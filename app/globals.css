@@ -316,6 +316,66 @@ button {
   color: var(--muted);
 }
 
+.visual-editor-error {
+  border-bottom: 1px solid #eccd8f;
+  background: #fff4d8;
+  color: #76510f;
+  padding: 12px 28px;
+  font-weight: 700;
+}
+
+.visual-editor-error strong,
+.visual-editor-error span {
+  display: block;
+}
+
+.visual-editor-error span {
+  margin-top: 4px;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+
+.visual-editor-fallback {
+  display: flex;
+  min-height: calc(72vh - 138px);
+  flex-direction: column;
+  background: #fffdf6;
+}
+
+.visual-editor-fallback-toolbar {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 28px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.visual-editor-fallback-toolbar button {
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  padding: 8px 12px;
+  font-weight: 700;
+}
+
+.visual-editor-fallback textarea {
+  flex: 1;
+  min-height: 560px;
+  resize: vertical;
+  border: 0;
+  outline: none;
+  background: transparent;
+  color: var(--text);
+  padding: 28px 34px 56px;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.95rem;
+  line-height: 1.65;
+}
+
 .patchmark-mdx-editor {
   min-height: 100%;
 }
@@ -439,6 +499,11 @@ button {
   }
 
   .draft-restore-banner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .visual-editor-fallback-toolbar {
     align-items: stretch;
     flex-direction: column;
   }
