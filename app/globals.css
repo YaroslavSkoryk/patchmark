@@ -99,6 +99,18 @@ button {
   padding: 16px;
 }
 
+.document-toolbar-primary,
+.document-toolbar-controls {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  min-width: 0;
+}
+
+.document-toolbar-controls {
+  justify-content: flex-end;
+}
+
 .document-meta {
   min-width: 0;
 }
@@ -116,6 +128,62 @@ button {
   margin-top: 4px;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.document-status {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 8px;
+  border: 1px solid var(--border);
+  padding: 5px 8px;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
+.document-status-saved {
+  border-color: #b9d8ca;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.document-status-dirty {
+  border-color: #eccd8f;
+  background: #fff4d8;
+  color: #76510f;
+}
+
+.document-status-restored {
+  border-color: #c7d3e6;
+  background: #edf3fb;
+  color: #2f4b73;
+}
+
+.document-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: flex-end;
+}
+
+.document-actions button,
+.draft-restore-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 12px;
+  font-weight: 700;
+}
+
+.document-actions button:hover,
+.draft-restore-actions button:hover {
+  border-color: var(--accent);
+}
+
+.copy-status {
+  min-width: 72px;
+  color: var(--muted);
+  font-size: 0.84rem;
 }
 
 .mode-switcher {
@@ -169,6 +237,34 @@ button {
 .file-loader-help {
   color: var(--muted);
   font-size: 0.9rem;
+}
+
+.draft-restore-banner {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #c7d3e6;
+  background: #edf3fb;
+  padding: 14px 16px;
+}
+
+.draft-restore-banner strong,
+.draft-restore-banner span {
+  display: block;
+}
+
+.draft-restore-banner span {
+  margin-top: 4px;
+  color: #2f4b73;
+  font-size: 0.9rem;
+}
+
+.draft-restore-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  flex: 0 0 auto;
 }
 
 .empty-state {
@@ -317,7 +413,32 @@ button {
     flex-direction: column;
   }
 
+  .document-toolbar-primary,
+  .document-toolbar-controls {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .document-toolbar-controls {
+    justify-content: stretch;
+  }
+
   .loader-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .document-actions,
+  .draft-restore-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .copy-status {
+    min-height: 1.2em;
+  }
+
+  .draft-restore-banner {
     align-items: stretch;
     flex-direction: column;
   }
