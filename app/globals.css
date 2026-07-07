@@ -1,0 +1,336 @@
+:root {
+  color-scheme: light;
+  --background: #f7f6f2;
+  --surface: #ffffff;
+  --surface-muted: #f0f3f1;
+  --surface-strong: #e5ebe7;
+  --text: #16231d;
+  --muted: #66716b;
+  --border: #d8ded9;
+  --accent: #2f6f55;
+  --accent-strong: #214f3d;
+  --accent-soft: #deeee6;
+  --shadow: 0 18px 50px rgba(22, 35, 29, 0.08);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  min-height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--background);
+  color: var(--text);
+  font-family:
+    Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+    sans-serif;
+}
+
+button,
+input,
+textarea {
+  font: inherit;
+}
+
+button {
+  cursor: pointer;
+}
+
+.app-shell {
+  min-height: 100vh;
+  padding: 32px;
+}
+
+.app-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  max-width: 1280px;
+  margin: 0 auto 24px;
+}
+
+.app-header h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 4.5rem);
+  line-height: 1;
+  letter-spacing: 0;
+}
+
+.app-header p {
+  margin: 12px 0 0;
+  max-width: 620px;
+  color: var(--muted);
+  font-size: 1.05rem;
+}
+
+.document-workspace {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 280px;
+  gap: 20px;
+  max-width: 1280px;
+  margin: 0 auto;
+}
+
+.editor-panel,
+.outline-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.editor-panel {
+  display: flex;
+  min-height: 72vh;
+  flex-direction: column;
+}
+
+.document-toolbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 16px;
+}
+
+.document-meta {
+  min-width: 0;
+}
+
+.document-meta span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.document-meta strong {
+  display: block;
+  overflow: hidden;
+  margin-top: 4px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.mode-switcher {
+  display: inline-grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  padding: 4px;
+}
+
+.mode-switcher button {
+  min-width: 136px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  padding: 9px 12px;
+}
+
+.mode-switcher button[aria-pressed="true"] {
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.loader-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.file-loader-label {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+  padding: 10px 14px;
+  font-weight: 700;
+}
+
+.file-loader-label input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+}
+
+.file-loader-help {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.empty-state {
+  display: grid;
+  min-height: 420px;
+  place-items: center;
+  padding: 32px;
+  text-align: center;
+}
+
+.empty-state h2 {
+  margin: 0;
+  font-size: 1.4rem;
+}
+
+.empty-state p {
+  max-width: 460px;
+  margin: 12px auto 0;
+  color: var(--muted);
+}
+
+.editor-body {
+  min-height: 0;
+  flex: 1;
+}
+
+.markdown-source-editor {
+  display: block;
+  width: 100%;
+  min-height: 100%;
+  resize: none;
+  border: 0;
+  outline: none;
+  padding: 28px;
+  background: #101815;
+  color: #f4f7f5;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.96rem;
+  line-height: 1.65;
+}
+
+.visual-editor-shell {
+  min-height: 100%;
+}
+
+.visual-editor-loading {
+  padding: 28px;
+  color: var(--muted);
+}
+
+.patchmark-mdx-editor {
+  min-height: 100%;
+}
+
+.patchmark-mdx-editor .mdxeditor-toolbar {
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.patchmark-prose {
+  min-height: calc(72vh - 138px);
+  padding: 28px 34px 56px;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.patchmark-prose h1,
+.patchmark-prose h2,
+.patchmark-prose h3,
+.patchmark-prose h4,
+.patchmark-prose h5,
+.patchmark-prose h6 {
+  line-height: 1.25;
+  letter-spacing: 0;
+}
+
+.outline-panel {
+  align-self: start;
+  max-height: 72vh;
+  overflow: auto;
+  padding: 18px;
+}
+
+.outline-panel h2 {
+  margin: 0 0 14px;
+  font-size: 0.95rem;
+  letter-spacing: 0;
+}
+
+.outline-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.92rem;
+}
+
+.outline-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.outline-item {
+  min-width: 0;
+}
+
+.outline-entry {
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  min-width: 0;
+  color: var(--text);
+  font-size: 0.92rem;
+}
+
+.outline-line {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.outline-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 900px) {
+  .app-shell {
+    padding: 20px;
+  }
+
+  .app-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .document-workspace {
+    grid-template-columns: 1fr;
+  }
+
+  .document-toolbar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .loader-row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .mode-switcher {
+    width: 100%;
+  }
+
+  .mode-switcher button {
+    min-width: 0;
+  }
+
+  .outline-panel {
+    max-height: none;
+  }
+}
