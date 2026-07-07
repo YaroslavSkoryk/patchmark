@@ -5,6 +5,7 @@ import {
   BlockTypeSelect,
   BoldItalicUnderlineToggles,
   CreateLink,
+  GenericJsxEditor,
   InsertCodeBlock,
   InsertImage,
   InsertTable,
@@ -19,6 +20,7 @@ import {
   frontmatterPlugin,
   headingsPlugin,
   imagePlugin,
+  jsxPlugin,
   linkDialogPlugin,
   linkPlugin,
   listsPlugin,
@@ -45,18 +47,24 @@ export function MdxEditorClient({
   );
   const editorRef = useRef<MDXEditorMethods>(null);
   const lastSyncedMarkdownRef = useRef(visualMarkdown);
+  const renderErrorTimerRef = useRef<number | null>(null);
+  const isMountedRef = useRef(false);
   const queuedRenderErrorRef = useRef<string | null>(null);
+  const lastAutoRetryMarkdownRef = useRef<string | null>(null);
   const [renderError, setRenderError] = useState<string | null>(null);
+  const [editorInstanceKey, setEditorInstanceKey] = useState(0);
 
   useEffect(() => {
-    if (!queuedRenderErrorRef.current) {
-      return;
-    }
+    isMountedRef.current = true;
 
-    const nextRenderError = queuedRenderErrorRef.current;
-    queuedRenderErrorRef.current = null;
-    setRenderError(nextRenderError);
-  }, [markdown, renderError]);
+    return () => {
+      isMountedRef.current = false;
+
+      if (renderErrorTimerRef.current !== null) {
+        window.clearTimeout(renderErrorTimerRef.current);
+      }
+    };
+  }, []);
 
   useEffect(() => {
     if (
@@ -75,13 +83,52 @@ export function MdxEditorClient({
     }
   }, [visualMarkdown]);
 
+  useEffect(() => {
+    if (
+      !renderError ||
+      visualMarkdown === markdown ||
+      lastAutoRetryMarkdownRef.current === visualMarkdown ||
+      !renderError.includes("<br>")
+    ) {
+      return;
+    }
+
+    lastAutoRetryMarkdownRef.current = visualMarkdown;
+    queuedRenderErrorRef.current = null;
+    setEditorInstanceKey((currentKey) => currentKey + 1);
+    setRenderError(null);
+  }, [markdown, renderError, visualMarkdown]);
+
   function queueRenderError(error: unknown) {
     queuedRenderErrorRef.current = normalizeVisualModeError(error);
+
+    if (renderErrorTimerRef.current !== null) {
+      window.clearTimeout(renderErrorTimerRef.current);
+    }
+
+    renderErrorTimerRef.current = window.setTimeout(() => {
+      renderErrorTimerRef.current = null;
+
+      if (!isMountedRef.current || queuedRenderErrorRef.current === null) {
+        return;
+      }
+
+      const nextRenderError = queuedRenderErrorRef.current;
+      queuedRenderErrorRef.current = null;
+      setRenderError(nextRenderError);
+    }, 0);
   }
 
   function handleFallbackMarkdownChange(nextMarkdown: string) {
     lastSyncedMarkdownRef.current = nextMarkdown;
     onMarkdownChange(nextMarkdown);
+  }
+
+  function handleRetryVisualMode() {
+    queuedRenderErrorRef.current = null;
+    lastAutoRetryMarkdownRef.current = null;
+    setEditorInstanceKey((currentKey) => currentKey + 1);
+    setRenderError(null);
   }
 
   function handleMarkdownChange(
@@ -116,7 +163,7 @@ export function MdxEditorClient({
         <div className="visual-editor-fallback">
           <div className="visual-editor-fallback-toolbar">
             <span>Editing remains Markdown-safe.</span>
-            <button type="button" onClick={() => setRenderError(null)}>
+            <button type="button" onClick={handleRetryVisualMode}>
               Retry Visual Mode
             </button>
           </div>
@@ -129,6 +176,7 @@ export function MdxEditorClient({
         </div>
       ) : (
         <MDXEditor
+          key={editorInstanceKey}
           ref={editorRef}
           className="patchmark-mdx-editor"
           contentEditableClassName="patchmark-prose"
@@ -161,6 +209,17 @@ export function MdxEditorClient({
               }
             }),
             imagePlugin({ disableImageResize: true }),
+            jsxPlugin({
+              jsxComponentDescriptors: [
+                {
+                  name: "br",
+                  kind: "text",
+                  props: [],
+                  hasChildren: false,
+                  Editor: GenericJsxEditor
+                }
+              ]
+            }),
             linkPlugin(),
             linkDialogPlugin(),
             markdownShortcutPlugin(),
