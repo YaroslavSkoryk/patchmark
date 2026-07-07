@@ -180,8 +180,8 @@ export function DocumentEditor() {
               <div>
                 <h2>Load a Markdown file to begin.</h2>
                 <p>
-                  Markdown is the source of truth. DOCX/PDF import will come
-                  later.
+                  Markdown is the source of truth across Visual Mode and
+                  Markdown Mode.
                 </p>
               </div>
             </div>

@@ -1,6 +1,6 @@
 # Patchmark
 
-Markdown-first document editor with reviewable AI patches.
+Markdown-first document editor with Visual Mode and Markdown Mode.
 
 ## Getting Started
 

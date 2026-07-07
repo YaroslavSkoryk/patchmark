@@ -6,7 +6,7 @@ export default function Home() {
       <header className="app-header">
         <div>
           <h1>Patchmark</h1>
-          <p>Markdown-first document editor with reviewable AI patches.</p>
+          <p>Markdown-first document editor with Visual Mode and Markdown Mode.</p>
         </div>
       </header>
 
