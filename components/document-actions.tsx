@@ -7,14 +7,20 @@ type CopyState = "idle" | "copied" | "failed";
 
 type DocumentActionsProps = {
   fileName: string;
+  isSaving: boolean;
   markdown: string;
-  onDownloaded: () => void;
+  onDownload: () => void;
+  onSaveAs: () => void;
+  onSaveChanges: () => void;
 };
 
 export function DocumentActions({
   fileName,
+  isSaving,
   markdown,
-  onDownloaded
+  onDownload,
+  onSaveAs,
+  onSaveChanges
 }: DocumentActionsProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
 
@@ -38,11 +44,22 @@ export function DocumentActions({
 
   function handleDownloadMarkdown() {
     downloadMarkdown(fileName, markdown);
-    onDownloaded();
+    onDownload();
   }
 
   return (
     <div className="document-actions" aria-label="Document actions">
+      <button
+        className="document-action-primary"
+        type="button"
+        disabled={isSaving}
+        onClick={onSaveChanges}
+      >
+        Save Changes
+      </button>
+      <button type="button" disabled={isSaving} onClick={onSaveAs}>
+        Save As
+      </button>
       <button type="button" onClick={handleDownloadMarkdown}>
         Download .md
       </button>

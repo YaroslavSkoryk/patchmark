@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { MarkdownSourceEditor } from "@/components/markdown-source-editor";
@@ -8,6 +8,14 @@ import { DocumentOutline } from "@/components/document-outline";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
 import { DraftRestoreBanner } from "@/components/draft-restore-banner";
 import { VisualMarkdownEditor } from "@/components/visual-markdown-editor";
+import { downloadMarkdown } from "@/lib/files/download-markdown";
+import {
+  canSaveMarkdownFilePicker,
+  saveMarkdownAsFile,
+  saveMarkdownToFileHandle,
+  type LoadedMarkdownFile,
+  type MarkdownFileHandle
+} from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import {
   deleteDocumentDraft,
@@ -17,27 +25,37 @@ import {
 } from "@/lib/storage/document-draft-storage";
 
 type EditorMode = "visual" | "markdown";
+type SaveStatus = "idle" | "saving" | "failed" | "unavailable";
+type SaveFeedback = {
+  kind: "success" | "error" | "info";
+  message: string;
+};
 
 export function DocumentEditor() {
   const [fileName, setFileName] = useState<string | null>(null);
   // Markdown is the source of truth across both editing modes.
   const [markdown, setMarkdown] = useState("");
   const [baselineMarkdown, setBaselineMarkdown] = useState<string | null>(null);
+  const [activeFileHandle, setActiveFileHandle] =
+    useState<MarkdownFileHandle | null>(null);
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
   const [availableDraft, setAvailableDraft] = useState<DocumentDraft | null>(null);
   const [mode, setMode] = useState<EditorMode>("visual");
   const [documentVersion, setDocumentVersion] = useState(0);
+  const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
+  const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const isDirty =
     fileName !== null &&
     (baselineMarkdown === null || markdown !== baselineMarkdown);
-  const documentStatus: DocumentStatusKind =
-    restoredMarkdown !== null && markdown === restoredMarkdown
-      ? "restored"
-      : isDirty
-        ? "dirty"
-        : "saved";
+  const isSaving = saveStatus === "saving";
+  const documentStatus: DocumentStatusKind = getDocumentStatus({
+    isDirty,
+    markdown,
+    restoredMarkdown,
+    saveStatus
+  });
 
   useEffect(() => {
     setAvailableDraft(readMostRecentDocumentDraft());
@@ -69,12 +87,76 @@ export function DocumentEditor() {
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isDirty]);
 
-  function handleFileLoaded(nextFileName: string, nextMarkdown: string) {
-    setFileName(nextFileName);
-    setMarkdown(nextMarkdown);
-    setBaselineMarkdown(nextMarkdown);
+  const handleSaveChanges = useCallback(async () => {
+    if (!fileName || isSaving) {
+      return;
+    }
+
+    if (typeof markdown !== "string") {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: "Save failed because Markdown content is invalid."
+      });
+      return;
+    }
+
+    if (!activeFileHandle) {
+      setSaveStatus("unavailable");
+      setSaveFeedback({
+        kind: "error",
+        message:
+          "Direct save is not available for this document. Use Save As or Download .md instead."
+      });
+      return;
+    }
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+
+    try {
+      await saveMarkdownToFileHandle(activeFileHandle, markdown);
+      setBaselineMarkdown(markdown);
+      setRestoredMarkdown(null);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Saved changes to the Markdown file."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getSaveErrorMessage(error)
+      });
+    }
+  }, [activeFileHandle, fileName, isSaving, markdown]);
+
+  useEffect(() => {
+    if (!fileName) {
+      return;
+    }
+
+    function handleSaveShortcut(event: KeyboardEvent) {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "s") {
+        event.preventDefault();
+        void handleSaveChanges();
+      }
+    }
+
+    window.addEventListener("keydown", handleSaveShortcut);
+    return () => window.removeEventListener("keydown", handleSaveShortcut);
+  }, [fileName, handleSaveChanges]);
+
+  function handleFileLoaded(loadedFile: LoadedMarkdownFile) {
+    setFileName(loadedFile.fileName);
+    setMarkdown(loadedFile.markdown);
+    setBaselineMarkdown(loadedFile.markdown);
+    setActiveFileHandle(loadedFile.fileHandle);
     setRestoredMarkdown(null);
     setAvailableDraft(null);
+    setSaveStatus("idle");
+    setSaveFeedback(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -87,8 +169,11 @@ export function DocumentEditor() {
     setFileName(availableDraft.fileName);
     setMarkdown(availableDraft.markdown);
     setBaselineMarkdown(null);
+    setActiveFileHandle(null);
     setRestoredMarkdown(availableDraft.markdown);
     setAvailableDraft(null);
+    setSaveStatus("idle");
+    setSaveFeedback(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -102,9 +187,74 @@ export function DocumentEditor() {
     setAvailableDraft(null);
   }
 
-  function handleDownloaded() {
-    setBaselineMarkdown(markdown);
-    setRestoredMarkdown(null);
+  function handleMarkdownChange(nextMarkdown: string) {
+    setMarkdown(nextMarkdown);
+
+    if (saveStatus !== "saving") {
+      setSaveStatus("idle");
+      setSaveFeedback(null);
+    }
+  }
+
+  async function handleSaveAs() {
+    if (!fileName || isSaving) {
+      return;
+    }
+
+    if (typeof markdown !== "string") {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: "Save failed because Markdown content is invalid."
+      });
+      return;
+    }
+
+    if (!canSaveMarkdownFilePicker()) {
+      downloadMarkdown(fileName, markdown);
+      setSaveStatus("unavailable");
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Direct Save As is not available in this browser. Downloaded a Markdown copy instead."
+      });
+      return;
+    }
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+
+    try {
+      const fileHandle = await saveMarkdownAsFile(fileName, markdown);
+
+      if (!fileHandle) {
+        setSaveStatus("idle");
+        return;
+      }
+
+      setActiveFileHandle(fileHandle);
+      setFileName(fileHandle.name);
+      setBaselineMarkdown(markdown);
+      setRestoredMarkdown(null);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Saved Markdown to the selected file."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getSaveErrorMessage(error)
+      });
+    }
+  }
+
+  function handleDownload() {
+    setSaveFeedback({
+      kind: "info",
+      message: "Downloaded a Markdown copy. Save status is unchanged."
+    });
   }
 
   return (
@@ -130,8 +280,11 @@ export function DocumentEditor() {
             <div className="document-toolbar-controls">
               <DocumentActions
                 fileName={fileName}
+                isSaving={isSaving}
                 markdown={markdown}
-                onDownloaded={handleDownloaded}
+                onDownload={handleDownload}
+                onSaveAs={handleSaveAs}
+                onSaveChanges={handleSaveChanges}
               />
               <div className="mode-switcher" aria-label="Editor mode">
                 <button
@@ -153,6 +306,15 @@ export function DocumentEditor() {
           ) : null}
         </div>
 
+        {fileName && saveFeedback ? (
+          <div
+            className={`document-save-banner document-save-banner-${saveFeedback.kind}`}
+            role={saveFeedback.kind === "error" ? "alert" : "status"}
+          >
+            {saveFeedback.message}
+          </div>
+        ) : null}
+
         {!fileName && availableDraft ? (
           <DraftRestoreBanner
             draft={availableDraft}
@@ -167,12 +329,12 @@ export function DocumentEditor() {
               <VisualMarkdownEditor
                 key={documentVersion}
                 markdown={markdown}
-                onMarkdownChange={setMarkdown}
+                onMarkdownChange={handleMarkdownChange}
               />
             ) : (
               <MarkdownSourceEditor
                 markdown={markdown}
-                onMarkdownChange={setMarkdown}
+                onMarkdownChange={handleMarkdownChange}
               />
             )
           ) : (
@@ -192,4 +354,42 @@ export function DocumentEditor() {
       <DocumentOutline headings={headings} />
     </section>
   );
+}
+
+function getDocumentStatus({
+  isDirty,
+  markdown,
+  restoredMarkdown,
+  saveStatus
+}: {
+  isDirty: boolean;
+  markdown: string;
+  restoredMarkdown: string | null;
+  saveStatus: SaveStatus;
+}): DocumentStatusKind {
+  if (saveStatus === "saving") {
+    return "saving";
+  }
+
+  if (saveStatus === "failed") {
+    return "saveFailed";
+  }
+
+  if (saveStatus === "unavailable") {
+    return "saveUnavailable";
+  }
+
+  if (restoredMarkdown !== null && markdown === restoredMarkdown) {
+    return "restored";
+  }
+
+  return isDirty ? "dirty" : "saved";
+}
+
+function getSaveErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return `Save failed: ${error.message}`;
+  }
+
+  return "Save failed. Your unsaved changes are still in Patchmark.";
 }

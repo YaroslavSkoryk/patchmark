@@ -92,8 +92,9 @@ button {
 
 .document-toolbar {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
-  align-items: center;
+  align-items: flex-start;
   justify-content: space-between;
   border-bottom: 1px solid var(--border);
   padding: 16px;
@@ -102,12 +103,14 @@ button {
 .document-toolbar-primary,
 .document-toolbar-controls {
   display: flex;
+  flex-wrap: wrap;
   gap: 16px;
   align-items: center;
   min-width: 0;
 }
 
 .document-toolbar-controls {
+  flex: 1 1 520px;
   justify-content: flex-end;
 }
 
@@ -159,8 +162,45 @@ button {
   color: #2f4b73;
 }
 
+.document-status-saving {
+  border-color: #c7d3e6;
+  background: #edf3fb;
+  color: #2f4b73;
+}
+
+.document-status-saveFailed,
+.document-status-saveUnavailable {
+  border-color: #efb7a9;
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.document-save-banner {
+  border-bottom: 1px solid var(--border);
+  padding: 10px 16px;
+  color: var(--muted);
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.document-save-banner-error {
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.document-save-banner-success {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.document-save-banner-info {
+  background: #edf3fb;
+  color: #2f4b73;
+}
+
 .document-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
   align-items: center;
   justify-content: flex-end;
@@ -178,6 +218,17 @@ button {
 .document-actions button:hover,
 .draft-restore-actions button:hover {
   border-color: var(--accent);
+}
+
+.document-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.document-actions .document-action-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
 }
 
 .copy-status {
@@ -225,13 +276,24 @@ button {
   font-weight: 700;
 }
 
-.file-loader-label input {
+.file-loader-control {
+  display: inline-flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.file-loader-input {
   position: absolute;
   width: 1px;
   height: 1px;
   overflow: hidden;
   clip: rect(0, 0, 0, 0);
   white-space: nowrap;
+}
+
+.file-loader-error {
+  color: #8d2f18;
+  font-size: 0.84rem;
 }
 
 .file-loader-help {
