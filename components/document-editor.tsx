@@ -18,6 +18,15 @@ import {
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import {
+  canOpenProjectFolder,
+  createProjectFromMarkdown,
+  createProjectSnapshot,
+  openProjectFolder,
+  saveProjectDocument,
+  type LoadedPatchmarkProject,
+  type PatchmarkProjectHandle
+} from "@/lib/project/patchmark-project";
+import {
   deleteDocumentDraft,
   readMostRecentDocumentDraft,
   saveDocumentDraft,
@@ -38,6 +47,8 @@ export function DocumentEditor() {
   const [baselineMarkdown, setBaselineMarkdown] = useState<string | null>(null);
   const [activeFileHandle, setActiveFileHandle] =
     useState<MarkdownFileHandle | null>(null);
+  const [projectHandle, setProjectHandle] =
+    useState<PatchmarkProjectHandle | null>(null);
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
   const [availableDraft, setAvailableDraft] = useState<DocumentDraft | null>(null);
   const [mode, setMode] = useState<EditorMode>("visual");
@@ -50,6 +61,7 @@ export function DocumentEditor() {
     fileName !== null &&
     (baselineMarkdown === null || markdown !== baselineMarkdown);
   const isSaving = saveStatus === "saving";
+  const isProjectMode = projectHandle !== null;
   const documentStatus: DocumentStatusKind = getDocumentStatus({
     isDirty,
     markdown,
@@ -101,6 +113,34 @@ export function DocumentEditor() {
       return;
     }
 
+    if (projectHandle) {
+      setSaveStatus("saving");
+      setSaveFeedback(null);
+
+      try {
+        const nextProjectHandle = await saveProjectDocument(
+          projectHandle,
+          markdown
+        );
+        setProjectHandle(nextProjectHandle);
+        setBaselineMarkdown(markdown);
+        setRestoredMarkdown(null);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "success",
+          message: "Saved changes to project document.md."
+        });
+      } catch (error) {
+        setSaveStatus("failed");
+        setSaveFeedback({
+          kind: "error",
+          message: getSaveErrorMessage(error)
+        });
+      }
+
+      return;
+    }
+
     if (!activeFileHandle) {
       setSaveStatus("unavailable");
       setSaveFeedback({
@@ -130,7 +170,7 @@ export function DocumentEditor() {
         message: getSaveErrorMessage(error)
       });
     }
-  }, [activeFileHandle, fileName, isSaving, markdown]);
+  }, [activeFileHandle, fileName, isSaving, markdown, projectHandle]);
 
   useEffect(() => {
     if (!fileName) {
@@ -153,6 +193,7 @@ export function DocumentEditor() {
     setMarkdown(loadedFile.markdown);
     setBaselineMarkdown(loadedFile.markdown);
     setActiveFileHandle(loadedFile.fileHandle);
+    setProjectHandle(null);
     setRestoredMarkdown(null);
     setAvailableDraft(null);
     setSaveStatus("idle");
@@ -170,6 +211,7 @@ export function DocumentEditor() {
     setMarkdown(availableDraft.markdown);
     setBaselineMarkdown(null);
     setActiveFileHandle(null);
+    setProjectHandle(null);
     setRestoredMarkdown(availableDraft.markdown);
     setAvailableDraft(null);
     setSaveStatus("idle");
@@ -232,6 +274,16 @@ export function DocumentEditor() {
         return;
       }
 
+      if (projectHandle) {
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "success",
+          message:
+            "Saved an exported Markdown copy. The project folder remains active."
+        });
+        return;
+      }
+
       setActiveFileHandle(fileHandle);
       setFileName(fileHandle.name);
       setBaselineMarkdown(markdown);
@@ -257,6 +309,139 @@ export function DocumentEditor() {
     });
   }
 
+  async function handleOpenProjectFolder() {
+    if (isSaving) {
+      return;
+    }
+
+    if (!canOpenProjectFolder()) {
+      setSaveStatus("unavailable");
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Project folders require a browser with File System Access API support. You can continue using Single File Mode."
+      });
+      return;
+    }
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+
+    try {
+      const loadedProject = await openProjectFolder();
+
+      if (!loadedProject) {
+        setSaveStatus("idle");
+        return;
+      }
+
+      loadProjectIntoEditor(loadedProject);
+      setSaveFeedback({
+        kind: "success",
+        message: "Opened Patchmark project folder."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleCreateProjectFromCurrentDocument() {
+    if (!fileName || isSaving) {
+      return;
+    }
+
+    if (typeof markdown !== "string") {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: "Project creation failed because Markdown content is invalid."
+      });
+      return;
+    }
+
+    if (!canOpenProjectFolder()) {
+      setSaveStatus("unavailable");
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Project folders require a browser with File System Access API support. You can continue using Single File Mode."
+      });
+      return;
+    }
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+
+    try {
+      const loadedProject = await createProjectFromMarkdown({
+        markdown,
+        suggestedProjectName: fileName
+      });
+
+      if (!loadedProject) {
+        setSaveStatus("idle");
+        return;
+      }
+
+      loadProjectIntoEditor(loadedProject);
+      setSaveFeedback({
+        kind: "success",
+        message: "Created Patchmark project from the current document."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleCreateSnapshot() {
+    if (!projectHandle || isSaving) {
+      return;
+    }
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+
+    try {
+      const nextProjectHandle = await createProjectSnapshot({
+        project: projectHandle,
+        markdown
+      });
+      setProjectHandle(nextProjectHandle);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Created a Markdown snapshot in .patchmark/versions/."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  function loadProjectIntoEditor(loadedProject: LoadedPatchmarkProject) {
+    setProjectHandle(loadedProject.project);
+    setFileName(loadedProject.project.manifest.document_file);
+    setMarkdown(loadedProject.markdown);
+    setBaselineMarkdown(loadedProject.markdown);
+    setActiveFileHandle(null);
+    setRestoredMarkdown(null);
+    setAvailableDraft(null);
+    setSaveStatus("idle");
+    setMode("visual");
+    setDocumentVersion((currentVersion) => currentVersion + 1);
+  }
+
   return (
     <section className="document-workspace" aria-label="Patchmark editor">
       <div className="editor-panel">
@@ -267,9 +452,39 @@ export function DocumentEditor() {
               <span className="file-loader-help">Accepts .md and .markdown</span>
             </div>
 
+            <div className="project-actions" aria-label="Project folder actions">
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={handleOpenProjectFolder}
+              >
+                Open Project Folder
+              </button>
+              <button
+                type="button"
+                disabled={!fileName || isSaving}
+                onClick={handleCreateProjectFromCurrentDocument}
+              >
+                Create Project From Current Document
+              </button>
+            </div>
+
+            <div className="workspace-status" aria-label="Workspace status">
+              <span>
+                Mode:{" "}
+                {isProjectMode ? "Patchmark Project" : "Single Markdown File"}
+              </span>
+              {projectHandle ? (
+                <>
+                  <span>Project: {projectHandle.manifest.project_name}</span>
+                  <span>Document: {projectHandle.manifest.document_file}</span>
+                </>
+              ) : null}
+            </div>
+
             {fileName ? (
               <div className="document-meta">
-                <span>Loaded file</span>
+                <span>{isProjectMode ? "Project document" : "Loaded file"}</span>
                 <strong title={fileName}>{fileName}</strong>
                 <DocumentStatus status={documentStatus} />
               </div>
@@ -282,9 +497,11 @@ export function DocumentEditor() {
                 fileName={fileName}
                 isSaving={isSaving}
                 markdown={markdown}
+                onCreateSnapshot={handleCreateSnapshot}
                 onDownload={handleDownload}
                 onSaveAs={handleSaveAs}
                 onSaveChanges={handleSaveChanges}
+                showCreateSnapshot={isProjectMode}
               />
               <div className="mode-switcher" aria-label="Editor mode">
                 <button
@@ -306,7 +523,7 @@ export function DocumentEditor() {
           ) : null}
         </div>
 
-        {fileName && saveFeedback ? (
+        {saveFeedback ? (
           <div
             className={`document-save-banner document-save-banner-${saveFeedback.kind}`}
             role={saveFeedback.kind === "error" ? "alert" : "status"}
@@ -392,4 +609,12 @@ function getSaveErrorMessage(error: unknown): string {
   }
 
   return "Save failed. Your unsaved changes are still in Patchmark.";
+}
+
+function getProjectErrorMessage(error: unknown): string {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+
+  return "Project folder action failed. Your Markdown is still in Patchmark.";
 }

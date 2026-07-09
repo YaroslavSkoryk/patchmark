@@ -1,0 +1,456 @@
+import { type MarkdownFileHandle } from "@/lib/files/file-system-access";
+import {
+  type PatchmarkManifest,
+  type PatchmarkVersionEntry
+} from "@/lib/project/project-types";
+
+const documentFileName = "document.md";
+const metadataDirectoryName = ".patchmark";
+const manifestFileName = "manifest.json";
+
+type DirectoryPickerOptions = {
+  mode?: "read" | "readwrite";
+};
+
+type FileSystemAccessWindow = Window & {
+  showDirectoryPicker?: (
+    options?: DirectoryPickerOptions
+  ) => Promise<PatchmarkDirectoryHandle>;
+};
+
+type DirectoryHandleOptions = {
+  create?: boolean;
+};
+
+export type PatchmarkDirectoryHandle = {
+  name: string;
+  getFileHandle: (
+    name: string,
+    options?: DirectoryHandleOptions
+  ) => Promise<MarkdownFileHandle>;
+  getDirectoryHandle: (
+    name: string,
+    options?: DirectoryHandleOptions
+  ) => Promise<PatchmarkDirectoryHandle>;
+};
+
+export type PatchmarkProjectHandle = {
+  directoryHandle: PatchmarkDirectoryHandle;
+  manifest: PatchmarkManifest;
+};
+
+export type LoadedPatchmarkProject = {
+  project: PatchmarkProjectHandle;
+  markdown: string;
+};
+
+const emptyMetadataFiles = {
+  "comments.json": "[]\n",
+  "patches.json": "[]\n",
+  "tasks.json": "[]\n"
+} as const;
+
+const metadataDirectories = ["versions", "context-packs", "imports"] as const;
+
+export function canOpenProjectFolder(): boolean {
+  return (
+    typeof window !== "undefined" &&
+    typeof getFileSystemAccessWindow().showDirectoryPicker === "function"
+  );
+}
+
+export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null> {
+  const directoryHandle = await pickProjectDirectory();
+
+  if (!directoryHandle) {
+    return null;
+  }
+
+  const documentFileHandle = await getRequiredFileHandle(
+    directoryHandle,
+    documentFileName,
+    "This folder does not contain document.md."
+  );
+
+  const metadataDirectoryHandle = await getRequiredDirectoryHandle(
+    directoryHandle,
+    metadataDirectoryName,
+    "This folder contains document.md but is not initialized as a Patchmark project."
+  );
+
+  const manifestFileHandle = await getRequiredFileHandle(
+    metadataDirectoryHandle,
+    manifestFileName,
+    "This folder is missing .patchmark/manifest.json."
+  );
+
+  const manifest = normalizeManifest(
+    JSON.parse(await readTextFile(manifestFileHandle)),
+    directoryHandle.name
+  );
+
+  await ensureProjectMetadata(directoryHandle, manifest);
+
+  return {
+    markdown: await readTextFile(documentFileHandle),
+    project: {
+      directoryHandle,
+      manifest
+    }
+  };
+}
+
+export async function createProjectFromMarkdown({
+  markdown,
+  suggestedProjectName
+}: {
+  markdown: string;
+  suggestedProjectName: string | null;
+}): Promise<LoadedPatchmarkProject | null> {
+  const directoryHandle = await pickProjectDirectory();
+
+  if (!directoryHandle) {
+    return null;
+  }
+
+  if (
+    (await hasFile(directoryHandle, documentFileName)) ||
+    (await hasDirectory(directoryHandle, metadataDirectoryName))
+  ) {
+    throw new Error(
+      "This folder already contains a Patchmark project or document.md. Choose an empty folder."
+    );
+  }
+
+  const now = new Date().toISOString();
+  const manifest: PatchmarkManifest = {
+    schema_version: 1,
+    project_name: createProjectName(
+      suggestedProjectName ?? directoryHandle.name,
+      directoryHandle.name
+    ),
+    document_file: documentFileName,
+    created_at: now,
+    updated_at: now
+  };
+
+  await writeProjectDocument(directoryHandle, markdown);
+  await ensureProjectMetadata(directoryHandle, manifest);
+
+  return {
+    markdown,
+    project: {
+      directoryHandle,
+      manifest
+    }
+  };
+}
+
+export async function saveProjectDocument(
+  project: PatchmarkProjectHandle,
+  markdown: string
+): Promise<PatchmarkProjectHandle> {
+  const manifest = {
+    ...project.manifest,
+    updated_at: new Date().toISOString()
+  };
+
+  await writeProjectDocument(project.directoryHandle, markdown);
+  await writeManifest(project.directoryHandle, manifest);
+
+  return {
+    ...project,
+    manifest
+  };
+}
+
+export async function createProjectSnapshot({
+  project,
+  markdown,
+  reason = "manual snapshot"
+}: {
+  project: PatchmarkProjectHandle;
+  markdown: string;
+  reason?: string;
+}): Promise<PatchmarkProjectHandle> {
+  const createdAt = new Date().toISOString();
+  const snapshotId = createSnapshotId(createdAt);
+  const snapshotFile = `.patchmark/versions/${snapshotId}.md`;
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const versionsDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("versions", {
+      create: true
+    });
+  const snapshotFileHandle = await versionsDirectoryHandle.getFileHandle(
+    `${snapshotId}.md`,
+    { create: true }
+  );
+  const versionEntry: PatchmarkVersionEntry = {
+    id: snapshotId,
+    file: snapshotFile,
+    created_at: createdAt,
+    reason
+  };
+  const manifest: PatchmarkManifest = {
+    ...project.manifest,
+    updated_at: createdAt,
+    current_version: snapshotId,
+    versions: [...(project.manifest.versions ?? []), versionEntry]
+  };
+
+  await writeTextFile(snapshotFileHandle, markdown);
+  await writeManifest(project.directoryHandle, manifest);
+
+  return {
+    ...project,
+    manifest
+  };
+}
+
+async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> {
+  const directoryPicker = getFileSystemAccessWindow().showDirectoryPicker;
+
+  if (!directoryPicker) {
+    throw new Error(
+      "Project folders require a browser with File System Access API support. You can continue using Single File Mode."
+    );
+  }
+
+  try {
+    return await directoryPicker({ mode: "readwrite" });
+  } catch (error) {
+    if (isAbortError(error)) {
+      return null;
+    }
+
+    throw error;
+  }
+}
+
+async function ensureProjectMetadata(
+  directoryHandle: PatchmarkDirectoryHandle,
+  manifest: PatchmarkManifest
+): Promise<void> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+
+  await writeManifest(directoryHandle, manifest);
+
+  await Promise.all(
+    Object.entries(emptyMetadataFiles).map(async ([fileName, contents]) => {
+      if (await hasFile(metadataDirectoryHandle, fileName)) {
+        return;
+      }
+
+      const fileHandle = await metadataDirectoryHandle.getFileHandle(fileName, {
+        create: true
+      });
+      await writeTextFile(fileHandle, contents);
+    })
+  );
+
+  await Promise.all(
+    metadataDirectories.map((directoryName) =>
+      metadataDirectoryHandle.getDirectoryHandle(directoryName, { create: true })
+    )
+  );
+}
+
+async function writeProjectDocument(
+  directoryHandle: PatchmarkDirectoryHandle,
+  markdown: string
+): Promise<void> {
+  const documentFileHandle = await directoryHandle.getFileHandle(
+    documentFileName,
+    { create: true }
+  );
+  await writeTextFile(documentFileHandle, markdown);
+}
+
+async function writeManifest(
+  directoryHandle: PatchmarkDirectoryHandle,
+  manifest: PatchmarkManifest
+): Promise<void> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const manifestFileHandle = await metadataDirectoryHandle.getFileHandle(
+    manifestFileName,
+    { create: true }
+  );
+  await writeTextFile(
+    manifestFileHandle,
+    `${JSON.stringify(manifest, null, 2)}\n`
+  );
+}
+
+async function getRequiredFileHandle(
+  directoryHandle: PatchmarkDirectoryHandle,
+  fileName: string,
+  message: string
+): Promise<MarkdownFileHandle> {
+  try {
+    return await directoryHandle.getFileHandle(fileName);
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      throw new Error(message);
+    }
+
+    throw error;
+  }
+}
+
+async function getRequiredDirectoryHandle(
+  directoryHandle: PatchmarkDirectoryHandle,
+  directoryName: string,
+  message: string
+): Promise<PatchmarkDirectoryHandle> {
+  try {
+    return await directoryHandle.getDirectoryHandle(directoryName);
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      throw new Error(message);
+    }
+
+    throw error;
+  }
+}
+
+async function hasFile(
+  directoryHandle: PatchmarkDirectoryHandle,
+  fileName: string
+): Promise<boolean> {
+  try {
+    await directoryHandle.getFileHandle(fileName);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function hasDirectory(
+  directoryHandle: PatchmarkDirectoryHandle,
+  directoryName: string
+): Promise<boolean> {
+  try {
+    await directoryHandle.getDirectoryHandle(directoryName);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function readTextFile(fileHandle: MarkdownFileHandle): Promise<string> {
+  return (await fileHandle.getFile()).text();
+}
+
+async function writeTextFile(
+  fileHandle: MarkdownFileHandle,
+  contents: string
+): Promise<void> {
+  const writable = await fileHandle.createWritable();
+  await writable.write(contents);
+  await writable.close();
+}
+
+function normalizeManifest(
+  manifest: unknown,
+  fallbackProjectName: string
+): PatchmarkManifest {
+  if (!isRecord(manifest)) {
+    throw new Error(".patchmark/manifest.json is not valid JSON metadata.");
+  }
+
+  if (manifest.schema_version !== 1) {
+    throw new Error("Unsupported Patchmark project schema version.");
+  }
+
+  if (manifest.document_file !== documentFileName) {
+    throw new Error("Patchmark projects must use document.md as the document file.");
+  }
+
+  const now = new Date().toISOString();
+  return {
+    schema_version: 1,
+    project_name:
+      typeof manifest.project_name === "string"
+        ? manifest.project_name
+        : createProjectName(fallbackProjectName, fallbackProjectName),
+    document_file: documentFileName,
+    created_at:
+      typeof manifest.created_at === "string" ? manifest.created_at : now,
+    updated_at:
+      typeof manifest.updated_at === "string" ? manifest.updated_at : now,
+    current_version:
+      typeof manifest.current_version === "string"
+        ? manifest.current_version
+        : undefined,
+    versions: Array.isArray(manifest.versions)
+      ? manifest.versions.filter(isPatchmarkVersionEntry)
+      : undefined
+  };
+}
+
+function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    typeof value.file === "string" &&
+    typeof value.created_at === "string" &&
+    typeof value.reason === "string"
+  );
+}
+
+function createProjectName(
+  suggestedProjectName: string,
+  fallbackProjectName: string
+): string {
+  const withoutExtension = suggestedProjectName.replace(/\.(md|markdown)$/i, "");
+  const normalized = withoutExtension
+    .trim()
+    .replace(/\s+/g, "_")
+    .replace(/[^\w.-]+/g, "_")
+    .replace(/^_+|_+$/g, "");
+
+  return normalized || fallbackProjectName || "Patchmark_Project";
+}
+
+function createSnapshotId(createdAt: string): string {
+  const timestamp = createdAt
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z")
+    .replace("T", "-")
+    .replace("Z", "");
+
+  return `snapshot-${timestamp}`;
+}
+
+function getFileSystemAccessWindow(): FileSystemAccessWindow {
+  return window as FileSystemAccessWindow;
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "AbortError";
+}
+
+function isNotFoundError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === "NotFoundError";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}

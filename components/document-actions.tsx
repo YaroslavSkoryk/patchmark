@@ -9,18 +9,22 @@ type DocumentActionsProps = {
   fileName: string;
   isSaving: boolean;
   markdown: string;
+  onCreateSnapshot?: () => void;
   onDownload: () => void;
   onSaveAs: () => void;
   onSaveChanges: () => void;
+  showCreateSnapshot?: boolean;
 };
 
 export function DocumentActions({
   fileName,
   isSaving,
   markdown,
+  onCreateSnapshot,
   onDownload,
   onSaveAs,
-  onSaveChanges
+  onSaveChanges,
+  showCreateSnapshot = false
 }: DocumentActionsProps) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
 
@@ -60,6 +64,11 @@ export function DocumentActions({
       <button type="button" disabled={isSaving} onClick={onSaveAs}>
         Save As
       </button>
+      {showCreateSnapshot && onCreateSnapshot ? (
+        <button type="button" disabled={isSaving} onClick={onCreateSnapshot}>
+          Create Snapshot
+        </button>
+      ) : null}
       <button type="button" onClick={handleDownloadMarkdown}>
         Download .md
       </button>
