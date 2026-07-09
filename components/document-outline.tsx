@@ -6,7 +6,7 @@ type DocumentOutlineProps = {
 
 export function DocumentOutline({ headings }: DocumentOutlineProps) {
   return (
-    <aside className="outline-panel" aria-label="Document Outline">
+    <section className="outline-panel" aria-label="Document Outline">
       <h2>Document Outline</h2>
 
       {headings.length === 0 ? (
@@ -27,6 +27,6 @@ export function DocumentOutline({ headings }: DocumentOutlineProps) {
           ))}
         </ol>
       )}
-    </aside>
+    </section>
   );
 }

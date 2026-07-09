@@ -7,6 +7,11 @@ import { MarkdownSourceEditor } from "@/components/markdown-source-editor";
 import { DocumentOutline } from "@/components/document-outline";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
 import { DraftRestoreBanner } from "@/components/draft-restore-banner";
+import {
+  SnapshotDialog,
+  type SnapshotDialogState
+} from "@/components/snapshot-dialog";
+import { VersionHistoryPanel } from "@/components/version-history-panel";
 import { VisualMarkdownEditor } from "@/components/visual-markdown-editor";
 import { downloadMarkdown } from "@/lib/files/download-markdown";
 import {
@@ -21,11 +26,14 @@ import {
   canOpenProjectFolder,
   createProjectFromMarkdown,
   createProjectSnapshot,
+  listProjectVersions,
   openProjectFolder,
+  readProjectVersionMarkdown,
   saveProjectDocument,
   type LoadedPatchmarkProject,
   type PatchmarkProjectHandle
 } from "@/lib/project/patchmark-project";
+import { type PatchmarkVersionEntry } from "@/lib/project/project-types";
 import {
   deleteDocumentDraft,
   readMostRecentDocumentDraft,
@@ -55,6 +63,11 @@ export function DocumentEditor() {
   const [documentVersion, setDocumentVersion] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
+  const [versionEntries, setVersionEntries] = useState<PatchmarkVersionEntry[]>(
+    []
+  );
+  const [snapshotDialog, setSnapshotDialog] =
+    useState<SnapshotDialogState | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const isDirty =
@@ -72,6 +85,25 @@ export function DocumentEditor() {
   useEffect(() => {
     setAvailableDraft(readMostRecentDocumentDraft());
   }, []);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    if (!projectHandle) {
+      setVersionEntries([]);
+      return;
+    }
+
+    void listProjectVersions(projectHandle).then((versions) => {
+      if (!isCancelled) {
+        setVersionEntries(versions);
+      }
+    });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [projectHandle]);
 
   useEffect(() => {
     if (!fileName) {
@@ -198,6 +230,7 @@ export function DocumentEditor() {
     setAvailableDraft(null);
     setSaveStatus("idle");
     setSaveFeedback(null);
+    setSnapshotDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -216,6 +249,7 @@ export function DocumentEditor() {
     setAvailableDraft(null);
     setSaveStatus("idle");
     setSaveFeedback(null);
+    setSnapshotDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -410,11 +444,21 @@ export function DocumentEditor() {
     setSaveFeedback(null);
 
     try {
-      const nextProjectHandle = await createProjectSnapshot({
+      const snapshotResult = await createProjectSnapshot({
         project: projectHandle,
         markdown
       });
-      setProjectHandle(nextProjectHandle);
+
+      if (!snapshotResult.created) {
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "info",
+          message: "No changes since latest snapshot."
+        });
+        return;
+      }
+
+      setProjectHandle(snapshotResult.project);
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -422,6 +466,53 @@ export function DocumentEditor() {
       });
     } catch (error) {
       setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleViewSnapshot(version: PatchmarkVersionEntry) {
+    if (!projectHandle) {
+      return;
+    }
+
+    try {
+      const snapshotMarkdown = await readProjectVersionMarkdown(
+        projectHandle,
+        version
+      );
+      setSnapshotDialog({
+        kind: "view",
+        snapshotMarkdown,
+        version
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleCompareSnapshot(version: PatchmarkVersionEntry) {
+    if (!projectHandle) {
+      return;
+    }
+
+    try {
+      const snapshotMarkdown = await readProjectVersionMarkdown(
+        projectHandle,
+        version
+      );
+      setSnapshotDialog({
+        currentMarkdown: markdown,
+        kind: "compare",
+        snapshotMarkdown,
+        version
+      });
+    } catch (error) {
       setSaveFeedback({
         kind: "error",
         message: getProjectErrorMessage(error)
@@ -438,12 +529,23 @@ export function DocumentEditor() {
     setRestoredMarkdown(null);
     setAvailableDraft(null);
     setSaveStatus("idle");
+    setSnapshotDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
 
   return (
     <section className="document-workspace" aria-label="Patchmark editor">
+      <aside className="document-sidebar" aria-label="Document navigation">
+        <DocumentOutline headings={headings} />
+        <VersionHistoryPanel
+          isProjectMode={isProjectMode}
+          versions={versionEntries}
+          onCompareVersion={handleCompareSnapshot}
+          onViewVersion={handleViewSnapshot}
+        />
+      </aside>
+
       <div className="editor-panel">
         <div className="document-toolbar">
           <div className="document-toolbar-primary">
@@ -568,7 +670,12 @@ export function DocumentEditor() {
         </div>
       </div>
 
-      <DocumentOutline headings={headings} />
+      {snapshotDialog ? (
+        <SnapshotDialog
+          dialog={snapshotDialog}
+          onClose={() => setSnapshotDialog(null)}
+        />
+      ) : null}
     </section>
   );
 }

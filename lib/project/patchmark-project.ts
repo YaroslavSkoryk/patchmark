@@ -44,6 +44,18 @@ export type LoadedPatchmarkProject = {
   markdown: string;
 };
 
+export type CreateProjectSnapshotResult =
+  | {
+      created: true;
+      project: PatchmarkProjectHandle;
+      version: PatchmarkVersionEntry;
+    }
+  | {
+      created: false;
+      project: PatchmarkProjectHandle;
+      reason: "unchanged";
+    };
+
 const emptyMetadataFiles = {
   "comments.json": "[]\n",
   "patches.json": "[]\n",
@@ -172,7 +184,27 @@ export async function createProjectSnapshot({
   project: PatchmarkProjectHandle;
   markdown: string;
   reason?: string;
-}): Promise<PatchmarkProjectHandle> {
+}): Promise<CreateProjectSnapshotResult> {
+  const versions = project.manifest.versions ?? [];
+  const latestVersion = versions.at(-1);
+  const contentHash = await createMarkdownHash(markdown);
+
+  if (
+    latestVersion &&
+    (await isSameAsLatestSnapshot({
+      contentHash,
+      markdown,
+      project,
+      version: latestVersion
+    }))
+  ) {
+    return {
+      created: false,
+      project,
+      reason: "unchanged"
+    };
+  }
+
   const createdAt = new Date().toISOString();
   const snapshotId = createSnapshotId(createdAt);
   const snapshotFile = `.patchmark/versions/${snapshotId}.md`;
@@ -192,22 +224,121 @@ export async function createProjectSnapshot({
     id: snapshotId,
     file: snapshotFile,
     created_at: createdAt,
-    reason
+    reason,
+    content_hash: contentHash
   };
   const manifest: PatchmarkManifest = {
     ...project.manifest,
     updated_at: createdAt,
     current_version: snapshotId,
-    versions: [...(project.manifest.versions ?? []), versionEntry]
+    versions: [...versions, versionEntry]
   };
 
   await writeTextFile(snapshotFileHandle, markdown);
   await writeManifest(project.directoryHandle, manifest);
 
   return {
-    ...project,
-    manifest
+    created: true,
+    version: versionEntry,
+    project: {
+      ...project,
+      manifest
+    }
   };
+}
+
+async function isSameAsLatestSnapshot({
+  contentHash,
+  markdown,
+  project,
+  version
+}: {
+  contentHash: string | undefined;
+  markdown: string;
+  project: PatchmarkProjectHandle;
+  version: PatchmarkVersionEntry;
+}): Promise<boolean> {
+  if (
+    contentHash &&
+    version.content_hash &&
+    contentHash === version.content_hash
+  ) {
+    return true;
+  }
+
+  if (
+    contentHash &&
+    version.content_hash &&
+    contentHash !== version.content_hash
+  ) {
+    return false;
+  }
+
+  try {
+    return (await readProjectVersionMarkdown(project, version)) === markdown;
+  } catch (error) {
+    if (isNotFoundError(error) || isSnapshotNotFoundError(error)) {
+      return false;
+    }
+
+    throw error;
+  }
+}
+
+async function createMarkdownHash(markdown: string): Promise<string | undefined> {
+  const subtleCrypto = globalThis.crypto?.subtle;
+
+  if (!subtleCrypto) {
+    return undefined;
+  }
+
+  const hashBuffer = await subtleCrypto.digest(
+    "SHA-256",
+    new TextEncoder().encode(markdown)
+  );
+
+  return Array.from(new Uint8Array(hashBuffer))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function isSnapshotNotFoundError(error: unknown): boolean {
+  return error instanceof Error && error.message === "Snapshot file not found.";
+}
+
+export async function listProjectVersions(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkVersionEntry[]> {
+  return project.manifest.versions ?? [];
+}
+
+export async function readProjectVersionMarkdown(
+  project: PatchmarkProjectHandle,
+  version: PatchmarkVersionEntry
+): Promise<string> {
+  const snapshotFileName = version.file.split("/").pop();
+
+  if (!snapshotFileName) {
+    throw new Error("Snapshot file not found.");
+  }
+
+  const metadataDirectoryHandle = await getRequiredDirectoryHandle(
+    project.directoryHandle,
+    metadataDirectoryName,
+    "Snapshot file not found."
+  );
+  const versionsDirectoryHandle = await getRequiredDirectoryHandle(
+    metadataDirectoryHandle,
+    "versions",
+    "Snapshot file not found."
+  );
+  const snapshotFileHandle = await getRequiredFileHandle(
+    versionsDirectoryHandle,
+    snapshotFileName,
+    "Snapshot file not found."
+  );
+
+  return readTextFile(snapshotFileHandle);
 }
 
 async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> {
@@ -411,7 +542,8 @@ function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry
     typeof value.id === "string" &&
     typeof value.file === "string" &&
     typeof value.created_at === "string" &&
-    typeof value.reason === "string"
+    typeof value.reason === "string" &&
+    (value.content_hash === undefined || typeof value.content_hash === "string")
   );
 }
 

@@ -55,4 +55,10 @@ Project Folder/
 
 Use `Open Project Folder` to load an existing Patchmark project. Use `Create Project From Current Document` to write the current Markdown as `document.md` into an empty local folder and create the `.patchmark/` structure.
 
+Project Folder Mode also shows Version History from `.patchmark/manifest.json`.
+Use `Create Snapshot` to add a Markdown checkpoint under `.patchmark/versions/`.
+If the current Markdown is unchanged from the latest snapshot, Patchmark skips creating a duplicate snapshot.
+Snapshots can be viewed or compared with the current in-memory Markdown without replacing the live document.
+Restore is intentionally not implemented yet.
+
 Git is optional and can be used manually around the project folder, but Patchmark does not run Git commands yet.

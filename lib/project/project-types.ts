@@ -3,6 +3,7 @@ export type PatchmarkVersionEntry = {
   file: string;
   created_at: string;
   reason: string;
+  content_hash?: string;
 };
 
 export type PatchmarkManifest = {
