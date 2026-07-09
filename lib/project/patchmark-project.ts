@@ -1,5 +1,8 @@
 import { type MarkdownFileHandle } from "@/lib/files/file-system-access";
 import {
+  type PatchmarkComment,
+  type PatchmarkCommentStatus,
+  type PatchmarkCommentType,
   type PatchmarkManifest,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
@@ -61,6 +64,16 @@ const emptyMetadataFiles = {
   "patches.json": "[]\n",
   "tasks.json": "[]\n"
 } as const;
+
+const commentTypes: PatchmarkCommentType[] = [
+  "note",
+  "question",
+  "risk",
+  "research_needed",
+  "decision_needed"
+];
+
+const commentStatuses: PatchmarkCommentStatus[] = ["open", "resolved"];
 
 const metadataDirectories = ["versions", "context-packs", "imports"] as const;
 
@@ -341,6 +354,70 @@ export async function readProjectVersionMarkdown(
   return readTextFile(snapshotFileHandle);
 }
 
+export async function readProjectComments(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkComment[]> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+
+  let commentsFileHandle: MarkdownFileHandle;
+
+  try {
+    commentsFileHandle =
+      await metadataDirectoryHandle.getFileHandle("comments.json");
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+
+    commentsFileHandle = await metadataDirectoryHandle.getFileHandle(
+      "comments.json",
+      { create: true }
+    );
+    await writeTextFile(commentsFileHandle, "[]\n");
+    return [];
+  }
+
+  let parsedComments: unknown;
+
+  try {
+    parsedComments = JSON.parse(await readTextFile(commentsFileHandle));
+  } catch {
+    throw new Error(
+      ".patchmark/comments.json is invalid JSON. Fix the file before editing comments."
+    );
+  }
+
+  if (!Array.isArray(parsedComments)) {
+    throw new Error(
+      ".patchmark/comments.json must contain an array of comments."
+    );
+  }
+
+  return parsedComments.map(normalizeComment);
+}
+
+export async function writeProjectComments(
+  project: PatchmarkProjectHandle,
+  comments: PatchmarkComment[]
+): Promise<void> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const commentsFileHandle = await metadataDirectoryHandle.getFileHandle(
+    "comments.json",
+    { create: true }
+  );
+
+  await writeTextFile(
+    commentsFileHandle,
+    `${JSON.stringify(comments, null, 2)}\n`
+  );
+}
+
 async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> {
   const directoryPicker = getFileSystemAccessWindow().showDirectoryPicker;
 
@@ -544,6 +621,69 @@ function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry
     typeof value.created_at === "string" &&
     typeof value.reason === "string" &&
     (value.content_hash === undefined || typeof value.content_hash === "string")
+  );
+}
+
+function normalizeComment(comment: unknown): PatchmarkComment {
+  if (!isRecord(comment)) {
+    throw new Error(".patchmark/comments.json contains an invalid comment.");
+  }
+
+  if (
+    typeof comment.id !== "string" ||
+    !isPatchmarkCommentType(comment.type) ||
+    !isPatchmarkCommentStatus(comment.status) ||
+    typeof comment.comment !== "string" ||
+    typeof comment.created_at !== "string" ||
+    typeof comment.updated_at !== "string"
+  ) {
+    throw new Error(".patchmark/comments.json contains an invalid comment.");
+  }
+
+  return {
+    id: comment.id,
+    type: comment.type,
+    status: comment.status,
+    target_heading:
+      typeof comment.target_heading === "string"
+        ? comment.target_heading
+        : undefined,
+    target_heading_level:
+      typeof comment.target_heading_level === "number"
+        ? comment.target_heading_level
+        : undefined,
+    target_heading_line:
+      typeof comment.target_heading_line === "number"
+        ? comment.target_heading_line
+        : undefined,
+    target_heading_path: Array.isArray(comment.target_heading_path)
+      ? comment.target_heading_path.filter(
+          (pathEntry): pathEntry is string => typeof pathEntry === "string"
+        )
+      : undefined,
+    comment: comment.comment,
+    created_at: comment.created_at,
+    updated_at: comment.updated_at,
+    resolved_at:
+      typeof comment.resolved_at === "string" ? comment.resolved_at : undefined
+  };
+}
+
+function isPatchmarkCommentType(
+  value: unknown
+): value is PatchmarkCommentType {
+  return (
+    typeof value === "string" &&
+    (commentTypes as readonly string[]).includes(value)
+  );
+}
+
+function isPatchmarkCommentStatus(
+  value: unknown
+): value is PatchmarkCommentStatus {
+  return (
+    typeof value === "string" &&
+    (commentStatuses as readonly string[]).includes(value)
   );
 }
 

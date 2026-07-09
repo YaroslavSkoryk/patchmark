@@ -61,4 +61,8 @@ If the current Markdown is unchanged from the latest snapshot, Patchmark skips c
 Snapshots can be viewed or compared with the current in-memory Markdown without replacing the live document.
 Restore is intentionally not implemented yet.
 
+Project comments are stored in `.patchmark/comments.json`, not in `document.md`.
+Use the Comments panel to add section-level notes, questions, risks, research needs, and decision points.
+Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
+
 Git is optional and can be used manually around the project folder, but Patchmark does not run Git commands yet.

@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  CommentsPanel,
+  type CommentFormValues
+} from "@/components/comments-panel";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { MarkdownSourceEditor } from "@/components/markdown-source-editor";
@@ -29,11 +33,16 @@ import {
   listProjectVersions,
   openProjectFolder,
   readProjectVersionMarkdown,
+  readProjectComments,
   saveProjectDocument,
+  writeProjectComments,
   type LoadedPatchmarkProject,
   type PatchmarkProjectHandle
 } from "@/lib/project/patchmark-project";
-import { type PatchmarkVersionEntry } from "@/lib/project/project-types";
+import {
+  type PatchmarkComment,
+  type PatchmarkVersionEntry
+} from "@/lib/project/project-types";
 import {
   deleteDocumentDraft,
   readMostRecentDocumentDraft,
@@ -66,6 +75,9 @@ export function DocumentEditor() {
   const [versionEntries, setVersionEntries] = useState<PatchmarkVersionEntry[]>(
     []
   );
+  const [comments, setComments] = useState<PatchmarkComment[]>([]);
+  const [commentsError, setCommentsError] = useState<string | null>(null);
+  const [isCommentBusy, setIsCommentBusy] = useState(false);
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
 
@@ -91,6 +103,8 @@ export function DocumentEditor() {
 
     if (!projectHandle) {
       setVersionEntries([]);
+      setComments([]);
+      setCommentsError(null);
       return;
     }
 
@@ -99,6 +113,20 @@ export function DocumentEditor() {
         setVersionEntries(versions);
       }
     });
+
+    void readProjectComments(projectHandle)
+      .then((projectComments) => {
+        if (!isCancelled) {
+          setComments(projectComments);
+          setCommentsError(null);
+        }
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          setComments([]);
+          setCommentsError(getProjectErrorMessage(error));
+        }
+      });
 
     return () => {
       isCancelled = true;
@@ -231,6 +259,8 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
+    setComments([]);
+    setCommentsError(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -250,6 +280,8 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
+    setComments([]);
+    setCommentsError(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -520,6 +552,122 @@ export function DocumentEditor() {
     }
   }
 
+  async function handleAddComment(values: CommentFormValues) {
+    if (!projectHandle) {
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const targetHeading = values.targetHeadingLine
+      ? headings.find((heading) => heading.line === values.targetHeadingLine)
+      : undefined;
+    const nextComment: PatchmarkComment = {
+      id: createNextCommentId(comments),
+      type: values.type,
+      status: "open",
+      target_heading: targetHeading?.text,
+      target_heading_level: targetHeading?.level,
+      target_heading_line: targetHeading?.line,
+      target_heading_path: targetHeading
+        ? getHeadingPath(headings, targetHeading)
+        : undefined,
+      comment: values.comment,
+      created_at: now,
+      updated_at: now
+    };
+    const nextComments = [...comments, nextComment];
+
+    await persistComments(nextComments, "Added comment.");
+  }
+
+  async function handleEditComment(
+    commentId: string,
+    values: Pick<CommentFormValues, "comment" | "type">
+  ) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId
+        ? {
+            ...comment,
+            type: values.type,
+            comment: values.comment,
+            updated_at: now
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Updated comment.");
+  }
+
+  async function handleResolveComment(commentId: string) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId
+        ? {
+            ...comment,
+            status: "resolved" as const,
+            resolved_at: now,
+            updated_at: now
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Resolved comment.");
+  }
+
+  async function handleReopenComment(commentId: string) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId
+        ? {
+            ...comment,
+            status: "open" as const,
+            resolved_at: undefined,
+            updated_at: now
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Reopened comment.");
+  }
+
+  async function handleDeleteComment(commentId: string) {
+    const nextComments = comments.filter((comment) => comment.id !== commentId);
+
+    await persistComments(nextComments, "Deleted comment.");
+  }
+
+  async function persistComments(
+    nextComments: PatchmarkComment[],
+    successMessage: string
+  ) {
+    if (!projectHandle || isCommentBusy) {
+      return;
+    }
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+
+    try {
+      await writeProjectComments(projectHandle, nextComments);
+      setComments(nextComments);
+      setSaveFeedback({
+        kind: "success",
+        message: successMessage
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
   function loadProjectIntoEditor(loadedProject: LoadedPatchmarkProject) {
     setProjectHandle(loadedProject.project);
     setFileName(loadedProject.project.manifest.document_file);
@@ -530,6 +678,7 @@ export function DocumentEditor() {
     setAvailableDraft(null);
     setSaveStatus("idle");
     setSnapshotDialog(null);
+    setCommentsError(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -543,6 +692,18 @@ export function DocumentEditor() {
           versions={versionEntries}
           onCompareVersion={handleCompareSnapshot}
           onViewVersion={handleViewSnapshot}
+        />
+        <CommentsPanel
+          comments={comments}
+          error={commentsError}
+          headings={headings}
+          isBusy={isCommentBusy}
+          isProjectMode={isProjectMode}
+          onAddComment={handleAddComment}
+          onDeleteComment={handleDeleteComment}
+          onEditComment={handleEditComment}
+          onReopenComment={handleReopenComment}
+          onResolveComment={handleResolveComment}
         />
       </aside>
 
@@ -724,4 +885,40 @@ function getProjectErrorMessage(error: unknown): string {
   }
 
   return "Project folder action failed. Your Markdown is still in Patchmark.";
+}
+
+function createNextCommentId(comments: PatchmarkComment[]): string {
+  const nextNumber =
+    comments.reduce((maxNumber, comment) => {
+      const match = /^PM-COMMENT-(\d+)$/.exec(comment.id);
+
+      if (!match) {
+        return maxNumber;
+      }
+
+      return Math.max(maxNumber, Number(match[1]));
+    }, 0) + 1;
+
+  return `PM-COMMENT-${String(nextNumber).padStart(4, "0")}`;
+}
+
+function getHeadingPath(
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  targetHeading: ReturnType<typeof parseMarkdownHeadings>[number]
+): string[] {
+  const path: ReturnType<typeof parseMarkdownHeadings> = [];
+
+  for (const heading of headings) {
+    while (path.length > 0 && path[path.length - 1].level >= heading.level) {
+      path.pop();
+    }
+
+    path.push(heading);
+
+    if (heading.line === targetHeading.line) {
+      return path.map((pathHeading) => pathHeading.text);
+    }
+  }
+
+  return [targetHeading.text];
 }

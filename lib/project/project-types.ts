@@ -6,6 +6,15 @@ export type PatchmarkVersionEntry = {
   content_hash?: string;
 };
 
+export type PatchmarkCommentType =
+  | "note"
+  | "question"
+  | "risk"
+  | "research_needed"
+  | "decision_needed";
+
+export type PatchmarkCommentStatus = "open" | "resolved";
+
 export type PatchmarkManifest = {
   schema_version: 1;
   project_name: string;
@@ -18,11 +27,16 @@ export type PatchmarkManifest = {
 
 export type PatchmarkComment = {
   id: string;
-  status: "open" | "resolved";
+  type: PatchmarkCommentType;
+  status: PatchmarkCommentStatus;
   target_heading?: string;
-  selected_text?: string;
+  target_heading_level?: number;
+  target_heading_line?: number;
+  target_heading_path?: string[];
   comment: string;
   created_at: string;
+  updated_at: string;
+  resolved_at?: string;
 };
 
 export type PatchmarkPatch = {
