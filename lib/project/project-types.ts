@@ -15,6 +15,42 @@ export type PatchmarkCommentType =
 
 export type PatchmarkCommentStatus = "open" | "resolved";
 
+export type PatchmarkCommentAnchor =
+  | {
+      kind: "document";
+    }
+  | {
+      kind: "section";
+      heading: string;
+      heading_level?: number;
+      heading_line?: number;
+      heading_path?: string[];
+      section_start_offset?: number;
+      section_end_offset?: number;
+    }
+  | {
+      kind: "selected_text";
+      selected_text: string;
+      selected_text_hash?: string;
+      markdown_start_offset?: number;
+      markdown_end_offset?: number;
+      context_before?: string;
+      context_after?: string;
+      containing_heading?: string;
+      containing_heading_level?: number;
+      containing_heading_line?: number;
+      containing_heading_path?: string[];
+      anchor_source?: "visual" | "markdown";
+      fallback_section_start_offset?: number;
+      fallback_section_end_offset?: number;
+    };
+
+export type CommentAnchorStatus =
+  | "active"
+  | "not_found"
+  | "ambiguous"
+  | "document";
+
 export type PatchmarkManifest = {
   schema_version: 1;
   project_name: string;
@@ -29,10 +65,7 @@ export type PatchmarkComment = {
   id: string;
   type: PatchmarkCommentType;
   status: PatchmarkCommentStatus;
-  target_heading?: string;
-  target_heading_level?: number;
-  target_heading_line?: number;
-  target_heading_path?: string[];
+  anchor: PatchmarkCommentAnchor;
   comment: string;
   created_at: string;
   updated_at: string;

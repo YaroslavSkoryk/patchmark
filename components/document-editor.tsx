@@ -1,13 +1,19 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   CommentsPanel,
+  type CommentAddRequest,
+  type CommentAnchorSummary,
+  type CommentAnchorScope,
   type CommentFormValues
 } from "@/components/comments-panel";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
-import { MarkdownSourceEditor } from "@/components/markdown-source-editor";
+import {
+  MarkdownSourceEditor,
+  type MarkdownSelection
+} from "@/components/markdown-source-editor";
 import { DocumentOutline } from "@/components/document-outline";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
 import { DraftRestoreBanner } from "@/components/draft-restore-banner";
@@ -41,6 +47,7 @@ import {
 } from "@/lib/project/patchmark-project";
 import {
   type PatchmarkComment,
+  type PatchmarkCommentAnchor,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 import {
@@ -56,8 +63,21 @@ type SaveFeedback = {
   kind: "success" | "error" | "info";
   message: string;
 };
+type SelectedCommentAnchorDraft = {
+  anchorSource: "visual" | "markdown";
+  markdownEndOffset?: number;
+  markdownStartOffset?: number;
+  selectedText: string;
+};
+type CommentContextMenuState = {
+  defaultHeadingLine: number | null;
+  selectedDraft: SelectedCommentAnchorDraft | null;
+  x: number;
+  y: number;
+};
 
 export function DocumentEditor() {
+  const editorDocumentRef = useRef<HTMLDivElement>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   // Markdown is the source of truth across both editing modes.
   const [markdown, setMarkdown] = useState("");
@@ -78,10 +98,60 @@ export function DocumentEditor() {
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
+  const [markdownSelection, setMarkdownSelection] =
+    useState<MarkdownSelection>({
+      end: 0,
+      start: 0
+    });
+  const [markdownSelectionRequest, setMarkdownSelectionRequest] = useState<
+    (MarkdownSelection & { nonce: number }) | null
+  >(null);
+  const [visualSelectionDraft, setVisualSelectionDraft] =
+    useState<SelectedCommentAnchorDraft | null>(null);
+  const [commentAddRequest, setCommentAddRequest] =
+    useState<CommentAddRequest | null>(null);
+  const [commentContextMenu, setCommentContextMenu] =
+    useState<CommentContextMenuState | null>(null);
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
+  const markdownSelectionDraft = useMemo(
+    () => createMarkdownSelectionDraft(markdown, markdownSelection),
+    [markdown, markdownSelection]
+  );
+  const selectedCommentDraft =
+    mode === "markdown" ? markdownSelectionDraft : visualSelectionDraft;
+  const selectedCommentHeading = useMemo(
+    () =>
+      typeof selectedCommentDraft?.markdownStartOffset === "number"
+        ? getHeadingContainingOffset(
+            markdown,
+            headings,
+            selectedCommentDraft.markdownStartOffset
+          )
+        : undefined,
+    [headings, markdown, selectedCommentDraft]
+  );
+  const defaultCommentHeading = useMemo(
+    () =>
+      selectedCommentHeading ??
+      getHeadingContainingOffset(markdown, headings, markdownSelection.start),
+    [headings, markdown, markdownSelection.start, selectedCommentHeading]
+  );
+  const selectedCommentText = selectedCommentDraft?.selectedText.trim()
+    ? selectedCommentDraft.selectedText
+    : "";
+  const commentAnchorSummaries = useMemo(
+    () =>
+      Object.fromEntries(
+        comments.map((comment) => [
+          comment.id,
+          getCommentAnchorSummary(comment, markdown, headings)
+        ])
+      ),
+    [comments, headings, markdown]
+  );
   const isDirty =
     fileName !== null &&
     (baselineMarkdown === null || markdown !== baselineMarkdown);
@@ -158,6 +228,32 @@ export function DocumentEditor() {
     window.addEventListener("beforeunload", handleBeforeUnload);
     return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, [isDirty]);
+
+  useEffect(() => {
+    if (!commentContextMenu) {
+      return;
+    }
+
+    function closeCommentContextMenu() {
+      setCommentContextMenu(null);
+    }
+
+    function handleContextMenuKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        closeCommentContextMenu();
+      }
+    }
+
+    window.addEventListener("click", closeCommentContextMenu);
+    window.addEventListener("keydown", handleContextMenuKeyDown);
+    window.addEventListener("scroll", closeCommentContextMenu, true);
+
+    return () => {
+      window.removeEventListener("click", closeCommentContextMenu);
+      window.removeEventListener("keydown", handleContextMenuKeyDown);
+      window.removeEventListener("scroll", closeCommentContextMenu, true);
+    };
+  }, [commentContextMenu]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving) {
@@ -259,6 +355,11 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setCommentAddRequest(null);
+    setCommentContextMenu(null);
     setComments([]);
     setCommentsError(null);
     setMode("visual");
@@ -280,6 +381,11 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setCommentAddRequest(null);
+    setCommentContextMenu(null);
     setComments([]);
     setCommentsError(null);
     setMode("visual");
@@ -558,19 +664,17 @@ export function DocumentEditor() {
     }
 
     const now = new Date().toISOString();
-    const targetHeading = values.targetHeadingLine
-      ? headings.find((heading) => heading.line === values.targetHeadingLine)
-      : undefined;
     const nextComment: PatchmarkComment = {
       id: createNextCommentId(comments),
       type: values.type,
       status: "open",
-      target_heading: targetHeading?.text,
-      target_heading_level: targetHeading?.level,
-      target_heading_line: targetHeading?.line,
-      target_heading_path: targetHeading
-        ? getHeadingPath(headings, targetHeading)
-        : undefined,
+      anchor: createCommentAnchor({
+        headings,
+        markdown,
+        selection: markdownSelection,
+        selectedDraft: selectedCommentDraft,
+        values
+      }),
       comment: values.comment,
       created_at: now,
       updated_at: now
@@ -637,6 +741,146 @@ export function DocumentEditor() {
     await persistComments(nextComments, "Deleted comment.");
   }
 
+  async function handleFindComment(comment: PatchmarkComment) {
+    const resolution = resolveCommentAnchor(comment, markdown, headings);
+
+    if (comment.anchor.kind === "document") {
+      setSaveFeedback({
+        kind: "info",
+        message: "This is a whole-document comment."
+      });
+      return;
+    }
+
+    if (resolution.status === "active" && resolution.start !== undefined) {
+      jumpToMarkdownSelection(
+        resolution.start,
+        resolution.end ?? resolution.start
+      );
+      setSaveFeedback({
+        kind: "success",
+        message: "Showing comment anchor in Markdown Mode."
+      });
+      return;
+    }
+
+    if (resolution.status === "ambiguous") {
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Multiple matching anchors found. Open Markdown Mode and review manually."
+      });
+      return;
+    }
+
+    if (
+      comment.anchor.kind === "selected_text" &&
+      resolution.fallbackStart !== undefined
+    ) {
+      jumpToMarkdownSelection(
+        resolution.fallbackStart,
+        resolution.fallbackEnd ?? resolution.fallbackStart
+      );
+      setSaveFeedback({
+        kind: "info",
+        message: "Selected text was not found. Showing fallback section."
+      });
+      return;
+    }
+
+    setSaveFeedback({
+      kind: "error",
+      message:
+        comment.anchor.kind === "section"
+          ? "Target section not found."
+          : "Selected text anchor not found. The text may have changed."
+    });
+  }
+
+  function jumpToMarkdownSelection(start: number, end: number) {
+    setMode("markdown");
+    setMarkdownSelectionRequest({
+      end,
+      nonce: Date.now(),
+      start
+    });
+  }
+
+  function handleEditorMouseUp() {
+    if (mode !== "visual") {
+      return;
+    }
+
+    setVisualSelectionDraft(
+      createVisualSelectionDraft({
+        container: editorDocumentRef.current,
+        markdown
+      })
+    );
+  }
+
+  function handleEditorContextMenu(event: React.MouseEvent<HTMLDivElement>) {
+    if (!fileName || isToolbarContextMenuTarget(event.target)) {
+      return;
+    }
+
+    event.preventDefault();
+
+    const selectedDraft =
+      mode === "markdown"
+        ? createMarkdownSelectionDraft(markdown, markdownSelection)
+        : createVisualSelectionDraft({
+            container: editorDocumentRef.current,
+            markdown
+          });
+    const headingForSelection =
+      typeof selectedDraft?.markdownStartOffset === "number"
+        ? getHeadingContainingOffset(
+            markdown,
+            headings,
+            selectedDraft.markdownStartOffset
+          )
+        : defaultCommentHeading;
+
+    if (mode === "visual") {
+      setVisualSelectionDraft(selectedDraft);
+    }
+
+    setCommentContextMenu({
+      defaultHeadingLine: headingForSelection?.line ?? null,
+      selectedDraft,
+      x: event.clientX,
+      y: event.clientY
+    });
+  }
+
+  function handleOpenCommentFromMenu(scope: CommentAnchorScope | "auto") {
+    if (!commentContextMenu) {
+      return;
+    }
+
+    const nextScope =
+      scope === "auto"
+        ? commentContextMenu.selectedDraft
+          ? "selected_text"
+          : commentContextMenu.defaultHeadingLine
+            ? "section"
+            : "document"
+        : scope;
+
+    setVisualSelectionDraft(
+      commentContextMenu.selectedDraft?.anchorSource === "visual"
+        ? commentContextMenu.selectedDraft
+        : null
+    );
+    setCommentAddRequest({
+      nonce: Date.now(),
+      scope: nextScope,
+      targetHeadingLine: commentContextMenu.defaultHeadingLine
+    });
+    setCommentContextMenu(null);
+  }
+
   async function persistComments(
     nextComments: PatchmarkComment[],
     successMessage: string
@@ -678,6 +922,11 @@ export function DocumentEditor() {
     setAvailableDraft(null);
     setSaveStatus("idle");
     setSnapshotDialog(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setCommentAddRequest(null);
+    setCommentContextMenu(null);
     setCommentsError(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
@@ -692,18 +941,6 @@ export function DocumentEditor() {
           versions={versionEntries}
           onCompareVersion={handleCompareSnapshot}
           onViewVersion={handleViewSnapshot}
-        />
-        <CommentsPanel
-          comments={comments}
-          error={commentsError}
-          headings={headings}
-          isBusy={isCommentBusy}
-          isProjectMode={isProjectMode}
-          onAddComment={handleAddComment}
-          onDeleteComment={handleDeleteComment}
-          onEditComment={handleEditComment}
-          onReopenComment={handleReopenComment}
-          onResolveComment={handleResolveComment}
         />
       </aside>
 
@@ -803,7 +1040,12 @@ export function DocumentEditor() {
           />
         ) : null}
 
-        <div className="editor-body">
+        <div
+          ref={editorDocumentRef}
+          className="editor-body"
+          onContextMenu={handleEditorContextMenu}
+          onMouseUp={handleEditorMouseUp}
+        >
           {fileName ? (
             mode === "visual" ? (
               <VisualMarkdownEditor
@@ -815,6 +1057,8 @@ export function DocumentEditor() {
               <MarkdownSourceEditor
                 markdown={markdown}
                 onMarkdownChange={handleMarkdownChange}
+                onSelectionChange={setMarkdownSelection}
+                selectionRequest={markdownSelectionRequest}
               />
             )
           ) : (
@@ -830,6 +1074,67 @@ export function DocumentEditor() {
           )}
         </div>
       </div>
+
+      <aside className="comments-rail" aria-label="Document comments">
+        <CommentsPanel
+          addRequest={commentAddRequest}
+          anchorSummaries={commentAnchorSummaries}
+          comments={comments}
+          defaultSectionLine={defaultCommentHeading?.line ?? null}
+          error={commentsError}
+          headings={headings}
+          isBusy={isCommentBusy}
+          isMarkdownMode={mode === "markdown"}
+          isProjectMode={isProjectMode}
+          onAddComment={handleAddComment}
+          onDeleteComment={handleDeleteComment}
+          onEditComment={handleEditComment}
+          onFindComment={handleFindComment}
+          onReopenComment={handleReopenComment}
+          onResolveComment={handleResolveComment}
+          selectedTextPreview={selectedCommentText || null}
+        />
+      </aside>
+
+      {commentContextMenu ? (
+        <div
+          className="comment-context-menu"
+          style={{ left: commentContextMenu.x, top: commentContextMenu.y }}
+          role="menu"
+          aria-label="Patchmark comment menu"
+          onClick={(event) => event.stopPropagation()}
+        >
+          {!isProjectMode ? (
+            <span className="comment-context-menu-note">
+              Comments require Project Folder Mode.
+            </span>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!isProjectMode}
+            onClick={() => handleOpenCommentFromMenu("auto")}
+          >
+            Add Comment
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!isProjectMode || headings.length === 0}
+            onClick={() => handleOpenCommentFromMenu("section")}
+          >
+            Add Section Comment
+          </button>
+          <button
+            type="button"
+            role="menuitem"
+            disabled={!isProjectMode}
+            onClick={() => handleOpenCommentFromMenu("document")}
+          >
+            Add Document Comment
+          </button>
+        </div>
+      ) : null}
 
       {snapshotDialog ? (
         <SnapshotDialog
@@ -902,6 +1207,81 @@ function createNextCommentId(comments: PatchmarkComment[]): string {
   return `PM-COMMENT-${String(nextNumber).padStart(4, "0")}`;
 }
 
+function createMarkdownSelectionDraft(
+  markdown: string,
+  selection: MarkdownSelection
+): SelectedCommentAnchorDraft | null {
+  if (selection.end <= selection.start) {
+    return null;
+  }
+
+  const selectedText = markdown.slice(selection.start, selection.end);
+
+  if (!selectedText.trim()) {
+    return null;
+  }
+
+  return {
+    anchorSource: "markdown",
+    markdownEndOffset: selection.end,
+    markdownStartOffset: selection.start,
+    selectedText
+  };
+}
+
+function createVisualSelectionDraft({
+  container,
+  markdown
+}: {
+  container: HTMLElement | null;
+  markdown: string;
+}): SelectedCommentAnchorDraft | null {
+  const selectedText = getBrowserSelectedTextWithin(container);
+
+  if (!selectedText) {
+    return null;
+  }
+
+  const exactMatches = findExactTextMatches(markdown, selectedText);
+  const uniqueMatch = exactMatches.length === 1 ? exactMatches[0] : null;
+
+  return {
+    anchorSource: "visual",
+    markdownEndOffset: uniqueMatch?.end,
+    markdownStartOffset: uniqueMatch?.start,
+    selectedText
+  };
+}
+
+function getBrowserSelectedTextWithin(container: HTMLElement | null): string {
+  if (!container || typeof window === "undefined") {
+    return "";
+  }
+
+  const selection = window.getSelection();
+
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) {
+    return "";
+  }
+
+  const { anchorNode, focusNode } = selection;
+
+  if (
+    !anchorNode ||
+    !focusNode ||
+    !container.contains(anchorNode) ||
+    !container.contains(focusNode)
+  ) {
+    return "";
+  }
+
+  return selection.toString().trim();
+}
+
+function isToolbarContextMenuTarget(target: EventTarget): boolean {
+  return target instanceof Element && Boolean(target.closest(".mdxeditor-toolbar"));
+}
+
 function getHeadingPath(
   headings: ReturnType<typeof parseMarkdownHeadings>,
   targetHeading: ReturnType<typeof parseMarkdownHeadings>[number]
@@ -921,4 +1301,328 @@ function getHeadingPath(
   }
 
   return [targetHeading.text];
+}
+
+type CommentAnchorResolution = CommentAnchorSummary & {
+  end?: number;
+  fallbackEnd?: number;
+  fallbackStart?: number;
+  start?: number;
+};
+
+function createCommentAnchor({
+  headings,
+  markdown,
+  selection,
+  selectedDraft,
+  values
+}: {
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  selection: MarkdownSelection;
+  selectedDraft: SelectedCommentAnchorDraft | null;
+  values: CommentFormValues;
+}): PatchmarkCommentAnchor {
+  if (values.anchorScope === "document") {
+    return {
+      kind: "document"
+    };
+  }
+
+  if (values.anchorScope === "section") {
+    const targetHeading = values.targetHeadingLine
+      ? headings.find((heading) => heading.line === values.targetHeadingLine)
+      : undefined;
+
+    if (!targetHeading) {
+      throw new Error("Choose a target section.");
+    }
+
+    const sectionRange = getSectionRange(markdown, headings, targetHeading);
+
+    return {
+      kind: "section",
+      heading: targetHeading.text,
+      heading_level: targetHeading.level,
+      heading_line: targetHeading.line,
+      heading_path: getHeadingPath(headings, targetHeading),
+      section_start_offset: sectionRange.start,
+      section_end_offset: sectionRange.end
+    };
+  }
+
+  const selectedText =
+    selectedDraft?.selectedText ?? markdown.slice(selection.start, selection.end);
+
+  if (!selectedText.trim()) {
+    throw new Error("Select text in the editor before saving this comment.");
+  }
+
+  const markdownStartOffset = selectedDraft
+    ? selectedDraft.markdownStartOffset
+    : selection.start;
+  const markdownEndOffset = selectedDraft
+    ? selectedDraft.markdownEndOffset
+    : selection.end;
+
+  const containingHeading =
+    typeof markdownStartOffset === "number"
+      ? getHeadingContainingOffset(markdown, headings, markdownStartOffset)
+      : undefined;
+  const fallbackSectionRange = containingHeading
+    ? getSectionRange(markdown, headings, containingHeading)
+    : null;
+
+  return {
+    kind: "selected_text",
+    selected_text: selectedText,
+    markdown_start_offset: markdownStartOffset,
+    markdown_end_offset: markdownEndOffset,
+    context_before:
+      typeof markdownStartOffset !== "number"
+        ? undefined
+        : markdown.slice(Math.max(0, markdownStartOffset - 120), markdownStartOffset),
+    context_after:
+      typeof markdownEndOffset !== "number"
+        ? undefined
+        : markdown.slice(
+            markdownEndOffset,
+            Math.min(markdown.length, markdownEndOffset + 120)
+          ),
+    containing_heading: containingHeading?.text,
+    containing_heading_level: containingHeading?.level,
+    containing_heading_line: containingHeading?.line,
+    containing_heading_path: containingHeading
+      ? getHeadingPath(headings, containingHeading)
+      : undefined,
+    anchor_source: selectedDraft?.anchorSource ?? "markdown",
+    fallback_section_start_offset: fallbackSectionRange?.start,
+    fallback_section_end_offset: fallbackSectionRange?.end
+  };
+}
+
+function getCommentAnchorSummary(
+  comment: PatchmarkComment,
+  markdown: string,
+  headings: ReturnType<typeof parseMarkdownHeadings>
+): CommentAnchorSummary {
+  const resolution = resolveCommentAnchor(comment, markdown, headings);
+
+  return {
+    detail: resolution.detail,
+    label: resolution.label,
+    status: resolution.status
+  };
+}
+
+function resolveCommentAnchor(
+  comment: PatchmarkComment,
+  markdown: string,
+  headings: ReturnType<typeof parseMarkdownHeadings>
+): CommentAnchorResolution {
+  const { anchor } = comment;
+
+  if (anchor.kind === "document") {
+    return {
+      label: "Whole document",
+      status: "document"
+    };
+  }
+
+  if (anchor.kind === "section") {
+    const currentHeading = findMatchingHeading(headings, {
+      level: anchor.heading_level,
+      text: anchor.heading
+    });
+
+    if (!currentHeading) {
+      return {
+        label: "Whole section: Target section not found",
+        status: "not_found"
+      };
+    }
+
+    const lineRange = getHeadingLineRange(markdown, currentHeading);
+
+    return {
+      end: lineRange.end,
+      label: `Whole section: ${"#".repeat(currentHeading.level)} ${
+        currentHeading.text
+      }`,
+      start: lineRange.start,
+      status: "active"
+    };
+  }
+
+  const offsetStart = anchor.markdown_start_offset;
+  const offsetEnd = anchor.markdown_end_offset;
+
+  if (
+    typeof offsetStart === "number" &&
+    typeof offsetEnd === "number" &&
+    markdown.slice(offsetStart, offsetEnd) === anchor.selected_text
+  ) {
+    return {
+      end: offsetEnd,
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      start: offsetStart,
+      status: "active"
+    };
+  }
+
+  const matches = findExactTextMatches(markdown, anchor.selected_text);
+
+  if (matches.length === 1) {
+    return {
+      end: matches[0].end,
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      start: matches[0].start,
+      status: "active"
+    };
+  }
+
+  if (matches.length > 1) {
+    return {
+      detail: "Multiple matching anchors found.",
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "ambiguous"
+    };
+  }
+
+  const fallbackHeading = anchor.containing_heading
+    ? findMatchingHeading(headings, {
+        level: anchor.containing_heading_level,
+        text: anchor.containing_heading
+      })
+    : null;
+
+  if (fallbackHeading) {
+    const lineRange = getHeadingLineRange(markdown, fallbackHeading);
+
+    return {
+      detail: "Text not found, section still exists.",
+      fallbackEnd: lineRange.end,
+      fallbackStart: lineRange.start,
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "not_found"
+    };
+  }
+
+  return {
+    label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+    status: "not_found"
+  };
+}
+
+function getSelectedTextHeadingLabel(
+  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
+): string {
+  if (!anchor.containing_heading) {
+    return "document";
+  }
+
+  return `${"#".repeat(anchor.containing_heading_level ?? 1)} ${
+    anchor.containing_heading
+  }`;
+}
+
+function findExactTextMatches(
+  markdown: string,
+  selectedText: string
+): Array<{ end: number; start: number }> {
+  if (!selectedText) {
+    return [];
+  }
+
+  const matches: Array<{ end: number; start: number }> = [];
+  let nextIndex = markdown.indexOf(selectedText);
+
+  while (nextIndex !== -1) {
+    matches.push({
+      end: nextIndex + selectedText.length,
+      start: nextIndex
+    });
+    nextIndex = markdown.indexOf(selectedText, nextIndex + selectedText.length);
+  }
+
+  return matches;
+}
+
+function getHeadingContainingOffset(
+  markdown: string,
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  offset: number
+): ReturnType<typeof parseMarkdownHeadings>[number] | undefined {
+  const lineOffsets = getLineStartOffsets(markdown);
+  let containingHeading: ReturnType<typeof parseMarkdownHeadings>[number] | undefined;
+
+  for (const heading of headings) {
+    const headingOffset = lineOffsets[heading.line - 1] ?? 0;
+
+    if (headingOffset > offset) {
+      break;
+    }
+
+    containingHeading = heading;
+  }
+
+  return containingHeading;
+}
+
+function findMatchingHeading(
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  target: { level?: number; text: string }
+) {
+  return headings.find(
+    (heading) =>
+      heading.text === target.text &&
+      (target.level === undefined || heading.level === target.level)
+  );
+}
+
+function getSectionRange(
+  markdown: string,
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  targetHeading: ReturnType<typeof parseMarkdownHeadings>[number]
+): { end: number; start: number } {
+  const lineOffsets = getLineStartOffsets(markdown);
+  const headingIndex = headings.findIndex(
+    (heading) => heading.line === targetHeading.line
+  );
+  const nextPeerHeading = headings
+    .slice(headingIndex + 1)
+    .find((heading) => heading.level <= targetHeading.level);
+
+  return {
+    end: nextPeerHeading
+      ? lineOffsets[nextPeerHeading.line - 1] ?? markdown.length
+      : markdown.length,
+    start: lineOffsets[targetHeading.line - 1] ?? 0
+  };
+}
+
+function getHeadingLineRange(
+  markdown: string,
+  heading: ReturnType<typeof parseMarkdownHeadings>[number]
+): { end: number; start: number } {
+  const lineOffsets = getLineStartOffsets(markdown);
+  const start = lineOffsets[heading.line - 1] ?? 0;
+  const nextLineStart = lineOffsets[heading.line];
+
+  return {
+    end: nextLineStart ? Math.max(start, nextLineStart - 1) : markdown.length,
+    start
+  };
+}
+
+function getLineStartOffsets(markdown: string): number[] {
+  const offsets = [0];
+
+  for (let index = 0; index < markdown.length; index += 1) {
+    if (markdown[index] === "\n") {
+      offsets.push(index + 1);
+    }
+  }
+
+  return offsets;
 }

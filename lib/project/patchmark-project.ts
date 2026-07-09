@@ -1,5 +1,6 @@
 import { type MarkdownFileHandle } from "@/lib/files/file-system-access";
 import {
+  type PatchmarkCommentAnchor,
   type PatchmarkComment,
   type PatchmarkCommentStatus,
   type PatchmarkCommentType,
@@ -644,29 +645,67 @@ function normalizeComment(comment: unknown): PatchmarkComment {
     id: comment.id,
     type: comment.type,
     status: comment.status,
-    target_heading:
-      typeof comment.target_heading === "string"
-        ? comment.target_heading
-        : undefined,
-    target_heading_level:
-      typeof comment.target_heading_level === "number"
-        ? comment.target_heading_level
-        : undefined,
-    target_heading_line:
-      typeof comment.target_heading_line === "number"
-        ? comment.target_heading_line
-        : undefined,
-    target_heading_path: Array.isArray(comment.target_heading_path)
-      ? comment.target_heading_path.filter(
-          (pathEntry): pathEntry is string => typeof pathEntry === "string"
-        )
-      : undefined,
+    anchor: normalizeCommentAnchor(comment),
     comment: comment.comment,
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     resolved_at:
       typeof comment.resolved_at === "string" ? comment.resolved_at : undefined
   };
+}
+
+function normalizeCommentAnchor(
+  comment: Record<string, unknown>
+): PatchmarkCommentAnchor {
+  if (isPatchmarkCommentAnchor(comment.anchor)) {
+    return comment.anchor;
+  }
+
+  if (typeof comment.target_heading === "string") {
+    return {
+      kind: "section",
+      heading: comment.target_heading,
+      heading_level:
+        typeof comment.target_heading_level === "number"
+          ? comment.target_heading_level
+          : undefined,
+      heading_line:
+        typeof comment.target_heading_line === "number"
+          ? comment.target_heading_line
+          : undefined,
+      heading_path: Array.isArray(comment.target_heading_path)
+        ? comment.target_heading_path.filter(
+            (pathEntry): pathEntry is string => typeof pathEntry === "string"
+          )
+        : undefined
+    };
+  }
+
+  return {
+    kind: "document"
+  };
+}
+
+function isPatchmarkCommentAnchor(
+  anchor: unknown
+): anchor is PatchmarkCommentAnchor {
+  if (!isRecord(anchor) || typeof anchor.kind !== "string") {
+    return false;
+  }
+
+  if (anchor.kind === "document") {
+    return true;
+  }
+
+  if (anchor.kind === "section") {
+    return typeof anchor.heading === "string";
+  }
+
+  if (anchor.kind === "selected_text") {
+    return typeof anchor.selected_text === "string";
+  }
+
+  return false;
 }
 
 function isPatchmarkCommentType(

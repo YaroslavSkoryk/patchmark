@@ -46,7 +46,7 @@ Project Folder/
 ```
 
 - `document.md` is the Markdown source of truth.
-- `.patchmark/comments.json` is reserved for section comments and research notes.
+- `.patchmark/comments.json` is reserved for anchored comments and research notes.
 - `.patchmark/patches.json` is reserved for pending/accepted/rejected patch suggestions.
 - `.patchmark/tasks.json` is reserved for task and context-pack tracking.
 - `.patchmark/versions/` stores manual Markdown snapshots.
@@ -62,7 +62,8 @@ Snapshots can be viewed or compared with the current in-memory Markdown without 
 Restore is intentionally not implemented yet.
 
 Project comments are stored in `.patchmark/comments.json`, not in `document.md`.
-Use the Comments panel to add section-level notes, questions, risks, research needs, and decision points.
+Use the right-side Comments rail to add notes, questions, risks, research needs, and decision points.
+Comments can apply to selected Markdown text, a whole section, or the whole document.
 Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
 
 Git is optional and can be used manually around the project folder, but Patchmark does not run Git commands yet.
