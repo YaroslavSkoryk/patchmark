@@ -15,6 +15,12 @@ export type PatchmarkCommentType =
 
 export type PatchmarkCommentStatus = "open" | "resolved";
 
+export type PatchmarkCommentFocusState =
+  | "idle"
+  | "in_focus"
+  | "exported"
+  | "awaiting_reply";
+
 export type PatchmarkCommentActionScope =
   | "display_target"
   | "anchor_context"
@@ -32,8 +38,22 @@ export type PatchmarkCommentActionIntent =
 export type PatchmarkCommentActionContext = {
   default_scope: PatchmarkCommentActionScope;
   include_document_brief: boolean;
-  include_open_comments: "none" | "same_section" | "all";
-  intent_hint?: PatchmarkCommentActionIntent;
+  include_open_comments: "none" | "same_section" | "focused_only" | "all";
+  intent_hint: PatchmarkCommentActionIntent;
+};
+
+export type PatchmarkCommentThreadEntry = {
+  id: string;
+  role: "user" | "chatgpt" | "system";
+  content: string;
+  created_at: string;
+};
+
+export type PatchmarkCommentExportState = {
+  focus_state: PatchmarkCommentFocusState;
+  marked_for_export_at?: string;
+  last_exported_at?: string;
+  last_export_id?: string;
 };
 
 export type PatchmarkSelectedTextAnchorContextKind =
@@ -116,6 +136,8 @@ export type PatchmarkComment = {
   status: PatchmarkCommentStatus;
   anchor: PatchmarkCommentAnchor;
   comment: string;
+  thread: PatchmarkCommentThreadEntry[];
+  export_state: PatchmarkCommentExportState;
   created_at: string;
   updated_at: string;
   resolved_at?: string;

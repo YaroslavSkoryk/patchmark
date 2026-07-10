@@ -678,7 +678,8 @@ button {
 }
 
 .version-entry-actions button,
-.snapshot-dialog button {
+.snapshot-dialog button,
+.comment-export-dialog button {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -687,7 +688,8 @@ button {
 }
 
 .version-entry-actions button:hover,
-.snapshot-dialog button:hover {
+.snapshot-dialog button:hover,
+.comment-export-dialog button:hover {
   border-color: var(--accent);
 }
 
@@ -704,6 +706,17 @@ button {
 .snapshot-dialog {
   display: flex;
   width: min(1040px, 100%);
+  max-height: min(86vh, 860px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
+}
+
+.comment-export-dialog {
+  display: flex;
+  width: min(980px, 100%);
   max-height: min(86vh, 860px);
   flex-direction: column;
   overflow: hidden;
@@ -751,6 +764,47 @@ button {
   min-width: 80px;
   color: var(--muted);
   font-size: 0.84rem;
+}
+
+.comment-export-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 18px;
+}
+
+.comment-export-actions span {
+  color: var(--muted);
+  font-size: 0.84rem;
+}
+
+.comment-export-json {
+  display: grid;
+  flex: 1;
+  gap: 8px;
+  min-height: 0;
+  padding: 18px;
+}
+
+.comment-export-json span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.comment-export-json textarea {
+  min-height: 440px;
+  resize: none;
+  border: 1px solid var(--border);
+  outline: none;
+  background: #101815;
+  color: #f4f7f5;
+  padding: 14px;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
 }
 
 .snapshot-compare-summary {
@@ -1020,6 +1074,33 @@ button {
   font-weight: 800;
 }
 
+.comment-focus-state {
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--muted);
+  padding: 3px 6px;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.comment-focus-state-in_focus,
+.comment-focus-state-awaiting_reply {
+  border-color: #eccd8f;
+  background: #fff4d8;
+  color: #76510f;
+}
+
+.comment-focus-state-exported {
+  border-color: #b9d8ca;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.comment-focus-state-resolved {
+  opacity: 0.75;
+}
+
 .comment-anchor-status-active,
 .comment-anchor-status-document {
   border-color: #b9d8ca;
@@ -1055,6 +1136,28 @@ button {
   font-size: 0.88rem;
   line-height: 1.45;
   overflow-wrap: anywhere;
+}
+
+.comment-thread-preview {
+  display: grid;
+  gap: 4px;
+  border-left: 3px solid #eccd8f;
+  background: #fffaf0;
+  padding: 8px;
+}
+
+.comment-thread-preview span,
+.comment-thread-count {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.comment-reply-form {
+  margin-top: 0;
+  border: 1px solid #eccd8f;
+  background: #fffaf0;
+  padding: 10px;
 }
 
 .comment-timestamp {

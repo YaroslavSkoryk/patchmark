@@ -49,8 +49,11 @@ type CommentsPanelProps = {
     values: Pick<CommentFormValues, "comment" | "type">
   ) => Promise<void>;
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
+  onMarkCommentForExport: (commentId: string) => Promise<void>;
   onReopenComment: (commentId: string) => Promise<void>;
+  onReplyComment: (commentId: string, content: string) => Promise<void>;
   onResolveComment: (commentId: string) => Promise<void>;
+  onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
 };
@@ -77,8 +80,11 @@ export function CommentsPanel({
   onDeleteComment,
   onEditComment,
   onFindComment,
+  onMarkCommentForExport,
   onReopenComment,
+  onReplyComment,
   onResolveComment,
+  onUnmarkCommentForExport,
   selectedAnchorContextKind,
   selectedTextPreview
 }: CommentsPanelProps) {
@@ -92,6 +98,8 @@ export function CommentsPanel({
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editType, setEditType] = useState<PatchmarkCommentType>("note");
   const [editComment, setEditComment] = useState("");
+  const [replyingCommentId, setReplyingCommentId] = useState<string | null>(null);
+  const [replyComment, setReplyComment] = useState("");
   const [formError, setFormError] = useState("");
   const openComments = useMemo(
     () => comments.filter((comment) => comment.status === "open"),
@@ -127,6 +135,8 @@ export function CommentsPanel({
         : ""
     );
     setEditingCommentId(null);
+    setReplyingCommentId(null);
+    setReplyComment("");
     setAddPositionTop(preferredPositionTop ?? null);
     setIsAdding(true);
     setFormError("");
@@ -191,8 +201,19 @@ export function CommentsPanel({
     setEditingCommentId(comment.id);
     setIsAdding(false);
     setAddPositionTop(null);
+    setReplyingCommentId(null);
+    setReplyComment("");
     setEditType(comment.type);
     setEditComment(comment.comment);
+    setFormError("");
+  }
+
+  function startReplying(comment: PatchmarkComment) {
+    setReplyingCommentId(comment.id);
+    setReplyComment("");
+    setEditingCommentId(null);
+    setIsAdding(false);
+    setAddPositionTop(null);
     setFormError("");
   }
 
@@ -220,6 +241,30 @@ export function CommentsPanel({
       setFormError("");
     } catch {
       setFormError("Could not update comment. Your draft is still here.");
+    }
+  }
+
+  async function handleReplyComment(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!replyingCommentId) {
+      return;
+    }
+
+    const trimmedReply = replyComment.trim();
+
+    if (!trimmedReply) {
+      setFormError("Reply text is required.");
+      return;
+    }
+
+    try {
+      await onReplyComment(replyingCommentId, trimmedReply);
+      setReplyingCommentId(null);
+      setReplyComment("");
+      setFormError("");
+    } catch {
+      setFormError("Could not save reply. Your draft is still here.");
     }
   }
 
@@ -302,12 +347,23 @@ export function CommentsPanel({
             onDeleteComment={handleDeleteComment}
             onEditComment={handleEditComment}
             onFindComment={onFindComment}
+            onMarkCommentForExport={onMarkCommentForExport}
             onReopenComment={onReopenComment}
+            onReplyComment={handleReplyComment}
             onResolveComment={onResolveComment}
             onSetEditComment={setEditComment}
             onSetEditType={setEditType}
+            onSetReplyComment={setReplyComment}
             onStartEditing={startEditing}
+            onStartReplying={startReplying}
             onStopEditing={() => setEditingCommentId(null)}
+            onStopReplying={() => {
+              setReplyingCommentId(null);
+              setReplyComment("");
+            }}
+            onUnmarkCommentForExport={onUnmarkCommentForExport}
+            replyingCommentId={replyingCommentId}
+            replyComment={replyComment}
           />
         </>
       )}
@@ -327,13 +383,21 @@ type CommentGroupProps = {
   onDeleteComment: (commentId: string) => Promise<void>;
   onEditComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
+  onMarkCommentForExport: (commentId: string) => Promise<void>;
   onReopenComment?: (commentId: string) => Promise<void>;
+  onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onResolveComment?: (commentId: string) => Promise<void>;
   onSetEditComment: (comment: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
+  onSetReplyComment: (comment: string) => void;
   onStartEditing: (comment: PatchmarkComment) => void;
+  onStartReplying: (comment: PatchmarkComment) => void;
   onStopEditing: () => void;
+  onStopReplying: () => void;
+  onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   quiet?: boolean;
+  replyingCommentId: string | null;
+  replyComment: string;
 };
 
 type FloatingCommentListProps = Omit<
@@ -358,12 +422,20 @@ function FloatingCommentList({
   onDeleteComment,
   onEditComment,
   onFindComment,
+  onMarkCommentForExport,
   onReopenComment,
+  onReplyComment,
   onResolveComment,
   onSetEditComment,
   onSetEditType,
+  onSetReplyComment,
   onStartEditing,
-  onStopEditing
+  onStartReplying,
+  onStopEditing,
+  onStopReplying,
+  onUnmarkCommentForExport,
+  replyingCommentId,
+  replyComment
 }: FloatingCommentListProps) {
   const positionedComments = comments
     .filter((comment) => commentPositions[comment.id] !== undefined)
@@ -430,13 +502,21 @@ function FloatingCommentList({
                 onDeleteComment={onDeleteComment}
                 onEditComment={onEditComment}
                 onFindComment={onFindComment}
+                onMarkCommentForExport={onMarkCommentForExport}
                 onReopenComment={onReopenComment}
+                onReplyComment={onReplyComment}
                 onResolveComment={onResolveComment}
                 onSetEditComment={onSetEditComment}
                 onSetEditType={onSetEditType}
+                onSetReplyComment={onSetReplyComment}
                 onStartEditing={onStartEditing}
+                onStartReplying={onStartReplying}
                 onStopEditing={onStopEditing}
+                onStopReplying={onStopReplying}
+                onUnmarkCommentForExport={onUnmarkCommentForExport}
                 quiet={comment.status === "resolved"}
+                replyingCommentId={replyingCommentId}
+                replyComment={replyComment}
               />
             </li>
           ))}
@@ -458,13 +538,21 @@ function FloatingCommentList({
           onDeleteComment={onDeleteComment}
           onEditComment={onEditComment}
           onFindComment={onFindComment}
+          onMarkCommentForExport={onMarkCommentForExport}
           onReopenComment={onReopenComment}
+          onReplyComment={onReplyComment}
           onResolveComment={onResolveComment}
           onSetEditComment={onSetEditComment}
           onSetEditType={onSetEditType}
+          onSetReplyComment={onSetReplyComment}
           onStartEditing={onStartEditing}
+          onStartReplying={onStartReplying}
           onStopEditing={onStopEditing}
+          onStopReplying={onStopReplying}
+          onUnmarkCommentForExport={onUnmarkCommentForExport}
           quiet
+          replyingCommentId={replyingCommentId}
+          replyComment={replyComment}
         />
       ) : null}
     </div>
@@ -501,12 +589,20 @@ function CommentGroup({
   onDeleteComment,
   onEditComment,
   onFindComment,
+  onMarkCommentForExport,
   onReopenComment,
+  onReplyComment,
   onResolveComment,
   onSetEditComment,
   onSetEditType,
+  onSetReplyComment,
   onStartEditing,
+  onStartReplying,
   onStopEditing,
+  onStopReplying,
+  onUnmarkCommentForExport,
+  replyingCommentId,
+  replyComment,
   quiet = false
 }: CommentGroupProps) {
   return (
@@ -529,13 +625,21 @@ function CommentGroup({
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
                   onFindComment={onFindComment}
+                  onMarkCommentForExport={onMarkCommentForExport}
                   onReopenComment={onReopenComment}
+                  onReplyComment={onReplyComment}
                   onResolveComment={onResolveComment}
                   onSetEditComment={onSetEditComment}
                   onSetEditType={onSetEditType}
+                  onSetReplyComment={onSetReplyComment}
                   onStartEditing={onStartEditing}
+                  onStartReplying={onStartReplying}
                   onStopEditing={onStopEditing}
+                  onStopReplying={onStopReplying}
+                  onUnmarkCommentForExport={onUnmarkCommentForExport}
                   quiet={quiet}
+                  replyingCommentId={replyingCommentId}
+                  replyComment={replyComment}
                 />
               </li>
             );
@@ -556,13 +660,21 @@ type CommentCardProps = {
   onDeleteComment: (commentId: string) => Promise<void>;
   onEditComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
+  onMarkCommentForExport: (commentId: string) => Promise<void>;
   onReopenComment?: (commentId: string) => Promise<void>;
+  onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onResolveComment?: (commentId: string) => Promise<void>;
   onSetEditComment: (comment: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
+  onSetReplyComment: (comment: string) => void;
   onStartEditing: (comment: PatchmarkComment) => void;
+  onStartReplying: (comment: PatchmarkComment) => void;
   onStopEditing: () => void;
+  onStopReplying: () => void;
+  onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   quiet?: boolean;
+  replyingCommentId: string | null;
+  replyComment: string;
 };
 
 function CommentCard({
@@ -575,18 +687,33 @@ function CommentCard({
   onDeleteComment,
   onEditComment,
   onFindComment,
+  onMarkCommentForExport,
   onReopenComment,
+  onReplyComment,
   onResolveComment,
   onSetEditComment,
   onSetEditType,
+  onSetReplyComment,
   onStartEditing,
+  onStartReplying,
   onStopEditing,
+  onStopReplying,
+  onUnmarkCommentForExport,
+  replyingCommentId,
+  replyComment,
   quiet = false
 }: CommentCardProps) {
   const anchorSummary = anchorSummaries[comment.id] ?? {
     label: getCommentAnchorLabel(comment),
     status: "document" as const
   };
+  const latestUserReply = [...comment.thread]
+    .reverse()
+    .find((entry) => entry.role === "user");
+  const isReplying = replyingCommentId === comment.id;
+  const isQueuedForExport =
+    comment.export_state.focus_state === "in_focus" ||
+    comment.export_state.focus_state === "awaiting_reply";
 
   return (
     <article className={`comment-card ${quiet ? "comment-card-quiet" : ""}`}>
@@ -632,6 +759,14 @@ function CommentCard({
           </div>
           <strong className="comment-target">{anchorSummary.label}</strong>
           <span
+            className={`comment-focus-state comment-focus-state-${comment.status === "resolved"
+              ? "resolved"
+              : comment.export_state.focus_state
+            }`}
+          >
+            {getCommentFocusStateLabel(comment)}
+          </span>
+          <span
             className={`comment-anchor-status comment-anchor-status-${anchorSummary.status}`}
           >
             {getAnchorStatusLabel(anchorSummary.status)}
@@ -670,6 +805,40 @@ function CommentCard({
             </>
           ) : null}
           <p>{comment.comment}</p>
+          {latestUserReply ? (
+            <div className="comment-thread-preview">
+              <span>
+                User reply
+                {comment.thread.length > 1 ? ` · ${comment.thread.length} total` : ""}
+              </span>
+              <p>{latestUserReply.content}</p>
+            </div>
+          ) : comment.thread.length > 0 ? (
+            <span className="comment-thread-count">
+              {comment.thread.length} thread entr
+              {comment.thread.length === 1 ? "y" : "ies"}
+            </span>
+          ) : null}
+          {isReplying ? (
+            <form className="comment-form comment-reply-form" onSubmit={onReplyComment}>
+              <label>
+                <span>User reply</span>
+                <textarea
+                  required
+                  value={replyComment}
+                  onChange={(event) => onSetReplyComment(event.target.value)}
+                />
+              </label>
+              <div className="comment-form-actions">
+                <button type="submit" disabled={isBusy}>
+                  Save Reply
+                </button>
+                <button type="button" disabled={isBusy} onClick={onStopReplying}>
+                  Cancel
+                </button>
+              </div>
+            </form>
+          ) : null}
           <span className="comment-timestamp">
             Updated {formatCommentDate(comment.updated_at)}
           </span>
@@ -683,6 +852,36 @@ function CommentCard({
             >
               Find
             </button>
+            {comment.status === "open" ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => onStartReplying(comment)}
+              >
+                Reply
+              </button>
+            ) : null}
+            {comment.status === "open" && isQueuedForExport ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => {
+                  void onUnmarkCommentForExport(comment.id).catch(() => undefined);
+                }}
+              >
+                Unmark
+              </button>
+            ) : comment.status === "open" ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => {
+                  void onMarkCommentForExport(comment.id).catch(() => undefined);
+                }}
+              >
+                Mark for ChatGPT
+              </button>
+            ) : null}
             {comment.status === "open" && onResolveComment ? (
               <button
                 type="button"
@@ -915,6 +1114,26 @@ function getActionScopeLabel(scope: string): string {
   }
 
   return "containing section";
+}
+
+function getCommentFocusStateLabel(comment: PatchmarkComment): string {
+  if (comment.status === "resolved") {
+    return "Resolved";
+  }
+
+  if (comment.export_state.focus_state === "in_focus") {
+    return "Marked for ChatGPT";
+  }
+
+  if (comment.export_state.focus_state === "exported") {
+    return "Exported";
+  }
+
+  if (comment.export_state.focus_state === "awaiting_reply") {
+    return "Awaiting reply";
+  }
+
+  return "Idle";
 }
 
 function sortCommentsByStatus(comments: PatchmarkComment[]): PatchmarkComment[] {

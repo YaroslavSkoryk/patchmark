@@ -5,7 +5,10 @@ import {
   type PatchmarkCommentActionScope,
   type PatchmarkCommentAnchor,
   type PatchmarkComment,
+  type PatchmarkCommentExportState,
+  type PatchmarkCommentFocusState,
   type PatchmarkCommentStatus,
+  type PatchmarkCommentThreadEntry,
   type PatchmarkCommentType,
   type PatchmarkManifest,
   type PatchmarkVersionEntry
@@ -418,8 +421,35 @@ export async function writeProjectComments(
 
   await writeTextFile(
     commentsFileHandle,
-    `${JSON.stringify(comments, null, 2)}\n`
+    `${JSON.stringify(comments.map(normalizeComment), null, 2)}\n`
   );
+}
+
+export async function writeProjectContextPack({
+  contents,
+  fileName,
+  project
+}: {
+  contents: string;
+  fileName: string;
+  project: PatchmarkProjectHandle;
+}): Promise<string> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const contextPacksDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("context-packs", {
+      create: true
+    });
+  const contextPackFileHandle = await contextPacksDirectoryHandle.getFileHandle(
+    fileName,
+    { create: true }
+  );
+
+  await writeTextFile(contextPackFileHandle, contents);
+
+  return `${metadataDirectoryName}/context-packs/${fileName}`;
 }
 
 async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> {
@@ -636,7 +666,6 @@ function normalizeComment(comment: unknown): PatchmarkComment {
   if (
     typeof comment.id !== "string" ||
     !isPatchmarkCommentType(comment.type) ||
-    !isPatchmarkCommentStatus(comment.status) ||
     typeof comment.comment !== "string" ||
     typeof comment.created_at !== "string" ||
     typeof comment.updated_at !== "string"
@@ -644,16 +673,24 @@ function normalizeComment(comment: unknown): PatchmarkComment {
     throw new Error(".patchmark/comments.json contains an invalid comment.");
   }
 
+  const status = isPatchmarkCommentStatus(comment.status)
+    ? comment.status
+    : "open";
+
   return {
     id: comment.id,
     type: comment.type,
-    status: comment.status,
+    status,
     anchor: normalizeCommentAnchor(comment),
     comment: comment.comment,
+    thread: normalizeCommentThread(comment.thread),
+    export_state: normalizeCommentExportState(comment.export_state),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     resolved_at:
-      typeof comment.resolved_at === "string" ? comment.resolved_at : undefined
+      status === "resolved" && typeof comment.resolved_at === "string"
+        ? comment.resolved_at
+        : undefined
   };
 }
 
@@ -699,7 +736,10 @@ function normalizeKnownCommentAnchor(
     return {
       kind: "document",
       action_context:
-        normalizeActionContext(anchor.action_context) ??
+        normalizeActionContext(
+          anchor.action_context,
+          getActionIntentForCommentType(commentType)
+        ) ??
         createDefaultActionContext("document", commentType)
     };
   }
@@ -714,7 +754,10 @@ function normalizeKnownCommentAnchor(
       section_start_offset: anchor.section_start_offset,
       section_end_offset: anchor.section_end_offset,
       action_context:
-        normalizeActionContext(anchor.action_context) ??
+        normalizeActionContext(
+          anchor.action_context,
+          getActionIntentForCommentType(commentType)
+        ) ??
         createDefaultActionContext("section", commentType)
     };
   }
@@ -738,7 +781,10 @@ function normalizeKnownCommentAnchor(
     fallback_section_start_offset: anchor.fallback_section_start_offset,
     fallback_section_end_offset: anchor.fallback_section_end_offset,
     action_context:
-      normalizeActionContext(anchor.action_context) ??
+      normalizeActionContext(
+        anchor.action_context,
+        getActionIntentForCommentType(commentType)
+      ) ??
       createDefaultActionContext("selected_text", commentType)
   };
 }
@@ -804,7 +850,8 @@ function createLegacyAnchorContext(
 }
 
 function normalizeActionContext(
-  context: unknown
+  context: unknown,
+  fallbackIntent: PatchmarkCommentActionIntent
 ): PatchmarkCommentActionContext | undefined {
   if (
     !isRecord(context) ||
@@ -821,7 +868,43 @@ function normalizeActionContext(
     include_open_comments: context.include_open_comments,
     intent_hint: isCommentActionIntent(context.intent_hint)
       ? context.intent_hint
-      : undefined
+      : fallbackIntent
+  };
+}
+
+function normalizeCommentThread(thread: unknown): PatchmarkCommentThreadEntry[] {
+  if (!Array.isArray(thread)) {
+    return [];
+  }
+
+  return thread.filter(isPatchmarkCommentThreadEntry);
+}
+
+function normalizeCommentExportState(
+  exportState: unknown
+): PatchmarkCommentExportState {
+  if (!isRecord(exportState)) {
+    return {
+      focus_state: "idle"
+    };
+  }
+
+  return {
+    focus_state: isCommentFocusState(exportState.focus_state)
+      ? exportState.focus_state
+      : "idle",
+    marked_for_export_at:
+      typeof exportState.marked_for_export_at === "string"
+        ? exportState.marked_for_export_at
+        : undefined,
+    last_exported_at:
+      typeof exportState.last_exported_at === "string"
+        ? exportState.last_exported_at
+        : undefined,
+    last_export_id:
+      typeof exportState.last_export_id === "string"
+        ? exportState.last_export_id
+        : undefined
   };
 }
 
@@ -833,7 +916,7 @@ function createDefaultActionContext(
     ? {
         default_scope: "full_document",
         include_document_brief: true,
-        include_open_comments: "all",
+        include_open_comments: "focused_only",
         intent_hint: getActionIntentForCommentType(commentType)
       }
     : {
@@ -927,12 +1010,33 @@ function isCommentActionIntent(
   );
 }
 
+function isPatchmarkCommentThreadEntry(
+  value: unknown
+): value is PatchmarkCommentThreadEntry {
+  return (
+    isRecord(value) &&
+    typeof value.id === "string" &&
+    (value.role === "user" ||
+      value.role === "chatgpt" ||
+      value.role === "system") &&
+    typeof value.content === "string" &&
+    typeof value.created_at === "string"
+  );
+}
+
+function isCommentFocusState(value: unknown): value is PatchmarkCommentFocusState {
+  return (
+    typeof value === "string" &&
+    ["idle", "in_focus", "exported", "awaiting_reply"].includes(value)
+  );
+}
+
 function isCommentOpenCommentsScope(
   value: unknown
 ): value is PatchmarkCommentActionContext["include_open_comments"] {
   return (
     typeof value === "string" &&
-    ["none", "same_section", "all"].includes(value)
+    ["none", "same_section", "focused_only", "all"].includes(value)
   );
 }
 

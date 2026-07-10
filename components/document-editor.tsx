@@ -41,6 +41,7 @@ import {
   readProjectVersionMarkdown,
   readProjectComments,
   saveProjectDocument,
+  writeProjectContextPack,
   writeProjectComments,
   type LoadedPatchmarkProject,
   type PatchmarkProjectHandle
@@ -51,6 +52,7 @@ import {
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
   type PatchmarkCommentType,
+  type PatchmarkCommentThreadEntry,
   type PatchmarkSelectedTextAnchorContext,
   type PatchmarkSelectedTextAnchorContextKind,
   type PatchmarkVersionEntry
@@ -89,6 +91,13 @@ type CommentContextMenuState = {
   selectionHelp: string | null;
   x: number;
   y: number;
+};
+type FocusedCommentsExportDialogState = {
+  commentIds: string[];
+  exportId: string;
+  exportedAt: string;
+  fileName: string;
+  jsonText: string;
 };
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
@@ -171,6 +180,8 @@ export function DocumentEditor() {
   );
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
+  const [focusedExportDialog, setFocusedExportDialog] =
+    useState<FocusedCommentsExportDialogState | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const markdownSelectionDraft = useMemo(
@@ -771,6 +782,129 @@ export function DocumentEditor() {
     }
   }
 
+  function handleExportFocusedComments() {
+    if (!projectHandle) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Comment export is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    const focusedComments = getFocusedCommentsForExport(comments);
+
+    if (focusedComments.length === 0) {
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "No focused comments to export. Reply to a comment or mark it for ChatGPT first."
+      });
+      return;
+    }
+
+    const exportedAt = new Date().toISOString();
+    const exportId = createCommentExportId(exportedAt);
+    const exportPayload = createFocusedCommentsExportPayload({
+      comments: focusedComments,
+      exportedAt,
+      exportId,
+      headings,
+      markdown,
+      project: projectHandle
+    });
+    const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
+
+    setFocusedExportDialog({
+      commentIds: focusedComments.map((comment) => comment.id),
+      exportedAt,
+      exportId,
+      fileName: `${exportId}-focused-comments.json`,
+      jsonText
+    });
+    setSaveFeedback({
+      kind: "info",
+      message: `Prepared ${focusedComments.length} focused comment${
+        focusedComments.length === 1 ? "" : "s"
+      } for ChatGPT export.`
+    });
+  }
+
+  async function handleCopyFocusedExport() {
+    if (!focusedExportDialog) {
+      return;
+    }
+
+    if (!navigator.clipboard) {
+      setSaveFeedback({
+        kind: "error",
+        message: "Clipboard copy is not available in this browser."
+      });
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(focusedExportDialog.jsonText);
+      await markFocusedExportCommentsAsExported(focusedExportDialog);
+      setSaveFeedback({
+        kind: "success",
+        message: "Copied export JSON and marked focused comments as exported."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleSaveFocusedExport() {
+    if (!projectHandle || !focusedExportDialog) {
+      return;
+    }
+
+    try {
+      const filePath = await writeProjectContextPack({
+        contents: focusedExportDialog.jsonText,
+        fileName: focusedExportDialog.fileName,
+        project: projectHandle
+      });
+      await markFocusedExportCommentsAsExported(focusedExportDialog);
+      setSaveFeedback({
+        kind: "success",
+        message: `Saved focused comment export to ${filePath}.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message
+      });
+    }
+  }
+
+  async function markFocusedExportCommentsAsExported(
+    exportDialog: FocusedCommentsExportDialogState
+  ) {
+    const exportedCommentIds = new Set(exportDialog.commentIds);
+    const nextComments = comments.map((comment) =>
+      exportedCommentIds.has(comment.id) && comment.status === "open"
+        ? {
+            ...comment,
+            export_state: {
+              ...comment.export_state,
+              focus_state: "exported" as const,
+              last_exported_at: exportDialog.exportedAt,
+              last_export_id: exportDialog.exportId
+            },
+            updated_at: exportDialog.exportedAt
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Marked focused comments as exported.");
+  }
+
   async function handleViewSnapshot(version: PatchmarkVersionEntry) {
     if (!projectHandle) {
       return;
@@ -836,6 +970,10 @@ export function DocumentEditor() {
         values
       }),
       comment: values.comment,
+      thread: [],
+      export_state: {
+        focus_state: "idle"
+      },
       created_at: now,
       updated_at: now
     };
@@ -875,6 +1013,11 @@ export function DocumentEditor() {
             ...comment,
             status: "resolved" as const,
             resolved_at: now,
+            export_state: {
+              ...comment.export_state,
+              focus_state: "idle" as const,
+              marked_for_export_at: undefined
+            },
             updated_at: now
           }
         : comment
@@ -890,6 +1033,11 @@ export function DocumentEditor() {
         ? {
             ...comment,
             status: "open" as const,
+            export_state: {
+              ...comment.export_state,
+              focus_state: "idle" as const,
+              marked_for_export_at: undefined
+            },
             resolved_at: undefined,
             updated_at: now
           }
@@ -897,6 +1045,72 @@ export function DocumentEditor() {
     );
 
     await persistComments(nextComments, "Reopened comment.");
+  }
+
+  async function handleReplyToComment(commentId: string, content: string) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId && comment.status === "open"
+        ? {
+            ...comment,
+            thread: [
+              ...comment.thread,
+              {
+                id: createNextThreadEntryId(comment),
+                role: "user" as const,
+                content,
+                created_at: now
+              }
+            ],
+            export_state: {
+              ...comment.export_state,
+              focus_state: "in_focus" as const,
+              marked_for_export_at: now
+            },
+            updated_at: now
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Added reply and marked comment for ChatGPT.");
+  }
+
+  async function handleMarkCommentForExport(commentId: string) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId && comment.status === "open"
+        ? {
+            ...comment,
+            export_state: {
+              ...comment.export_state,
+              focus_state: "in_focus" as const,
+              marked_for_export_at: now
+            },
+            updated_at: now
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Marked comment for ChatGPT.");
+  }
+
+  async function handleUnmarkCommentForExport(commentId: string) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId && comment.status === "open"
+        ? {
+            ...comment,
+            export_state: {
+              ...comment.export_state,
+              focus_state: "idle" as const,
+              marked_for_export_at: undefined
+            },
+            updated_at: now
+          }
+        : comment
+    );
+
+    await persistComments(nextComments, "Removed comment from ChatGPT export queue.");
   }
 
   async function handleDeleteComment(commentId: string) {
@@ -1102,6 +1316,10 @@ export function DocumentEditor() {
         status: "open",
         anchor,
         comment: "",
+        thread: [],
+        export_state: {
+          focus_state: "idle"
+        },
         created_at: "",
         updated_at: ""
       };
@@ -1206,14 +1424,21 @@ export function DocumentEditor() {
               >
                 Open Project Folder
               </button>
-              <button
-                type="button"
-                disabled={!fileName || isSaving}
-                onClick={handleCreateProjectFromCurrentDocument}
-              >
-                Create Project From Current Document
-              </button>
-            </div>
+            <button
+              type="button"
+              disabled={!fileName || isSaving}
+              onClick={handleCreateProjectFromCurrentDocument}
+            >
+              Create Project From Current Document
+            </button>
+            <button
+              type="button"
+              disabled={isSaving || isCommentBusy}
+              onClick={handleExportFocusedComments}
+            >
+              Export Focused Comments
+            </button>
+          </div>
 
             <div className="workspace-status" aria-label="Workspace status">
               <span>
@@ -1336,8 +1561,11 @@ export function DocumentEditor() {
           onDeleteComment={handleDeleteComment}
           onEditComment={handleEditComment}
           onFindComment={handleFindComment}
+          onMarkCommentForExport={handleMarkCommentForExport}
           onReopenComment={handleReopenComment}
+          onReplyComment={handleReplyToComment}
           onResolveComment={handleResolveComment}
+          onUnmarkCommentForExport={handleUnmarkCommentForExport}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
         />
@@ -1400,6 +1628,50 @@ export function DocumentEditor() {
           dialog={snapshotDialog}
           onClose={() => setSnapshotDialog(null)}
         />
+      ) : null}
+
+      {focusedExportDialog ? (
+        <div className="snapshot-dialog-backdrop">
+          <section
+            className="comment-export-dialog"
+            aria-label="Focused comments export"
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Focused comment export</span>
+                <h2>Export Focused Comments</h2>
+                <p>
+                  JSON is ready to paste into ChatGPT. Copying or saving marks
+                  these comments as exported, but does not resolve them.
+                </p>
+              </div>
+              <button type="button" onClick={() => setFocusedExportDialog(null)}>
+                Close
+              </button>
+            </header>
+            <div className="comment-export-actions">
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={handleCopyFocusedExport}
+              >
+                Copy JSON
+              </button>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={handleSaveFocusedExport}
+              >
+                Save Export
+              </button>
+              <span>{focusedExportDialog.fileName}</span>
+            </div>
+            <label className="comment-export-json">
+              <span>Export JSON</span>
+              <textarea readOnly value={focusedExportDialog.jsonText} />
+            </label>
+          </section>
+        </div>
       ) : null}
     </section>
   );
@@ -1472,6 +1744,265 @@ function createNextCommentId(comments: PatchmarkComment[]): string {
     }, 0) + 1;
 
   return `PM-COMMENT-${String(nextNumber).padStart(4, "0")}`;
+}
+
+function createNextThreadEntryId(comment: PatchmarkComment): string {
+  const nextNumber =
+    comment.thread.reduce((maxNumber, entry) => {
+      const match = /^PM-THREAD-(\d+)$/.exec(entry.id);
+
+      if (!match) {
+        return maxNumber;
+      }
+
+      return Math.max(maxNumber, Number(match[1]));
+    }, 0) + 1;
+
+  return `PM-THREAD-${String(nextNumber).padStart(4, "0")}`;
+}
+
+function getFocusedCommentsForExport(
+  comments: PatchmarkComment[]
+): PatchmarkComment[] {
+  return comments.filter(
+    (comment) =>
+      comment.status === "open" &&
+      (comment.export_state.focus_state === "in_focus" ||
+        comment.export_state.focus_state === "awaiting_reply")
+  );
+}
+
+function createCommentExportId(exportedAt: string): string {
+  const timestamp = exportedAt
+    .replace(/[-:]/g, "")
+    .replace(/\.(\d{3})Z$/, "-$1")
+    .replace("T", "-")
+    .replace("Z", "");
+
+  return `comment-export-${timestamp}`;
+}
+
+function createFocusedCommentsExportPayload({
+  comments,
+  exportedAt,
+  exportId,
+  headings,
+  markdown,
+  project
+}: {
+  comments: PatchmarkComment[];
+  exportedAt: string;
+  exportId: string;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  project: PatchmarkProjectHandle;
+}) {
+  return {
+    protocol: "patchmark.comment_export",
+    protocol_version: 1,
+    export_id: exportId,
+    project: {
+      project_name: project.manifest.project_name,
+      document_file: project.manifest.document_file,
+      exported_at: exportedAt
+    },
+    instructions_for_chatgpt: {
+      role:
+        "You are helping review and improve a Markdown document through Patchmark comments.",
+      rules: [
+        "Reply to each exported comment by comment_id.",
+        "Do not resolve comments. Only the human resolves comments.",
+        "If you suggest a document change, return a patch proposal linked to the comment_id.",
+        "If more information is needed, ask a clarification question linked to the comment_id.",
+        "Preserve Markdown structure.",
+        "Drafting support only. Legal review may still be required."
+      ],
+      expected_response_format: "patchmark.comment_reply_import"
+    },
+    comments: comments.map((comment) =>
+      createFocusedCommentExportEntry({
+        comment,
+        headings,
+        markdown
+      })
+    )
+  };
+}
+
+function createFocusedCommentExportEntry({
+  comment,
+  headings,
+  markdown
+}: {
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}) {
+  const actionContext =
+    comment.anchor.action_context ??
+    getDefaultCommentActionContext(comment.type, comment.anchor.kind);
+
+  return {
+    comment_id: comment.id,
+    type: comment.type,
+    intent: actionContext.intent_hint,
+    anchor: createExportAnchor(comment.anchor),
+    action_context: actionContext,
+    comment: comment.comment,
+    thread: comment.thread.map(createExportThreadEntry),
+    context: createExportContext({
+      actionContext,
+      anchor: comment.anchor,
+      headings,
+      markdown
+    })
+  };
+}
+
+function createExportThreadEntry(entry: PatchmarkCommentThreadEntry) {
+  return {
+    id: entry.id,
+    role: entry.role,
+    content: entry.content,
+    created_at: entry.created_at
+  };
+}
+
+function createExportAnchor(anchor: PatchmarkCommentAnchor) {
+  if (anchor.kind === "document") {
+    return {
+      kind: "document"
+    };
+  }
+
+  if (anchor.kind === "section") {
+    return {
+      kind: "section",
+      heading: anchor.heading,
+      heading_level: anchor.heading_level,
+      heading_line: anchor.heading_line,
+      heading_path: anchor.heading_path
+    };
+  }
+
+  return {
+    kind: "selected_text",
+    selected_text: anchor.selected_text,
+    anchor_context: anchor.anchor_context,
+    containing_heading: anchor.containing_heading,
+    containing_heading_level: anchor.containing_heading_level,
+    containing_heading_line: anchor.containing_heading_line,
+    containing_heading_path: anchor.containing_heading_path,
+    anchor_source: anchor.anchor_source
+  };
+}
+
+function createExportContext({
+  actionContext,
+  anchor,
+  headings,
+  markdown
+}: {
+  actionContext: PatchmarkCommentActionContext;
+  anchor: PatchmarkCommentAnchor;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}) {
+  const containingSectionMarkdown = getContainingSectionMarkdown(
+    anchor,
+    markdown,
+    headings
+  );
+
+  return {
+    document_brief: null,
+    display_target: getCommentDisplayTarget(anchor),
+    anchor_context:
+      anchor.kind === "selected_text" ? anchor.anchor_context ?? null : null,
+    containing_section_markdown:
+      actionContext.default_scope === "containing_section"
+        ? containingSectionMarkdown
+        : null,
+    full_document_markdown:
+      actionContext.default_scope === "full_document" ? markdown : null,
+    related_open_comments: []
+  };
+}
+
+function getCommentDisplayTarget(anchor: PatchmarkCommentAnchor): string {
+  if (anchor.kind === "document") {
+    return "Whole document";
+  }
+
+  if (anchor.kind === "section") {
+    return `${"#".repeat(anchor.heading_level ?? 1)} ${anchor.heading}`;
+  }
+
+  return anchor.selected_text;
+}
+
+function getContainingSectionMarkdown(
+  anchor: PatchmarkCommentAnchor,
+  markdown: string,
+  headings: ReturnType<typeof parseMarkdownHeadings>
+): string | null {
+  if (anchor.kind === "document") {
+    return null;
+  }
+
+  if (anchor.kind === "section") {
+    const heading = findMatchingHeading(headings, {
+      level: anchor.heading_level,
+      text: anchor.heading
+    });
+
+    if (!heading) {
+      return null;
+    }
+
+    const sectionRange = getSectionRange(markdown, headings, heading);
+
+    return markdown.slice(sectionRange.start, sectionRange.end);
+  }
+
+  const containingHeading = anchor.containing_heading
+    ? findMatchingHeading(headings, {
+        level: anchor.containing_heading_level,
+        text: anchor.containing_heading
+      })
+    : null;
+
+  if (containingHeading) {
+    const sectionRange = getSectionRange(markdown, headings, containingHeading);
+
+    return markdown.slice(sectionRange.start, sectionRange.end);
+  }
+
+  if (
+    typeof anchor.fallback_section_start_offset === "number" &&
+    typeof anchor.fallback_section_end_offset === "number"
+  ) {
+    return markdown.slice(
+      anchor.fallback_section_start_offset,
+      anchor.fallback_section_end_offset
+    );
+  }
+
+  if (typeof anchor.markdown_start_offset === "number") {
+    const heading = getHeadingContainingOffset(
+      markdown,
+      headings,
+      anchor.markdown_start_offset
+    );
+
+    if (heading) {
+      const sectionRange = getSectionRange(markdown, headings, heading);
+
+      return markdown.slice(sectionRange.start, sectionRange.end);
+    }
+  }
+
+  return null;
 }
 
 function createMarkdownSelectionDraft(
@@ -2748,12 +3279,12 @@ function getDefaultCommentActionContext(
   anchorKind: PatchmarkCommentAnchor["kind"]
 ): PatchmarkCommentActionContext {
   return anchorKind === "document"
-    ? {
-        default_scope: "full_document",
-        include_document_brief: true,
-        include_open_comments: "all",
-        intent_hint: getActionIntentForCommentType(commentType)
-      }
+      ? {
+          default_scope: "full_document",
+          include_document_brief: true,
+          include_open_comments: "focused_only",
+          intent_hint: getActionIntentForCommentType(commentType)
+        }
     : {
         default_scope: "containing_section",
         include_document_brief: true,
