@@ -56,6 +56,37 @@ export type PatchmarkCommentExportState = {
   last_export_id?: string;
 };
 
+export type PatchmarkSuggestedUserAction =
+  | "review"
+  | "clarify"
+  | "apply_patch"
+  | "keep_open"
+  | "resolve_manually";
+
+export type PatchmarkCommentReplyImport = {
+  protocol: "patchmark.comment_reply_import";
+  protocol_version: 1;
+  summary?: string;
+  source_chat_url?: string;
+  replies: Array<{
+    comment_id: string;
+    reply: string;
+    suggested_user_action?: PatchmarkSuggestedUserAction;
+  }>;
+  patch_proposals: Array<{
+    comment_id: string;
+    target_heading?: string;
+    original_text: string;
+    suggested_text: string;
+    reason: string;
+    risk?: string;
+  }>;
+  open_questions: Array<{
+    comment_id: string;
+    question: string;
+  }>;
+};
+
 export type PatchmarkSelectedTextAnchorContextKind =
   | "sentence"
   | "paragraph"

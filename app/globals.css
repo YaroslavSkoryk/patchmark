@@ -716,7 +716,7 @@ button {
 
 .comment-export-dialog {
   display: flex;
-  width: min(980px, 100%);
+  width: min(1120px, 100%);
   max-height: min(86vh, 860px);
   flex-direction: column;
   overflow: hidden;
@@ -768,6 +768,7 @@ button {
 
 .comment-export-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   align-items: center;
   border-bottom: 1px solid var(--border);
@@ -796,6 +797,34 @@ button {
 .comment-export-json textarea {
   min-height: 440px;
   resize: none;
+  border: 1px solid var(--border);
+  outline: none;
+  background: #101815;
+  color: #f4f7f5;
+  padding: 14px;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+}
+
+.comment-export-payload-details {
+  border-top: 1px solid var(--border);
+  padding: 0 18px 18px;
+}
+
+.comment-export-payload-details summary {
+  cursor: pointer;
+  padding: 12px 0;
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.comment-export-payload-details textarea {
+  width: 100%;
+  min-height: 220px;
+  resize: vertical;
   border: 1px solid var(--border);
   outline: none;
   background: #101815;

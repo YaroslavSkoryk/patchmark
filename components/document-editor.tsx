@@ -92,12 +92,14 @@ type CommentContextMenuState = {
   x: number;
   y: number;
 };
-type FocusedCommentsExportDialogState = {
+type ChatGptPromptDialogState = {
   commentIds: string[];
   exportId: string;
   exportedAt: string;
-  fileName: string;
+  payloadFileName: string;
+  promptFileName: string;
   jsonText: string;
+  promptText: string;
 };
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
@@ -180,8 +182,8 @@ export function DocumentEditor() {
   );
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
-  const [focusedExportDialog, setFocusedExportDialog] =
-    useState<FocusedCommentsExportDialogState | null>(null);
+  const [chatGptPromptDialog, setChatGptPromptDialog] =
+    useState<ChatGptPromptDialogState | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const markdownSelectionDraft = useMemo(
@@ -782,11 +784,11 @@ export function DocumentEditor() {
     }
   }
 
-  function handleExportFocusedComments() {
+  function handleGenerateChatGptPrompt() {
     if (!projectHandle) {
       setSaveFeedback({
         kind: "info",
-        message: "Comment export is available in Project Folder Mode."
+        message: "ChatGPT prompt generation is available in Project Folder Mode."
       });
       return;
     }
@@ -804,6 +806,7 @@ export function DocumentEditor() {
 
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
+    const fileTimestamp = createFileSafeTimestamp(exportedAt);
     const exportPayload = createFocusedCommentsExportPayload({
       comments: focusedComments,
       exportedAt,
@@ -813,24 +816,27 @@ export function DocumentEditor() {
       project: projectHandle
     });
     const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
+    const promptText = createFocusedCommentsChatGptPrompt(jsonText);
 
-    setFocusedExportDialog({
+    setChatGptPromptDialog({
       commentIds: focusedComments.map((comment) => comment.id),
       exportedAt,
       exportId,
-      fileName: `${exportId}-focused-comments.json`,
-      jsonText
+      payloadFileName: `${fileTimestamp}-focused-comments-payload.json`,
+      promptFileName: `${fileTimestamp}-focused-comments-prompt.md`,
+      jsonText,
+      promptText
     });
     setSaveFeedback({
       kind: "info",
-      message: `Prepared ${focusedComments.length} focused comment${
+      message: `Generated a ChatGPT prompt for ${focusedComments.length} focused comment${
         focusedComments.length === 1 ? "" : "s"
-      } for ChatGPT export.`
+      }.`
     });
   }
 
-  async function handleCopyFocusedExport() {
-    if (!focusedExportDialog) {
+  async function handleCopyChatGptPrompt() {
+    if (!chatGptPromptDialog) {
       return;
     }
 
@@ -843,11 +849,11 @@ export function DocumentEditor() {
     }
 
     try {
-      await navigator.clipboard.writeText(focusedExportDialog.jsonText);
-      await markFocusedExportCommentsAsExported(focusedExportDialog);
+      await navigator.clipboard.writeText(chatGptPromptDialog.promptText);
+      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
       setSaveFeedback({
         kind: "success",
-        message: "Copied export JSON and marked focused comments as exported."
+        message: "Prompt copied. Focused comments marked as exported."
       });
     } catch (error) {
       setSaveFeedback({
@@ -857,21 +863,75 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleSaveFocusedExport() {
-    if (!projectHandle || !focusedExportDialog) {
+  async function handleSaveChatGptPrompt() {
+    if (!projectHandle || !chatGptPromptDialog) {
       return;
     }
 
     try {
       const filePath = await writeProjectContextPack({
-        contents: focusedExportDialog.jsonText,
-        fileName: focusedExportDialog.fileName,
+        contents: chatGptPromptDialog.promptText,
+        fileName: chatGptPromptDialog.promptFileName,
         project: projectHandle
       });
-      await markFocusedExportCommentsAsExported(focusedExportDialog);
+      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
       setSaveFeedback({
         kind: "success",
-        message: `Saved focused comment export to ${filePath}.`
+        message: `Prompt saved to ${filePath}. Focused comments marked as exported.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message
+      });
+    }
+  }
+
+  async function handleCopyFocusedJsonPayload() {
+    if (!chatGptPromptDialog) {
+      return;
+    }
+
+    if (!navigator.clipboard) {
+      setSaveFeedback({
+        kind: "error",
+        message: "Clipboard copy is not available in this browser."
+      });
+      return;
+    }
+
+    try {
+      await navigator.clipboard.writeText(chatGptPromptDialog.jsonText);
+      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
+      setSaveFeedback({
+        kind: "success",
+        message: "JSON payload copied. Focused comments marked as exported."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleSaveFocusedJsonPayload() {
+    if (!projectHandle || !chatGptPromptDialog) {
+      return;
+    }
+
+    try {
+      const filePath = await writeProjectContextPack({
+        contents: chatGptPromptDialog.jsonText,
+        fileName: chatGptPromptDialog.payloadFileName,
+        project: projectHandle
+      });
+      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
+      setSaveFeedback({
+        kind: "success",
+        message: `JSON payload saved to ${filePath}. Focused comments marked as exported.`
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
@@ -884,7 +944,7 @@ export function DocumentEditor() {
   }
 
   async function markFocusedExportCommentsAsExported(
-    exportDialog: FocusedCommentsExportDialogState
+    exportDialog: ChatGptPromptDialogState
   ) {
     const exportedCommentIds = new Set(exportDialog.commentIds);
     const nextComments = comments.map((comment) =>
@@ -1434,9 +1494,9 @@ export function DocumentEditor() {
             <button
               type="button"
               disabled={isSaving || isCommentBusy}
-              onClick={handleExportFocusedComments}
+              onClick={handleGenerateChatGptPrompt}
             >
-              Export Focused Comments
+              Generate ChatGPT Prompt
             </button>
           </div>
 
@@ -1630,22 +1690,23 @@ export function DocumentEditor() {
         />
       ) : null}
 
-      {focusedExportDialog ? (
+      {chatGptPromptDialog ? (
         <div className="snapshot-dialog-backdrop">
           <section
             className="comment-export-dialog"
-            aria-label="Focused comments export"
+            aria-label="Generate ChatGPT prompt"
           >
             <header className="snapshot-dialog-header">
               <div>
-                <span>Focused comment export</span>
-                <h2>Export Focused Comments</h2>
+                <span>Focused comments</span>
+                <h2>Generate ChatGPT Prompt</h2>
                 <p>
-                  JSON is ready to paste into ChatGPT. Copying or saving marks
-                  these comments as exported, but does not resolve them.
+                  This Markdown prompt is ready to paste into ChatGPT. Copying
+                  or saving marks focused comments as exported, but does not
+                  resolve them.
                 </p>
               </div>
-              <button type="button" onClick={() => setFocusedExportDialog(null)}>
+              <button type="button" onClick={() => setChatGptPromptDialog(null)}>
                 Close
               </button>
             </header>
@@ -1653,23 +1714,41 @@ export function DocumentEditor() {
               <button
                 type="button"
                 disabled={isCommentBusy}
-                onClick={handleCopyFocusedExport}
+                onClick={handleCopyChatGptPrompt}
               >
-                Copy JSON
+                Copy Prompt
               </button>
               <button
                 type="button"
                 disabled={isCommentBusy}
-                onClick={handleSaveFocusedExport}
+                onClick={handleSaveChatGptPrompt}
               >
-                Save Export
+                Save Prompt
               </button>
-              <span>{focusedExportDialog.fileName}</span>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={handleCopyFocusedJsonPayload}
+              >
+                Copy JSON Payload
+              </button>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={handleSaveFocusedJsonPayload}
+              >
+                Save JSON Payload
+              </button>
+              <span>{chatGptPromptDialog.promptFileName}</span>
             </div>
             <label className="comment-export-json">
-              <span>Export JSON</span>
-              <textarea readOnly value={focusedExportDialog.jsonText} />
+              <span>Generated prompt</span>
+              <textarea readOnly value={chatGptPromptDialog.promptText} />
             </label>
+            <details className="comment-export-payload-details">
+              <summary>JSON Payload</summary>
+              <textarea readOnly value={chatGptPromptDialog.jsonText} />
+            </details>
           </section>
         </div>
       ) : null}
@@ -1773,13 +1852,98 @@ function getFocusedCommentsForExport(
 }
 
 function createCommentExportId(exportedAt: string): string {
-  const timestamp = exportedAt
+  return `comment-export-${createFileSafeTimestamp(exportedAt)}`;
+}
+
+function createFileSafeTimestamp(exportedAt: string): string {
+  return exportedAt
     .replace(/[-:]/g, "")
     .replace(/\.(\d{3})Z$/, "-$1")
     .replace("T", "-")
     .replace("Z", "");
+}
 
-  return `comment-export-${timestamp}`;
+function createFocusedCommentsChatGptPrompt(jsonText: string): string {
+  return `# Patchmark Focused Comments Review
+
+You are helping review and improve a Markdown document through Patchmark.
+
+Patchmark is the source of truth for the document. You are not editing the document directly. You are replying to focused comments and, when useful, proposing reviewable patches.
+
+Patchmark is the document control layer. ChatGPT is the reasoning/review layer. The human user is the bridge.
+
+## Collaboration Rules
+
+- Reply to each exported comment by \`comment_id\`.
+- Do not resolve comments.
+- Only the human user can resolve comments in Patchmark.
+- If a comment needs clarification, ask a question linked to that \`comment_id\`.
+- If you suggest a document change, return a patch proposal linked to the \`comment_id\`.
+- Patch proposals must use exact Markdown from the supplied context as \`original_text\`.
+- Do not rewrite the whole document unless explicitly requested.
+- Preserve Markdown structure.
+- Be clear about reason and risk/tradeoff.
+- Drafting support only. Legal review may still be required.
+
+## Required Response Format
+
+Return only valid JSON.
+
+Do not wrap the JSON in Markdown fences.
+
+Use this exact protocol:
+
+\`\`\`json
+{
+  "protocol": "patchmark.comment_reply_import",
+  "protocol_version": 1,
+  "summary": "Brief summary of what you did.",
+  "replies": [
+    {
+      "comment_id": "PM-COMMENT-0001",
+      "reply": "Your reply to the comment.",
+      "suggested_user_action": "review"
+    }
+  ],
+  "patch_proposals": [
+    {
+      "comment_id": "PM-COMMENT-0001",
+      "target_heading": "## Example Heading",
+      "original_text": "Exact Markdown text to replace.",
+      "suggested_text": "Replacement Markdown text.",
+      "reason": "Why this change helps.",
+      "risk": "Tradeoff or caution."
+    }
+  ],
+  "open_questions": [
+    {
+      "comment_id": "PM-COMMENT-0001",
+      "question": "Question for the human user."
+    }
+  ]
+}
+\`\`\`
+
+Allowed \`suggested_user_action\` values:
+
+- \`review\`
+- \`clarify\`
+- \`apply_patch\`
+- \`keep_open\`
+- \`resolve_manually\`
+
+If no patch is needed, return an empty \`patch_proposals\` array.
+
+If no clarification is needed, return an empty \`open_questions\` array.
+
+Remember: you may suggest \`resolve_manually\`, but you must not claim the comment is resolved. Only the human user resolves comments in Patchmark.
+
+## Patchmark Export Payload
+
+\`\`\`json
+${jsonText.trimEnd()}
+\`\`\`
+`;
 }
 
 function createFocusedCommentsExportPayload({
