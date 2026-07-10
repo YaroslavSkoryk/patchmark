@@ -315,24 +315,32 @@ export function DocumentEditor() {
   }, [commentContextMenu]);
 
   useEffect(() => {
-    const animationFrameId = window.requestAnimationFrame(() => {
-      setCommentPositions(
-        measureCommentPositions({
-          comments,
-          container: editorDocumentRef.current,
-          headings,
-          markdown,
-          mode,
-          workspace: documentWorkspaceRef.current
-        })
+    let isCancelled = false;
+    let animationFrameId: number | null = null;
+    const delayedSyncTimeoutIds: number[] = [];
+    const editorContainer = editorDocumentRef.current;
+    const workspace = documentWorkspaceRef.current;
+
+    function syncCommentAnchors() {
+      if (isCancelled) {
+        return;
+      }
+
+      const nextCommentPositions = measureCommentPositions({
+        comments,
+        container: editorDocumentRef.current,
+        headings,
+        markdown,
+        mode,
+        workspace: documentWorkspaceRef.current
+      });
+
+      setCommentPositions((currentCommentPositions) =>
+        areCommentPositionsEqual(currentCommentPositions, nextCommentPositions)
+          ? currentCommentPositions
+          : nextCommentPositions
       );
-    });
 
-    return () => window.cancelAnimationFrame(animationFrameId);
-  }, [comments, headings, markdown, mode]);
-
-  useEffect(() => {
-    const animationFrameId = window.requestAnimationFrame(() => {
       updateVisualCommentHighlights({
         comments,
         container: editorDocumentRef.current,
@@ -340,13 +348,72 @@ export function DocumentEditor() {
         markdown,
         mode
       });
-    });
+    }
+
+    function scheduleCommentAnchorSync() {
+      if (animationFrameId !== null) {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+
+      animationFrameId = window.requestAnimationFrame(() => {
+        animationFrameId = null;
+        syncCommentAnchors();
+      });
+    }
+
+    scheduleCommentAnchorSync();
+
+    for (const delay of [60, 180, 420, 900]) {
+      delayedSyncTimeoutIds.push(
+        window.setTimeout(scheduleCommentAnchorSync, delay)
+      );
+    }
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(scheduleCommentAnchorSync);
+    const mutationObserver =
+      typeof MutationObserver === "undefined" || !editorContainer
+        ? null
+        : new MutationObserver(scheduleCommentAnchorSync);
+
+    if (resizeObserver) {
+      if (editorContainer) {
+        resizeObserver.observe(editorContainer);
+      }
+
+      if (workspace) {
+        resizeObserver.observe(workspace);
+      }
+    }
+
+    if (mutationObserver && editorContainer) {
+      mutationObserver.observe(editorContainer, {
+        characterData: true,
+        childList: true,
+        subtree: true
+      });
+    }
+    window.addEventListener("resize", scheduleCommentAnchorSync);
 
     return () => {
-      window.cancelAnimationFrame(animationFrameId);
+      isCancelled = true;
+
+      if (animationFrameId !== null) {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+
+      for (const timeoutId of delayedSyncTimeoutIds) {
+        window.clearTimeout(timeoutId);
+      }
+
+      resizeObserver?.disconnect();
+      mutationObserver?.disconnect();
+      window.removeEventListener("resize", scheduleCommentAnchorSync);
       clearVisualCommentHighlights();
     };
-  }, [comments, headings, markdown, mode]);
+  }, [comments, documentVersion, headings, markdown, mode]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving) {
@@ -978,17 +1045,82 @@ export function DocumentEditor() {
       return;
     }
 
-    setVisualSelectionDraft(
+    const selectedDraft =
       commentContextMenu.selectedDraft?.anchorSource === "visual"
         ? commentContextMenu.selectedDraft
-        : null
+        : null;
+    const positionTop = measurePendingCommentTop({
+      scope,
+      selectedDraft: commentContextMenu.selectedDraft,
+      targetHeadingLine: commentContextMenu.defaultHeadingLine
+    });
+
+    setVisualSelectionDraft(
+      selectedDraft
     );
     setCommentAddRequest({
       nonce: Date.now(),
+      positionTop,
       scope,
       targetHeadingLine: commentContextMenu.defaultHeadingLine
     });
     setCommentContextMenu(null);
+  }
+
+  function measurePendingCommentTop({
+    scope,
+    selectedDraft,
+    targetHeadingLine
+  }: {
+    scope: CommentAnchorScope;
+    selectedDraft: SelectedCommentAnchorDraft | null;
+    targetHeadingLine: number | null;
+  }): number | null {
+    const container = editorDocumentRef.current;
+    const workspace = documentWorkspaceRef.current;
+
+    if (!container || !workspace) {
+      return scope === "document" ? 0 : null;
+    }
+
+    try {
+      const anchor = createCommentAnchor({
+        headings,
+        markdown,
+        selection: markdownSelection,
+        selectedDraft,
+        values: {
+          anchorScope: scope,
+          comment: "",
+          targetHeadingLine,
+          type: "note"
+        }
+      });
+      const previewComment: PatchmarkComment = {
+        id: "PM-COMMENT-DRAFT",
+        type: "note",
+        status: "open",
+        anchor,
+        comment: "",
+        created_at: "",
+        updated_at: ""
+      };
+      const workspaceRect = workspace.getBoundingClientRect();
+      const editorRect = container.getBoundingClientRect();
+      const editorTop = Math.max(0, editorRect.top - workspaceRect.top);
+
+      return measureCommentTop({
+        comment: previewComment,
+        container,
+        editorTop,
+        headings,
+        markdown,
+        mode,
+        workspaceRect
+      });
+    } catch {
+      return scope === "document" ? 0 : null;
+    }
   }
 
   async function persistComments(
@@ -1988,6 +2120,22 @@ function stackCommentPositions(
   }
 
   return stackedPositions;
+}
+
+function areCommentPositionsEqual(
+  firstPositions: Record<string, number>,
+  secondPositions: Record<string, number>
+): boolean {
+  const firstIds = Object.keys(firstPositions);
+  const secondIds = Object.keys(secondPositions);
+
+  if (firstIds.length !== secondIds.length) {
+    return false;
+  }
+
+  return firstIds.every(
+    (commentId) => firstPositions[commentId] === secondPositions[commentId]
+  );
 }
 
 function findVisualHeadingForPoint({

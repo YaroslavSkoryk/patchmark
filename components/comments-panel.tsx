@@ -14,6 +14,7 @@ export type CommentAnchorScope = PatchmarkCommentAnchor["kind"];
 
 export type CommentAddRequest = {
   nonce: number;
+  positionTop?: number | null;
   scope: CommentAnchorScope;
   targetHeadingLine?: number | null;
 };
@@ -87,6 +88,7 @@ export function CommentsPanel({
   const [addType, setAddType] = useState<PatchmarkCommentType>("note");
   const [addTargetLine, setAddTargetLine] = useState("");
   const [addComment, setAddComment] = useState("");
+  const [addPositionTop, setAddPositionTop] = useState<number | null>(null);
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editType, setEditType] = useState<PatchmarkCommentType>("note");
   const [editComment, setEditComment] = useState("");
@@ -104,7 +106,8 @@ export function CommentsPanel({
 
   const openAddForm = useCallback((
     preferredScope?: CommentAnchorScope,
-    preferredHeadingLine?: number | null
+    preferredHeadingLine?: number | null,
+    preferredPositionTop?: number | null
   ) => {
     let nextScope = preferredScope ?? "document";
 
@@ -124,6 +127,7 @@ export function CommentsPanel({
         : ""
     );
     setEditingCommentId(null);
+    setAddPositionTop(preferredPositionTop ?? null);
     setIsAdding(true);
     setFormError("");
   }, [canUseSection, canUseSelectedText, defaultSectionLine]);
@@ -137,7 +141,11 @@ export function CommentsPanel({
     }
 
     handledAddRequestNonceRef.current = addRequest.nonce;
-    openAddForm(addRequest.scope, addRequest.targetHeadingLine ?? null);
+    openAddForm(
+      addRequest.scope,
+      addRequest.targetHeadingLine ?? null,
+      addRequest.positionTop ?? null
+    );
   }, [addRequest, openAddForm]);
 
   async function handleAddComment(event: React.FormEvent<HTMLFormElement>) {
@@ -170,6 +178,7 @@ export function CommentsPanel({
       });
       setAddComment("");
       setAddTargetLine("");
+      setAddPositionTop(null);
       setAddType("note");
       setAddScope("document");
       setIsAdding(false);
@@ -181,6 +190,7 @@ export function CommentsPanel({
   function startEditing(comment: PatchmarkComment) {
     setEditingCommentId(comment.id);
     setIsAdding(false);
+    setAddPositionTop(null);
     setEditType(comment.type);
     setEditComment(comment.comment);
     setFormError("");
@@ -225,12 +235,44 @@ export function CommentsPanel({
     }
   }
 
+  const addForm = isAdding ? (
+    <form className="comment-form comment-form-popover" onSubmit={handleAddComment}>
+      <CommentAnchorPreview
+        anchorContextKind={selectedAnchorContextKind}
+        headings={headings}
+        scope={addScope}
+        selectedTextPreview={selectedTextPreview}
+        targetHeadingLine={addTargetLine ? Number(addTargetLine) : null}
+      />
+      <CommentTypeSelect value={addType} onChange={setAddType} />
+      <label>
+        <span>Comment text</span>
+        <textarea
+          required
+          value={addComment}
+          onChange={(event) => setAddComment(event.target.value)}
+        />
+      </label>
+      <div className="comment-form-actions">
+        <button type="submit" disabled={isBusy}>
+          Save Comment
+        </button>
+        <button
+          type="button"
+          disabled={isBusy}
+          onClick={() => {
+            setIsAdding(false);
+            setAddPositionTop(null);
+          }}
+        >
+          Cancel
+        </button>
+      </div>
+    </form>
+  ) : null;
+
   return (
     <section className="comments-panel" aria-label="Comments">
-      <div className="comments-panel-heading">
-        <h2>Comments</h2>
-      </div>
-
       {!isProjectMode ? (
         <p className="comments-empty">
           Comments are available in Project Folder Mode.
@@ -241,39 +283,6 @@ export function CommentsPanel({
         </p>
       ) : (
         <>
-          {isAdding ? (
-            <form className="comment-form comment-form-popover" onSubmit={handleAddComment}>
-              <CommentAnchorPreview
-                anchorContextKind={selectedAnchorContextKind}
-                headings={headings}
-                scope={addScope}
-                selectedTextPreview={selectedTextPreview}
-                targetHeadingLine={addTargetLine ? Number(addTargetLine) : null}
-              />
-              <CommentTypeSelect value={addType} onChange={setAddType} />
-              <label>
-                <span>Comment text</span>
-                <textarea
-                  required
-                  value={addComment}
-                  onChange={(event) => setAddComment(event.target.value)}
-                />
-              </label>
-              <div className="comment-form-actions">
-                <button type="submit" disabled={isBusy}>
-                  Save Comment
-                </button>
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => setIsAdding(false)}
-                >
-                  Cancel
-                </button>
-              </div>
-            </form>
-          ) : null}
-
           {formError ? (
             <p className="comments-error" role="alert">
               {formError}
@@ -281,6 +290,8 @@ export function CommentsPanel({
           ) : null}
 
           <FloatingCommentList
+            addForm={addForm}
+            addPositionTop={addPositionTop}
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
             comments={[...openComments, ...resolvedComments]}
@@ -329,10 +340,14 @@ type FloatingCommentListProps = Omit<
   CommentGroupProps,
   "emptyMessage" | "label" | "quiet"
 > & {
+  addForm: React.ReactNode;
+  addPositionTop: number | null;
   commentPositions: Record<string, number>;
 };
 
 function FloatingCommentList({
+  addForm,
+  addPositionTop,
   anchorSummaries,
   commentPositions,
   comments,
@@ -361,17 +376,22 @@ function FloatingCommentList({
   const unpositionedComments = comments.filter(
     (comment) => commentPositions[comment.id] === undefined
   );
+  const positionedAddFormTop =
+    addForm && addPositionTop !== null
+      ? getStackedAddFormTop(addPositionTop, commentPositions)
+      : null;
   const stageHeight =
-    positionedComments.length === 0
+    positionedComments.length === 0 && positionedAddFormTop === null
       ? 0
       : Math.max(
           220,
+          positionedAddFormTop !== null ? positionedAddFormTop + 260 : 0,
           ...positionedComments.map(
             (comment) => (commentPositions[comment.id] ?? 0) + 180
           )
         );
 
-  if (comments.length === 0) {
+  if (comments.length === 0 && !addForm) {
     return (
       <p className="comments-empty">
         No comments yet. Right-click in the document to add one.
@@ -381,11 +401,19 @@ function FloatingCommentList({
 
   return (
     <div className="comment-floating-layout">
-      {positionedComments.length > 0 ? (
+      {positionedComments.length > 0 || positionedAddFormTop !== null ? (
         <ol
           className="comment-floating-stage"
           style={{ minHeight: `${stageHeight}px` }}
         >
+          {addForm && positionedAddFormTop !== null ? (
+            <li
+              className="comment-floating-item comment-floating-item-draft"
+              style={{ top: positionedAddFormTop }}
+            >
+              {addForm}
+            </li>
+          ) : null}
           {positionedComments.map((comment) => (
             <li
               className="comment-floating-item"
@@ -415,6 +443,8 @@ function FloatingCommentList({
         </ol>
       ) : null}
 
+      {addForm && positionedAddFormTop === null ? addForm : null}
+
       {unpositionedComments.length > 0 ? (
         <CommentGroup
           anchorSummaries={anchorSummaries}
@@ -439,6 +469,24 @@ function FloatingCommentList({
       ) : null}
     </div>
   );
+}
+
+function getStackedAddFormTop(
+  addPositionTop: number,
+  commentPositions: Record<string, number>
+): number {
+  const minimumGap = 148;
+  let nextTop = Math.max(0, addPositionTop);
+
+  for (const commentTop of Object.values(commentPositions).sort(
+    (firstTop, secondTop) => firstTop - secondTop
+  )) {
+    if (nextTop >= commentTop && nextTop < commentTop + minimumGap) {
+      nextTop = commentTop + minimumGap;
+    }
+  }
+
+  return nextTop;
 }
 
 function CommentGroup({

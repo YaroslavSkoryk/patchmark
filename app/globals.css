@@ -84,8 +84,7 @@ button {
 
 .editor-panel,
 .outline-panel,
-.version-history-panel,
-.comments-panel {
+.version-history-panel {
   min-width: 0;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -572,14 +571,12 @@ button {
 }
 
 .outline-panel,
-.version-history-panel,
-.comments-panel {
+.version-history-panel {
   padding: 18px;
 }
 
 .outline-panel h2,
-.version-history-panel h2,
-.comments-panel h2 {
+.version-history-panel h2 {
   margin: 0 0 14px;
   font-size: 0.95rem;
   letter-spacing: 0;
@@ -826,20 +823,9 @@ button {
   line-height: 1.55;
 }
 
-.comments-panel-heading {
-  display: flex;
-  gap: 8px;
-  align-items: flex-start;
-  justify-content: space-between;
-}
-
 .comments-panel {
   position: relative;
   min-height: 72vh;
-}
-
-.comments-panel-heading h2 {
-  margin-bottom: 0;
 }
 
 .comments-panel button,
@@ -964,6 +950,10 @@ button {
   position: absolute;
   right: 0;
   left: 0;
+}
+
+.comment-floating-item-draft .comment-form-popover {
+  margin-top: 0;
 }
 
 .comment-group {
