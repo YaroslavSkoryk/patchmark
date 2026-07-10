@@ -41,6 +41,11 @@ button {
   cursor: pointer;
 }
 
+::highlight(patchmark-comment-anchors) {
+  background: rgba(236, 205, 143, 0.55);
+  color: inherit;
+}
+
 .app-shell {
   min-height: 100vh;
   padding: 32px;
@@ -98,11 +103,9 @@ button {
 }
 
 .comments-rail {
-  align-self: start;
-  position: sticky;
-  top: 20px;
-  max-height: calc(100vh - 40px);
-  overflow: auto;
+  align-self: stretch;
+  position: relative;
+  min-width: 0;
 }
 
 .editor-panel {
@@ -830,11 +833,9 @@ button {
   justify-content: space-between;
 }
 
-.comments-panel-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  justify-content: flex-end;
+.comments-panel {
+  position: relative;
+  min-height: 72vh;
 }
 
 .comments-panel-heading h2 {
@@ -879,6 +880,12 @@ button {
   margin-top: 12px;
 }
 
+.comment-form-popover {
+  border: 1px solid var(--accent);
+  background: #fbfffc;
+  padding: 12px;
+}
+
 .comment-form label {
   display: grid;
   gap: 5px;
@@ -906,30 +913,7 @@ button {
   line-height: 1.45;
 }
 
-.comment-scope-options {
-  display: grid;
-  gap: 6px;
-  margin: 0;
-  border: 1px solid var(--border);
-  padding: 10px;
-}
-
-.comment-scope-options legend {
-  color: var(--muted);
-  font-size: 0.76rem;
-  font-weight: 700;
-  text-transform: uppercase;
-}
-
-.comment-scope-options label {
-  display: flex;
-  gap: 7px;
-  align-items: center;
-  color: var(--text);
-  font-size: 0.86rem;
-}
-
-.selected-text-preview {
+.comment-anchor-preview {
   display: grid;
   gap: 5px;
   border-left: 3px solid var(--accent);
@@ -937,14 +921,20 @@ button {
   padding: 10px;
 }
 
-.selected-text-preview span {
+.comment-anchor-preview span {
   color: var(--accent-strong);
   font-size: 0.76rem;
   font-weight: 800;
   text-transform: uppercase;
 }
 
-.selected-text-preview p {
+.comment-anchor-preview strong {
+  color: var(--text);
+  font-size: 0.88rem;
+  line-height: 1.35;
+}
+
+.comment-anchor-preview p {
   margin: 0;
   color: var(--text);
   font-size: 0.84rem;
@@ -957,6 +947,23 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+}
+
+.comment-floating-layout {
+  margin-top: 14px;
+}
+
+.comment-floating-stage {
+  position: relative;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.comment-floating-item {
+  position: absolute;
+  right: 0;
+  left: 0;
 }
 
 .comment-group {

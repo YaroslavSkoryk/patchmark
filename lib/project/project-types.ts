@@ -31,7 +31,10 @@ export type PatchmarkCommentAnchor =
   | {
       kind: "selected_text";
       selected_text: string;
+      anchor_text?: string;
+      anchor_text_source?: "selected" | "expanded_sentence" | "expanded_block";
       selected_text_hash?: string;
+      anchor_text_hash?: string;
       markdown_start_offset?: number;
       markdown_end_offset?: number;
       context_before?: string;

@@ -33,12 +33,12 @@ export type CommentAnchorSummary = {
 type CommentsPanelProps = {
   addRequest: CommentAddRequest | null;
   anchorSummaries: Record<string, CommentAnchorSummary>;
+  commentPositions: Record<string, number>;
   comments: PatchmarkComment[];
   defaultSectionLine: number | null;
   error: string | null;
   headings: MarkdownHeading[];
   isBusy: boolean;
-  isMarkdownMode: boolean;
   isProjectMode: boolean;
   onAddComment: (values: CommentFormValues) => Promise<void>;
   onDeleteComment: (commentId: string) => Promise<void>;
@@ -49,6 +49,12 @@ type CommentsPanelProps = {
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
   onReopenComment: (commentId: string) => Promise<void>;
   onResolveComment: (commentId: string) => Promise<void>;
+  selectedAnchorTextPreview: string | null;
+  selectedAnchorTextSource:
+    | "selected"
+    | "expanded_sentence"
+    | "expanded_block"
+    | null;
   selectedTextPreview: string | null;
 };
 
@@ -63,12 +69,12 @@ const commentTypeOptions: PatchmarkCommentType[] = [
 export function CommentsPanel({
   addRequest,
   anchorSummaries,
+  commentPositions,
   comments,
   defaultSectionLine,
   error,
   headings,
   isBusy,
-  isMarkdownMode,
   isProjectMode,
   onAddComment,
   onDeleteComment,
@@ -76,6 +82,8 @@ export function CommentsPanel({
   onFindComment,
   onReopenComment,
   onResolveComment,
+  selectedAnchorTextPreview,
+  selectedAnchorTextSource,
   selectedTextPreview
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
@@ -96,7 +104,6 @@ export function CommentsPanel({
     () => comments.filter((comment) => comment.status === "resolved"),
     [comments]
   );
-  const canEditComments = isProjectMode && !error;
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
 
@@ -104,9 +111,7 @@ export function CommentsPanel({
     preferredScope?: CommentAnchorScope,
     preferredHeadingLine?: number | null
   ) => {
-    let nextScope =
-      preferredScope ??
-      (canUseSelectedText ? "selected_text" : canUseSection ? "section" : "document");
+    let nextScope = preferredScope ?? "document";
 
     if (nextScope === "selected_text" && !canUseSelectedText) {
       nextScope = canUseSection ? "section" : "document";
@@ -122,6 +127,7 @@ export function CommentsPanel({
         ? String(preferredHeadingLine ?? defaultSectionLine)
         : ""
     );
+    setEditingCommentId(null);
     setIsAdding(true);
     setFormError("");
   }, [canUseSection, canUseSelectedText, defaultSectionLine]);
@@ -178,6 +184,7 @@ export function CommentsPanel({
 
   function startEditing(comment: PatchmarkComment) {
     setEditingCommentId(comment.id);
+    setIsAdding(false);
     setEditType(comment.type);
     setEditComment(comment.comment);
     setFormError("");
@@ -226,26 +233,6 @@ export function CommentsPanel({
     <section className="comments-panel" aria-label="Comments">
       <div className="comments-panel-heading">
         <h2>Comments</h2>
-        {canEditComments ? (
-          <div className="comments-panel-actions">
-            <button
-              type="button"
-              disabled={isBusy}
-              onClick={() => openAddForm()}
-            >
-              Add Comment
-            </button>
-            {isMarkdownMode || canUseSelectedText ? (
-              <button
-                type="button"
-                disabled={isBusy || !canUseSelectedText}
-                onClick={() => openAddForm("selected_text")}
-              >
-                Add Comment to Selection
-              </button>
-            ) : null}
-          </div>
-        ) : null}
       </div>
 
       {!isProjectMode ? (
@@ -259,77 +246,15 @@ export function CommentsPanel({
       ) : (
         <>
           {isAdding ? (
-            <form className="comment-form" onSubmit={handleAddComment}>
-              <fieldset className="comment-scope-options">
-                <legend>Comment applies to</legend>
-                <label>
-                  <input
-                    type="radio"
-                    name="comment-anchor-scope"
-                    value="selected_text"
-                    checked={addScope === "selected_text"}
-                    disabled={!canUseSelectedText}
-                    onChange={() => setAddScope("selected_text")}
-                  />
-                  Selected text
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="comment-anchor-scope"
-                    value="section"
-                    checked={addScope === "section"}
-                    disabled={!canUseSection}
-                    onChange={() => {
-                      setAddScope("section");
-                      setAddTargetLine(
-                        defaultSectionLine ? String(defaultSectionLine) : ""
-                      );
-                    }}
-                  />
-                  Whole section
-                </label>
-                <label>
-                  <input
-                    type="radio"
-                    name="comment-anchor-scope"
-                    value="document"
-                    checked={addScope === "document"}
-                    onChange={() => setAddScope("document")}
-                  />
-                  Whole document
-                </label>
-              </fieldset>
-
-              {addScope === "selected_text" ? (
-                <div className="selected-text-preview">
-                  <span>Selected text</span>
-                  <p>{selectedTextPreview}</p>
-                </div>
-              ) : null}
-
-              {addScope === "section" ? (
-                <label>
-                  <span>Target section</span>
-                  <select
-                    value={addTargetLine}
-                    onChange={(event) => setAddTargetLine(event.target.value)}
-                  >
-                    <option value="">Choose a section</option>
-                    {headings.map((heading) => (
-                      <option
-                        key={`${heading.line}-${heading.text}`}
-                        value={heading.line}
-                      >
-                        {`${"  ".repeat(Math.max(0, heading.level - 1))}${"#".repeat(
-                          heading.level
-                        )} ${heading.text}`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              ) : null}
-
+            <form className="comment-form comment-form-popover" onSubmit={handleAddComment}>
+              <CommentAnchorPreview
+                anchorTextPreview={selectedAnchorTextPreview}
+                anchorTextSource={selectedAnchorTextSource}
+                headings={headings}
+                scope={addScope}
+                selectedTextPreview={selectedTextPreview}
+                targetHeadingLine={addTargetLine ? Number(addTargetLine) : null}
+              />
               <CommentTypeSelect value={addType} onChange={setAddType} />
               <label>
                 <span>Comment text</span>
@@ -360,43 +285,23 @@ export function CommentsPanel({
             </p>
           ) : null}
 
-          <CommentGroup
+          <FloatingCommentList
             anchorSummaries={anchorSummaries}
-            comments={openComments}
+            commentPositions={commentPositions}
+            comments={[...openComments, ...resolvedComments]}
             editingCommentId={editingCommentId}
             editComment={editComment}
             editType={editType}
-            emptyMessage="No open comments."
             isBusy={isBusy}
-            label="Open comments"
             onDeleteComment={handleDeleteComment}
             onEditComment={handleEditComment}
             onFindComment={onFindComment}
+            onReopenComment={onReopenComment}
             onResolveComment={onResolveComment}
             onSetEditComment={setEditComment}
             onSetEditType={setEditType}
             onStartEditing={startEditing}
             onStopEditing={() => setEditingCommentId(null)}
-          />
-
-          <CommentGroup
-            anchorSummaries={anchorSummaries}
-            comments={resolvedComments}
-            editingCommentId={editingCommentId}
-            editComment={editComment}
-            editType={editType}
-            emptyMessage="No resolved comments."
-            isBusy={isBusy}
-            label="Resolved comments"
-            onDeleteComment={handleDeleteComment}
-            onEditComment={handleEditComment}
-            onFindComment={onFindComment}
-            onReopenComment={onReopenComment}
-            onSetEditComment={setEditComment}
-            onSetEditType={setEditType}
-            onStartEditing={startEditing}
-            onStopEditing={() => setEditingCommentId(null)}
-            quiet
           />
         </>
       )}
@@ -424,6 +329,122 @@ type CommentGroupProps = {
   onStopEditing: () => void;
   quiet?: boolean;
 };
+
+type FloatingCommentListProps = Omit<
+  CommentGroupProps,
+  "emptyMessage" | "label" | "quiet"
+> & {
+  commentPositions: Record<string, number>;
+};
+
+function FloatingCommentList({
+  anchorSummaries,
+  commentPositions,
+  comments,
+  editingCommentId,
+  editComment,
+  editType,
+  isBusy,
+  onDeleteComment,
+  onEditComment,
+  onFindComment,
+  onReopenComment,
+  onResolveComment,
+  onSetEditComment,
+  onSetEditType,
+  onStartEditing,
+  onStopEditing
+}: FloatingCommentListProps) {
+  const positionedComments = comments
+    .filter((comment) => commentPositions[comment.id] !== undefined)
+    .sort((firstComment, secondComment) => {
+      const firstTop = commentPositions[firstComment.id] ?? 0;
+      const secondTop = commentPositions[secondComment.id] ?? 0;
+
+      return firstTop - secondTop;
+    });
+  const unpositionedComments = comments.filter(
+    (comment) => commentPositions[comment.id] === undefined
+  );
+  const stageHeight =
+    positionedComments.length === 0
+      ? 0
+      : Math.max(
+          220,
+          ...positionedComments.map(
+            (comment) => (commentPositions[comment.id] ?? 0) + 180
+          )
+        );
+
+  if (comments.length === 0) {
+    return (
+      <p className="comments-empty">
+        No comments yet. Right-click in the document to add one.
+      </p>
+    );
+  }
+
+  return (
+    <div className="comment-floating-layout">
+      {positionedComments.length > 0 ? (
+        <ol
+          className="comment-floating-stage"
+          style={{ minHeight: `${stageHeight}px` }}
+        >
+          {positionedComments.map((comment) => (
+            <li
+              className="comment-floating-item"
+              key={comment.id}
+              style={{ top: commentPositions[comment.id] }}
+            >
+              <CommentCard
+                anchorSummaries={anchorSummaries}
+                comment={comment}
+                editingCommentId={editingCommentId}
+                editComment={editComment}
+                editType={editType}
+                isBusy={isBusy}
+                onDeleteComment={onDeleteComment}
+                onEditComment={onEditComment}
+                onFindComment={onFindComment}
+                onReopenComment={onReopenComment}
+                onResolveComment={onResolveComment}
+                onSetEditComment={onSetEditComment}
+                onSetEditType={onSetEditType}
+                onStartEditing={onStartEditing}
+                onStopEditing={onStopEditing}
+                quiet={comment.status === "resolved"}
+              />
+            </li>
+          ))}
+        </ol>
+      ) : null}
+
+      {unpositionedComments.length > 0 ? (
+        <CommentGroup
+          anchorSummaries={anchorSummaries}
+          comments={sortCommentsByStatus(unpositionedComments)}
+          editingCommentId={editingCommentId}
+          editComment={editComment}
+          editType={editType}
+          emptyMessage="No comments need review."
+          isBusy={isBusy}
+          label="Needs review"
+          onDeleteComment={onDeleteComment}
+          onEditComment={onEditComment}
+          onFindComment={onFindComment}
+          onReopenComment={onReopenComment}
+          onResolveComment={onResolveComment}
+          onSetEditComment={onSetEditComment}
+          onSetEditType={onSetEditType}
+          onStartEditing={onStartEditing}
+          onStopEditing={onStopEditing}
+          quiet
+        />
+      ) : null}
+    </div>
+  );
+}
 
 function CommentGroup({
   anchorSummaries,
@@ -453,129 +474,250 @@ function CommentGroup({
       ) : (
         <ol className="comment-list">
           {comments.map((comment) => {
-            const anchorSummary = anchorSummaries[comment.id] ?? {
-              label: getCommentAnchorLabel(comment),
-              status: "document" as const
-            };
-
             return (
-              <li
-                className={`comment-card ${quiet ? "comment-card-quiet" : ""}`}
-                key={comment.id}
-              >
-                {editingCommentId === comment.id ? (
-                  <form className="comment-form" onSubmit={onEditComment}>
-                    <CommentTypeSelect
-                      value={editType}
-                      onChange={onSetEditType}
-                    />
-                    <label>
-                      <span>Comment text</span>
-                      <textarea
-                        required
-                        value={editComment}
-                        onChange={(event) => onSetEditComment(event.target.value)}
-                      />
-                    </label>
-                    <div className="comment-form-actions">
-                      <button type="submit" disabled={isBusy}>
-                        Save Edit
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={onStopEditing}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </form>
-                ) : (
-                  <>
-                    <div className="comment-card-meta">
-                      <span className="comment-type">[{comment.type}]</span>
-                      <span>{comment.status}</span>
-                    </div>
-                    <strong className="comment-target">
-                      {anchorSummary.label}
-                    </strong>
-                    <span
-                      className={`comment-anchor-status comment-anchor-status-${anchorSummary.status}`}
-                    >
-                      {getAnchorStatusLabel(anchorSummary.status)}
-                    </span>
-                    {anchorSummary.detail ? (
-                      <span className="comment-anchor-detail">
-                        {anchorSummary.detail}
-                      </span>
-                    ) : null}
-                    {comment.anchor.kind === "selected_text" ? (
-                      <blockquote className="comment-selected-text">
-                        Selected: “{truncateText(comment.anchor.selected_text, 140)}”
-                      </blockquote>
-                    ) : null}
-                    <p>{comment.comment}</p>
-                    <span className="comment-timestamp">
-                      Updated {formatCommentDate(comment.updated_at)}
-                    </span>
-                    <div className="comment-card-actions">
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => {
-                          void onFindComment(comment).catch(() => undefined);
-                        }}
-                      >
-                        Find
-                      </button>
-                      {comment.status === "open" && onResolveComment ? (
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => {
-                            void onResolveComment(comment.id).catch(
-                              () => undefined
-                            );
-                          }}
-                        >
-                          Resolve
-                        </button>
-                      ) : null}
-                      {comment.status === "resolved" && onReopenComment ? (
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => {
-                            void onReopenComment(comment.id).catch(
-                              () => undefined
-                            );
-                          }}
-                        >
-                          Reopen
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => onStartEditing(comment)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isBusy}
-                        onClick={() => onDeleteComment(comment.id)}
-                      >
-                        Delete
-                      </button>
-                    </div>
-                  </>
-                )}
+              <li key={comment.id}>
+                <CommentCard
+                  anchorSummaries={anchorSummaries}
+                  comment={comment}
+                  editingCommentId={editingCommentId}
+                  editComment={editComment}
+                  editType={editType}
+                  isBusy={isBusy}
+                  onDeleteComment={onDeleteComment}
+                  onEditComment={onEditComment}
+                  onFindComment={onFindComment}
+                  onReopenComment={onReopenComment}
+                  onResolveComment={onResolveComment}
+                  onSetEditComment={onSetEditComment}
+                  onSetEditType={onSetEditType}
+                  onStartEditing={onStartEditing}
+                  onStopEditing={onStopEditing}
+                  quiet={quiet}
+                />
               </li>
             );
           })}
         </ol>
       )}
+    </div>
+  );
+}
+
+type CommentCardProps = {
+  anchorSummaries: Record<string, CommentAnchorSummary>;
+  comment: PatchmarkComment;
+  editingCommentId: string | null;
+  editComment: string;
+  editType: PatchmarkCommentType;
+  isBusy: boolean;
+  onDeleteComment: (commentId: string) => Promise<void>;
+  onEditComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
+  onFindComment: (comment: PatchmarkComment) => Promise<void>;
+  onReopenComment?: (commentId: string) => Promise<void>;
+  onResolveComment?: (commentId: string) => Promise<void>;
+  onSetEditComment: (comment: string) => void;
+  onSetEditType: (type: PatchmarkCommentType) => void;
+  onStartEditing: (comment: PatchmarkComment) => void;
+  onStopEditing: () => void;
+  quiet?: boolean;
+};
+
+function CommentCard({
+  anchorSummaries,
+  comment,
+  editingCommentId,
+  editComment,
+  editType,
+  isBusy,
+  onDeleteComment,
+  onEditComment,
+  onFindComment,
+  onReopenComment,
+  onResolveComment,
+  onSetEditComment,
+  onSetEditType,
+  onStartEditing,
+  onStopEditing,
+  quiet = false
+}: CommentCardProps) {
+  const anchorSummary = anchorSummaries[comment.id] ?? {
+    label: getCommentAnchorLabel(comment),
+    status: "document" as const
+  };
+
+  return (
+    <article className={`comment-card ${quiet ? "comment-card-quiet" : ""}`}>
+      {editingCommentId === comment.id ? (
+        <form className="comment-form" onSubmit={onEditComment}>
+          <CommentAnchorPreview
+            anchorTextPreview={
+              comment.anchor.kind === "selected_text" &&
+              comment.anchor.anchor_text &&
+              comment.anchor.anchor_text !== comment.anchor.selected_text
+                ? comment.anchor.anchor_text
+                : null
+            }
+            anchorTextSource={
+              comment.anchor.kind === "selected_text"
+                ? comment.anchor.anchor_text_source ?? null
+                : null
+            }
+            scope={comment.anchor.kind}
+            selectedTextPreview={
+              comment.anchor.kind === "selected_text"
+                ? comment.anchor.selected_text
+                : null
+            }
+            staticLabel={anchorSummary.label}
+          />
+          <CommentTypeSelect value={editType} onChange={onSetEditType} />
+          <label>
+            <span>Comment text</span>
+            <textarea
+              required
+              value={editComment}
+              onChange={(event) => onSetEditComment(event.target.value)}
+            />
+          </label>
+          <div className="comment-form-actions">
+            <button type="submit" disabled={isBusy}>
+              Save Edit
+            </button>
+            <button type="button" disabled={isBusy} onClick={onStopEditing}>
+              Cancel
+            </button>
+          </div>
+        </form>
+      ) : (
+        <>
+          <div className="comment-card-meta">
+            <span className="comment-type">[{comment.type}]</span>
+            <span>{comment.status}</span>
+          </div>
+          <strong className="comment-target">{anchorSummary.label}</strong>
+          <span
+            className={`comment-anchor-status comment-anchor-status-${anchorSummary.status}`}
+          >
+            {getAnchorStatusLabel(anchorSummary.status)}
+          </span>
+          {anchorSummary.detail ? (
+            <span className="comment-anchor-detail">{anchorSummary.detail}</span>
+          ) : null}
+          {comment.anchor.kind === "selected_text" ? (
+            <>
+              <blockquote className="comment-selected-text">
+                Selected: “{truncateText(comment.anchor.selected_text, 140)}”
+              </blockquote>
+              {comment.anchor.anchor_text &&
+              comment.anchor.anchor_text !== comment.anchor.selected_text ? (
+                <blockquote className="comment-selected-text">
+                  Anchor: {getAnchorTextSourceLabel(comment.anchor.anchor_text_source)} “
+                  {truncateText(comment.anchor.anchor_text, 180)}”
+                </blockquote>
+              ) : null}
+            </>
+          ) : null}
+          <p>{comment.comment}</p>
+          <span className="comment-timestamp">
+            Updated {formatCommentDate(comment.updated_at)}
+          </span>
+          <div className="comment-card-actions">
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => {
+                void onFindComment(comment).catch(() => undefined);
+              }}
+            >
+              Find
+            </button>
+            {comment.status === "open" && onResolveComment ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => {
+                  void onResolveComment(comment.id).catch(() => undefined);
+                }}
+              >
+                Resolve
+              </button>
+            ) : null}
+            {comment.status === "resolved" && onReopenComment ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => {
+                  void onReopenComment(comment.id).catch(() => undefined);
+                }}
+              >
+                Reopen
+              </button>
+            ) : null}
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => onStartEditing(comment)}
+            >
+              Edit
+            </button>
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => onDeleteComment(comment.id)}
+            >
+              Delete
+            </button>
+          </div>
+        </>
+      )}
+    </article>
+  );
+}
+
+type CommentAnchorPreviewProps = {
+  anchorTextPreview?: string | null;
+  anchorTextSource?:
+    | "selected"
+    | "expanded_sentence"
+    | "expanded_block"
+    | null;
+  headings?: MarkdownHeading[];
+  scope: CommentAnchorScope;
+  selectedTextPreview?: string | null;
+  staticLabel?: string;
+  targetHeadingLine?: number | null;
+};
+
+function CommentAnchorPreview({
+  anchorTextPreview,
+  anchorTextSource,
+  headings = [],
+  scope,
+  selectedTextPreview,
+  staticLabel,
+  targetHeadingLine
+}: CommentAnchorPreviewProps) {
+  const targetHeading = targetHeadingLine
+    ? headings.find((heading) => heading.line === targetHeadingLine)
+    : undefined;
+  const label = staticLabel ?? getAddAnchorPreviewLabel(scope, targetHeading);
+
+  return (
+    <div className="comment-anchor-preview">
+      <span>Anchor preview</span>
+      <strong>{label}</strong>
+      {scope === "selected_text" ? (
+        <>
+          <p>Selected text: “{truncateText(selectedTextPreview ?? "", 220)}”</p>
+          {anchorTextPreview ? (
+            <p>
+              Anchor text used for matching:{" "}
+              {getAnchorTextSourceLabel(anchorTextSource)} “
+              {truncateText(anchorTextPreview, 260)}”
+            </p>
+          ) : null}
+        </>
+      ) : null}
     </div>
   );
 }
@@ -643,6 +785,49 @@ function getAnchorStatusLabel(status: CommentAnchorStatus): string {
   }
 
   return "Anchor not found";
+}
+
+function getAnchorTextSourceLabel(
+  source?: "selected" | "expanded_sentence" | "expanded_block" | null
+): string {
+  if (source === "expanded_sentence") {
+    return "surrounding sentence";
+  }
+
+  if (source === "expanded_block") {
+    return "surrounding block";
+  }
+
+  return "";
+}
+
+function getAddAnchorPreviewLabel(
+  scope: CommentAnchorScope,
+  targetHeading?: MarkdownHeading
+): string {
+  if (scope === "selected_text") {
+    return "Commenting on selected text";
+  }
+
+  if (scope === "section") {
+    return targetHeading
+      ? `Commenting on whole section: ${"#".repeat(targetHeading.level)} ${
+          targetHeading.text
+        }`
+      : "Commenting on whole section";
+  }
+
+  return "Commenting on whole document";
+}
+
+function sortCommentsByStatus(comments: PatchmarkComment[]): PatchmarkComment[] {
+  return [...comments].sort((firstComment, secondComment) => {
+    if (firstComment.status === secondComment.status) {
+      return firstComment.updated_at.localeCompare(secondComment.updated_at);
+    }
+
+    return firstComment.status === "open" ? -1 : 1;
+  });
 }
 
 function truncateText(text: string, maxLength: number): string {

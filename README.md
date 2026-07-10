@@ -62,7 +62,8 @@ Snapshots can be viewed or compared with the current in-memory Markdown without 
 Restore is intentionally not implemented yet.
 
 Project comments are stored in `.patchmark/comments.json`, not in `document.md`.
-Use the right-side Comments rail to add notes, questions, risks, research needs, and decision points.
+Right-click in the document to add notes, questions, risks, research needs, and decision points.
+The right-side Comments rail displays saved comments beside their approximate anchors.
 Comments can apply to selected Markdown text, a whole section, or the whole document.
 Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
 
