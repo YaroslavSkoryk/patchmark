@@ -1,5 +1,8 @@
 import { type MarkdownFileHandle } from "@/lib/files/file-system-access";
 import {
+  type PatchmarkCommentActionContext,
+  type PatchmarkCommentActionIntent,
+  type PatchmarkCommentActionScope,
   type PatchmarkCommentAnchor,
   type PatchmarkComment,
   type PatchmarkCommentStatus,
@@ -658,7 +661,7 @@ function normalizeCommentAnchor(
   comment: Record<string, unknown>
 ): PatchmarkCommentAnchor {
   if (isPatchmarkCommentAnchor(comment.anchor)) {
-    return comment.anchor;
+    return normalizeKnownCommentAnchor(comment.anchor, comment.type);
   }
 
   if (typeof comment.target_heading === "string") {
@@ -677,13 +680,186 @@ function normalizeCommentAnchor(
         ? comment.target_heading_path.filter(
             (pathEntry): pathEntry is string => typeof pathEntry === "string"
           )
-        : undefined
+        : undefined,
+      action_context: createDefaultActionContext("section", comment.type)
     };
   }
 
   return {
-    kind: "document"
+    kind: "document",
+    action_context: createDefaultActionContext("document", comment.type)
   };
+}
+
+function normalizeKnownCommentAnchor(
+  anchor: PatchmarkCommentAnchor,
+  commentType: unknown
+): PatchmarkCommentAnchor {
+  if (anchor.kind === "document") {
+    return {
+      kind: "document",
+      action_context:
+        normalizeActionContext(anchor.action_context) ??
+        createDefaultActionContext("document", commentType)
+    };
+  }
+
+  if (anchor.kind === "section") {
+    return {
+      kind: "section",
+      heading: anchor.heading,
+      heading_level: anchor.heading_level,
+      heading_line: anchor.heading_line,
+      heading_path: anchor.heading_path,
+      section_start_offset: anchor.section_start_offset,
+      section_end_offset: anchor.section_end_offset,
+      action_context:
+        normalizeActionContext(anchor.action_context) ??
+        createDefaultActionContext("section", commentType)
+    };
+  }
+
+  return {
+    kind: "selected_text",
+    selected_text: anchor.selected_text,
+    selected_text_hash: anchor.selected_text_hash,
+    anchor_context:
+      normalizeAnchorContext(anchor.anchor_context) ??
+      createLegacyAnchorContext(anchor),
+    markdown_start_offset: anchor.markdown_start_offset,
+    markdown_end_offset: anchor.markdown_end_offset,
+    context_before: anchor.context_before,
+    context_after: anchor.context_after,
+    containing_heading: anchor.containing_heading,
+    containing_heading_level: anchor.containing_heading_level,
+    containing_heading_line: anchor.containing_heading_line,
+    containing_heading_path: anchor.containing_heading_path,
+    anchor_source: anchor.anchor_source,
+    fallback_section_start_offset: anchor.fallback_section_start_offset,
+    fallback_section_end_offset: anchor.fallback_section_end_offset,
+    action_context:
+      normalizeActionContext(anchor.action_context) ??
+      createDefaultActionContext("selected_text", commentType)
+  };
+}
+
+function normalizeAnchorContext(
+  context: unknown
+): Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>["anchor_context"] {
+  if (
+    !isRecord(context) ||
+    !isAnchorContextKind(context.kind) ||
+    typeof context.plain_text !== "string"
+  ) {
+    return undefined;
+  }
+
+  return {
+    kind: context.kind,
+    plain_text: context.plain_text,
+    markdown_text:
+      typeof context.markdown_text === "string" ? context.markdown_text : undefined,
+    selected_start_in_context:
+      typeof context.selected_start_in_context === "number"
+        ? context.selected_start_in_context
+        : undefined,
+    selected_end_in_context:
+      typeof context.selected_end_in_context === "number"
+        ? context.selected_end_in_context
+        : undefined,
+    context_hash:
+      typeof context.context_hash === "string" ? context.context_hash : undefined,
+    markdown_start_offset:
+      typeof context.markdown_start_offset === "number"
+        ? context.markdown_start_offset
+        : undefined,
+    markdown_end_offset:
+      typeof context.markdown_end_offset === "number"
+        ? context.markdown_end_offset
+        : undefined
+  };
+}
+
+function createLegacyAnchorContext(
+  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
+): Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>["anchor_context"] {
+  if (
+    typeof anchor.anchor_text !== "string" ||
+    !anchor.anchor_text.trim() ||
+    anchor.anchor_text === anchor.selected_text
+  ) {
+    return undefined;
+  }
+
+  return {
+    kind:
+      anchor.anchor_text_source === "expanded_sentence"
+        ? "sentence"
+        : anchor.anchor_text_source === "expanded_block"
+          ? "block"
+          : "paragraph",
+    plain_text: anchor.anchor_text,
+    markdown_text: anchor.anchor_text
+  };
+}
+
+function normalizeActionContext(
+  context: unknown
+): PatchmarkCommentActionContext | undefined {
+  if (
+    !isRecord(context) ||
+    !isCommentActionScope(context.default_scope) ||
+    typeof context.include_document_brief !== "boolean" ||
+    !isCommentOpenCommentsScope(context.include_open_comments)
+  ) {
+    return undefined;
+  }
+
+  return {
+    default_scope: context.default_scope,
+    include_document_brief: context.include_document_brief,
+    include_open_comments: context.include_open_comments,
+    intent_hint: isCommentActionIntent(context.intent_hint)
+      ? context.intent_hint
+      : undefined
+  };
+}
+
+function createDefaultActionContext(
+  anchorKind: PatchmarkCommentAnchor["kind"],
+  commentType: unknown
+): PatchmarkCommentActionContext {
+  return anchorKind === "document"
+    ? {
+        default_scope: "full_document",
+        include_document_brief: true,
+        include_open_comments: "all",
+        intent_hint: getActionIntentForCommentType(commentType)
+      }
+    : {
+        default_scope: "containing_section",
+        include_document_brief: true,
+        include_open_comments: "same_section",
+        intent_hint: getActionIntentForCommentType(commentType)
+      };
+}
+
+function getActionIntentForCommentType(
+  commentType: unknown
+): PatchmarkCommentActionIntent {
+  if (commentType === "question" || commentType === "decision_needed") {
+    return "decision";
+  }
+
+  if (commentType === "risk") {
+    return "risk_review";
+  }
+
+  if (commentType === "research_needed") {
+    return "research";
+  }
+
+  return "note";
 }
 
 function isPatchmarkCommentAnchor(
@@ -706,6 +882,58 @@ function isPatchmarkCommentAnchor(
   }
 
   return false;
+}
+
+function isAnchorContextKind(value: unknown): value is NonNullable<
+  Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>["anchor_context"]
+>["kind"] {
+  return (
+    typeof value === "string" &&
+    [
+      "sentence",
+      "paragraph",
+      "heading",
+      "list_item",
+      "table_cell",
+      "blockquote",
+      "block",
+      "section"
+    ].includes(value)
+  );
+}
+
+function isCommentActionScope(
+  value: unknown
+): value is PatchmarkCommentActionScope {
+  return (
+    typeof value === "string" &&
+    [
+      "display_target",
+      "anchor_context",
+      "containing_section",
+      "full_document"
+    ].includes(value)
+  );
+}
+
+function isCommentActionIntent(
+  value: unknown
+): value is PatchmarkCommentActionIntent {
+  return (
+    typeof value === "string" &&
+    ["note", "review", "rewrite", "research", "risk_review", "decision"].includes(
+      value
+    )
+  );
+}
+
+function isCommentOpenCommentsScope(
+  value: unknown
+): value is PatchmarkCommentActionContext["include_open_comments"] {
+  return (
+    typeof value === "string" &&
+    ["none", "same_section", "all"].includes(value)
+  );
 }
 
 function isPatchmarkCommentType(

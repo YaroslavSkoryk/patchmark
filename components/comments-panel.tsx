@@ -6,6 +6,7 @@ import {
   type CommentAnchorStatus,
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
+  type PatchmarkSelectedTextAnchorContextKind,
   type PatchmarkCommentType
 } from "@/lib/project/project-types";
 
@@ -49,12 +50,7 @@ type CommentsPanelProps = {
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
   onReopenComment: (commentId: string) => Promise<void>;
   onResolveComment: (commentId: string) => Promise<void>;
-  selectedAnchorTextPreview: string | null;
-  selectedAnchorTextSource:
-    | "selected"
-    | "expanded_sentence"
-    | "expanded_block"
-    | null;
+  selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
 };
 
@@ -82,8 +78,7 @@ export function CommentsPanel({
   onFindComment,
   onReopenComment,
   onResolveComment,
-  selectedAnchorTextPreview,
-  selectedAnchorTextSource,
+  selectedAnchorContextKind,
   selectedTextPreview
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
@@ -123,7 +118,8 @@ export function CommentsPanel({
 
     setAddScope(nextScope);
     setAddTargetLine(
-      nextScope === "section" && (preferredHeadingLine ?? defaultSectionLine)
+      (nextScope === "section" || nextScope === "selected_text") &&
+        (preferredHeadingLine ?? defaultSectionLine)
         ? String(preferredHeadingLine ?? defaultSectionLine)
         : ""
     );
@@ -248,8 +244,7 @@ export function CommentsPanel({
           {isAdding ? (
             <form className="comment-form comment-form-popover" onSubmit={handleAddComment}>
               <CommentAnchorPreview
-                anchorTextPreview={selectedAnchorTextPreview}
-                anchorTextSource={selectedAnchorTextSource}
+                anchorContextKind={selectedAnchorContextKind}
                 headings={headings}
                 scope={addScope}
                 selectedTextPreview={selectedTextPreview}
@@ -550,16 +545,9 @@ function CommentCard({
       {editingCommentId === comment.id ? (
         <form className="comment-form" onSubmit={onEditComment}>
           <CommentAnchorPreview
-            anchorTextPreview={
-              comment.anchor.kind === "selected_text" &&
-              comment.anchor.anchor_text &&
-              comment.anchor.anchor_text !== comment.anchor.selected_text
-                ? comment.anchor.anchor_text
-                : null
-            }
-            anchorTextSource={
+            anchorContextKind={
               comment.anchor.kind === "selected_text"
-                ? comment.anchor.anchor_text_source ?? null
+                ? comment.anchor.anchor_context?.kind ?? null
                 : null
             }
             scope={comment.anchor.kind}
@@ -611,8 +599,24 @@ function CommentCard({
               {comment.anchor.anchor_text &&
               comment.anchor.anchor_text !== comment.anchor.selected_text ? (
                 <blockquote className="comment-selected-text">
-                  Anchor: {getAnchorTextSourceLabel(comment.anchor.anchor_text_source)} “
-                  {truncateText(comment.anchor.anchor_text, 180)}”
+                  Context: {getAnchorContextKindLabel(
+                    comment.anchor.anchor_context?.kind ??
+                      getLegacyAnchorTextSourceContextKind(
+                        comment.anchor.anchor_text_source
+                      )
+                  )}
+                </blockquote>
+              ) : comment.anchor.anchor_context ? (
+                <blockquote className="comment-selected-text">
+                  Context: {getAnchorContextKindLabel(
+                    comment.anchor.anchor_context.kind
+                  )}
+                </blockquote>
+              ) : null}
+              {comment.anchor.action_context ? (
+                <blockquote className="comment-selected-text">
+                  Action context:{" "}
+                  {getActionScopeLabel(comment.anchor.action_context.default_scope)}
                 </blockquote>
               ) : null}
             </>
@@ -675,12 +679,7 @@ function CommentCard({
 }
 
 type CommentAnchorPreviewProps = {
-  anchorTextPreview?: string | null;
-  anchorTextSource?:
-    | "selected"
-    | "expanded_sentence"
-    | "expanded_block"
-    | null;
+  anchorContextKind?: PatchmarkSelectedTextAnchorContextKind | null;
   headings?: MarkdownHeading[];
   scope: CommentAnchorScope;
   selectedTextPreview?: string | null;
@@ -689,8 +688,7 @@ type CommentAnchorPreviewProps = {
 };
 
 function CommentAnchorPreview({
-  anchorTextPreview,
-  anchorTextSource,
+  anchorContextKind,
   headings = [],
   scope,
   selectedTextPreview,
@@ -708,12 +706,13 @@ function CommentAnchorPreview({
       <strong>{label}</strong>
       {scope === "selected_text" ? (
         <>
-          <p>Selected text: “{truncateText(selectedTextPreview ?? "", 220)}”</p>
-          {anchorTextPreview ? (
+          <p>
+            Commenting on selected text: “
+            {truncateText(selectedTextPreview ?? "", 220)}”
+          </p>
+          {anchorContextKind ? (
             <p>
-              Anchor text used for matching:{" "}
-              {getAnchorTextSourceLabel(anchorTextSource)} “
-              {truncateText(anchorTextPreview, 260)}”
+              Anchored using {getAnchorContextKindLabel(anchorContextKind)}.
             </p>
           ) : null}
         </>
@@ -787,20 +786,6 @@ function getAnchorStatusLabel(status: CommentAnchorStatus): string {
   return "Anchor not found";
 }
 
-function getAnchorTextSourceLabel(
-  source?: "selected" | "expanded_sentence" | "expanded_block" | null
-): string {
-  if (source === "expanded_sentence") {
-    return "surrounding sentence";
-  }
-
-  if (source === "expanded_block") {
-    return "surrounding block";
-  }
-
-  return "";
-}
-
 function getAddAnchorPreviewLabel(
   scope: CommentAnchorScope,
   targetHeading?: MarkdownHeading
@@ -818,6 +803,70 @@ function getAddAnchorPreviewLabel(
   }
 
   return "Commenting on whole document";
+}
+
+function getAnchorContextKindLabel(
+  kind?: PatchmarkSelectedTextAnchorContextKind | null
+): string {
+  if (kind === "heading") {
+    return "surrounding heading";
+  }
+
+  if (kind === "list_item") {
+    return "surrounding list item";
+  }
+
+  if (kind === "table_cell") {
+    return "surrounding table cell";
+  }
+
+  if (kind === "blockquote") {
+    return "surrounding blockquote";
+  }
+
+  if (kind === "sentence") {
+    return "surrounding sentence";
+  }
+
+  if (kind === "paragraph") {
+    return "surrounding paragraph";
+  }
+
+  if (kind === "section") {
+    return "containing section";
+  }
+
+  return "surrounding block";
+}
+
+function getLegacyAnchorTextSourceContextKind(
+  source?: "selected" | "expanded_sentence" | "expanded_block" | null
+): PatchmarkSelectedTextAnchorContextKind | null {
+  if (source === "expanded_sentence") {
+    return "sentence";
+  }
+
+  if (source === "expanded_block") {
+    return "block";
+  }
+
+  return null;
+}
+
+function getActionScopeLabel(scope: string): string {
+  if (scope === "full_document") {
+    return "full document";
+  }
+
+  if (scope === "display_target") {
+    return "selected text";
+  }
+
+  if (scope === "anchor_context") {
+    return "anchor context";
+  }
+
+  return "containing section";
 }
 
 function sortCommentsByStatus(comments: PatchmarkComment[]): PatchmarkComment[] {

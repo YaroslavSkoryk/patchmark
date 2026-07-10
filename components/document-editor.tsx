@@ -48,6 +48,11 @@ import {
 import {
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
+  type PatchmarkCommentActionContext,
+  type PatchmarkCommentActionIntent,
+  type PatchmarkCommentType,
+  type PatchmarkSelectedTextAnchorContext,
+  type PatchmarkSelectedTextAnchorContextKind,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 import {
@@ -63,10 +68,13 @@ type SaveFeedback = {
   kind: "success" | "error" | "info";
   message: string;
 };
+type SelectedTextAnchor = Extract<
+  PatchmarkCommentAnchor,
+  { kind: "selected_text" }
+>;
 type SelectedCommentAnchorDraft = {
   anchorSource: "visual" | "markdown";
-  anchorText: string;
-  anchorTextSource: "selected" | "expanded_sentence" | "expanded_block";
+  anchorContext: PatchmarkSelectedTextAnchorContext;
   markdownEndOffset?: number;
   markdownStartOffset?: number;
   selectedText: string;
@@ -90,14 +98,11 @@ type CommentPositionMeasurementInput = {
   mode: EditorMode;
   workspace: HTMLElement | null;
 };
-type AnchorTextCandidate = {
-  end: number;
-  source: "selected" | "expanded_sentence" | "expanded_block";
-  start: number;
-  text: string;
-};
 type VisualSelectionSnapshot = {
   blockText: string;
+  blockKind: PatchmarkSelectedTextAnchorContextKind;
+  selectedEndInBlock?: number;
+  selectedStartInBlock?: number;
   selectedText: string;
 };
 type VisualTextMatch = {
@@ -119,11 +124,9 @@ type CssHighlightRegistry = {
 };
 type CssHighlightConstructor = new (...ranges: Range[]) => unknown;
 
-const MIN_SELECTED_TEXT_CHARS = 24;
-const MIN_SELECTED_TEXT_WORDS = 4;
 const ANCHOR_CONTEXT_CHARS = 160;
 const SHORT_SELECTION_HELP =
-  "Select a longer phrase or use Add Comment to Section.";
+  "Could not create a reliable anchor. Try selecting a larger phrase or add a section comment.";
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
 
 export function DocumentEditor() {
@@ -178,11 +181,11 @@ export function DocumentEditor() {
     mode === "markdown" ? markdownSelectionDraft : visualSelectionDraft;
   const selectedCommentHeading = useMemo(
     () =>
-      typeof selectedCommentDraft?.markdownStartOffset === "number"
+      typeof getDraftMarkdownStartOffset(selectedCommentDraft) === "number"
         ? getHeadingContainingOffset(
             markdown,
             headings,
-            selectedCommentDraft.markdownStartOffset
+            getDraftMarkdownStartOffset(selectedCommentDraft) ?? 0
           )
         : undefined,
     [headings, markdown, selectedCommentDraft]
@@ -196,11 +199,8 @@ export function DocumentEditor() {
   const selectedCommentText = selectedCommentDraft?.selectedText.trim()
     ? selectedCommentDraft.selectedText
     : "";
-  const selectedCommentAnchorText =
-    selectedCommentDraft?.anchorText &&
-    selectedCommentDraft.anchorText !== selectedCommentDraft.selectedText
-      ? selectedCommentDraft.anchorText
-      : "";
+  const selectedCommentAnchorContextKind =
+    selectedCommentDraft?.anchorContext.kind ?? null;
   const commentAnchorSummaries = useMemo(
     () =>
       Object.fromEntries(
@@ -787,6 +787,10 @@ export function DocumentEditor() {
         ? {
             ...comment,
             type: values.type,
+            anchor: refreshCommentAnchorActionContext(
+              comment.anchor,
+              values.type
+            ),
             comment: values.comment,
             updated_at: now
           }
@@ -860,8 +864,22 @@ export function DocumentEditor() {
     if (resolution.status === "ambiguous") {
       setSaveFeedback({
         kind: "info",
-        message:
-          "Multiple matching anchors found. Open Markdown Mode and review manually."
+        message: resolution.detail ?? "Open Markdown Mode and review manually."
+      });
+      return;
+    }
+
+    if (
+      comment.anchor.kind === "selected_text" &&
+      resolution.contextStart !== undefined
+    ) {
+      jumpToMarkdownSelection(
+        resolution.contextStart,
+        resolution.contextEnd ?? resolution.contextStart
+      );
+      setSaveFeedback({
+        kind: "info",
+        message: "Exact selected text was not found. Showing anchor context."
       });
       return;
     }
@@ -1189,8 +1207,7 @@ export function DocumentEditor() {
           onReopenComment={handleReopenComment}
           onResolveComment={handleResolveComment}
           selectedTextPreview={selectedCommentText || null}
-          selectedAnchorTextPreview={selectedCommentAnchorText || null}
-          selectedAnchorTextSource={selectedCommentDraft?.anchorTextSource ?? null}
+          selectedAnchorContextKind={selectedCommentAnchorContextKind}
         />
       </aside>
 
@@ -1286,6 +1303,14 @@ function getDocumentStatus({
   return isDirty ? "dirty" : "saved";
 }
 
+function getDraftMarkdownStartOffset(
+  draft: SelectedCommentAnchorDraft | null
+): number | undefined {
+  return (
+    draft?.markdownStartOffset ?? draft?.anchorContext.markdown_start_offset
+  );
+}
+
 function getSaveErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return `Save failed: ${error.message}`;
@@ -1345,26 +1370,24 @@ function createMarkdownSelectionDraftResult(
   }
 
   const selectedText = markdown.slice(selectedRange.start, selectedRange.end);
-  const anchorCandidate = createAnchorTextCandidateFromMarkdownRange(
+  const anchorContext = createAnchorContextFromMarkdownRange(
     markdown,
     selectedRange
   );
 
-  if (!anchorCandidate) {
+  if (!anchorContext) {
     return {
       draft: null,
-      help:
-        "Selection is too short to anchor reliably. Select a longer phrase or add a section comment."
+      help: SHORT_SELECTION_HELP
     };
   }
 
   return {
     draft: {
       anchorSource: "markdown",
-      anchorText: anchorCandidate.text,
-      anchorTextSource: anchorCandidate.source,
-      markdownEndOffset: anchorCandidate.end,
-      markdownStartOffset: anchorCandidate.start,
+      anchorContext,
+      markdownEndOffset: selectedRange.end,
+      markdownStartOffset: selectedRange.start,
       selectedText
     },
     help: null
@@ -1387,26 +1410,29 @@ function createVisualSelectionDraftResult({
     };
   }
 
-  const anchorCandidate = createAnchorTextCandidateFromVisualSnapshot(snapshot);
+  const anchorContext = createAnchorContextFromVisualSnapshot(snapshot, markdown);
 
-  if (!anchorCandidate) {
+  if (!anchorContext) {
     return {
       draft: null,
-      help:
-        "Selection is too short to anchor reliably. Select a longer phrase or add a section comment."
+      help: SHORT_SELECTION_HELP
     };
   }
 
-  const exactMatches = findExactTextMatches(markdown, anchorCandidate.text);
-  const uniqueMatch = exactMatches.length === 1 ? exactMatches[0] : null;
+  const selectedOffsets = findSelectedMarkdownOffsetsFromAnchorContext(
+    anchorContext,
+    snapshot.selectedText
+  );
+  const selectedTextMatches = findExactTextMatches(markdown, snapshot.selectedText);
+  const uniqueSelectedTextMatch =
+    selectedTextMatches.length === 1 ? selectedTextMatches[0] : null;
 
   return {
     draft: {
       anchorSource: "visual",
-      anchorText: anchorCandidate.text,
-      anchorTextSource: anchorCandidate.source,
-      markdownEndOffset: uniqueMatch?.end,
-      markdownStartOffset: uniqueMatch?.start,
+      anchorContext,
+      markdownEndOffset: selectedOffsets?.end ?? uniqueSelectedTextMatch?.end,
+      markdownStartOffset: selectedOffsets?.start ?? uniqueSelectedTextMatch?.start,
       selectedText: snapshot.selectedText
     },
     help: null
@@ -1450,117 +1476,247 @@ function getBrowserSelectionSnapshotWithin(
       : range.commonAncestorContainer.parentElement;
   const blockElement =
     commonAncestor?.closest(
-      "p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6"
+      "p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6, pre, code"
     ) ?? null;
   const blockText = normalizeDomText(blockElement?.textContent ?? selectedText);
+  const selectedRangeInBlock = blockElement
+    ? getSelectionOffsetsInsideElement(blockElement, range, selectedText)
+    : null;
 
   return {
     blockText,
+    blockKind: getVisualAnchorContextKind(blockElement),
+    selectedEndInBlock: selectedRangeInBlock?.end,
+    selectedStartInBlock: selectedRangeInBlock?.start,
     selectedText
   };
 }
 
-function createAnchorTextCandidateFromMarkdownRange(
+function createAnchorContextFromMarkdownRange(
   markdown: string,
   selectedRange: { end: number; start: number }
-): AnchorTextCandidate | null {
-  const selectedText = markdown.slice(selectedRange.start, selectedRange.end);
-
-  if (isReliableAnchorText(selectedText)) {
-    return {
-      end: selectedRange.end,
-      source: "selected",
-      start: selectedRange.start,
-      text: selectedText
-    };
-  }
-
+): PatchmarkSelectedTextAnchorContext | null {
   const blockRange = getMarkdownBlockRange(markdown, selectedRange);
+  const trimmedBlockRange = trimRange(markdown, blockRange.start, blockRange.end);
+  const blockText = markdown.slice(trimmedBlockRange.start, trimmedBlockRange.end);
+  const blockKind = getMarkdownAnchorContextKind(blockText);
   const sentenceRange = getSentenceRangeWithinText(
     markdown.slice(blockRange.start, blockRange.end),
     selectedRange.start - blockRange.start,
     selectedRange.end - blockRange.start
   );
 
-  if (sentenceRange) {
+  if (sentenceRange && blockKind === "paragraph") {
     const absoluteSentenceRange = trimRange(
       markdown,
       blockRange.start + sentenceRange.start,
       blockRange.start + sentenceRange.end
     );
-    const sentenceText = markdown.slice(
-      absoluteSentenceRange.start,
-      absoluteSentenceRange.end
-    );
 
-    if (isReliableAnchorText(sentenceText)) {
-      return {
-        end: absoluteSentenceRange.end,
-        source: "expanded_sentence",
-        start: absoluteSentenceRange.start,
-        text: sentenceText
-      };
+    return createAnchorContextFromMarkdownContextRange({
+      kind: "sentence",
+      markdown,
+      contextRange: absoluteSentenceRange,
+      selectedRange
+    });
+  }
+
+  if (!blockText.trim()) {
+    return null;
+  }
+
+  return createAnchorContextFromMarkdownContextRange({
+    kind: blockKind,
+    markdown,
+    contextRange: trimmedBlockRange,
+    selectedRange
+  });
+}
+
+function createAnchorContextFromMarkdownContextRange({
+  contextRange,
+  kind,
+  markdown,
+  selectedRange
+}: {
+  contextRange: { end: number; start: number };
+  kind: PatchmarkSelectedTextAnchorContextKind;
+  markdown: string;
+  selectedRange: { end: number; start: number };
+}): PatchmarkSelectedTextAnchorContext {
+  const markdownText = markdown.slice(contextRange.start, contextRange.end);
+
+  return {
+    kind,
+    plain_text: normalizeDomText(markdownText),
+    markdown_text: markdownText,
+    selected_start_in_context: Math.max(0, selectedRange.start - contextRange.start),
+    selected_end_in_context: Math.max(0, selectedRange.end - contextRange.start),
+    markdown_start_offset: contextRange.start,
+    markdown_end_offset: contextRange.end
+  };
+}
+
+function createAnchorContextFromVisualSnapshot(
+  snapshot: VisualSelectionSnapshot,
+  markdown: string
+): PatchmarkSelectedTextAnchorContext | null {
+  if (!snapshot.blockText.trim()) {
+    return null;
+  }
+
+  const exactContextMatches = findExactTextMatches(markdown, snapshot.blockText);
+  const markdownPlainContextMatches = findMarkdownPlainTextMatches(
+    markdown,
+    snapshot.blockText
+  );
+  const contextMatches = dedupeTextMatches([
+    ...exactContextMatches,
+    ...markdownPlainContextMatches
+  ]);
+  const uniqueContextMatch = contextMatches.length === 1 ? contextMatches[0] : null;
+
+  return {
+    kind: snapshot.blockKind,
+    plain_text: snapshot.blockText,
+    markdown_text: uniqueContextMatch
+      ? markdown.slice(uniqueContextMatch.start, uniqueContextMatch.end)
+      : undefined,
+    selected_start_in_context: snapshot.selectedStartInBlock,
+    selected_end_in_context: snapshot.selectedEndInBlock,
+    markdown_start_offset: uniqueContextMatch?.start,
+    markdown_end_offset: uniqueContextMatch?.end
+  };
+}
+
+function findSelectedMarkdownOffsetsFromAnchorContext(
+  anchorContext: PatchmarkSelectedTextAnchorContext,
+  selectedText: string
+): { end: number; start: number } | null {
+  if (
+    typeof anchorContext.markdown_start_offset === "number" &&
+    typeof anchorContext.selected_start_in_context === "number" &&
+    typeof anchorContext.selected_end_in_context === "number"
+  ) {
+    const start =
+      anchorContext.markdown_start_offset + anchorContext.selected_start_in_context;
+    const end =
+      anchorContext.markdown_start_offset + anchorContext.selected_end_in_context;
+
+    if (anchorContext.markdown_text?.slice(
+      anchorContext.selected_start_in_context,
+      anchorContext.selected_end_in_context
+    ) === selectedText) {
+      return { end, start };
     }
   }
 
-  const trimmedBlockRange = trimRange(markdown, blockRange.start, blockRange.end);
-  const blockText = markdown.slice(trimmedBlockRange.start, trimmedBlockRange.end);
-
-  if (isReliableAnchorText(blockText)) {
-    return {
-      end: trimmedBlockRange.end,
-      source: "expanded_block",
-      start: trimmedBlockRange.start,
-      text: blockText
-    };
+  if (
+    typeof anchorContext.markdown_start_offset !== "number" ||
+    !anchorContext.markdown_text
+  ) {
+    return null;
   }
 
-  return null;
+  const contextMatches = findExactTextMatches(
+    anchorContext.markdown_text,
+    selectedText
+  );
+  const uniqueContextMatch =
+    contextMatches.length === 1 ? contextMatches[0] : null;
+
+  return uniqueContextMatch
+    ? {
+        start: anchorContext.markdown_start_offset + uniqueContextMatch.start,
+        end: anchorContext.markdown_start_offset + uniqueContextMatch.end
+      }
+    : null;
 }
 
-function createAnchorTextCandidateFromVisualSnapshot(
-  snapshot: VisualSelectionSnapshot
-): Pick<AnchorTextCandidate, "source" | "text"> | null {
-  if (isReliableAnchorText(snapshot.selectedText)) {
-    return {
-      source: "selected",
-      text: snapshot.selectedText
-    };
-  }
-
-  const sentenceText = getSentenceTextAroundSelection(
-    snapshot.blockText,
-    snapshot.selectedText
+function getSelectionOffsetsInsideElement(
+  element: Element,
+  selectionRange: Range,
+  selectedText: string
+): { end: number; start: number } | null {
+  const beforeSelectionRange = document.createRange();
+  beforeSelectionRange.selectNodeContents(element);
+  beforeSelectionRange.setEnd(
+    selectionRange.startContainer,
+    selectionRange.startOffset
   );
 
-  if (sentenceText && isReliableAnchorText(sentenceText)) {
+  const start = normalizeDomText(beforeSelectionRange.toString()).length;
+  beforeSelectionRange.detach();
+
+  const blockText = normalizeDomText(element.textContent ?? "");
+  const directEnd = start + selectedText.length;
+
+  if (blockText.slice(start, directEnd) === selectedText) {
     return {
-      source: "expanded_sentence",
-      text: sentenceText
+      end: directEnd,
+      start
     };
   }
 
-  if (isReliableAnchorText(snapshot.blockText)) {
-    return {
-      source: "expanded_block",
-      text: snapshot.blockText
-    };
+  const selectedTextMatches = findExactTextMatches(blockText, selectedText);
+
+  return selectedTextMatches.length === 1 ? selectedTextMatches[0] : null;
+}
+
+function getVisualAnchorContextKind(
+  element: Element | null
+): PatchmarkSelectedTextAnchorContextKind {
+  if (!element) {
+    return "block";
   }
 
-  return null;
+  const tagName = element.tagName.toLowerCase();
+
+  if (/^h[1-6]$/.test(tagName)) {
+    return "heading";
+  }
+
+  if (tagName === "li") {
+    return "list_item";
+  }
+
+  if (tagName === "td" || tagName === "th") {
+    return "table_cell";
+  }
+
+  if (tagName === "blockquote") {
+    return "blockquote";
+  }
+
+  if (tagName === "p") {
+    return "paragraph";
+  }
+
+  return "block";
 }
 
-function isReliableAnchorText(text: string): boolean {
-  const normalizedText = text.trim();
+function getMarkdownAnchorContextKind(
+  markdownText: string
+): PatchmarkSelectedTextAnchorContextKind {
+  const trimmedMarkdown = markdownText.trim();
 
-  return (
-    normalizedText.length >= MIN_SELECTED_TEXT_CHARS &&
-    getWordCount(normalizedText) >= MIN_SELECTED_TEXT_WORDS
-  );
-}
+  if (/^#{1,6}\s+/.test(trimmedMarkdown)) {
+    return "heading";
+  }
 
-function getWordCount(text: string): number {
-  return text.trim().split(/\s+/).filter(Boolean).length;
+  if (/^([-*+]\s+|\d+\.\s+)/.test(trimmedMarkdown)) {
+    return "list_item";
+  }
+
+  if (/^\|.*\|$/.test(trimmedMarkdown)) {
+    return "table_cell";
+  }
+
+  if (/^>/.test(trimmedMarkdown)) {
+    return "blockquote";
+  }
+
+  return "paragraph";
 }
 
 function trimRange(
@@ -1634,27 +1790,6 @@ function getSentenceRangeWithinText(
   const trimmedRange = trimRange(text, sentenceStart, sentenceEnd);
 
   return trimmedRange.end > trimmedRange.start ? trimmedRange : null;
-}
-
-function getSentenceTextAroundSelection(
-  blockText: string,
-  selectedText: string
-): string | null {
-  const selectedIndex = blockText.indexOf(selectedText);
-
-  if (selectedIndex === -1) {
-    return null;
-  }
-
-  const sentenceRange = getSentenceRangeWithinText(
-    blockText,
-    selectedIndex,
-    selectedIndex + selectedText.length
-  );
-
-  return sentenceRange
-    ? blockText.slice(sentenceRange.start, sentenceRange.end)
-    : null;
 }
 
 function isToolbarContextMenuTarget(target: EventTarget): boolean {
@@ -1764,6 +1899,16 @@ function measureCommentTop({
         return visualTextTop;
       }
 
+      const visualContextTop = findVisualAnchorContextTop({
+        anchor,
+        container,
+        workspaceRect
+      });
+
+      if (visualContextTop !== null) {
+        return visualContextTop;
+      }
+
       const fallbackHeading = anchor.containing_heading
         ? findMatchingHeading(headings, {
             level: anchor.containing_heading_level,
@@ -1782,6 +1927,22 @@ function measureCommentTop({
     }
 
     return estimateTopForOffset(markdown, resolution.start, editorTop);
+  }
+
+  if (resolution.contextStart !== undefined) {
+    if (mode === "visual") {
+      const visualContextTop = findVisualAnchorContextTop({
+        anchor,
+        container,
+        workspaceRect
+      });
+
+      if (visualContextTop !== null) {
+        return visualContextTop;
+      }
+    }
+
+    return estimateTopForOffset(markdown, resolution.contextStart, editorTop);
   }
 
   if (resolution.fallbackStart !== undefined) {
@@ -1915,29 +2076,99 @@ function findVisualSelectedTextTop({
   return visualMatch ? Math.max(0, visualMatch.top - workspaceRect.top) : null;
 }
 
+function findVisualAnchorContextTop({
+  anchor,
+  container,
+  workspaceRect
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  workspaceRect: DOMRect;
+}): number | null {
+  const contextMatch = findUniqueVisualAnchorContextMatch({ anchor, container });
+
+  return contextMatch ? Math.max(0, contextMatch.top - workspaceRect.top) : null;
+}
+
 function findUniqueVisualSelectedTextMatch({
   anchor,
   container
 }: {
-  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>;
+  anchor: SelectedTextAnchor;
   container: HTMLElement;
 }): VisualTextMatch | null {
-  for (const searchText of getSelectedAnchorSearchTexts(anchor)) {
-    const matches = findVisualTextMatches({
-      container,
-      searchText
-    });
+  const selectedMatches = findVisualTextMatches({
+    container,
+    searchText: anchor.selected_text
+  });
+  const contextMatches = findVisualAnchorContextMatches({ anchor, container });
 
-    if (matches.length === 1) {
-      return matches[0];
+  if (contextMatches.length === 1) {
+    const selectedMatchesInsideContext = selectedMatches.filter((match) =>
+      isRangeInsideRange(match.range, contextMatches[0].range)
+    );
+
+    if (selectedMatchesInsideContext.length === 1) {
+      return selectedMatchesInsideContext[0];
     }
 
-    if (matches.length > 1) {
-      return null;
-    }
+    return null;
   }
 
-  return null;
+  if (contextMatches.length > 1) {
+    return null;
+  }
+
+  return selectedMatches.length === 1 ? selectedMatches[0] : null;
+}
+
+function findUniqueVisualAnchorContextMatch({
+  anchor,
+  container
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+}): VisualTextMatch | null {
+  const contextMatches = findVisualAnchorContextMatches({ anchor, container });
+
+  return contextMatches.length === 1 ? contextMatches[0] : null;
+}
+
+function findVisualAnchorContextMatches({
+  anchor,
+  container
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+}): VisualTextMatch[] {
+  if (!anchor.anchor_context?.plain_text) {
+    return [];
+  }
+
+  const matches = findVisualTextMatches({
+    container,
+    searchText: anchor.anchor_context.plain_text
+  });
+
+  if (
+    matches.length === 0 &&
+    anchor.anchor_context.markdown_text &&
+    anchor.anchor_context.markdown_text !== anchor.anchor_context.plain_text
+  ) {
+    return findVisualTextMatches({
+      container,
+      searchText: anchor.anchor_context.markdown_text
+    });
+  }
+
+  return matches;
+}
+
+function isRangeInsideRange(range: Range, containingRange: Range): boolean {
+  return (
+    range.compareBoundaryPoints(Range.START_TO_START, containingRange) >= 0 &&
+    range.compareBoundaryPoints(Range.END_TO_END, containingRange) <= 0
+  );
 }
 
 function findVisualTextMatches({
@@ -2235,6 +2466,8 @@ function getHeadingPath(
 }
 
 type CommentAnchorResolution = CommentAnchorSummary & {
+  contextEnd?: number;
+  contextStart?: number;
   end?: number;
   fallbackEnd?: number;
   fallbackStart?: number;
@@ -2256,7 +2489,8 @@ function createCommentAnchor({
 }): PatchmarkCommentAnchor {
   if (values.anchorScope === "document") {
     return {
-      kind: "document"
+      kind: "document",
+      action_context: getDefaultCommentActionContext(values.type, "document")
     };
   }
 
@@ -2278,54 +2512,75 @@ function createCommentAnchor({
       heading_line: targetHeading.line,
       heading_path: getHeadingPath(headings, targetHeading),
       section_start_offset: sectionRange.start,
-      section_end_offset: sectionRange.end
+      section_end_offset: sectionRange.end,
+      action_context: getDefaultCommentActionContext(values.type, "section")
     };
   }
 
+  const usableSelectedDraft =
+    selectedDraft ?? createMarkdownSelectionDraft(markdown, selection);
   const selectedText =
-    selectedDraft?.selectedText ?? markdown.slice(selection.start, selection.end);
-  const anchorText = selectedDraft?.anchorText ?? selectedText;
-  const anchorTextSource = selectedDraft?.anchorTextSource ?? "selected";
+    usableSelectedDraft?.selectedText ??
+    markdown.slice(selection.start, selection.end);
 
   if (!selectedText.trim()) {
     throw new Error("Select text in the editor before saving this comment.");
   }
 
-  const markdownStartOffset = selectedDraft
-    ? selectedDraft.markdownStartOffset
-    : selection.start;
-  const markdownEndOffset = selectedDraft
-    ? selectedDraft.markdownEndOffset
-    : selection.end;
+  if (!usableSelectedDraft?.anchorContext) {
+    throw new Error(SHORT_SELECTION_HELP);
+  }
 
-  const containingHeading =
+  const markdownStartOffset = usableSelectedDraft
+    ? usableSelectedDraft.markdownStartOffset
+    : selection.start;
+  const markdownEndOffset = usableSelectedDraft
+    ? usableSelectedDraft.markdownEndOffset
+    : selection.end;
+  const contextStartOffset =
+    usableSelectedDraft.anchorContext.markdown_start_offset;
+  const contextEndOffset = usableSelectedDraft.anchorContext.markdown_end_offset;
+  const containingHeadingFromSelection =
     typeof markdownStartOffset === "number"
       ? getHeadingContainingOffset(markdown, headings, markdownStartOffset)
       : undefined;
+  const containingHeadingFromContext =
+    typeof contextStartOffset === "number"
+      ? getHeadingContainingOffset(markdown, headings, contextStartOffset)
+      : undefined;
+  const containingHeadingFromForm = values.targetHeadingLine
+    ? headings.find((heading) => heading.line === values.targetHeadingLine)
+    : undefined;
+
+  const containingHeading =
+    containingHeadingFromSelection ??
+    containingHeadingFromContext ??
+    containingHeadingFromForm;
   const fallbackSectionRange = containingHeading
     ? getSectionRange(markdown, headings, containingHeading)
     : null;
+  const contextBeforeStart = markdownStartOffset ?? contextStartOffset;
+  const contextAfterEnd = markdownEndOffset ?? contextEndOffset;
 
   return {
     kind: "selected_text",
     selected_text: selectedText,
-    anchor_text: anchorText,
-    anchor_text_source: anchorTextSource,
+    anchor_context: usableSelectedDraft.anchorContext,
     markdown_start_offset: markdownStartOffset,
     markdown_end_offset: markdownEndOffset,
     context_before:
-      typeof markdownStartOffset !== "number"
+      typeof contextBeforeStart !== "number"
         ? undefined
         : markdown.slice(
-            Math.max(0, markdownStartOffset - ANCHOR_CONTEXT_CHARS),
-            markdownStartOffset
+            Math.max(0, contextBeforeStart - ANCHOR_CONTEXT_CHARS),
+            contextBeforeStart
           ),
     context_after:
-      typeof markdownEndOffset !== "number"
+      typeof contextAfterEnd !== "number"
         ? undefined
         : markdown.slice(
-            markdownEndOffset,
-            Math.min(markdown.length, markdownEndOffset + ANCHOR_CONTEXT_CHARS)
+            contextAfterEnd,
+            Math.min(markdown.length, contextAfterEnd + ANCHOR_CONTEXT_CHARS)
           ),
     containing_heading: containingHeading?.text,
     containing_heading_level: containingHeading?.level,
@@ -2333,10 +2588,62 @@ function createCommentAnchor({
     containing_heading_path: containingHeading
       ? getHeadingPath(headings, containingHeading)
       : undefined,
-    anchor_source: selectedDraft?.anchorSource ?? "markdown",
+    anchor_source: usableSelectedDraft.anchorSource,
     fallback_section_start_offset: fallbackSectionRange?.start,
-    fallback_section_end_offset: fallbackSectionRange?.end
+    fallback_section_end_offset: fallbackSectionRange?.end,
+    action_context: getDefaultCommentActionContext(values.type, "selected_text")
   };
+}
+
+function getDefaultCommentActionContext(
+  commentType: PatchmarkCommentType,
+  anchorKind: PatchmarkCommentAnchor["kind"]
+): PatchmarkCommentActionContext {
+  return anchorKind === "document"
+    ? {
+        default_scope: "full_document",
+        include_document_brief: true,
+        include_open_comments: "all",
+        intent_hint: getActionIntentForCommentType(commentType)
+      }
+    : {
+        default_scope: "containing_section",
+        include_document_brief: true,
+        include_open_comments: "same_section",
+        intent_hint: getActionIntentForCommentType(commentType)
+      };
+}
+
+function refreshCommentAnchorActionContext(
+  anchor: PatchmarkCommentAnchor,
+  commentType: PatchmarkCommentType
+): PatchmarkCommentAnchor {
+  return {
+    ...anchor,
+    action_context: {
+      ...getDefaultCommentActionContext(commentType, anchor.kind),
+      ...anchor.action_context,
+      intent_hint: getActionIntentForCommentType(commentType)
+    }
+  };
+}
+
+function getActionIntentForCommentType(
+  commentType: PatchmarkCommentType
+): PatchmarkCommentActionIntent {
+  if (commentType === "question" || commentType === "decision_needed") {
+    return "decision";
+  }
+
+  if (commentType === "risk") {
+    return "risk_review";
+  }
+
+  if (commentType === "research_needed") {
+    return "research";
+  }
+
+  return "note";
 }
 
 function getCommentAnchorSummary(
@@ -2394,13 +2701,11 @@ function resolveCommentAnchor(
 
   const offsetStart = anchor.markdown_start_offset;
   const offsetEnd = anchor.markdown_end_offset;
-  const searchTexts = getSelectedAnchorSearchTexts(anchor);
-  const primarySearchText = searchTexts[0];
 
   if (
     typeof offsetStart === "number" &&
     typeof offsetEnd === "number" &&
-    markdown.slice(offsetStart, offsetEnd) === primarySearchText
+    markdown.slice(offsetStart, offsetEnd) === anchor.selected_text
   ) {
     return {
       end: offsetEnd,
@@ -2410,17 +2715,40 @@ function resolveCommentAnchor(
     };
   }
 
-  let matches: Array<{ end: number; start: number }> = [];
+  const contextResolution = resolveSelectedAnchorViaContext(markdown, anchor);
 
-  for (const searchText of searchTexts) {
-    matches = findExactTextMatches(markdown, searchText);
-
-    if (matches.length > 0) {
-      break;
-    }
+  if (contextResolution.status === "active") {
+    return {
+      contextEnd: contextResolution.contextEnd,
+      contextStart: contextResolution.contextStart,
+      end: contextResolution.end,
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      start: contextResolution.start,
+      status: "active"
+    };
   }
 
-  if (matches.length > 1) {
+  if (contextResolution.status === "ambiguous") {
+    return {
+      detail: "Could not identify a unique surrounding context.",
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "ambiguous"
+    };
+  }
+
+  if (contextResolution.status === "context_found") {
+    return {
+      contextEnd: contextResolution.contextEnd,
+      contextStart: contextResolution.contextStart,
+      detail: "Exact selected text not found, surrounding context still exists.",
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "not_found"
+    };
+  }
+
+  let matches = findExactTextMatches(markdown, anchor.selected_text);
+
+  if (!anchor.anchor_context && matches.length > 1) {
     matches = filterMatchesByStoredContext(markdown, matches, anchor);
   }
 
@@ -2435,8 +2763,9 @@ function resolveCommentAnchor(
 
   if (matches.length > 1) {
     return {
-      detail:
-        "Multiple matches found. Select a longer phrase next time or re-anchor this comment.",
+      detail: anchor.anchor_context
+        ? "Could not identify a unique surrounding context."
+        : "Multiple matches for selected text.",
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "ambiguous"
     };
@@ -2468,6 +2797,137 @@ function resolveCommentAnchor(
   };
 }
 
+type SelectedAnchorContextResolution =
+  | {
+      contextEnd: number;
+      contextStart: number;
+      end: number;
+      start: number;
+      status: "active";
+    }
+  | {
+      status: "ambiguous";
+    }
+  | {
+      contextEnd: number;
+      contextStart: number;
+      status: "context_found";
+    }
+  | {
+      status: "not_found";
+    };
+
+function resolveSelectedAnchorViaContext(
+  markdown: string,
+  anchor: SelectedTextAnchor
+): SelectedAnchorContextResolution {
+  if (!anchor.anchor_context) {
+    return {
+      status: "not_found"
+    };
+  }
+
+  const contextMatches = findAnchorContextMatches(markdown, anchor.anchor_context);
+
+  if (contextMatches.length === 0) {
+    return {
+      status: "not_found"
+    };
+  }
+
+  const selectedMatches = contextMatches.flatMap((contextMatch) =>
+    findSelectedTextMatchesInsideContext(markdown, contextMatch, anchor)
+  );
+
+  if (selectedMatches.length === 1) {
+    return {
+      ...selectedMatches[0],
+      status: "active"
+    };
+  }
+
+  if (selectedMatches.length > 1 || contextMatches.length > 1) {
+    return {
+      status: "ambiguous"
+    };
+  }
+
+  return {
+    contextEnd: contextMatches[0].end,
+    contextStart: contextMatches[0].start,
+    status: "context_found"
+  };
+}
+
+function findAnchorContextMatches(
+  markdown: string,
+  anchorContext: PatchmarkSelectedTextAnchorContext
+): Array<{ end: number; start: number }> {
+  const matches: Array<{ end: number; start: number }> = [];
+
+  if (
+    typeof anchorContext.markdown_start_offset === "number" &&
+    typeof anchorContext.markdown_end_offset === "number" &&
+    anchorContext.markdown_text &&
+    markdown.slice(
+      anchorContext.markdown_start_offset,
+      anchorContext.markdown_end_offset
+    ) === anchorContext.markdown_text
+  ) {
+    matches.push({
+      start: anchorContext.markdown_start_offset,
+      end: anchorContext.markdown_end_offset
+    });
+  }
+
+  if (anchorContext.markdown_text) {
+    matches.push(...findExactTextMatches(markdown, anchorContext.markdown_text));
+  }
+
+  if (
+    anchorContext.plain_text &&
+    anchorContext.plain_text !== anchorContext.markdown_text
+  ) {
+    matches.push(...findExactTextMatches(markdown, anchorContext.plain_text));
+    matches.push(...findNormalizedTextMatches(markdown, anchorContext.plain_text));
+    matches.push(...findMarkdownPlainTextMatches(markdown, anchorContext.plain_text));
+  }
+
+  return dedupeTextMatches(matches);
+}
+
+function findSelectedTextMatchesInsideContext(
+  markdown: string,
+  contextMatch: { end: number; start: number },
+  anchor: SelectedTextAnchor
+): Array<{ contextEnd: number; contextStart: number; end: number; start: number }> {
+  const contextText = markdown.slice(contextMatch.start, contextMatch.end);
+  const directStart = anchor.anchor_context?.selected_start_in_context;
+  const directEnd = anchor.anchor_context?.selected_end_in_context;
+
+  if (
+    typeof directStart === "number" &&
+    typeof directEnd === "number" &&
+    contextText.slice(directStart, directEnd) === anchor.selected_text
+  ) {
+    return [
+      {
+        contextEnd: contextMatch.end,
+        contextStart: contextMatch.start,
+        end: contextMatch.start + directEnd,
+        start: contextMatch.start + directStart
+      }
+    ];
+  }
+
+  return findExactTextMatches(contextText, anchor.selected_text).map((match) => ({
+    contextEnd: contextMatch.end,
+    contextStart: contextMatch.start,
+    end: contextMatch.start + match.end,
+    start: contextMatch.start + match.start
+  }));
+}
+
 function filterMatchesByStoredContext(
   markdown: string,
   matches: Array<{ end: number; start: number }>,
@@ -2496,17 +2956,6 @@ function filterMatchesByStoredContext(
   });
 
   return contextMatches.length > 0 ? contextMatches : matches;
-}
-
-function getSelectedAnchorSearchTexts(
-  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
-): string[] {
-  return [anchor.anchor_text, anchor.selected_text].filter(
-    (text, index, texts): text is string =>
-      typeof text === "string" &&
-      text.trim().length > 0 &&
-      texts.indexOf(text) === index
-  );
 }
 
 function getSelectedTextHeadingLabel(
@@ -2541,6 +2990,216 @@ function findExactTextMatches(
   }
 
   return matches;
+}
+
+function findNormalizedTextMatches(
+  text: string,
+  searchText: string
+): Array<{ end: number; start: number }> {
+  const textIndex = buildNormalizedSourceTextIndex(text);
+  const normalizedSearchText = normalizeDomText(searchText);
+  const matches: Array<{ end: number; start: number }> = [];
+
+  if (!normalizedSearchText) {
+    return matches;
+  }
+
+  let nextIndex = textIndex.text.indexOf(normalizedSearchText);
+
+  while (nextIndex !== -1) {
+    const start = textIndex.positions[nextIndex];
+    const end = textIndex.positions[nextIndex + normalizedSearchText.length - 1];
+
+    if (typeof start === "number" && typeof end === "number") {
+      matches.push({
+        start,
+        end: end + 1
+      });
+    }
+
+    nextIndex = textIndex.text.indexOf(
+      normalizedSearchText,
+      nextIndex + normalizedSearchText.length
+    );
+  }
+
+  return matches;
+}
+
+function findMarkdownPlainTextMatches(
+  markdown: string,
+  searchText: string
+): Array<{ end: number; start: number }> {
+  const textIndex = buildMarkdownPlainTextIndex(markdown);
+  const normalizedSearchText = normalizeDomText(searchText);
+  const matches: Array<{ end: number; start: number }> = [];
+
+  if (!normalizedSearchText) {
+    return matches;
+  }
+
+  let nextIndex = textIndex.text.indexOf(normalizedSearchText);
+
+  while (nextIndex !== -1) {
+    const start = textIndex.positions[nextIndex];
+    const end = textIndex.positions[nextIndex + normalizedSearchText.length - 1];
+
+    if (typeof start === "number" && typeof end === "number") {
+      matches.push({
+        start,
+        end: end + 1
+      });
+    }
+
+    nextIndex = textIndex.text.indexOf(
+      normalizedSearchText,
+      nextIndex + normalizedSearchText.length
+    );
+  }
+
+  return matches;
+}
+
+function buildMarkdownPlainTextIndex(markdown: string): {
+  positions: number[];
+  text: string;
+} {
+  const textParts: string[] = [];
+  const positions: number[] = [];
+  const lines = markdown.split(/(\n)/);
+  let markdownOffset = 0;
+
+  for (const lineOrBreak of lines) {
+    if (lineOrBreak === "\n") {
+      appendNormalizedIndexedCharacter({
+        character: " ",
+        sourceOffset: markdownOffset,
+        positions,
+        textParts
+      });
+      markdownOffset += 1;
+      continue;
+    }
+
+    const line = lineOrBreak;
+    const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(line);
+    let index = prefixMatch?.[0].length ?? 0;
+
+    while (index < line.length) {
+      const character = line[index];
+
+      if (character === "(" && index > 0 && line[index - 1] === "]") {
+        const closingIndex = line.indexOf(")", index);
+        index = closingIndex === -1 ? line.length : closingIndex + 1;
+        continue;
+      }
+
+      if (/[*_`\[\]\|\\]/.test(character)) {
+        index += 1;
+        continue;
+      }
+
+      appendNormalizedIndexedCharacter({
+        character,
+        sourceOffset: markdownOffset + index,
+        positions,
+        textParts
+      });
+      index += 1;
+    }
+
+    markdownOffset += line.length;
+  }
+
+  trimNormalizedTextIndex(textParts, positions);
+
+  return {
+    positions,
+    text: textParts.join("")
+  };
+}
+
+function buildNormalizedSourceTextIndex(text: string): {
+  positions: number[];
+  text: string;
+} {
+  const textParts: string[] = [];
+  const positions: number[] = [];
+
+  for (let index = 0; index < text.length; index += 1) {
+    appendNormalizedIndexedCharacter({
+      character: text[index],
+      sourceOffset: index,
+      positions,
+      textParts
+    });
+  }
+
+  trimNormalizedTextIndex(textParts, positions);
+
+  return {
+    positions,
+    text: textParts.join("")
+  };
+}
+
+function appendNormalizedIndexedCharacter({
+  character,
+  positions,
+  sourceOffset,
+  textParts
+}: {
+  character: string;
+  positions: number[];
+  sourceOffset: number;
+  textParts: string[];
+}): void {
+  const isWhitespace = /\s/.test(character);
+  const previousCharacter = textParts[textParts.length - 1];
+
+  if (isWhitespace) {
+    if (textParts.length > 0 && previousCharacter !== " ") {
+      textParts.push(" ");
+      positions.push(sourceOffset);
+    }
+
+    return;
+  }
+
+  textParts.push(character);
+  positions.push(sourceOffset);
+}
+
+function trimNormalizedTextIndex(
+  textParts: string[],
+  positions: number[]
+): void {
+  while (textParts[0] === " ") {
+    textParts.shift();
+    positions.shift();
+  }
+
+  while (textParts[textParts.length - 1] === " ") {
+    textParts.pop();
+    positions.pop();
+  }
+}
+
+function dedupeTextMatches(
+  matches: Array<{ end: number; start: number }>
+): Array<{ end: number; start: number }> {
+  const seen = new Set<string>();
+
+  return matches.filter((match) => {
+    const key = `${match.start}:${match.end}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
 }
 
 function getHeadingContainingOffset(

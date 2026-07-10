@@ -15,9 +15,52 @@ export type PatchmarkCommentType =
 
 export type PatchmarkCommentStatus = "open" | "resolved";
 
+export type PatchmarkCommentActionScope =
+  | "display_target"
+  | "anchor_context"
+  | "containing_section"
+  | "full_document";
+
+export type PatchmarkCommentActionIntent =
+  | "note"
+  | "review"
+  | "rewrite"
+  | "research"
+  | "risk_review"
+  | "decision";
+
+export type PatchmarkCommentActionContext = {
+  default_scope: PatchmarkCommentActionScope;
+  include_document_brief: boolean;
+  include_open_comments: "none" | "same_section" | "all";
+  intent_hint?: PatchmarkCommentActionIntent;
+};
+
+export type PatchmarkSelectedTextAnchorContextKind =
+  | "sentence"
+  | "paragraph"
+  | "heading"
+  | "list_item"
+  | "table_cell"
+  | "blockquote"
+  | "block"
+  | "section";
+
+export type PatchmarkSelectedTextAnchorContext = {
+  kind: PatchmarkSelectedTextAnchorContextKind;
+  plain_text: string;
+  markdown_text?: string;
+  selected_start_in_context?: number;
+  selected_end_in_context?: number;
+  context_hash?: string;
+  markdown_start_offset?: number;
+  markdown_end_offset?: number;
+};
+
 export type PatchmarkCommentAnchor =
   | {
       kind: "document";
+      action_context?: PatchmarkCommentActionContext;
     }
   | {
       kind: "section";
@@ -27,14 +70,13 @@ export type PatchmarkCommentAnchor =
       heading_path?: string[];
       section_start_offset?: number;
       section_end_offset?: number;
+      action_context?: PatchmarkCommentActionContext;
     }
   | {
       kind: "selected_text";
       selected_text: string;
-      anchor_text?: string;
-      anchor_text_source?: "selected" | "expanded_sentence" | "expanded_block";
       selected_text_hash?: string;
-      anchor_text_hash?: string;
+      anchor_context?: PatchmarkSelectedTextAnchorContext;
       markdown_start_offset?: number;
       markdown_end_offset?: number;
       context_before?: string;
@@ -46,6 +88,10 @@ export type PatchmarkCommentAnchor =
       anchor_source?: "visual" | "markdown";
       fallback_section_start_offset?: number;
       fallback_section_end_offset?: number;
+      action_context?: PatchmarkCommentActionContext;
+      anchor_text?: string;
+      anchor_text_source?: "selected" | "expanded_sentence" | "expanded_block";
+      anchor_text_hash?: string;
     };
 
 export type CommentAnchorStatus =
