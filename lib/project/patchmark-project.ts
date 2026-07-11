@@ -89,6 +89,7 @@ const commentStatuses: PatchmarkCommentStatus[] = ["open", "resolved"];
 const commentAnchorHistoryReasons: PatchmarkCommentAnchorHistoryEntry["reason"][] = [
   "patch_applied",
   "offset_shifted_after_patch",
+  "anchor_recovered_after_patch",
   "anchor_reanchored_after_patch",
   "anchor_marked_needs_review_after_patch"
 ];

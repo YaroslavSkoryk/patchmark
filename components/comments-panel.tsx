@@ -1032,7 +1032,6 @@ function CommentCard({
   const isQueuedForExport =
     comment.export_state.focus_state === "in_focus" ||
     comment.export_state.focus_state === "awaiting_reply";
-  const latestAnchorPatchId = comment.anchor_history?.at(-1)?.source_patch_id;
   const latestPatchImpact = comment.patch_impacts?.at(-1);
   const isResolvedCollapsed =
     comment.status === "resolved" &&
@@ -1146,17 +1145,14 @@ function CommentCard({
               <span
                 className={`comment-anchor-status comment-patch-impact comment-patch-impact-${latestPatchImpact.result}`}
               >
-                {getPatchImpactStatusLabel(latestPatchImpact.result)}
+                {getPatchImpactStatusLabel(latestPatchImpact)}
               </span>
-              <span className="comment-anchor-detail">
-                Affected by {latestPatchImpact.patch_id}
-              </span>
+              {latestPatchImpact.note ? (
+                <span className="comment-anchor-detail">
+                  {latestPatchImpact.note}
+                </span>
+              ) : null}
             </>
-          ) : null}
-          {latestAnchorPatchId ? (
-            <span className="comment-anchor-detail">
-              Anchor updated by {latestAnchorPatchId}
-            </span>
           ) : null}
           {comment.anchor.kind === "selected_text" ? (
             <>
@@ -1495,22 +1491,23 @@ function getAnchorStatusLabel(status: CommentAnchorStatus): string {
   return "Anchor not found";
 }
 
-function getPatchImpactStatusLabel(
-  result: NonNullable<PatchmarkComment["patch_impacts"]>[number]["result"]
-): string {
+function getPatchImpactStatusLabel({
+  patch_id: patchId,
+  result
+}: NonNullable<PatchmarkComment["patch_impacts"]>[number]): string {
   if (result === "needs_review") {
-    return "Needs review";
+    return `Needs review after ${patchId}`;
   }
 
   if (result === "reanchored") {
-    return "Re-anchored after patch";
+    return `Anchor recovered after ${patchId}`;
   }
 
   if (result === "offset_shifted") {
-    return "Offset shifted after patch";
+    return `Offset shifted after ${patchId}`;
   }
 
-  return "Affected by patch";
+  return `Patch checked: ${patchId}`;
 }
 
 function getAddAnchorPreviewLabel(

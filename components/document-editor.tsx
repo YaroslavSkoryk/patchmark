@@ -172,6 +172,29 @@ type AppliedPatchAnchorStatus =
   | "not_found"
   | "present_at_applied_offsets";
 type TextMatch = { end: number; start: number };
+type RecoveredAnchorReason =
+  | "current_offsets_match"
+  | "selected_text_unique_in_section"
+  | "anchor_context_unique_match"
+  | "table_cell_unique_match"
+  | "selected_text_unique_in_document";
+type RecoveredAnchorResult =
+  | {
+      matchEnd: number;
+      matchStart: number;
+      newAnchor: SelectedTextAnchor;
+      reason: RecoveredAnchorReason;
+      status: "recovered";
+    }
+  | {
+      matchCount: number;
+      reason: string;
+      status: "ambiguous";
+    }
+  | {
+      reason: string;
+      status: "not_found";
+    };
 type PatchTableRowRebaseCandidate = {
   currentRowText: string;
   end: number;
@@ -1954,6 +1977,49 @@ export function DocumentEditor() {
         message: resolution.detail ?? "Open Markdown Mode and review manually."
       });
       return;
+    }
+
+    if (comment.anchor.kind === "selected_text") {
+      const recovery = recoverSelectedTextAnchor({
+        comment,
+        headings,
+        markdown
+      });
+
+      if (recovery.status === "recovered") {
+        const createdAt = new Date().toISOString();
+        const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
+        const recoveredComment = recoverCommentAnchorForFind({
+          comment,
+          createdAt,
+          latestNeedsReviewImpact,
+          newAnchor: recovery.newAnchor
+        });
+        const nextComments = comments.map((currentComment) =>
+          currentComment.id === comment.id ? recoveredComment : currentComment
+        );
+
+        await persistComments(
+          nextComments,
+          latestNeedsReviewImpact
+            ? `Recovered comment anchor after ${latestNeedsReviewImpact.patch_id}.`
+            : "Recovered comment anchor from selected text."
+        );
+        jumpToMarkdownSelection(recovery.matchStart, recovery.matchEnd);
+        setSaveFeedback({
+          kind: "success",
+          message: "Recovered comment anchor and selected it in Markdown Mode."
+        });
+        return;
+      }
+
+      if (recovery.status === "ambiguous") {
+        setSaveFeedback({
+          kind: "info",
+          message: `Selected text still exists, but ${recovery.matchCount} matches were found. Review manually.`
+        });
+        return;
+      }
     }
 
     if (
@@ -6823,12 +6889,36 @@ function updateSingleAffectedCommentAnchor({
     });
 
     if (!shiftedAnchor) {
+      const recoveredAnchor = recoverSelectedTextAnchor({
+        comment,
+        headings: parseMarkdownHeadings(newMarkdown),
+        markdown: newMarkdown,
+        preferredHeadingText: patch.target_heading
+      });
+
+      if (recoveredAnchor.status === "recovered") {
+        return updateCommentAnchorAfterPatch({
+          comment,
+          content: `Patch ${patch.id} shifted text before this comment and Patchmark recovered the anchor from the selected text.`,
+          createdAt,
+          impactKind,
+          newAnchor: recoveredAnchor.newAnchor,
+          note: "Anchor recovered from selected text after patch.",
+          patch,
+          reason: "anchor_recovered_after_patch",
+          result: "reanchored"
+        });
+      }
+
       return markCommentAnchorNeedsReviewAfterPatch({
         comment,
         content: `Patch ${patch.id} may have affected this comment anchor. Please review it.`,
         createdAt,
         impactKind,
-        note: "Patchmark could not verify the shifted selected-text anchor.",
+        note:
+          recoveredAnchor.status === "ambiguous"
+            ? `Patchmark could not verify the shifted selected-text anchor and found ${recoveredAnchor.matchCount} possible recovery matches.`
+            : "Patchmark could not verify the shifted selected-text anchor or recover the selected text.",
         patch
       });
     }
@@ -6838,6 +6928,7 @@ function updateSingleAffectedCommentAnchor({
       createdAt,
       impactKind,
       newAnchor: shiftedAnchor,
+      note: "Offsets shifted after patch.",
       patch,
       reason: "offset_shifted_after_patch",
       result: "offset_shifted"
@@ -6856,12 +6947,13 @@ function updateSingleAffectedCommentAnchor({
     if (preservedAnchor) {
       return updateCommentAnchorAfterPatch({
         comment,
-        content: `Patch ${patch.id} changed nearby text and this comment anchor was updated.`,
+        content: `Patch ${patch.id} changed nearby text and Patchmark recovered this comment anchor in the replacement.`,
         createdAt,
         impactKind,
         newAnchor: preservedAnchor,
+        note: "Anchor recovered from selected text after patch.",
         patch,
-        reason: "anchor_reanchored_after_patch",
+        reason: "anchor_recovered_after_patch",
         result: "reanchored"
       });
     }
@@ -7244,12 +7336,411 @@ function refreshSelectedAnchorPositionMetadata({
   };
 }
 
+function recoverSelectedTextAnchor({
+  comment,
+  headings,
+  markdown,
+  preferredHeadingText
+}: {
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  preferredHeadingText?: string;
+}): RecoveredAnchorResult {
+  if (comment.anchor.kind !== "selected_text") {
+    return {
+      reason: "Only selected-text comments can be recovered from selected text.",
+      status: "not_found"
+    };
+  }
+
+  const { anchor } = comment;
+  const currentOffsetMatch = getCurrentSelectedTextOffsetMatch(anchor, markdown);
+  let ambiguousRecovery: Extract<RecoveredAnchorResult, { status: "ambiguous" }> | null =
+    null;
+
+  if (currentOffsetMatch) {
+    return createRecoveredAnchorResult({
+      anchor,
+      comment,
+      markdown,
+      match: currentOffsetMatch,
+      preferredHeadingText,
+      reason: "current_offsets_match"
+    });
+  }
+
+  const containingSectionRange = getSelectedAnchorContainingSectionRange({
+    anchor,
+    headings,
+    markdown
+  });
+
+  if (containingSectionRange) {
+    const sectionMatches = findExactTextMatches(
+      markdown.slice(containingSectionRange.start, containingSectionRange.end),
+      anchor.selected_text
+    ).map((match) => ({
+      start: containingSectionRange.start + match.start,
+      end: containingSectionRange.start + match.end
+    }));
+    const sectionRecovery = createRecoveryResultFromMatches({
+      anchor,
+      comment,
+      markdown,
+      matches: sectionMatches,
+      preferredHeadingText,
+      reason: "selected_text_unique_in_section"
+    });
+
+    if (sectionRecovery.status === "recovered") {
+      return sectionRecovery;
+    }
+
+    if (sectionRecovery.status === "ambiguous") {
+      ambiguousRecovery = sectionRecovery;
+    }
+  }
+
+  const contextResolution = resolveSelectedAnchorViaContext(markdown, anchor);
+
+  if (contextResolution.status === "active") {
+    return createRecoveredAnchorResult({
+      anchor,
+      comment,
+      markdown,
+      match: {
+        start: contextResolution.start,
+        end: contextResolution.end
+      },
+      preferredHeadingText,
+      reason: "anchor_context_unique_match"
+    });
+  }
+
+  const tableSearchRange =
+    containingSectionRange ??
+    ({
+      start: 0,
+      end: markdown.length
+    } satisfies TextMatch);
+  const tableMatches = findTableCellSelectedTextMatches({
+    anchor,
+    markdown,
+    range: tableSearchRange
+  });
+  const tableRecovery = createRecoveryResultFromMatches({
+    anchor,
+    comment,
+    markdown,
+    matches: tableMatches,
+    preferredHeadingText,
+    reason: "table_cell_unique_match"
+  });
+
+  if (tableRecovery.status === "recovered") {
+    return tableRecovery;
+  }
+
+  if (tableRecovery.status === "ambiguous") {
+    ambiguousRecovery = ambiguousRecovery ?? tableRecovery;
+  }
+
+  const documentRecovery = createRecoveryResultFromMatches({
+    anchor,
+    comment,
+    markdown,
+    matches: findExactTextMatches(markdown, anchor.selected_text),
+    preferredHeadingText,
+    reason: "selected_text_unique_in_document"
+  });
+
+  if (documentRecovery.status === "recovered") {
+    return documentRecovery;
+  }
+
+  if (documentRecovery.status === "ambiguous") {
+    ambiguousRecovery = ambiguousRecovery ?? documentRecovery;
+  }
+
+  if (contextResolution.status === "ambiguous") {
+    ambiguousRecovery = ambiguousRecovery ?? {
+      matchCount: 2,
+      reason: "Anchor context matched multiple places.",
+      status: "ambiguous"
+    };
+  }
+
+  if (ambiguousRecovery) {
+    return ambiguousRecovery;
+  }
+
+  return {
+    reason: "Selected text was not found uniquely in the section, context, table cells, or document.",
+    status: "not_found"
+  };
+}
+
+function getCurrentSelectedTextOffsetMatch(
+  anchor: SelectedTextAnchor,
+  markdown: string
+): TextMatch | null {
+  const start = anchor.markdown_start_offset;
+  const end = anchor.markdown_end_offset;
+
+  if (
+    typeof start !== "number" ||
+    typeof end !== "number" ||
+    start < 0 ||
+    end < start ||
+    markdown.slice(start, end) !== anchor.selected_text
+  ) {
+    return null;
+  }
+
+  return { end, start };
+}
+
+function getSelectedAnchorContainingSectionRange({
+  anchor,
+  headings,
+  markdown
+}: {
+  anchor: SelectedTextAnchor;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): TextMatch | null {
+  const heading = findSelectedAnchorContainingHeading(anchor, headings);
+
+  if (heading) {
+    return getSectionRange(markdown, headings, heading);
+  }
+
+  const fallbackStart = anchor.fallback_section_start_offset;
+  const fallbackEnd = anchor.fallback_section_end_offset;
+
+  if (
+    typeof fallbackStart === "number" &&
+    typeof fallbackEnd === "number" &&
+    fallbackStart >= 0 &&
+    fallbackEnd > fallbackStart &&
+    fallbackEnd <= markdown.length
+  ) {
+    return {
+      start: fallbackStart,
+      end: fallbackEnd
+    };
+  }
+
+  return null;
+}
+
+function findSelectedAnchorContainingHeading(
+  anchor: SelectedTextAnchor,
+  headings: ReturnType<typeof parseMarkdownHeadings>
+) {
+  if (!anchor.containing_heading) {
+    return null;
+  }
+
+  const candidates = headings.filter(
+    (heading) =>
+      heading.text === anchor.containing_heading &&
+      (anchor.containing_heading_level === undefined ||
+        heading.level === anchor.containing_heading_level)
+  );
+
+  if (candidates.length <= 1 || !anchor.containing_heading_path) {
+    return candidates[0] ?? null;
+  }
+
+  const containingHeadingPath = anchor.containing_heading_path;
+
+  return (
+    candidates.find((heading) =>
+      areHeadingPathsEqual(getHeadingPath(headings, heading), containingHeadingPath)
+    ) ??
+    candidates[0] ??
+    null
+  );
+}
+
+function areHeadingPathsEqual(firstPath: string[], secondPath: string[]): boolean {
+  return (
+    firstPath.length === secondPath.length &&
+    firstPath.every((heading, index) => heading === secondPath[index])
+  );
+}
+
+function findTableCellSelectedTextMatches({
+  anchor,
+  markdown,
+  range
+}: {
+  anchor: SelectedTextAnchor;
+  markdown: string;
+  range: TextMatch;
+}): TextMatch[] {
+  const tables = findMarkdownTablesInRange(markdown, {
+    start: range.start,
+    end: range.end,
+    searchedWholeDocument: range.start === 0 && range.end === markdown.length
+  });
+  const matches = tables.flatMap((table) =>
+    table.rows.flatMap((row) => {
+      const exactMatches = findExactTextMatches(row.text, anchor.selected_text);
+      const plainMatches =
+        anchor.anchor_context?.kind === "table_cell" || anchor.anchor_source === "visual"
+          ? findMarkdownPlainTextMatches(row.text, anchor.selected_text)
+          : [];
+
+      return dedupeTextMatches([...exactMatches, ...plainMatches]).map((match) => ({
+        start: row.start + match.start,
+        end: row.start + match.end
+      }));
+    })
+  );
+
+  return dedupeTextMatches(matches);
+}
+
+function createRecoveryResultFromMatches({
+  anchor,
+  comment,
+  markdown,
+  matches,
+  preferredHeadingText,
+  reason
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  markdown: string;
+  matches: TextMatch[];
+  preferredHeadingText?: string;
+  reason: RecoveredAnchorReason;
+}): RecoveredAnchorResult {
+  const uniqueMatches = dedupeTextMatches(matches);
+
+  if (uniqueMatches.length === 0) {
+    return {
+      reason: "No matches found.",
+      status: "not_found"
+    };
+  }
+
+  if (uniqueMatches.length > 1) {
+    return {
+      matchCount: uniqueMatches.length,
+      reason: "Selected text has multiple possible matches.",
+      status: "ambiguous"
+    };
+  }
+
+  return createRecoveredAnchorResult({
+    anchor,
+    comment,
+    markdown,
+    match: uniqueMatches[0],
+    preferredHeadingText,
+    reason
+  });
+}
+
+function createRecoveredAnchorResult({
+  anchor,
+  comment,
+  markdown,
+  match,
+  preferredHeadingText,
+  reason
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  markdown: string;
+  match: TextMatch;
+  preferredHeadingText?: string;
+  reason: RecoveredAnchorReason;
+}): RecoveredAnchorResult {
+  const context =
+    createAnchorContextFromMarkdownRange(markdown, match) ??
+    ({
+      kind: anchor.anchor_context?.kind ?? "block",
+      plain_text: anchor.selected_text,
+      markdown_text: markdown.slice(match.start, match.end),
+      selected_start_in_context: 0,
+      selected_end_in_context: match.end - match.start,
+      markdown_start_offset: match.start,
+      markdown_end_offset: match.end
+    } satisfies PatchmarkSelectedTextAnchorContext);
+
+  return {
+    matchStart: match.start,
+    matchEnd: match.end,
+    newAnchor: createSelectedTextAnchorAtRange({
+      anchor,
+      anchorSource: anchor.anchor_source ?? "markdown",
+      comment,
+      context,
+      markdown,
+      preferredHeadingText,
+      selectedText: anchor.selected_text,
+      start: match.start,
+      end: match.end
+    }),
+    reason,
+    status: "recovered"
+  };
+}
+
+function recoverCommentAnchorForFind({
+  comment,
+  createdAt,
+  latestNeedsReviewImpact,
+  newAnchor
+}: {
+  comment: PatchmarkComment;
+  createdAt: string;
+  latestNeedsReviewImpact: PatchmarkCommentPatchImpact | null;
+  newAnchor: SelectedTextAnchor;
+}): PatchmarkComment {
+  const recoveredComment: PatchmarkComment = {
+    ...comment,
+    anchor: newAnchor,
+    anchor_history: [
+      ...(comment.anchor_history ?? []),
+      {
+        changed_at: createdAt,
+        reason: "anchor_recovered_after_patch",
+        source_patch_id: latestNeedsReviewImpact?.patch_id,
+        previous_anchor: comment.anchor,
+        new_anchor: newAnchor,
+        impact_kind: latestNeedsReviewImpact?.impact_kind
+      }
+    ],
+    updated_at: createdAt
+  };
+
+  if (!latestNeedsReviewImpact) {
+    return recoveredComment;
+  }
+
+  return appendPatchImpactToComment({
+    comment: recoveredComment,
+    createdAt,
+    impactKind: latestNeedsReviewImpact.impact_kind,
+    note: "Anchor recovered from selected text during Find.",
+    patchId: latestNeedsReviewImpact.patch_id,
+    result: "reanchored"
+  });
+}
+
 function updateCommentAnchorAfterPatch({
   comment,
   content,
   createdAt,
   impactKind,
   newAnchor,
+  note,
   patch,
   reason,
   result
@@ -7259,6 +7750,7 @@ function updateCommentAnchorAfterPatch({
   createdAt: string;
   impactKind: PatchCommentImpactKind;
   newAnchor: PatchmarkCommentAnchor;
+  note?: string;
   patch: PatchmarkPatch;
   reason: NonNullable<PatchmarkComment["anchor_history"]>[number]["reason"];
   result: PatchmarkCommentPatchImpact["result"];
@@ -7281,6 +7773,7 @@ function updateCommentAnchorAfterPatch({
     },
     createdAt,
     impactKind,
+    note,
     patchId: patch.id,
     result
   });
@@ -9538,17 +10031,6 @@ function resolveCommentAnchor(
     };
   }
 
-  if (latestNeedsReviewImpact) {
-    return {
-      detail: `Affected by ${latestNeedsReviewImpact.patch_id}. Please review this anchor.`,
-      label:
-        anchor.kind === "section"
-          ? `Whole section: ${anchor.heading}`
-          : `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
-      status: "not_found"
-    };
-  }
-
   if (anchor.kind === "section") {
     const currentHeading = findMatchingHeading(headings, {
       level: anchor.heading_level,
@@ -9643,6 +10125,14 @@ function resolveCommentAnchor(
         : "Multiple matches for selected text.",
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "ambiguous"
+    };
+  }
+
+  if (latestNeedsReviewImpact) {
+    return {
+      detail: `Affected by ${latestNeedsReviewImpact.patch_id}. Please review this anchor.`,
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "not_found"
     };
   }
 
