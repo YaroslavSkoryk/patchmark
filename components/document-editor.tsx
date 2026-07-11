@@ -2465,6 +2465,7 @@ function createImportedCommentThreads({
           createdAt: importedAt,
           importId,
           sourceChatUrl,
+          suggestedUserAction: "clarify",
           thread: nextThread
         })
       ];
