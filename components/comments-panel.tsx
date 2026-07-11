@@ -137,6 +137,9 @@ export function CommentsPanel({
   const [replyingCommentId, setReplyingCommentId] = useState<string | null>(null);
   const [replyComment, setReplyComment] = useState("");
   const [formError, setFormError] = useState("");
+  const [expandedResolvedCommentIds, setExpandedResolvedCommentIds] = useState<
+    Set<string>
+  >(new Set());
   const openComments = useMemo(
     () => comments.filter((comment) => comment.status === "open"),
     [comments]
@@ -147,6 +150,36 @@ export function CommentsPanel({
   );
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
+
+  useEffect(() => {
+    const resolvedCommentIds = new Set(
+      comments
+        .filter((comment) => comment.status === "resolved")
+        .map((comment) => comment.id)
+    );
+
+    setExpandedResolvedCommentIds((currentIds) => {
+      const nextIds = new Set(
+        [...currentIds].filter((commentId) => resolvedCommentIds.has(commentId))
+      );
+
+      return nextIds.size === currentIds.size ? currentIds : nextIds;
+    });
+  }, [comments]);
+
+  function toggleResolvedComment(commentId: string) {
+    setExpandedResolvedCommentIds((currentIds) => {
+      const nextIds = new Set(currentIds);
+
+      if (nextIds.has(commentId)) {
+        nextIds.delete(commentId);
+      } else {
+        nextIds.add(commentId);
+      }
+
+      return nextIds;
+    });
+  }
 
   const openAddForm = useCallback((
     preferredScope?: CommentAnchorScope,
@@ -390,10 +423,11 @@ export function CommentsPanel({
             addPositionTop={addPositionTop}
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
-            comments={[...openComments, ...resolvedComments]}
+            comments={openComments}
             editingCommentId={editingCommentId}
             editComment={editComment}
             editType={editType}
+            expandedResolvedCommentIds={expandedResolvedCommentIds}
             isBusy={isBusy}
             onDeleteComment={handleDeleteComment}
             onEditComment={handleEditComment}
@@ -413,11 +447,49 @@ export function CommentsPanel({
               setReplyingCommentId(null);
               setReplyComment("");
             }}
+            onToggleResolvedComment={toggleResolvedComment}
             onUnmarkCommentForExport={onUnmarkCommentForExport}
             pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
             replyingCommentId={replyingCommentId}
             replyComment={replyComment}
           />
+          {resolvedComments.length > 0 ? (
+            <CommentGroup
+              anchorSummaries={anchorSummaries}
+              comments={resolvedComments}
+              editingCommentId={editingCommentId}
+              editComment={editComment}
+              editType={editType}
+              emptyMessage="No resolved comments."
+              expandedResolvedCommentIds={expandedResolvedCommentIds}
+              isBusy={isBusy}
+              label={`Resolved comments (${resolvedComments.length})`}
+              onDeleteComment={handleDeleteComment}
+              onEditComment={handleEditComment}
+              onFindComment={onFindComment}
+              onMarkCommentForExport={onMarkCommentForExport}
+              onReopenComment={onReopenComment}
+              onReplyComment={handleReplyComment}
+              onReviewCommentPatches={onReviewCommentPatches}
+              onResolveComment={onResolveComment}
+              onSetEditComment={setEditComment}
+              onSetEditType={setEditType}
+              onSetReplyComment={setReplyComment}
+              onStartEditing={startEditing}
+              onStartReplying={startReplying}
+              onStopEditing={() => setEditingCommentId(null)}
+              onStopReplying={() => {
+                setReplyingCommentId(null);
+                setReplyComment("");
+              }}
+              onToggleResolvedComment={toggleResolvedComment}
+              onUnmarkCommentForExport={onUnmarkCommentForExport}
+              pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
+              quiet
+              replyingCommentId={replyingCommentId}
+              replyComment={replyComment}
+            />
+          ) : null}
         </>
       )}
     </section>
@@ -431,6 +503,7 @@ type CommentGroupProps = {
   editComment: string;
   editType: PatchmarkCommentType;
   emptyMessage: string;
+  expandedResolvedCommentIds: Set<string>;
   isBusy: boolean;
   label: string;
   onDeleteComment: (commentId: string) => Promise<void>;
@@ -448,6 +521,7 @@ type CommentGroupProps = {
   onStartReplying: (comment: PatchmarkComment) => void;
   onStopEditing: () => void;
   onStopReplying: () => void;
+  onToggleResolvedComment: (commentId: string) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   pendingPatchCountsByCommentId: Record<string, number>;
   quiet?: boolean;
@@ -473,6 +547,7 @@ function FloatingCommentList({
   editingCommentId,
   editComment,
   editType,
+  expandedResolvedCommentIds,
   isBusy,
   onDeleteComment,
   onEditComment,
@@ -489,6 +564,7 @@ function FloatingCommentList({
   onStartReplying,
   onStopEditing,
   onStopReplying,
+  onToggleResolvedComment,
   onUnmarkCommentForExport,
   pendingPatchCountsByCommentId,
   replyingCommentId,
@@ -642,6 +718,7 @@ function FloatingCommentList({
                   editingCommentId={editingCommentId}
                   editComment={editComment}
                   editType={editType}
+                  expandedResolvedCommentIds={expandedResolvedCommentIds}
                   isBusy={isBusy}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
@@ -658,6 +735,7 @@ function FloatingCommentList({
                   onStartReplying={onStartReplying}
                   onStopEditing={onStopEditing}
                   onStopReplying={onStopReplying}
+                  onToggleResolvedComment={onToggleResolvedComment}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
                   pendingPatchCount={
                     pendingPatchCountsByCommentId[item.comment.id] ?? 0
@@ -682,6 +760,7 @@ function FloatingCommentList({
           editComment={editComment}
           editType={editType}
           emptyMessage="No comments need review."
+          expandedResolvedCommentIds={expandedResolvedCommentIds}
           isBusy={isBusy}
           label="Needs review"
           onDeleteComment={onDeleteComment}
@@ -699,6 +778,7 @@ function FloatingCommentList({
           onStartReplying={onStartReplying}
           onStopEditing={onStopEditing}
           onStopReplying={onStopReplying}
+          onToggleResolvedComment={onToggleResolvedComment}
           onUnmarkCommentForExport={onUnmarkCommentForExport}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           quiet
@@ -776,6 +856,7 @@ function CommentGroup({
   editComment,
   editType,
   emptyMessage,
+  expandedResolvedCommentIds,
   isBusy,
   label,
   onDeleteComment,
@@ -793,6 +874,7 @@ function CommentGroup({
   onStartReplying,
   onStopEditing,
   onStopReplying,
+  onToggleResolvedComment,
   onUnmarkCommentForExport,
   pendingPatchCountsByCommentId,
   replyingCommentId,
@@ -815,6 +897,7 @@ function CommentGroup({
                   editingCommentId={editingCommentId}
                   editComment={editComment}
                   editType={editType}
+                  expandedResolvedCommentIds={expandedResolvedCommentIds}
                   isBusy={isBusy}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
@@ -831,6 +914,7 @@ function CommentGroup({
                   onStartReplying={onStartReplying}
                   onStopEditing={onStopEditing}
                   onStopReplying={onStopReplying}
+                  onToggleResolvedComment={onToggleResolvedComment}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
                   pendingPatchCount={pendingPatchCountsByCommentId[comment.id] ?? 0}
                   quiet={quiet}
@@ -852,6 +936,7 @@ type CommentCardProps = {
   editingCommentId: string | null;
   editComment: string;
   editType: PatchmarkCommentType;
+  expandedResolvedCommentIds: Set<string>;
   isBusy: boolean;
   onDeleteComment: (commentId: string) => Promise<void>;
   onEditComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
@@ -868,6 +953,7 @@ type CommentCardProps = {
   onStartReplying: (comment: PatchmarkComment) => void;
   onStopEditing: () => void;
   onStopReplying: () => void;
+  onToggleResolvedComment: (commentId: string) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   pendingPatchCount: number;
   quiet?: boolean;
@@ -881,6 +967,7 @@ function CommentCard({
   editingCommentId,
   editComment,
   editType,
+  expandedResolvedCommentIds,
   isBusy,
   onDeleteComment,
   onEditComment,
@@ -897,6 +984,7 @@ function CommentCard({
   onStartReplying,
   onStopEditing,
   onStopReplying,
+  onToggleResolvedComment,
   onUnmarkCommentForExport,
   pendingPatchCount,
   replyingCommentId,
@@ -914,10 +1002,57 @@ function CommentCard({
     comment.export_state.focus_state === "awaiting_reply";
   const latestAnchorPatchId = comment.anchor_history?.at(-1)?.source_patch_id;
   const latestPatchImpact = comment.patch_impacts?.at(-1);
+  const isResolvedCollapsed =
+    comment.status === "resolved" &&
+    editingCommentId !== comment.id &&
+    !expandedResolvedCommentIds.has(comment.id);
+  const hasQuietAnchorWarning =
+    anchorSummary.status === "not_found" || anchorSummary.status === "ambiguous";
 
   return (
-    <article className={`comment-card ${quiet ? "comment-card-quiet" : ""}`}>
-      {editingCommentId === comment.id ? (
+    <article
+      className={`comment-card ${quiet ? "comment-card-quiet" : ""} ${
+        isResolvedCollapsed ? "comment-card-collapsed" : ""
+      }`}
+    >
+      {isResolvedCollapsed ? (
+        <>
+          <div className="comment-card-meta">
+            <span className="comment-type">[{comment.type}]</span>
+            <span>Resolved</span>
+          </div>
+          <strong className="comment-target">{anchorSummary.label}</strong>
+          {hasQuietAnchorWarning ? (
+            <span className="comment-anchor-detail">Anchor needs review</span>
+          ) : null}
+          <p className="comment-collapsed-preview">
+            {truncateText(comment.comment, 120)}
+          </p>
+          <span className="comment-timestamp">
+            Updated {formatCommentDate(comment.updated_at)}
+          </span>
+          <div className="comment-card-actions comment-card-actions-compact">
+            <button
+              type="button"
+              disabled={isBusy}
+              onClick={() => onToggleResolvedComment(comment.id)}
+            >
+              Expand
+            </button>
+            {onReopenComment ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => {
+                  void onReopenComment(comment.id).catch(() => undefined);
+                }}
+              >
+                Reopen
+              </button>
+            ) : null}
+          </div>
+        </>
+      ) : editingCommentId === comment.id ? (
         <form className="comment-form" onSubmit={onEditComment}>
           <CommentAnchorPreview
             anchorContextKind={
@@ -1168,15 +1303,24 @@ function CommentCard({
               </button>
             ) : null}
             {comment.status === "resolved" && onReopenComment ? (
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => {
-                  void onReopenComment(comment.id).catch(() => undefined);
-                }}
-              >
-                Reopen
-              </button>
+              <>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => onToggleResolvedComment(comment.id)}
+                >
+                  Collapse
+                </button>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => {
+                    void onReopenComment(comment.id).catch(() => undefined);
+                  }}
+                >
+                  Reopen
+                </button>
+              </>
             ) : null}
             <button
               type="button"

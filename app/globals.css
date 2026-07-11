@@ -1132,6 +1132,10 @@ button {
   gap: 8px;
 }
 
+.comment-card-actions-compact {
+  gap: 6px;
+}
+
 .comment-floating-layout {
   margin-top: 14px;
 }
@@ -1182,6 +1186,21 @@ button {
 
 .comment-card-quiet {
   opacity: 0.72;
+}
+
+.comment-card-collapsed {
+  gap: 5px;
+  padding: 8px;
+}
+
+.comment-card-collapsed .comment-target {
+  font-size: 0.8rem;
+}
+
+.comment-collapsed-preview {
+  color: var(--text);
+  font-size: 0.8rem;
+  line-height: 1.35;
 }
 
 .comment-card-meta {
