@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import { type MarkdownHeading } from "@/lib/markdown/parse-headings";
 import {
   type CommentAnchorStatus,
@@ -66,6 +73,27 @@ const commentTypeOptions: PatchmarkCommentType[] = [
   "research_needed",
   "decision_needed"
 ];
+const COMMENT_CARD_GAP = 12;
+const COMMENT_CARD_FALLBACK_HEIGHT = 180;
+const COMMENT_ADD_FORM_FALLBACK_HEIGHT = 260;
+const COMMENT_FLOATING_DRAFT_ID = "PM-COMMENT-DRAFT-FORM";
+
+type FloatingLayoutItem =
+  | {
+      comment: PatchmarkComment;
+      createdAt: string;
+      fallbackHeight: number;
+      id: string;
+      kind: "comment";
+      preferredTop: number;
+    }
+  | {
+      createdAt: string;
+      fallbackHeight: number;
+      id: string;
+      kind: "draft";
+      preferredTop: number;
+    };
 
 export function CommentsPanel({
   addRequest,
@@ -442,31 +470,118 @@ function FloatingCommentList({
   replyingCommentId,
   replyComment
 }: FloatingCommentListProps) {
+  const floatingItemRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const [measuredItemHeights, setMeasuredItemHeights] = useState<
+    Record<string, number>
+  >({});
   const positionedComments = comments
     .filter((comment) => commentPositions[comment.id] !== undefined)
     .sort((firstComment, secondComment) => {
       const firstTop = commentPositions[firstComment.id] ?? 0;
       const secondTop = commentPositions[secondComment.id] ?? 0;
 
-      return firstTop - secondTop;
+      return (
+        firstTop - secondTop ||
+        firstComment.created_at.localeCompare(secondComment.created_at) ||
+        firstComment.id.localeCompare(secondComment.id)
+      );
     });
   const unpositionedComments = comments.filter(
     (comment) => commentPositions[comment.id] === undefined
   );
-  const positionedAddFormTop =
-    addForm && addPositionTop !== null
-      ? getStackedAddFormTop(addPositionTop, commentPositions)
-      : null;
-  const stageHeight =
-    positionedComments.length === 0 && positionedAddFormTop === null
-      ? 0
-      : Math.max(
-          220,
-          positionedAddFormTop !== null ? positionedAddFormTop + 260 : 0,
-          ...positionedComments.map(
-            (comment) => (commentPositions[comment.id] ?? 0) + 180
-          )
-        );
+  const floatingLayoutItems = useMemo(
+    () =>
+      [
+        ...(addForm && addPositionTop !== null
+          ? [
+              {
+                createdAt: "",
+                fallbackHeight: COMMENT_ADD_FORM_FALLBACK_HEIGHT,
+                id: COMMENT_FLOATING_DRAFT_ID,
+                kind: "draft" as const,
+                preferredTop: Math.max(0, addPositionTop)
+              }
+            ]
+          : []),
+        ...positionedComments.map((comment) => ({
+          comment,
+          createdAt: comment.created_at,
+          fallbackHeight: COMMENT_CARD_FALLBACK_HEIGHT,
+          id: comment.id,
+          kind: "comment" as const,
+          preferredTop: Math.max(0, commentPositions[comment.id] ?? 0)
+        }))
+      ].sort(sortFloatingLayoutItems),
+    [addForm, addPositionTop, commentPositions, positionedComments]
+  );
+  const floatingLayout = useMemo(
+    () => createFloatingLayout(floatingLayoutItems, measuredItemHeights),
+    [floatingLayoutItems, measuredItemHeights]
+  );
+
+  useLayoutEffect(() => {
+    const itemIds = new Set(floatingLayoutItems.map((item) => item.id));
+
+    for (const itemId of Object.keys(floatingItemRefs.current)) {
+      if (!itemIds.has(itemId)) {
+        delete floatingItemRefs.current[itemId];
+      }
+    }
+
+    function measureFloatingItems() {
+      const nextMeasuredItemHeights: Record<string, number> = {};
+
+      for (const itemId of itemIds) {
+        const element = floatingItemRefs.current[itemId];
+
+        if (element) {
+          nextMeasuredItemHeights[itemId] = Math.ceil(
+            element.getBoundingClientRect().height
+          );
+        }
+      }
+
+      setMeasuredItemHeights((currentMeasuredItemHeights) =>
+        areMeasuredHeightsEqual(
+          currentMeasuredItemHeights,
+          nextMeasuredItemHeights
+        )
+          ? currentMeasuredItemHeights
+          : nextMeasuredItemHeights
+      );
+    }
+
+    measureFloatingItems();
+
+    const resizeObserver =
+      typeof ResizeObserver === "undefined"
+        ? null
+        : new ResizeObserver(measureFloatingItems);
+
+    if (resizeObserver) {
+      for (const itemId of itemIds) {
+        const element = floatingItemRefs.current[itemId];
+
+        if (element) {
+          resizeObserver.observe(element);
+        }
+      }
+    }
+
+    window.addEventListener("resize", measureFloatingItems);
+
+    return () => {
+      resizeObserver?.disconnect();
+      window.removeEventListener("resize", measureFloatingItems);
+    };
+  }, [
+    addForm,
+    editComment,
+    editingCommentId,
+    floatingLayoutItems,
+    replyComment,
+    replyingCommentId
+  ]);
 
   if (comments.length === 0 && !addForm) {
     return (
@@ -478,58 +593,61 @@ function FloatingCommentList({
 
   return (
     <div className="comment-floating-layout">
-      {positionedComments.length > 0 || positionedAddFormTop !== null ? (
+      {floatingLayoutItems.length > 0 ? (
         <ol
           className="comment-floating-stage"
-          style={{ minHeight: `${stageHeight}px` }}
+          style={{ minHeight: `${floatingLayout.stageHeight}px` }}
         >
-          {addForm && positionedAddFormTop !== null ? (
+          {floatingLayoutItems.map((item) => (
             <li
-              className="comment-floating-item comment-floating-item-draft"
-              style={{ top: positionedAddFormTop }}
+              className={`comment-floating-item ${
+                item.kind === "draft" ? "comment-floating-item-draft" : ""
+              }`}
+              key={item.id}
+              ref={(element) => {
+                floatingItemRefs.current[item.id] = element;
+              }}
+              style={{ top: floatingLayout.positions[item.id] ?? item.preferredTop }}
             >
-              {addForm}
-            </li>
-          ) : null}
-          {positionedComments.map((comment) => (
-            <li
-              className="comment-floating-item"
-              key={comment.id}
-              style={{ top: commentPositions[comment.id] }}
-            >
-              <CommentCard
-                anchorSummaries={anchorSummaries}
-                comment={comment}
-                editingCommentId={editingCommentId}
-                editComment={editComment}
-                editType={editType}
-                isBusy={isBusy}
-                onDeleteComment={onDeleteComment}
-                onEditComment={onEditComment}
-                onFindComment={onFindComment}
-                onMarkCommentForExport={onMarkCommentForExport}
-                onReopenComment={onReopenComment}
-                onReplyComment={onReplyComment}
-                onResolveComment={onResolveComment}
-                onSetEditComment={onSetEditComment}
-                onSetEditType={onSetEditType}
-                onSetReplyComment={onSetReplyComment}
-                onStartEditing={onStartEditing}
-                onStartReplying={onStartReplying}
-                onStopEditing={onStopEditing}
-                onStopReplying={onStopReplying}
-                onUnmarkCommentForExport={onUnmarkCommentForExport}
-                pendingPatchCount={pendingPatchCountsByCommentId[comment.id] ?? 0}
-                quiet={comment.status === "resolved"}
-                replyingCommentId={replyingCommentId}
-                replyComment={replyComment}
-              />
+              {item.kind === "draft" ? (
+                addForm
+              ) : (
+                <CommentCard
+                  anchorSummaries={anchorSummaries}
+                  comment={item.comment}
+                  editingCommentId={editingCommentId}
+                  editComment={editComment}
+                  editType={editType}
+                  isBusy={isBusy}
+                  onDeleteComment={onDeleteComment}
+                  onEditComment={onEditComment}
+                  onFindComment={onFindComment}
+                  onMarkCommentForExport={onMarkCommentForExport}
+                  onReopenComment={onReopenComment}
+                  onReplyComment={onReplyComment}
+                  onResolveComment={onResolveComment}
+                  onSetEditComment={onSetEditComment}
+                  onSetEditType={onSetEditType}
+                  onSetReplyComment={onSetReplyComment}
+                  onStartEditing={onStartEditing}
+                  onStartReplying={onStartReplying}
+                  onStopEditing={onStopEditing}
+                  onStopReplying={onStopReplying}
+                  onUnmarkCommentForExport={onUnmarkCommentForExport}
+                  pendingPatchCount={
+                    pendingPatchCountsByCommentId[item.comment.id] ?? 0
+                  }
+                  quiet={item.comment.status === "resolved"}
+                  replyingCommentId={replyingCommentId}
+                  replyComment={replyComment}
+                />
+              )}
             </li>
           ))}
         </ol>
       ) : null}
 
-      {addForm && positionedAddFormTop === null ? addForm : null}
+      {addForm && addPositionTop === null ? addForm : null}
 
       {unpositionedComments.length > 0 ? (
         <CommentGroup
@@ -566,22 +684,63 @@ function FloatingCommentList({
   );
 }
 
-function getStackedAddFormTop(
-  addPositionTop: number,
-  commentPositions: Record<string, number>
+function sortFloatingLayoutItems(
+  firstItem: FloatingLayoutItem,
+  secondItem: FloatingLayoutItem
 ): number {
-  const minimumGap = 148;
-  let nextTop = Math.max(0, addPositionTop);
+  return (
+    firstItem.preferredTop - secondItem.preferredTop ||
+    firstItem.createdAt.localeCompare(secondItem.createdAt) ||
+    firstItem.id.localeCompare(secondItem.id)
+  );
+}
 
-  for (const commentTop of Object.values(commentPositions).sort(
-    (firstTop, secondTop) => firstTop - secondTop
-  )) {
-    if (nextTop >= commentTop && nextTop < commentTop + minimumGap) {
-      nextTop = commentTop + minimumGap;
-    }
+function createFloatingLayout(
+  items: FloatingLayoutItem[],
+  measuredItemHeights: Record<string, number>
+): {
+  positions: Record<string, number>;
+  stageHeight: number;
+} {
+  const positions: Record<string, number> = {};
+  let previousBottom = -Infinity;
+
+  for (const item of items) {
+    const itemHeight = measuredItemHeights[item.id] ?? item.fallbackHeight;
+    const nextTop = Math.max(
+      item.preferredTop,
+      Number.isFinite(previousBottom)
+        ? previousBottom + COMMENT_CARD_GAP
+        : item.preferredTop
+    );
+
+    positions[item.id] = nextTop;
+    previousBottom = nextTop + itemHeight;
   }
 
-  return nextTop;
+  return {
+    positions,
+    stageHeight:
+      items.length === 0
+        ? 0
+        : Math.max(220, previousBottom + COMMENT_CARD_GAP)
+  };
+}
+
+function areMeasuredHeightsEqual(
+  firstHeights: Record<string, number>,
+  secondHeights: Record<string, number>
+): boolean {
+  const firstIds = Object.keys(firstHeights);
+  const secondIds = Object.keys(secondHeights);
+
+  if (firstIds.length !== secondIds.length) {
+    return false;
+  }
+
+  return firstIds.every(
+    (itemId) => firstHeights[itemId] === secondHeights[itemId]
+  );
 }
 
 function CommentGroup({

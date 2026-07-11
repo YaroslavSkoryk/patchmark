@@ -3337,7 +3337,7 @@ function measureCommentPositions({
   const workspaceRect = workspace.getBoundingClientRect();
   const editorRect = container.getBoundingClientRect();
   const editorTop = Math.max(0, editorRect.top - workspaceRect.top);
-  const rawPositions: Array<{ id: string; top: number }> = [];
+  const preferredPositions: Record<string, number> = {};
 
   for (const comment of comments) {
     const top = measureCommentTop({
@@ -3351,14 +3351,11 @@ function measureCommentPositions({
     });
 
     if (top !== null) {
-      rawPositions.push({
-        id: comment.id,
-        top
-      });
+      preferredPositions[comment.id] = top;
     }
   }
 
-  return stackCommentPositions(rawPositions);
+  return preferredPositions;
 }
 
 function measureCommentTop({
@@ -3496,24 +3493,6 @@ function measureCommentTop({
   }
 
   return null;
-}
-
-function stackCommentPositions(
-  rawPositions: Array<{ id: string; top: number }>
-): Record<string, number> {
-  const stackedPositions: Record<string, number> = {};
-  let previousTop = -Infinity;
-  const minimumGap = 148;
-
-  for (const position of rawPositions.sort(
-    (firstPosition, secondPosition) => firstPosition.top - secondPosition.top
-  )) {
-    const nextTop = Math.max(position.top, previousTop + minimumGap);
-    stackedPositions[position.id] = nextTop;
-    previousTop = nextTop;
-  }
-
-  return stackedPositions;
 }
 
 function areCommentPositionsEqual(
