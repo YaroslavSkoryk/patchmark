@@ -1063,8 +1063,13 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
         : undefined,
     original_text: patch.original_text,
     suggested_text: patch.suggested_text,
+    suggested_text_sources: normalizeSourceReferences(
+      patch.suggested_text_sources
+    ),
     reason: typeof patch.reason === "string" ? patch.reason : "No reason provided.",
+    reason_sources: normalizeSourceReferences(patch.reason_sources),
     risk: typeof patch.risk === "string" ? patch.risk : undefined,
+    risk_sources: normalizeSourceReferences(patch.risk_sources),
     sources: normalizeSourceReferences(patch.sources),
     created_at: patch.created_at,
     resolved_at:
@@ -1084,7 +1089,8 @@ function normalizeSourceReferences(
     .map((source) => ({
       title: source.title,
       url: source.url,
-      note: source.note
+      note: source.note,
+      supports: source.supports
     }));
 
   return normalizedSources.length > 0 ? normalizedSources : undefined;
@@ -1283,7 +1289,8 @@ function isPatchmarkSourceReference(
     typeof value.url === "string" &&
     value.url.trim().length > 0 &&
     (value.title === undefined || typeof value.title === "string") &&
-    (value.note === undefined || typeof value.note === "string")
+    (value.note === undefined || typeof value.note === "string") &&
+    (value.supports === undefined || typeof value.supports === "string")
   );
 }
 

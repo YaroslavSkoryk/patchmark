@@ -74,6 +74,7 @@ export type PatchmarkSourceReference = {
   title?: string;
   url: string;
   note?: string;
+  supports?: string;
 };
 
 export type PatchmarkCommentReplyImport = {
@@ -84,6 +85,7 @@ export type PatchmarkCommentReplyImport = {
   replies: Array<{
     comment_id: string;
     reply: string;
+    reply_sources?: PatchmarkSourceReference[];
     suggested_user_action?: PatchmarkSuggestedUserAction;
     sources?: PatchmarkSourceReference[];
   }>;
@@ -92,13 +94,17 @@ export type PatchmarkCommentReplyImport = {
     target_heading?: string;
     original_text: string;
     suggested_text: string;
+    suggested_text_sources?: PatchmarkSourceReference[];
     reason: string;
+    reason_sources?: PatchmarkSourceReference[];
     risk?: string;
+    risk_sources?: PatchmarkSourceReference[];
     sources?: PatchmarkSourceReference[];
   }>;
   open_questions: Array<{
     comment_id: string;
     question: string;
+    question_sources?: PatchmarkSourceReference[];
   }>;
 };
 
@@ -204,8 +210,11 @@ export type PatchmarkPatch = {
   target_heading?: string;
   original_text: string;
   suggested_text: string;
+  suggested_text_sources?: PatchmarkSourceReference[];
   reason: string;
+  reason_sources?: PatchmarkSourceReference[];
   risk?: string;
+  risk_sources?: PatchmarkSourceReference[];
   sources?: PatchmarkSourceReference[];
   created_at: string;
   resolved_at?: string;

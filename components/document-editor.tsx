@@ -158,14 +158,18 @@ const SHORT_SELECTION_HELP =
   "Could not create a reliable anchor. Try selecting a larger phrase or add a section comment.";
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
 const STRICT_CHATGPT_IMPORT_ERROR =
-  "Invalid Patchmark response. ChatGPT returned text outside the JSON protocol. Ask ChatGPT to return exactly one valid JSON object with all sources inside sources arrays.";
+  "Invalid Patchmark response. All references must be inside the JSON, placed in the field-local sources arrays.";
 const CHATGPT_IMPORT_REPAIR_PROMPT = `Please convert your previous answer into one valid Patchmark JSON object only.
 
 Do not include Markdown fences.
 Do not include text before or after the JSON.
 Do not use footnotes or reference links.
-Put all source URLs inside sources arrays.
+Put all source URLs inside the nearest field-local sources array.
 Use protocol: patchmark.comment_reply_import.`;
+const PROTOCOL_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
+const PROTOCOL_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\([^)]+\)/;
+const PROTOCOL_REFERENCE_LINK_PATTERN = /\[[^\]]+\]\[[^\]]+\]|\[\d+\]/;
+const PROTOCOL_FOOTNOTE_PATTERN = /\[\^[^\]]+\]/;
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -2179,17 +2183,33 @@ Do not wrap the JSON in Markdown fences.
 
 Do not include any text before or after the JSON.
 
-Do not include Markdown reference links such as [1] or [source][1].
+Do not use Markdown links in text fields.
 
-Do not include footnotes or link definitions after the JSON.
+Do not include footnotes.
 
-Do not use Markdown links in reply text.
+Do not include reference-link definitions like [1]: https://...
 
-If you use sources, include them only in sources arrays inside the JSON.
+Do not use [1] or [source][1] citations.
 
-Every URL must be inside a sources array.
+Do not put URLs inside prose fields.
 
-If you do not use sources, return an empty sources array.
+Every source URL must be placed in the nearest field-local sources array.
+
+Do not collect field evidence in a top-level \`sources\` array.
+
+Do not put source links after the JSON.
+
+Place each source in the closest matching field:
+
+- \`reply_sources\` for sources used in a comment reply.
+- \`suggested_text_sources\` for sources used to justify or support suggested replacement text.
+- \`reason_sources\` for sources used in the reason.
+- \`risk_sources\` for sources used in the risk/tradeoff.
+- \`question_sources\` for sources used in an open question.
+
+If the same source supports multiple fields, repeat it in each relevant field-local sources array.
+
+If a field uses no sources, return an empty array for that field's source array.
 
 Use this exact protocol:
 
@@ -2198,13 +2218,12 @@ Use this exact protocol:
   "protocol": "patchmark.comment_reply_import",
   "protocol_version": 1,
   "summary": "Brief summary of what you did.",
-  "sources": [],
   "replies": [
     {
       "comment_id": "PM-COMMENT-0001",
-      "reply": "Your reply to the comment.",
-      "suggested_user_action": "review",
-      "sources": []
+      "reply": "Your reply to the comment. Do not put URLs or Markdown links in this text.",
+      "reply_sources": [],
+      "suggested_user_action": "review"
     }
   ],
   "patch_proposals": [
@@ -2213,17 +2232,37 @@ Use this exact protocol:
       "target_heading": "## Example Heading",
       "original_text": "Exact Markdown text to replace.",
       "suggested_text": "Replacement Markdown text.",
+      "suggested_text_sources": [],
       "reason": "Why this change helps.",
+      "reason_sources": [],
       "risk": "Tradeoff or caution.",
-      "sources": []
+      "risk_sources": []
     }
   ],
   "open_questions": [
     {
       "comment_id": "PM-COMMENT-0001",
-      "question": "Question for the human user."
+      "question": "Question for the human user.",
+      "question_sources": []
     }
   ]
+}
+\`\`\`
+
+Example sourced reply object:
+
+\`\`\`json
+{
+  "comment_id": "PM-COMMENT-0003",
+  "reply": "Campaillou should be added because it appears in the current public bread catalogue.",
+  "reply_sources": [
+    {
+      "title": "Crust Chant — Bread Collection",
+      "url": "https://crustchant.com/en/collections/bread/",
+      "supports": "Shows Campaillou in the public bread catalogue."
+    }
+  ],
+  "suggested_user_action": "apply_patch"
 }
 \`\`\`
 
@@ -2291,7 +2330,7 @@ function parsePatchmarkCommentReplyImport(
     protocol_version: 1,
     summary:
       typeof parsedResponse.summary === "string"
-        ? parsedResponse.summary
+        ? validateProtocolTextField(parsedResponse.summary, "summary")
         : undefined,
     sources: normalizeImportedSources(parsedResponse.sources),
     replies: parsedResponse.replies.map(normalizeImportedReply),
@@ -2324,7 +2363,10 @@ function normalizeImportedReply(
 
   return {
     comment_id: reply.comment_id,
-    reply: reply.reply,
+    reply: validateProtocolTextField(reply.reply, "reply"),
+    reply_sources: normalizeImportedSources(
+      reply.reply_sources ?? reply.sources
+    ),
     suggested_user_action: isSuggestedUserAction(reply.suggested_user_action)
       ? reply.suggested_user_action
       : undefined,
@@ -2354,12 +2396,37 @@ function normalizeImportedPatchProposal(
         ? patchProposal.target_heading
         : undefined,
     original_text: patchProposal.original_text,
-    suggested_text: patchProposal.suggested_text,
-    reason: patchProposal.reason,
+    suggested_text: validateProtocolTextField(
+      patchProposal.suggested_text,
+      "suggested_text"
+    ),
+    suggested_text_sources: normalizeImportedSources(
+      patchProposal.suggested_text_sources
+    ),
+    reason: validateProtocolTextField(patchProposal.reason, "reason"),
+    reason_sources: normalizeImportedSources(
+      patchProposal.reason_sources ?? patchProposal.sources
+    ),
     risk:
-      typeof patchProposal.risk === "string" ? patchProposal.risk : undefined,
+      typeof patchProposal.risk === "string"
+        ? validateProtocolTextField(patchProposal.risk, "risk")
+        : undefined,
+    risk_sources: normalizeImportedSources(patchProposal.risk_sources),
     sources: normalizeImportedSources(patchProposal.sources)
   };
+}
+
+function validateProtocolTextField(value: string, fieldName: string): string {
+  if (
+    PROTOCOL_URL_PATTERN.test(value) ||
+    PROTOCOL_MARKDOWN_LINK_PATTERN.test(value) ||
+    PROTOCOL_REFERENCE_LINK_PATTERN.test(value) ||
+    PROTOCOL_FOOTNOTE_PATTERN.test(value)
+  ) {
+    throw new Error(`${STRICT_CHATGPT_IMPORT_ERROR} Invalid field: ${fieldName}.`);
+  }
+
+  return value;
 }
 
 function normalizeImportedSources(
@@ -2413,17 +2480,22 @@ function normalizeImportedSourceReference(
 
   const title =
     typeof source.title === "string" && source.title.trim()
-      ? source.title.trim()
+      ? validateProtocolTextField(source.title.trim(), "source.title")
       : undefined;
   const note =
     typeof source.note === "string" && source.note.trim()
-      ? source.note.trim()
+      ? validateProtocolTextField(source.note.trim(), "source.note")
+      : undefined;
+  const supports =
+    typeof source.supports === "string" && source.supports.trim()
+      ? validateProtocolTextField(source.supports.trim(), "source.supports")
       : undefined;
 
   return {
     title,
     url: normalizedUrl,
-    note
+    note,
+    supports
   };
 }
 
@@ -2442,7 +2514,8 @@ function normalizeImportedOpenQuestion(
 
   return {
     comment_id: openQuestion.comment_id,
-    question: openQuestion.question
+    question: validateProtocolTextField(openQuestion.question, "question"),
+    question_sources: normalizeImportedSources(openQuestion.question_sources)
   };
 }
 
@@ -2549,7 +2622,7 @@ function createImportedCommentThreads({
           content: reply.reply,
           createdAt: importedAt,
           importId,
-          sources: reply.sources,
+          sources: reply.reply_sources,
           sourceChatUrl,
           suggestedUserAction: reply.suggested_user_action,
           thread: nextThread
@@ -2565,6 +2638,7 @@ function createImportedCommentThreads({
           content: `Question: ${openQuestion.question}`,
           createdAt: importedAt,
           importId,
+          sources: openQuestion.question_sources,
           sourceChatUrl,
           suggestedUserAction: "clarify",
           thread: nextThread
@@ -2649,8 +2723,11 @@ function createImportedPatchProposals({
       target_heading: patchProposal.target_heading,
       original_text: patchProposal.original_text,
       suggested_text: patchProposal.suggested_text,
+      suggested_text_sources: patchProposal.suggested_text_sources,
       reason: patchProposal.reason,
+      reason_sources: patchProposal.reason_sources,
       risk: patchProposal.risk,
+      risk_sources: patchProposal.risk_sources,
       sources: patchProposal.sources,
       created_at: importedAt
     }));

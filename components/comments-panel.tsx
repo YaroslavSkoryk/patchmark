@@ -1022,6 +1022,9 @@ function CommentCard({
                             >
                               {source.title || source.url}
                             </a>
+                            {source.supports ? (
+                              <small>{source.supports}</small>
+                            ) : null}
                             {source.note ? <small>{source.note}</small> : null}
                           </li>
                         ))}
