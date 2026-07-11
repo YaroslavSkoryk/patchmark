@@ -59,9 +59,12 @@ type CommentsPanelProps = {
   onMarkCommentForExport: (commentId: string) => Promise<void>;
   onReopenComment: (commentId: string) => Promise<void>;
   onReplyComment: (commentId: string, content: string) => Promise<void>;
+  onReviewCommentPatches: (commentId: string) => void;
+  onReviewFirstPendingPatch: () => void;
   onResolveComment: (commentId: string) => Promise<void>;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   pendingPatchCountsByCommentId: Record<string, number>;
+  pendingPatchTotal: number;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
 };
@@ -112,9 +115,12 @@ export function CommentsPanel({
   onMarkCommentForExport,
   onReopenComment,
   onReplyComment,
+  onReviewCommentPatches,
+  onReviewFirstPendingPatch,
   onResolveComment,
   onUnmarkCommentForExport,
   pendingPatchCountsByCommentId,
+  pendingPatchTotal,
   selectedAnchorContextKind,
   selectedTextPreview
 }: CommentsPanelProps) {
@@ -363,6 +369,21 @@ export function CommentsPanel({
               {formError}
             </p>
           ) : null}
+          {pendingPatchTotal > 0 ? (
+            <div className="patch-summary-card">
+              <span>
+                Pending patch{pendingPatchTotal === 1 ? "" : "es"}:{" "}
+                {pendingPatchTotal}
+              </span>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={onReviewFirstPendingPatch}
+              >
+                Review patch{pendingPatchTotal === 1 ? "" : "es"}
+              </button>
+            </div>
+          ) : null}
 
           <FloatingCommentList
             addForm={addForm}
@@ -380,6 +401,7 @@ export function CommentsPanel({
             onMarkCommentForExport={onMarkCommentForExport}
             onReopenComment={onReopenComment}
             onReplyComment={handleReplyComment}
+            onReviewCommentPatches={onReviewCommentPatches}
             onResolveComment={onResolveComment}
             onSetEditComment={setEditComment}
             onSetEditType={setEditType}
@@ -417,6 +439,7 @@ type CommentGroupProps = {
   onMarkCommentForExport: (commentId: string) => Promise<void>;
   onReopenComment?: (commentId: string) => Promise<void>;
   onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
+  onReviewCommentPatches: (commentId: string) => void;
   onResolveComment?: (commentId: string) => Promise<void>;
   onSetEditComment: (comment: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
@@ -457,6 +480,7 @@ function FloatingCommentList({
   onMarkCommentForExport,
   onReopenComment,
   onReplyComment,
+  onReviewCommentPatches,
   onResolveComment,
   onSetEditComment,
   onSetEditType,
@@ -625,6 +649,7 @@ function FloatingCommentList({
                   onMarkCommentForExport={onMarkCommentForExport}
                   onReopenComment={onReopenComment}
                   onReplyComment={onReplyComment}
+                  onReviewCommentPatches={onReviewCommentPatches}
                   onResolveComment={onResolveComment}
                   onSetEditComment={onSetEditComment}
                   onSetEditType={onSetEditType}
@@ -665,6 +690,7 @@ function FloatingCommentList({
           onMarkCommentForExport={onMarkCommentForExport}
           onReopenComment={onReopenComment}
           onReplyComment={onReplyComment}
+          onReviewCommentPatches={onReviewCommentPatches}
           onResolveComment={onResolveComment}
           onSetEditComment={onSetEditComment}
           onSetEditType={onSetEditType}
@@ -758,6 +784,7 @@ function CommentGroup({
   onMarkCommentForExport,
   onReopenComment,
   onReplyComment,
+  onReviewCommentPatches,
   onResolveComment,
   onSetEditComment,
   onSetEditType,
@@ -795,6 +822,7 @@ function CommentGroup({
                   onMarkCommentForExport={onMarkCommentForExport}
                   onReopenComment={onReopenComment}
                   onReplyComment={onReplyComment}
+                  onReviewCommentPatches={onReviewCommentPatches}
                   onResolveComment={onResolveComment}
                   onSetEditComment={onSetEditComment}
                   onSetEditType={onSetEditType}
@@ -831,6 +859,7 @@ type CommentCardProps = {
   onMarkCommentForExport: (commentId: string) => Promise<void>;
   onReopenComment?: (commentId: string) => Promise<void>;
   onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
+  onReviewCommentPatches: (commentId: string) => void;
   onResolveComment?: (commentId: string) => Promise<void>;
   onSetEditComment: (comment: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
@@ -859,6 +888,7 @@ function CommentCard({
   onMarkCommentForExport,
   onReopenComment,
   onReplyComment,
+  onReviewCommentPatches,
   onResolveComment,
   onSetEditComment,
   onSetEditType,
@@ -974,10 +1004,19 @@ function CommentCard({
           ) : null}
           <p>{comment.comment}</p>
           {pendingPatchCount > 0 ? (
-            <span className="comment-pending-patches">
-              Pending patch proposal{pendingPatchCount === 1 ? "" : "s"}:{" "}
-              {pendingPatchCount}
-            </span>
+            <div className="comment-pending-patches">
+              <span>
+                Pending patch proposal{pendingPatchCount === 1 ? "" : "s"}:{" "}
+                {pendingPatchCount}
+              </span>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => onReviewCommentPatches(comment.id)}
+              >
+                Review patch{pendingPatchCount === 1 ? "" : "es"}
+              </button>
+            </div>
           ) : null}
           {threadPreviewEntries.length > 0 ? (
             <div className="comment-thread-preview">

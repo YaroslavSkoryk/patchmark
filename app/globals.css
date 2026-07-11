@@ -1042,6 +1042,21 @@ button {
   color: #8d2f18;
 }
 
+.patch-summary-card {
+  display: grid;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid #eccd8f;
+  background: #fffaf0;
+  padding: 10px;
+}
+
+.patch-summary-card span {
+  color: #76510f;
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
 .comment-form {
   display: grid;
   gap: 10px;
@@ -1289,11 +1304,23 @@ button {
 }
 
 .comment-pending-patches {
-  width: fit-content;
+  display: grid;
+  gap: 7px;
+  width: 100%;
   border: 1px solid #eccd8f;
   background: #fff4d8;
   color: #76510f;
-  padding: 3px 6px;
+  padding: 7px;
+}
+
+.comment-pending-patches span {
+  color: #76510f;
+  font-size: 0.74rem;
+  font-weight: 800;
+}
+
+.comment-pending-patches button {
+  width: fit-content;
 }
 
 .comment-thread-entry {
@@ -1347,6 +1374,187 @@ button {
 .comment-timestamp {
   color: var(--muted);
   font-size: 0.74rem;
+}
+
+.patch-review-dialog {
+  display: flex;
+  width: min(1120px, 100%);
+  max-height: min(90vh, 920px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
+}
+
+.patch-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 18px;
+}
+
+.patch-review-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 10px;
+  font-weight: 700;
+}
+
+.patch-review-actions button:hover {
+  border-color: var(--accent);
+}
+
+.patch-review-actions span {
+  color: var(--muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.patch-applicability {
+  display: grid;
+  gap: 3px;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 18px;
+}
+
+.patch-applicability strong {
+  font-size: 0.94rem;
+}
+
+.patch-applicability span {
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.patch-applicability-exact_match {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.patch-applicability-multiple_matches {
+  background: #fff4d8;
+  color: #76510f;
+}
+
+.patch-applicability-not_found {
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.patch-review-body {
+  display: grid;
+  gap: 14px;
+  overflow: auto;
+  padding: 18px;
+}
+
+.patch-review-card {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--border);
+  background: #fbfcfb;
+  padding: 12px;
+}
+
+.patch-review-card h3 {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.patch-review-card p {
+  margin: 0;
+  line-height: 1.5;
+}
+
+.patch-review-card pre {
+  max-width: 100%;
+  overflow: auto;
+  margin: 0;
+  border: 1px solid var(--border);
+  background: #101815;
+  color: #f4f7f5;
+  padding: 12px;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.patch-metadata {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.patch-metadata div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+
+.patch-metadata dt {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.patch-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-size: 0.88rem;
+}
+
+.patch-source-chat-link,
+.patch-source-list a {
+  width: fit-content;
+  color: var(--accent-strong);
+  font-weight: 800;
+}
+
+.patch-linked-reply {
+  margin: 0;
+  border-left: 3px solid #eccd8f;
+  background: #fffaf0;
+  padding: 10px;
+  line-height: 1.45;
+}
+
+.patch-source-list {
+  display: grid;
+  gap: 6px;
+}
+
+.patch-source-list span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.patch-source-list ul {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding-left: 18px;
+}
+
+.patch-source-list li {
+  color: var(--muted);
+  line-height: 1.4;
+}
+
+.patch-source-list small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 @media (max-width: 900px) {

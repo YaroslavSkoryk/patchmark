@@ -119,6 +119,10 @@ type ChatGptImportSummary = {
   repliesAttached: number;
   warnings: string[];
 };
+type PatchApplicability =
+  | "exact_match"
+  | "multiple_matches"
+  | "not_found";
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
   container: HTMLElement | null;
@@ -232,6 +236,9 @@ export function DocumentEditor() {
     useState<ChatGptPromptDialogState | null>(null);
   const [chatGptImportDialog, setChatGptImportDialog] =
     useState<ChatGptImportDialogState | null>(null);
+  const [selectedPatchId, setSelectedPatchId] = useState<string | null>(null);
+  const [patchReviewCommentScopeId, setPatchReviewCommentScopeId] =
+    useState<string | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const markdownSelectionDraft = useMemo(
@@ -276,6 +283,41 @@ export function DocumentEditor() {
     () => getPendingPatchCountsByCommentId(patches),
     [patches]
   );
+  const pendingPatches = useMemo(
+    () => patches.filter((patch) => patch.status === "pending"),
+    [patches]
+  );
+  const selectedPatch = useMemo(
+    () =>
+      selectedPatchId
+        ? patches.find((patch) => patch.id === selectedPatchId) ?? null
+        : null,
+    [patches, selectedPatchId]
+  );
+  const reviewablePatches = useMemo(
+    () =>
+      patchReviewCommentScopeId
+        ? pendingPatches.filter(
+            (patch) => patch.comment_id === patchReviewCommentScopeId
+          )
+        : pendingPatches,
+    [patchReviewCommentScopeId, pendingPatches]
+  );
+  const selectedPatchComment = useMemo(
+    () =>
+      selectedPatch?.comment_id
+        ? comments.find((comment) => comment.id === selectedPatch.comment_id) ??
+          null
+        : null,
+    [comments, selectedPatch]
+  );
+  const selectedPatchApplicability = useMemo(
+    () =>
+      selectedPatch
+        ? getPatchApplicability(markdown, selectedPatch.original_text)
+        : null,
+    [markdown, selectedPatch]
+  );
   const isDirty =
     fileName !== null &&
     (baselineMarkdown === null || markdown !== baselineMarkdown);
@@ -299,6 +341,8 @@ export function DocumentEditor() {
       setVersionEntries([]);
       setComments([]);
       setPatches([]);
+      setSelectedPatchId(null);
+      setPatchReviewCommentScopeId(null);
       setCommentsError(null);
       return;
     }
@@ -340,6 +384,13 @@ export function DocumentEditor() {
       isCancelled = true;
     };
   }, [projectHandle]);
+
+  useEffect(() => {
+    if (selectedPatchId && !patches.some((patch) => patch.id === selectedPatchId)) {
+      setSelectedPatchId(null);
+      setPatchReviewCommentScopeId(null);
+    }
+  }, [patches, selectedPatchId]);
 
   useEffect(() => {
     if (!fileName) {
@@ -601,6 +652,8 @@ export function DocumentEditor() {
     setCommentContextMenu(null);
     setComments([]);
     setPatches([]);
+    setSelectedPatchId(null);
+    setPatchReviewCommentScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setChatGptImportDialog(null);
@@ -630,6 +683,8 @@ export function DocumentEditor() {
     setCommentContextMenu(null);
     setComments([]);
     setPatches([]);
+    setSelectedPatchId(null);
+    setPatchReviewCommentScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setChatGptImportDialog(null);
@@ -1461,6 +1516,79 @@ export function DocumentEditor() {
     });
   }
 
+  function handleReviewFirstPendingPatch() {
+    const firstPendingPatch = pendingPatches[0];
+
+    if (!firstPendingPatch) {
+      setSaveFeedback({
+        kind: "info",
+        message: "No pending patch proposals to review."
+      });
+      return;
+    }
+
+    setPatchReviewCommentScopeId(null);
+    setSelectedPatchId(firstPendingPatch.id);
+  }
+
+  function handleReviewCommentPatches(commentId: string) {
+    const firstLinkedPendingPatch = pendingPatches.find(
+      (patch) => patch.comment_id === commentId
+    );
+
+    if (!firstLinkedPendingPatch) {
+      setSaveFeedback({
+        kind: "info",
+        message: "No pending patch proposal is linked to this comment."
+      });
+      return;
+    }
+
+    setPatchReviewCommentScopeId(commentId);
+    setSelectedPatchId(firstLinkedPendingPatch.id);
+  }
+
+  function handleNavigatePatchReview(direction: -1 | 1) {
+    if (!selectedPatch || reviewablePatches.length === 0) {
+      return;
+    }
+
+    const currentIndex = reviewablePatches.findIndex(
+      (patch) => patch.id === selectedPatch.id
+    );
+    const nextIndex =
+      currentIndex === -1
+        ? 0
+        : (currentIndex + direction + reviewablePatches.length) %
+          reviewablePatches.length;
+
+    setSelectedPatchId(reviewablePatches[nextIndex].id);
+  }
+
+  function handleFindPatchOriginalText(patch: PatchmarkPatch) {
+    const matches = findExactTextMatches(markdown, patch.original_text);
+
+    if (matches.length === 1) {
+      jumpToMarkdownSelection(
+        matches[0].start,
+        matches[0].end
+      );
+      setSaveFeedback({
+        kind: "success",
+        message: "Showing patch original text in Markdown Mode."
+      });
+      return;
+    }
+
+    setSaveFeedback({
+      kind: matches.length > 1 ? "info" : "error",
+      message:
+        matches.length > 1
+          ? "Patch original text appears multiple times."
+          : "Patch original text was not found."
+    });
+  }
+
   function jumpToMarkdownSelection(start: number, end: number) {
     setMode("markdown");
     setMarkdownSelectionRequest({
@@ -1660,6 +1788,8 @@ export function DocumentEditor() {
     setCommentAddRequest(null);
     setCommentContextMenu(null);
     setPatches([]);
+    setSelectedPatchId(null);
+    setPatchReviewCommentScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setChatGptImportDialog(null);
@@ -1846,9 +1976,12 @@ export function DocumentEditor() {
           onMarkCommentForExport={handleMarkCommentForExport}
           onReopenComment={handleReopenComment}
           onReplyComment={handleReplyToComment}
+          onReviewCommentPatches={handleReviewCommentPatches}
+          onReviewFirstPendingPatch={handleReviewFirstPendingPatch}
           onResolveComment={handleResolveComment}
           onUnmarkCommentForExport={handleUnmarkCommentForExport}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
+          pendingPatchTotal={pendingPatches.length}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
         />
@@ -2056,7 +2189,216 @@ export function DocumentEditor() {
           </form>
         </div>
       ) : null}
+      {selectedPatch && selectedPatchApplicability ? (
+        <PatchReviewDialog
+          applicability={selectedPatchApplicability}
+          comment={selectedPatchComment}
+          hasMultiplePendingPatches={reviewablePatches.length > 1}
+          onClose={() => {
+            setSelectedPatchId(null);
+            setPatchReviewCommentScopeId(null);
+          }}
+          onFindOriginalText={() => handleFindPatchOriginalText(selectedPatch)}
+          onNextPatch={() => handleNavigatePatchReview(1)}
+          onPreviousPatch={() => handleNavigatePatchReview(-1)}
+          patch={selectedPatch}
+          patchIndex={Math.max(
+            0,
+            reviewablePatches.findIndex((patch) => patch.id === selectedPatch.id)
+          )}
+          pendingPatchCount={reviewablePatches.length}
+        />
+      ) : null}
     </section>
+  );
+}
+
+function PatchReviewDialog({
+  applicability,
+  comment,
+  hasMultiplePendingPatches,
+  onClose,
+  onFindOriginalText,
+  onNextPatch,
+  onPreviousPatch,
+  patch,
+  patchIndex,
+  pendingPatchCount
+}: {
+  applicability: PatchApplicability;
+  comment: PatchmarkComment | null;
+  hasMultiplePendingPatches: boolean;
+  onClose: () => void;
+  onFindOriginalText: () => void;
+  onNextPatch: () => void;
+  onPreviousPatch: () => void;
+  patch: PatchmarkPatch;
+  patchIndex: number;
+  pendingPatchCount: number;
+}) {
+  const latestChatGptReply = comment
+    ? getLatestChatGptThreadEntry(comment)
+    : null;
+  const suggestedTextSources = patch.suggested_text_sources ?? [];
+  const reasonSources = patch.reason_sources ?? patch.sources ?? [];
+  const riskSources = patch.risk_sources ?? [];
+
+  return (
+    <div className="snapshot-dialog-backdrop">
+      <section className="patch-review-dialog" aria-label="Review Patch Proposal">
+        <header className="snapshot-dialog-header">
+          <div>
+            <span>Patch proposal</span>
+            <h2>Review Patch Proposal</h2>
+            <p>
+              Inspect this ChatGPT proposal. Patchmark will not apply or mutate
+              the document in this phase.
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </header>
+
+        <div className="patch-review-actions">
+          <button type="button" onClick={onFindOriginalText}>
+            Find original text
+          </button>
+          {hasMultiplePendingPatches ? (
+            <>
+              <button type="button" onClick={onPreviousPatch}>
+                Previous patch
+              </button>
+              <button type="button" onClick={onNextPatch}>
+                Next patch
+              </button>
+              <span>
+                Pending patch {patchIndex + 1} of {pendingPatchCount}
+              </span>
+            </>
+          ) : null}
+        </div>
+
+        <div
+          className={`patch-applicability patch-applicability-${applicability}`}
+          role="status"
+        >
+          <strong>{getPatchApplicabilityLabel(applicability)}</strong>
+          <span>{getPatchApplicabilityDetail(applicability)}</span>
+        </div>
+
+        <div className="patch-review-body">
+          <section className="patch-review-card">
+            <h3>Metadata</h3>
+            <dl className="patch-metadata">
+              <div>
+                <dt>Patch ID</dt>
+                <dd>{patch.id}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{patch.status}</dd>
+              </div>
+              <div>
+                <dt>Linked comment ID</dt>
+                <dd>{patch.comment_id ?? "None"}</dd>
+              </div>
+              <div>
+                <dt>Target heading</dt>
+                <dd>{patch.target_heading ?? "Not specified"}</dd>
+              </div>
+              <div>
+                <dt>Created at</dt>
+                <dd>{formatPatchDate(patch.created_at)}</dd>
+              </div>
+              <div>
+                <dt>Source import ID</dt>
+                <dd>{patch.source_import_id ?? "Not recorded"}</dd>
+              </div>
+            </dl>
+            {patch.source_chat_url ? (
+              <a
+                className="patch-source-chat-link"
+                href={patch.source_chat_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open ChatGPT chat
+              </a>
+            ) : null}
+          </section>
+
+          {comment ? (
+            <section className="patch-review-card">
+              <h3>Linked comment context</h3>
+              <p>{comment.comment}</p>
+              {latestChatGptReply ? (
+                <blockquote className="patch-linked-reply">
+                  Latest ChatGPT reply: {latestChatGptReply.content}
+                </blockquote>
+              ) : null}
+            </section>
+          ) : null}
+
+          <section className="patch-review-card">
+            <h3>Original text</h3>
+            <pre>{patch.original_text}</pre>
+          </section>
+
+          <section className="patch-review-card">
+            <h3>Suggested replacement</h3>
+            <pre>{patch.suggested_text}</pre>
+            <PatchSourceList
+              label="Suggested text sources"
+              sources={suggestedTextSources}
+            />
+          </section>
+
+          <section className="patch-review-card">
+            <h3>Reason</h3>
+            <p>{patch.reason}</p>
+            <PatchSourceList label="Reason sources" sources={reasonSources} />
+          </section>
+
+          {patch.risk ? (
+            <section className="patch-review-card">
+              <h3>Risk / tradeoff</h3>
+              <p>{patch.risk}</p>
+              <PatchSourceList label="Risk sources" sources={riskSources} />
+            </section>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PatchSourceList({
+  label,
+  sources
+}: {
+  label: string;
+  sources: PatchmarkSourceReference[];
+}) {
+  if (sources.length === 0) {
+    return null;
+  }
+
+  return (
+    <div className="patch-source-list">
+      <span>{label}</span>
+      <ul>
+        {sources.map((source, index) => (
+          <li key={`${source.url}-${index}`}>
+            <a href={source.url} target="_blank" rel="noreferrer">
+              {source.title || source.url}
+            </a>
+            {source.supports ? <small>{source.supports}</small> : null}
+            {source.note ? <small>{source.note}</small> : null}
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 
@@ -2907,6 +3249,72 @@ function getPendingPatchCountsByCommentId(
     counts[patch.comment_id] = (counts[patch.comment_id] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function getPatchApplicability(
+  markdown: string,
+  originalText: string
+): PatchApplicability {
+  const matches = findExactTextMatches(markdown, originalText);
+
+  if (matches.length === 1) {
+    return "exact_match";
+  }
+
+  if (matches.length > 1) {
+    return "multiple_matches";
+  }
+
+  return "not_found";
+}
+
+function getPatchApplicabilityLabel(applicability: PatchApplicability): string {
+  if (applicability === "exact_match") {
+    return "Patch can be applied cleanly.";
+  }
+
+  if (applicability === "multiple_matches") {
+    return "Patch matches multiple locations.";
+  }
+
+  return "Original text was not found.";
+}
+
+function getPatchApplicabilityDetail(
+  applicability: PatchApplicability
+): string {
+  if (applicability === "exact_match") {
+    return "The original text appears exactly once in the current Markdown.";
+  }
+
+  if (applicability === "multiple_matches") {
+    return "Review manually before applying in a later phase.";
+  }
+
+  return "The patch may be stale because the current document no longer contains the original text.";
+}
+
+function getLatestChatGptThreadEntry(
+  comment: PatchmarkComment
+): PatchmarkCommentThreadEntry | null {
+  return (
+    [...comment.thread]
+      .reverse()
+      .find((entry) => entry.role === "chatgpt") ?? null
+  );
+}
+
+function formatPatchDate(dateValue: string): string {
+  const date = new Date(dateValue);
+
+  if (Number.isNaN(date.getTime())) {
+    return dateValue;
+  }
+
+  return date.toLocaleString([], {
+    dateStyle: "medium",
+    timeStyle: "short"
+  });
 }
 
 function createChatGptImportSummaryMessage({
