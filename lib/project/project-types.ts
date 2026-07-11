@@ -258,6 +258,13 @@ export type PatchmarkPatch = {
   rejected_at?: string;
   pre_apply_snapshot_id?: string;
   pre_apply_snapshot_file?: string;
+  applied_text?: string;
+  applied_start_offset?: number;
+  applied_end_offset?: number;
+  applied_context_before?: string;
+  applied_context_after?: string;
+  applied_heading?: string;
+  applied_heading_path?: string[];
 };
 
 export type PatchmarkPatchGroup = {

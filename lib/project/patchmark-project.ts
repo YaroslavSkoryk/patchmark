@@ -1174,7 +1174,38 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
     pre_apply_snapshot_file:
       typeof patch.pre_apply_snapshot_file === "string"
         ? patch.pre_apply_snapshot_file
-        : undefined
+        : undefined,
+    applied_text:
+      typeof patch.applied_text === "string" ? patch.applied_text : undefined,
+    applied_start_offset:
+      typeof patch.applied_start_offset === "number" &&
+      Number.isInteger(patch.applied_start_offset) &&
+      patch.applied_start_offset >= 0
+        ? patch.applied_start_offset
+        : undefined,
+    applied_end_offset:
+      typeof patch.applied_end_offset === "number" &&
+      Number.isInteger(patch.applied_end_offset) &&
+      patch.applied_end_offset >= 0
+        ? patch.applied_end_offset
+        : undefined,
+    applied_context_before:
+      typeof patch.applied_context_before === "string"
+        ? patch.applied_context_before
+        : undefined,
+    applied_context_after:
+      typeof patch.applied_context_after === "string"
+        ? patch.applied_context_after
+        : undefined,
+    applied_heading:
+      typeof patch.applied_heading === "string"
+        ? patch.applied_heading
+        : undefined,
+    applied_heading_path: Array.isArray(patch.applied_heading_path)
+      ? patch.applied_heading_path.filter(
+          (heading): heading is string => typeof heading === "string"
+        )
+      : undefined
   };
 }
 

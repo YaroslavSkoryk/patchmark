@@ -164,6 +164,26 @@ type PatchApplicability =
   | "exact_match"
   | "multiple_matches"
   | "not_found";
+type AppliedPatchAnchorStatus =
+  | "empty_applied_text"
+  | "found_once"
+  | "multiple_matches"
+  | "not_found"
+  | "present_at_applied_offsets";
+type TextMatch = { end: number; start: number };
+type PatchReviewAnchorStatus =
+  | {
+      kind: "accepted";
+      matches: TextMatch[];
+      status: AppliedPatchAnchorStatus;
+      text: string;
+    }
+  | {
+      applicability: PatchApplicability;
+      kind: "historical" | "pending";
+      matches: TextMatch[];
+      text: string;
+    };
 type PatchmarkPatchGroupStatus =
   | "pending"
   | "in_progress"
@@ -171,6 +191,7 @@ type PatchmarkPatchGroupStatus =
   | "needs_review";
 type PatchGroupApplicabilitySummary = Record<PatchApplicability, number>;
 type DerivedPatchGroup = PatchmarkPatchGroup & {
+  anchor_status_by_patch_id: Record<string, PatchReviewAnchorStatus>;
   applicability_by_patch_id: Record<string, PatchApplicability>;
   applicability_summary: PatchGroupApplicabilitySummary;
   display_id: string;
@@ -441,10 +462,10 @@ export function DocumentEditor() {
         : null,
     [comments, selectedPatch]
   );
-  const selectedPatchApplicability = useMemo(
+  const selectedPatchAnchorStatus = useMemo(
     () =>
       selectedPatch
-        ? getPatchApplicability(markdown, selectedPatch.original_text)
+        ? getPatchReviewAnchorStatus(markdown, selectedPatch)
         : null,
     [markdown, selectedPatch]
   );
@@ -2042,7 +2063,40 @@ export function DocumentEditor() {
     setSelectedPatchId(reviewablePatches[nextIndex].id);
   }
 
-  function handleFindPatchOriginalText(patch: PatchmarkPatch) {
+  function handleFindPatchAnchorText(patch: PatchmarkPatch) {
+    if (patch.status === "accepted") {
+      const anchorStatus = getAppliedPatchAnchorStatus(markdown, patch);
+      const match = anchorStatus.matches[0];
+
+      if (
+        (anchorStatus.status === "present_at_applied_offsets" ||
+          anchorStatus.status === "found_once") &&
+        match
+      ) {
+        jumpToMarkdownSelection(match.start, match.end);
+        setSaveFeedback({
+          kind: "success",
+          message: "Showing applied patch text in Markdown Mode."
+        });
+        return;
+      }
+
+      setSaveFeedback({
+        kind:
+          anchorStatus.status === "multiple_matches" ||
+          anchorStatus.status === "empty_applied_text"
+            ? "info"
+            : "error",
+        message:
+          anchorStatus.status === "empty_applied_text"
+            ? "This accepted patch has no applied text to select."
+            : anchorStatus.status === "multiple_matches"
+              ? "Applied patch text appears multiple times."
+              : "Applied patch text was not found."
+      });
+      return;
+    }
+
     const matches = findExactTextMatches(markdown, patch.original_text);
 
     if (matches.length === 1) {
@@ -2164,6 +2218,12 @@ export function DocumentEditor() {
         nextMarkdown
       );
       const appliedAt = new Date().toISOString();
+      const appliedAnchorMetadata = createAppliedPatchAnchorMetadata({
+        end: replacementEnd,
+        markdown: nextMarkdown,
+        start: replacementStart,
+        text: currentPatch.suggested_text
+      });
       const affectedCommentUpdate = updateAffectedCommentAnchors({
         affectedComments,
         comments,
@@ -2183,7 +2243,8 @@ export function DocumentEditor() {
               accepted_at: appliedAt,
               applied_at: appliedAt,
               pre_apply_snapshot_id: snapshotResult.version.id,
-              pre_apply_snapshot_file: snapshotResult.version.file
+              pre_apply_snapshot_file: snapshotResult.version.file,
+              ...appliedAnchorMetadata
             }
           : candidate
       );
@@ -3317,9 +3378,9 @@ export function DocumentEditor() {
           }
         />
       ) : null}
-      {selectedPatch && selectedPatchApplicability ? (
+      {selectedPatch && selectedPatchAnchorStatus ? (
         <PatchReviewDialog
-          applicability={selectedPatchApplicability}
+          anchorStatus={selectedPatchAnchorStatus}
           comment={selectedPatchComment}
           hasMultipleReviewablePatches={reviewablePatches.length > 1}
           isPatchActionBusy={isSaving}
@@ -3339,7 +3400,7 @@ export function DocumentEditor() {
             setPatchReviewCommentScopeId(null);
             setPatchReviewGroupScopeId(null);
           }}
-          onFindOriginalText={() => handleFindPatchOriginalText(selectedPatch)}
+          onFindPatchAnchorText={() => handleFindPatchAnchorText(selectedPatch)}
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
           onRejectPatch={() => handleRejectPatch(selectedPatch)}
@@ -3572,7 +3633,9 @@ function PatchGroupPatchCard({
   onReviewPatch: (patch: PatchmarkPatch) => void;
   patch: PatchmarkPatch;
 }) {
-  const applicability = group.applicability_by_patch_id[patch.id] ?? "not_found";
+  const anchorStatus =
+    group.anchor_status_by_patch_id[patch.id] ??
+    getPatchReviewAnchorStatus("", patch);
 
   return (
     <article className="patch-group-patch-card">
@@ -3583,7 +3646,7 @@ function PatchGroupPatchCard({
         <span>{patch.id}</span>
         <span>Status: {patch.status}</span>
         <span>Target: {patch.target_heading ?? "Not specified"}</span>
-        <span>{getPatchApplicabilityShortLabel(applicability)}</span>
+        <span>{getPatchReviewAnchorShortLabel(anchorStatus)}</span>
       </div>
       <p>{patch.reason}</p>
       <button type="button" onClick={() => onReviewPatch(patch)}>
@@ -3594,7 +3657,7 @@ function PatchGroupPatchCard({
 }
 
 function PatchReviewDialog({
-  applicability,
+  anchorStatus,
   comment,
   hasMultipleReviewablePatches,
   isPatchActionBusy,
@@ -3602,7 +3665,7 @@ function PatchReviewDialog({
   onAcceptPatch,
   onBackToGroup,
   onClose,
-  onFindOriginalText,
+  onFindPatchAnchorText,
   onNextPatch,
   onPreviousPatch,
   onRejectPatch,
@@ -3611,7 +3674,7 @@ function PatchReviewDialog({
   patchIndex,
   reviewablePatchCount
 }: {
-  applicability: PatchApplicability;
+  anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
   hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
@@ -3619,7 +3682,7 @@ function PatchReviewDialog({
   onAcceptPatch: () => void;
   onBackToGroup?: () => void;
   onClose: () => void;
-  onFindOriginalText: () => void;
+  onFindPatchAnchorText: () => void;
   onNextPatch: () => void;
   onPreviousPatch: () => void;
   onRejectPatch: () => void;
@@ -3641,7 +3704,7 @@ function PatchReviewDialog({
   );
   const acceptDisabledMessage = getPatchAcceptDisabledMessage(
     patch,
-    applicability
+    anchorStatus.kind === "pending" ? anchorStatus.applicability : "not_found"
   );
   const sourceReferenceWarnings = getPatchSourceReferenceWarnings(patch);
   const canAcceptPatch =
@@ -3675,8 +3738,8 @@ function PatchReviewDialog({
               Back to group
             </button>
           ) : null}
-          <button type="button" onClick={onFindOriginalText}>
-            Find original text
+          <button type="button" onClick={onFindPatchAnchorText}>
+            {patch.status === "accepted" ? "Find applied text" : "Find original text"}
           </button>
           {patch.status === "pending" ? (
             <div className="patch-decision-actions">
@@ -3722,11 +3785,11 @@ function PatchReviewDialog({
         </div>
 
         <div
-          className={`patch-applicability patch-applicability-${applicability}`}
+          className={`patch-applicability patch-applicability-${getPatchReviewAnchorClassName(anchorStatus)}`}
           role="status"
         >
-          <strong>{getPatchApplicabilityLabel(applicability)}</strong>
-          <span>{getPatchApplicabilityDetail(applicability)}</span>
+          <strong>{getPatchReviewAnchorLabel(anchorStatus)}</strong>
+          <span>{getPatchReviewAnchorDetail(anchorStatus)}</span>
         </div>
 
         {sourceReferenceWarnings.length > 0 ? (
@@ -3767,6 +3830,12 @@ function PatchReviewDialog({
                 <dt>Status</dt>
                 <dd>{patch.status}</dd>
               </div>
+              {patch.status === "accepted" ? (
+                <div>
+                  <dt>Applied anchor</dt>
+                  <dd>{getPatchReviewAnchorShortLabel(anchorStatus)}</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>Linked comment ID</dt>
                 <dd>{patch.comment_id ?? "None"}</dd>
@@ -3861,7 +3930,7 @@ function PatchReviewDialog({
           {reviewMode === "visual" ? (
             <div className="patch-review-preview-grid">
               <section className="patch-review-card">
-                <h3>Current</h3>
+                <h3>{patch.status === "accepted" ? "Applied current text" : "Current"}</h3>
                 <MarkdownSnippetPreview markdown={visualPreview.originalMarkdown} />
                 {visualPreview.usesTableContext ? (
                   <p className="patch-review-preview-note">
@@ -3872,7 +3941,7 @@ function PatchReviewDialog({
               </section>
 
               <section className="patch-review-card">
-                <h3>Proposed</h3>
+                <h3>{patch.status === "accepted" ? "Accepted replacement" : "Proposed"}</h3>
                 <MarkdownSnippetPreview markdown={visualPreview.suggestedMarkdown} />
                 {visualPreview.usesTableContext ? (
                   <p className="patch-review-preview-note">
@@ -4260,6 +4329,35 @@ function createPatchVisualPreview(
   markdown: string,
   patch: PatchmarkPatch
 ): PatchVisualPreview {
+  if (patch.status === "accepted") {
+    const appliedText = getPatchAppliedText(patch);
+    const tableContext = getPatchTablePreviewContext(
+      markdown,
+      appliedText,
+      appliedText
+    );
+
+    if (tableContext) {
+      const appliedMarkdown = [
+        tableContext.headerRow,
+        tableContext.separatorRow,
+        appliedText.trim()
+      ].join("\n");
+
+      return {
+        originalMarkdown: appliedMarkdown,
+        suggestedMarkdown: appliedMarkdown,
+        usesTableContext: true
+      };
+    }
+
+    return {
+      originalMarkdown: appliedText,
+      suggestedMarkdown: appliedText,
+      usesTableContext: false
+    };
+  }
+
   const tableContext = getPatchTablePreviewContext(
     markdown,
     patch.original_text,
@@ -5423,6 +5521,10 @@ function derivePatchGroups(
           getPatchGroupSortIndex(firstPatch) - getPatchGroupSortIndex(secondPatch)
       );
       const statusSummary = createPatchGroupStatusSummary(patchesInOrder);
+      const anchorStatusByPatchId = createPatchGroupAnchorStatusByPatchId({
+        markdown,
+        patches: patchesInOrder
+      });
       const applicabilitySummary = createPatchGroupApplicabilitySummary({
         markdown,
         patches: patchesInOrder
@@ -5447,6 +5549,7 @@ function derivePatchGroups(
         patches: patchesInOrder,
         created_at: firstPatch?.created_at ?? "",
         status_summary: statusSummary,
+        anchor_status_by_patch_id: anchorStatusByPatchId,
         applicability_by_patch_id: applicabilityByPatchId,
         applicability_summary: applicabilitySummary,
         is_legacy_single_patch_group:
@@ -5499,6 +5602,10 @@ function createPatchGroupApplicabilitySummary({
 }): PatchGroupApplicabilitySummary {
   return patches.reduce<PatchGroupApplicabilitySummary>(
     (summary, patch) => {
+      if (patch.status !== "pending") {
+        return summary;
+      }
+
       const applicability = getPatchApplicability(markdown, patch.original_text);
 
       return {
@@ -5511,6 +5618,18 @@ function createPatchGroupApplicabilitySummary({
       multiple_matches: 0,
       not_found: 0
     }
+  );
+}
+
+function createPatchGroupAnchorStatusByPatchId({
+  markdown,
+  patches
+}: {
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): Record<string, PatchReviewAnchorStatus> {
+  return Object.fromEntries(
+    patches.map((patch) => [patch.id, getPatchReviewAnchorStatus(markdown, patch)])
   );
 }
 
@@ -5596,6 +5715,112 @@ function getPatchApplicability(
   }
 
   return "not_found";
+}
+
+function getPatchReviewAnchorStatus(
+  markdown: string,
+  patch: PatchmarkPatch
+): PatchReviewAnchorStatus {
+  if (patch.status === "accepted") {
+    return getAppliedPatchAnchorStatus(markdown, patch);
+  }
+
+  const matches = findExactTextMatches(markdown, patch.original_text);
+  const applicability = getPatchApplicability(markdown, patch.original_text);
+
+  return {
+    applicability,
+    kind: patch.status === "pending" ? "pending" : "historical",
+    matches,
+    text: patch.original_text
+  };
+}
+
+function getAppliedPatchAnchorStatus(
+  markdown: string,
+  patch: PatchmarkPatch
+): Extract<PatchReviewAnchorStatus, { kind: "accepted" }> {
+  const appliedText = getPatchAppliedText(patch);
+
+  if (appliedText.length === 0) {
+    return {
+      kind: "accepted",
+      matches: [],
+      status: "empty_applied_text",
+      text: appliedText
+    };
+  }
+
+  const offsetMatch = getAppliedPatchOffsetMatch(markdown, patch, appliedText);
+  if (offsetMatch) {
+    return {
+      kind: "accepted",
+      matches: [offsetMatch],
+      status: "present_at_applied_offsets",
+      text: appliedText
+    };
+  }
+
+  const matches = findExactTextMatches(markdown, appliedText);
+
+  if (matches.length === 1) {
+    return {
+      kind: "accepted",
+      matches,
+      status: "found_once",
+      text: appliedText
+    };
+  }
+
+  if (matches.length > 1) {
+    return {
+      kind: "accepted",
+      matches,
+      status: "multiple_matches",
+      text: appliedText
+    };
+  }
+
+  return {
+    kind: "accepted",
+    matches,
+    status: "not_found",
+    text: appliedText
+  };
+}
+
+function getPatchAppliedText(patch: PatchmarkPatch): string {
+  return patch.applied_text ?? patch.suggested_text;
+}
+
+function getAppliedPatchOffsetMatch(
+  markdown: string,
+  patch: PatchmarkPatch,
+  appliedText: string
+): TextMatch | null {
+  if (
+    typeof patch.applied_start_offset !== "number" ||
+    typeof patch.applied_end_offset !== "number" ||
+    patch.applied_start_offset < 0 ||
+    patch.applied_end_offset < patch.applied_start_offset ||
+    patch.applied_end_offset > markdown.length
+  ) {
+    return null;
+  }
+
+  const candidate = markdown.slice(
+    patch.applied_start_offset,
+    patch.applied_end_offset
+  );
+
+  if (candidate !== appliedText) {
+    return null;
+  }
+
+  return {
+    end: patch.applied_end_offset,
+    start: patch.applied_start_offset
+  };
 }
 
 function getPatchAcceptDisabledMessage(
@@ -5713,6 +5938,46 @@ function replaceSingleOccurrenceAt({
   text: string;
 }): string {
   return text.slice(0, start) + replacement + text.slice(start + search.length);
+}
+
+function createAppliedPatchAnchorMetadata({
+  end,
+  markdown,
+  start,
+  text
+}: {
+  end: number;
+  markdown: string;
+  start: number;
+  text: string;
+}): Partial<PatchmarkPatch> {
+  const contextRadius = 160;
+  const safeStart = Math.max(0, Math.min(start, markdown.length));
+  const safeEnd = Math.max(safeStart, Math.min(end, markdown.length));
+  const headings = parseMarkdownHeadings(markdown);
+  const containingHeading = getHeadingContainingOffset(
+    markdown,
+    headings,
+    safeStart
+  );
+
+  return {
+    applied_text: text,
+    applied_start_offset: safeStart,
+    applied_end_offset: safeEnd,
+    applied_context_before: markdown.slice(
+      Math.max(0, safeStart - contextRadius),
+      safeStart
+    ),
+    applied_context_after: markdown.slice(
+      safeEnd,
+      Math.min(markdown.length, safeEnd + contextRadius)
+    ),
+    applied_heading: containingHeading?.text,
+    applied_heading_path: containingHeading
+      ? getHeadingPath(headings, containingHeading)
+      : undefined
+  };
 }
 
 type AffectedPatchComment = {
@@ -6724,6 +6989,26 @@ function getPatchApplicabilityLabel(applicability: PatchApplicability): string {
   return "Original text was not found.";
 }
 
+function getPatchReviewAnchorLabel(anchorStatus: PatchReviewAnchorStatus): string {
+  if (anchorStatus.kind !== "accepted") {
+    return getPatchApplicabilityLabel(anchorStatus.applicability);
+  }
+
+  if (
+    anchorStatus.status === "present_at_applied_offsets" ||
+    anchorStatus.status === "found_once" ||
+    anchorStatus.status === "empty_applied_text"
+  ) {
+    return "Patch was applied.";
+  }
+
+  if (anchorStatus.status === "multiple_matches") {
+    return "Patch was applied, but the applied text now appears multiple times.";
+  }
+
+  return "Patch was applied, but the applied text is no longer found.";
+}
+
 function getPatchApplicabilityShortLabel(
   applicability: PatchApplicability
 ): string {
@@ -6738,6 +7023,31 @@ function getPatchApplicabilityShortLabel(
   return "Original text not found";
 }
 
+function getPatchReviewAnchorShortLabel(
+  anchorStatus: PatchReviewAnchorStatus
+): string {
+  if (anchorStatus.kind !== "accepted") {
+    return getPatchApplicabilityShortLabel(anchorStatus.applicability);
+  }
+
+  if (
+    anchorStatus.status === "present_at_applied_offsets" ||
+    anchorStatus.status === "found_once"
+  ) {
+    return "Applied text present";
+  }
+
+  if (anchorStatus.status === "empty_applied_text") {
+    return "Applied empty replacement";
+  }
+
+  if (anchorStatus.status === "multiple_matches") {
+    return "Applied text appears multiple times";
+  }
+
+  return "Applied text not found";
+}
+
 function getPatchApplicabilityDetail(
   applicability: PatchApplicability
 ): string {
@@ -6750,6 +7060,52 @@ function getPatchApplicabilityDetail(
   }
 
   return "The patch may be stale because the current document no longer contains the original text.";
+}
+
+function getPatchReviewAnchorDetail(anchorStatus: PatchReviewAnchorStatus): string {
+  if (anchorStatus.kind !== "accepted") {
+    return getPatchApplicabilityDetail(anchorStatus.applicability);
+  }
+
+  if (anchorStatus.status === "present_at_applied_offsets") {
+    return "Applied text is present at the recorded location in the current document.";
+  }
+
+  if (anchorStatus.status === "found_once") {
+    return "Applied text was found exactly once in the current document.";
+  }
+
+  if (anchorStatus.status === "multiple_matches") {
+    return "The accepted replacement exists, but Patchmark cannot identify one unique applied location.";
+  }
+
+  if (anchorStatus.status === "empty_applied_text") {
+    return "This accepted patch applied an empty replacement, so there is no applied text to locate.";
+  }
+
+  return "The document may have changed after this patch was applied.";
+}
+
+function getPatchReviewAnchorClassName(
+  anchorStatus: PatchReviewAnchorStatus
+): PatchApplicability {
+  if (anchorStatus.kind !== "accepted") {
+    return anchorStatus.applicability;
+  }
+
+  if (
+    anchorStatus.status === "present_at_applied_offsets" ||
+    anchorStatus.status === "found_once" ||
+    anchorStatus.status === "empty_applied_text"
+  ) {
+    return "exact_match";
+  }
+
+  if (anchorStatus.status === "multiple_matches") {
+    return "multiple_matches";
+  }
+
+  return "not_found";
 }
 
 function getPatchGroupStatusLabel(status: PatchmarkPatchGroupStatus): string {
