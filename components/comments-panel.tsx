@@ -39,6 +39,15 @@ export type CommentAnchorSummary = {
   status: CommentAnchorStatus;
 };
 
+export type CommentPatchGroupSummary = {
+  accepted: number;
+  groupCount: number;
+  patchCount: number;
+  pending: number;
+  rejected: number;
+  stale: number;
+};
+
 type CommentsPanelProps = {
   addRequest: CommentAddRequest | null;
   anchorSummaries: Record<string, CommentAnchorSummary>;
@@ -63,6 +72,8 @@ type CommentsPanelProps = {
   onReviewFirstPendingPatch: () => void;
   onResolveComment: (commentId: string) => Promise<void>;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  patchGroupSummariesByCommentId: Record<string, CommentPatchGroupSummary>;
+  pendingPatchGroupTotal: number;
   pendingPatchCountsByCommentId: Record<string, number>;
   pendingPatchTotal: number;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
@@ -119,6 +130,8 @@ export function CommentsPanel({
   onReviewFirstPendingPatch,
   onResolveComment,
   onUnmarkCommentForExport,
+  patchGroupSummariesByCommentId,
+  pendingPatchGroupTotal,
   pendingPatchCountsByCommentId,
   pendingPatchTotal,
   selectedAnchorContextKind,
@@ -405,6 +418,11 @@ export function CommentsPanel({
           {pendingPatchTotal > 0 ? (
             <div className="patch-summary-card">
               <span>
+                Pending patch group
+                {pendingPatchGroupTotal === 1 ? "" : "s"}:{" "}
+                {pendingPatchGroupTotal}
+              </span>
+              <span>
                 Pending patch{pendingPatchTotal === 1 ? "" : "es"}:{" "}
                 {pendingPatchTotal}
               </span>
@@ -413,7 +431,7 @@ export function CommentsPanel({
                 disabled={isBusy}
                 onClick={onReviewFirstPendingPatch}
               >
-                Review patch{pendingPatchTotal === 1 ? "" : "es"}
+                Review group{pendingPatchGroupTotal === 1 ? "" : "s"}
               </button>
             </div>
           ) : null}
@@ -449,6 +467,7 @@ export function CommentsPanel({
             }}
             onToggleResolvedComment={toggleResolvedComment}
             onUnmarkCommentForExport={onUnmarkCommentForExport}
+            patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
             pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
             replyingCommentId={replyingCommentId}
             replyComment={replyComment}
@@ -484,6 +503,7 @@ export function CommentsPanel({
               }}
               onToggleResolvedComment={toggleResolvedComment}
               onUnmarkCommentForExport={onUnmarkCommentForExport}
+              patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
               pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
               quiet
               replyingCommentId={replyingCommentId}
@@ -523,6 +543,7 @@ type CommentGroupProps = {
   onStopReplying: () => void;
   onToggleResolvedComment: (commentId: string) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  patchGroupSummariesByCommentId: Record<string, CommentPatchGroupSummary>;
   pendingPatchCountsByCommentId: Record<string, number>;
   quiet?: boolean;
   replyingCommentId: string | null;
@@ -566,6 +587,7 @@ function FloatingCommentList({
   onStopReplying,
   onToggleResolvedComment,
   onUnmarkCommentForExport,
+  patchGroupSummariesByCommentId,
   pendingPatchCountsByCommentId,
   replyingCommentId,
   replyComment
@@ -737,6 +759,9 @@ function FloatingCommentList({
                   onStopReplying={onStopReplying}
                   onToggleResolvedComment={onToggleResolvedComment}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
+                  patchGroupSummary={
+                    patchGroupSummariesByCommentId[item.comment.id] ?? null
+                  }
                   pendingPatchCount={
                     pendingPatchCountsByCommentId[item.comment.id] ?? 0
                   }
@@ -780,6 +805,7 @@ function FloatingCommentList({
           onStopReplying={onStopReplying}
           onToggleResolvedComment={onToggleResolvedComment}
           onUnmarkCommentForExport={onUnmarkCommentForExport}
+          patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           quiet
           replyingCommentId={replyingCommentId}
@@ -876,6 +902,7 @@ function CommentGroup({
   onStopReplying,
   onToggleResolvedComment,
   onUnmarkCommentForExport,
+  patchGroupSummariesByCommentId,
   pendingPatchCountsByCommentId,
   replyingCommentId,
   replyComment,
@@ -916,6 +943,9 @@ function CommentGroup({
                   onStopReplying={onStopReplying}
                   onToggleResolvedComment={onToggleResolvedComment}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
+                  patchGroupSummary={
+                    patchGroupSummariesByCommentId[comment.id] ?? null
+                  }
                   pendingPatchCount={pendingPatchCountsByCommentId[comment.id] ?? 0}
                   quiet={quiet}
                   replyingCommentId={replyingCommentId}
@@ -955,6 +985,7 @@ type CommentCardProps = {
   onStopReplying: () => void;
   onToggleResolvedComment: (commentId: string) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  patchGroupSummary: CommentPatchGroupSummary | null;
   pendingPatchCount: number;
   quiet?: boolean;
   replyingCommentId: string | null;
@@ -986,6 +1017,7 @@ function CommentCard({
   onStopReplying,
   onToggleResolvedComment,
   onUnmarkCommentForExport,
+  patchGroupSummary,
   pendingPatchCount,
   replyingCommentId,
   replyComment,
@@ -1157,7 +1189,19 @@ function CommentCard({
             </>
           ) : null}
           <p>{comment.comment}</p>
-          {pendingPatchCount > 0 ? (
+          {patchGroupSummary ? (
+            <div className="comment-pending-patches">
+              <span>{getCommentPatchGroupSummaryLabel(patchGroupSummary)}</span>
+              <span>{formatCommentPatchGroupStatusSummary(patchGroupSummary)}</span>
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => onReviewCommentPatches(comment.id)}
+              >
+                {getCommentPatchGroupReviewLabel(patchGroupSummary)}
+              </button>
+            </div>
+          ) : pendingPatchCount > 0 ? (
             <div className="comment-pending-patches">
               <span>
                 Pending patch proposal{pendingPatchCount === 1 ? "" : "s"}:{" "}
@@ -1586,6 +1630,60 @@ function getThreadRoleLabel(role: PatchmarkComment["thread"][number]["role"]): s
   }
 
   return "User reply";
+}
+
+function getCommentPatchGroupSummaryLabel(
+  summary: CommentPatchGroupSummary
+): string {
+  if (summary.groupCount > 1) {
+    return `Patch groups: ${summary.groupCount}`;
+  }
+
+  if (summary.patchCount === 1) {
+    return `Patch proposal: ${getSinglePatchStatusLabel(summary)}`;
+  }
+
+  return `Patch group: ${summary.patchCount} proposals`;
+}
+
+function getCommentPatchGroupReviewLabel(
+  summary: CommentPatchGroupSummary
+): string {
+  if (summary.groupCount > 1) {
+    return "Review groups";
+  }
+
+  if (summary.patchCount === 1) {
+    return "Review patch";
+  }
+
+  return "Review group";
+}
+
+function formatCommentPatchGroupStatusSummary(
+  summary: CommentPatchGroupSummary
+): string {
+  return `${summary.pending} pending · ${summary.accepted} accepted · ${summary.rejected} rejected · ${summary.stale} stale`;
+}
+
+function getSinglePatchStatusLabel(summary: CommentPatchGroupSummary): string {
+  if (summary.pending > 0) {
+    return "pending";
+  }
+
+  if (summary.accepted > 0) {
+    return "accepted";
+  }
+
+  if (summary.rejected > 0) {
+    return "rejected";
+  }
+
+  if (summary.stale > 0) {
+    return "stale";
+  }
+
+  return "unknown";
 }
 
 function sortCommentsByStatus(comments: PatchmarkComment[]): PatchmarkComment[] {

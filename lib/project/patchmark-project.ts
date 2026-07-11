@@ -1118,6 +1118,22 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
   return {
     id: patch.id,
     status: isPatchmarkPatchStatus(patch.status) ? patch.status : "pending",
+    patch_group_id:
+      typeof patch.patch_group_id === "string"
+        ? patch.patch_group_id
+        : undefined,
+    patch_group_index:
+      typeof patch.patch_group_index === "number" &&
+      Number.isInteger(patch.patch_group_index) &&
+      patch.patch_group_index > 0
+        ? patch.patch_group_index
+        : undefined,
+    patch_group_total:
+      typeof patch.patch_group_total === "number" &&
+      Number.isInteger(patch.patch_group_total) &&
+      patch.patch_group_total > 0
+        ? patch.patch_group_total
+        : undefined,
     comment_id:
       typeof patch.comment_id === "string" ? patch.comment_id : undefined,
     source_import_id:

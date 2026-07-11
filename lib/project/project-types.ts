@@ -236,6 +236,9 @@ export type PatchmarkPatchStatus =
 export type PatchmarkPatch = {
   id: string;
   status: PatchmarkPatchStatus;
+  patch_group_id?: string;
+  patch_group_index?: number;
+  patch_group_total?: number;
   comment_id?: string;
   source_import_id?: string;
   source_chat_url?: string;
@@ -255,4 +258,20 @@ export type PatchmarkPatch = {
   rejected_at?: string;
   pre_apply_snapshot_id?: string;
   pre_apply_snapshot_file?: string;
+};
+
+export type PatchmarkPatchGroup = {
+  id: string;
+  comment_id?: string;
+  source_import_id?: string;
+  source_chat_url?: string;
+  patches: PatchmarkPatch[];
+  created_at: string;
+  status_summary: {
+    total: number;
+    pending: number;
+    accepted: number;
+    rejected: number;
+    stale: number;
+  };
 };

@@ -1506,6 +1506,108 @@ button {
   color: var(--muted);
 }
 
+.patch-group-list-dialog {
+  width: min(920px, 100%);
+}
+
+.patch-group-list-body {
+  display: grid;
+  gap: 12px;
+  overflow: auto;
+  padding: 18px;
+}
+
+.patch-group-summary-card,
+.patch-group-patch-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 14px;
+  align-items: start;
+  border: 1px solid var(--border);
+  background: #fbfcfb;
+  padding: 12px;
+}
+
+.patch-group-summary-card h3,
+.patch-group-summary-card p,
+.patch-group-patch-card p {
+  margin: 0;
+}
+
+.patch-group-summary-card h3 {
+  font-size: 1rem;
+}
+
+.patch-group-summary-card div,
+.patch-group-patch-card div {
+  display: grid;
+  gap: 5px;
+}
+
+.patch-group-summary-card p,
+.patch-group-summary-card small,
+.patch-group-patch-card span,
+.patch-group-patch-card p {
+  color: var(--muted);
+  font-size: 0.84rem;
+  line-height: 1.45;
+}
+
+.patch-group-summary-card button,
+.patch-group-patch-card button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 10px;
+  font-weight: 800;
+}
+
+.patch-group-summary-card button:hover,
+.patch-group-patch-card button:hover {
+  border-color: var(--accent);
+}
+
+.patch-group-status {
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--muted);
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.patch-group-status-pending {
+  border-color: #c8d6d0;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.patch-group-status-in_progress {
+  border-color: #e1c171;
+  background: #fff4d8;
+  color: #76510f;
+}
+
+.patch-group-status-completed {
+  border-color: #cbd3ce;
+  background: #eef3f0;
+  color: var(--muted);
+}
+
+.patch-group-status-needs_review {
+  border-color: #e4b5a5;
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.patch-group-patch-list {
+  display: grid;
+  gap: 10px;
+}
+
 .patch-applicability {
   display: grid;
   gap: 3px;

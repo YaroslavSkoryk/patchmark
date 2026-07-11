@@ -13,6 +13,7 @@ import {
   type CommentAddRequest,
   type CommentAnchorSummary,
   type CommentAnchorScope,
+  type CommentPatchGroupSummary,
   type CommentFormValues
 } from "@/components/comments-panel";
 import { DocumentActions } from "@/components/document-actions";
@@ -67,6 +68,7 @@ import {
   type PatchmarkCommentReplyImport,
   type PatchmarkCommentThreadEntry,
   type PatchmarkPatch,
+  type PatchmarkPatchGroup,
   type PatchmarkSelectedTextAnchorContext,
   type PatchmarkSelectedTextAnchorContextKind,
   type PatchmarkSourceReference,
@@ -162,6 +164,22 @@ type PatchApplicability =
   | "exact_match"
   | "multiple_matches"
   | "not_found";
+type PatchmarkPatchGroupStatus =
+  | "pending"
+  | "in_progress"
+  | "completed"
+  | "needs_review";
+type PatchGroupApplicabilitySummary = Record<PatchApplicability, number>;
+type DerivedPatchGroup = PatchmarkPatchGroup & {
+  applicability_by_patch_id: Record<string, PatchApplicability>;
+  applicability_summary: PatchGroupApplicabilitySummary;
+  display_id: string;
+  is_legacy_single_patch_group: boolean;
+  status: PatchmarkPatchGroupStatus;
+};
+type PatchGroupListDialogState = {
+  commentId: string | null;
+};
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
   container: HTMLElement | null;
@@ -280,7 +298,14 @@ export function DocumentEditor() {
   const [chatGptImportDialog, setChatGptImportDialog] =
     useState<ChatGptImportDialogState | null>(null);
   const [selectedPatchId, setSelectedPatchId] = useState<string | null>(null);
+  const [selectedPatchGroupId, setSelectedPatchGroupId] = useState<string | null>(
+    null
+  );
+  const [patchGroupListDialog, setPatchGroupListDialog] =
+    useState<PatchGroupListDialogState | null>(null);
   const [patchReviewCommentScopeId, setPatchReviewCommentScopeId] =
+    useState<string | null>(null);
+  const [patchReviewGroupScopeId, setPatchReviewGroupScopeId] =
     useState<string | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
@@ -330,6 +355,19 @@ export function DocumentEditor() {
     () => patches.filter((patch) => patch.status === "pending"),
     [patches]
   );
+  const patchGroups = useMemo(
+    () => derivePatchGroups(patches, markdown),
+    [markdown, patches]
+  );
+  const pendingPatchGroups = useMemo(
+    () =>
+      patchGroups.filter((group) => group.status_summary.pending > 0),
+    [patchGroups]
+  );
+  const patchGroupSummariesByCommentId = useMemo(
+    () => getPatchGroupSummariesByCommentId(patchGroups),
+    [patchGroups]
+  );
   const selectedPatch = useMemo(
     () =>
       selectedPatchId
@@ -337,14 +375,59 @@ export function DocumentEditor() {
         : null,
     [patches, selectedPatchId]
   );
-  const reviewablePatches = useMemo(
+  const selectedPatchGroup = useMemo(
     () =>
-      patchReviewCommentScopeId
-        ? pendingPatches.filter(
-            (patch) => patch.comment_id === patchReviewCommentScopeId
-          )
-        : pendingPatches,
-    [patchReviewCommentScopeId, pendingPatches]
+      selectedPatchGroupId
+        ? patchGroups.find((group) => group.id === selectedPatchGroupId) ?? null
+        : null,
+    [patchGroups, selectedPatchGroupId]
+  );
+  const selectedPatchGroupComment = useMemo(
+    () =>
+      selectedPatchGroup?.comment_id
+        ? comments.find((comment) => comment.id === selectedPatchGroup.comment_id) ??
+          null
+        : null,
+    [comments, selectedPatchGroup]
+  );
+  const patchGroupListGroups = useMemo(() => {
+    if (!patchGroupListDialog) {
+      return [];
+    }
+
+    return patchGroupListDialog.commentId
+      ? patchGroups.filter(
+          (group) => group.comment_id === patchGroupListDialog.commentId
+        )
+      : pendingPatchGroups;
+  }, [patchGroupListDialog, patchGroups, pendingPatchGroups]);
+  const selectedPatchDerivedGroup = useMemo(
+    () =>
+      selectedPatch
+        ? patchGroups.find(
+            (group) => group.id === getDerivedPatchGroupId(selectedPatch)
+          ) ?? null
+        : null,
+    [patchGroups, selectedPatch]
+  );
+  const reviewablePatches = useMemo(
+    () => {
+      if (patchReviewGroupScopeId) {
+        return (
+          patchGroups.find((group) => group.id === patchReviewGroupScopeId)
+            ?.patches ?? []
+        );
+      }
+
+      if (patchReviewCommentScopeId) {
+        return pendingPatches.filter(
+          (patch) => patch.comment_id === patchReviewCommentScopeId
+        );
+      }
+
+      return pendingPatches;
+    },
+    [patchGroups, patchReviewCommentScopeId, patchReviewGroupScopeId, pendingPatches]
   );
   const selectedPatchComment = useMemo(
     () =>
@@ -385,7 +468,10 @@ export function DocumentEditor() {
       setComments([]);
       setPatches([]);
       setSelectedPatchId(null);
+      setSelectedPatchGroupId(null);
+      setPatchGroupListDialog(null);
       setPatchReviewCommentScopeId(null);
+      setPatchReviewGroupScopeId(null);
       setCommentsError(null);
       return;
     }
@@ -432,8 +518,19 @@ export function DocumentEditor() {
     if (selectedPatchId && !patches.some((patch) => patch.id === selectedPatchId)) {
       setSelectedPatchId(null);
       setPatchReviewCommentScopeId(null);
+      setPatchReviewGroupScopeId(null);
     }
   }, [patches, selectedPatchId]);
+
+  useEffect(() => {
+    if (
+      selectedPatchGroupId &&
+      !patchGroups.some((group) => group.id === selectedPatchGroupId)
+    ) {
+      setSelectedPatchGroupId(null);
+      setPatchReviewGroupScopeId(null);
+    }
+  }, [patchGroups, selectedPatchGroupId]);
 
   useEffect(() => {
     if (!fileName) {
@@ -696,7 +793,10 @@ export function DocumentEditor() {
     setComments([]);
     setPatches([]);
     setSelectedPatchId(null);
+    setSelectedPatchGroupId(null);
+    setPatchGroupListDialog(null);
     setPatchReviewCommentScopeId(null);
+    setPatchReviewGroupScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setDocumentLevelExportGuardDialog(null);
@@ -729,7 +829,10 @@ export function DocumentEditor() {
     setComments([]);
     setPatches([]);
     setSelectedPatchId(null);
+    setSelectedPatchGroupId(null);
+    setPatchGroupListDialog(null);
     setPatchReviewCommentScopeId(null);
+    setPatchReviewGroupScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setDocumentLevelExportGuardDialog(null);
@@ -1858,9 +1961,7 @@ export function DocumentEditor() {
   }
 
   function handleReviewFirstPendingPatch() {
-    const firstPendingPatch = pendingPatches[0];
-
-    if (!firstPendingPatch) {
+    if (pendingPatchGroups.length === 0) {
       setSaveFeedback({
         kind: "info",
         message: "No pending patch proposals to review."
@@ -1868,25 +1969,56 @@ export function DocumentEditor() {
       return;
     }
 
+    if (pendingPatchGroups.length === 1) {
+      handleOpenPatchGroup(pendingPatchGroups[0].id);
+      return;
+    }
+
+    setPatchGroupListDialog({ commentId: null });
+  }
+
+  function handleOpenPatchGroup(groupId: string) {
+    setPatchGroupListDialog(null);
+    setSelectedPatchGroupId(groupId);
+    setSelectedPatchId(null);
     setPatchReviewCommentScopeId(null);
-    setSelectedPatchId(firstPendingPatch.id);
+    setPatchReviewGroupScopeId(null);
   }
 
   function handleReviewCommentPatches(commentId: string) {
-    const firstLinkedPendingPatch = pendingPatches.find(
-      (patch) => patch.comment_id === commentId
+    const linkedGroups = patchGroups.filter(
+      (group) => group.comment_id === commentId
     );
 
-    if (!firstLinkedPendingPatch) {
+    if (linkedGroups.length === 0) {
       setSaveFeedback({
         kind: "info",
-        message: "No pending patch proposal is linked to this comment."
+        message: "No patch proposal is linked to this comment."
       });
       return;
     }
 
-    setPatchReviewCommentScopeId(commentId);
-    setSelectedPatchId(firstLinkedPendingPatch.id);
+    if (linkedGroups.length === 1 && linkedGroups[0].patches.length === 1) {
+      handleReviewPatchFromGroup(linkedGroups[0], linkedGroups[0].patches[0]);
+      return;
+    }
+
+    if (linkedGroups.length === 1) {
+      handleOpenPatchGroup(linkedGroups[0].id);
+      return;
+    }
+
+    setPatchGroupListDialog({ commentId });
+  }
+
+  function handleReviewPatchFromGroup(
+    group: DerivedPatchGroup,
+    patch: PatchmarkPatch
+  ) {
+    setSelectedPatchGroupId(group.id);
+    setPatchReviewGroupScopeId(group.id);
+    setPatchReviewCommentScopeId(null);
+    setSelectedPatchId(patch.id);
   }
 
   function handleNavigatePatchReview(direction: -1 | 1) {
@@ -2413,7 +2545,10 @@ export function DocumentEditor() {
     setCommentContextMenu(null);
     setPatches([]);
     setSelectedPatchId(null);
+    setSelectedPatchGroupId(null);
+    setPatchGroupListDialog(null);
     setPatchReviewCommentScopeId(null);
+    setPatchReviewGroupScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setDocumentLevelExportGuardDialog(null);
@@ -2606,6 +2741,8 @@ export function DocumentEditor() {
           onReviewFirstPendingPatch={handleReviewFirstPendingPatch}
           onResolveComment={handleResolveComment}
           onUnmarkCommentForExport={handleUnmarkCommentForExport}
+          patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
+          pendingPatchGroupTotal={pendingPatchGroups.length}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           pendingPatchTotal={pendingPatches.length}
           selectedTextPreview={selectedCommentText || null}
@@ -3041,64 +3178,315 @@ export function DocumentEditor() {
           </form>
         </div>
       ) : null}
+      {patchGroupListDialog ? (
+        <PatchGroupListDialog
+          groups={patchGroupListGroups}
+          onClose={() => setPatchGroupListDialog(null)}
+          onOpenGroup={handleOpenPatchGroup}
+          scopeLabel={
+            patchGroupListDialog.commentId
+              ? `linked to ${patchGroupListDialog.commentId}`
+              : "with pending proposals"
+          }
+        />
+      ) : null}
+      {selectedPatchGroup ? (
+        <PatchGroupReviewDialog
+          comment={selectedPatchGroupComment}
+          group={selectedPatchGroup}
+          onClose={() => {
+            setSelectedPatchGroupId(null);
+            setPatchReviewGroupScopeId(null);
+          }}
+          onReviewPatch={(patch) =>
+            handleReviewPatchFromGroup(selectedPatchGroup, patch)
+          }
+        />
+      ) : null}
       {selectedPatch && selectedPatchApplicability ? (
         <PatchReviewDialog
           applicability={selectedPatchApplicability}
           comment={selectedPatchComment}
-          hasMultiplePendingPatches={reviewablePatches.length > 1}
+          hasMultipleReviewablePatches={reviewablePatches.length > 1}
           isPatchActionBusy={isSaving}
           markdown={markdown}
           onAcceptPatch={() => handleAcceptPatch(selectedPatch)}
+          onBackToGroup={
+            selectedPatchDerivedGroup
+              ? () => {
+                  setSelectedPatchGroupId(selectedPatchDerivedGroup.id);
+                  setSelectedPatchId(null);
+                  setPatchReviewGroupScopeId(null);
+                }
+              : undefined
+          }
           onClose={() => {
             setSelectedPatchId(null);
             setPatchReviewCommentScopeId(null);
+            setPatchReviewGroupScopeId(null);
           }}
           onFindOriginalText={() => handleFindPatchOriginalText(selectedPatch)}
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
           onRejectPatch={() => handleRejectPatch(selectedPatch)}
           patch={selectedPatch}
+          patchGroup={selectedPatchDerivedGroup}
           patchIndex={Math.max(
             0,
             reviewablePatches.findIndex((patch) => patch.id === selectedPatch.id)
           )}
-          pendingPatchCount={reviewablePatches.length}
+          reviewablePatchCount={reviewablePatches.length}
         />
       ) : null}
     </section>
   );
 }
 
+function PatchGroupListDialog({
+  groups,
+  onClose,
+  onOpenGroup,
+  scopeLabel
+}: {
+  groups: DerivedPatchGroup[];
+  onClose: () => void;
+  onOpenGroup: (groupId: string) => void;
+  scopeLabel: string;
+}) {
+  return (
+    <div className="snapshot-dialog-backdrop">
+      <section className="comment-export-dialog patch-group-list-dialog">
+        <header className="snapshot-dialog-header">
+          <div>
+            <span>Patch groups</span>
+            <h2>Pending Patch Groups</h2>
+            <p>
+              Review bundles {scopeLabel}. Each patch still requires individual
+              review.
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </header>
+        <div className="patch-group-list-body">
+          {groups.length === 0 ? (
+            <p className="patch-review-source-note">
+              No patch groups match this view.
+            </p>
+          ) : (
+            groups.map((group) => (
+              <PatchGroupSummaryCard
+                group={group}
+                key={group.id}
+                onOpenGroup={onOpenGroup}
+              />
+            ))
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PatchGroupReviewDialog({
+  comment,
+  group,
+  onClose,
+  onReviewPatch
+}: {
+  comment: PatchmarkComment | null;
+  group: DerivedPatchGroup;
+  onClose: () => void;
+  onReviewPatch: (patch: PatchmarkPatch) => void;
+}) {
+  const latestChatGptReply = comment
+    ? getLatestChatGptThreadEntry(comment)
+    : null;
+
+  return (
+    <div className="snapshot-dialog-backdrop patch-review-backdrop">
+      <section className="patch-review-dialog" aria-label="Review Patch Group">
+        <header className="snapshot-dialog-header">
+          <div>
+            <span>Patch group</span>
+            <h2>Review Patch Group</h2>
+            <p>
+              This is a review bundle. Patchmark will not apply or resolve
+              anything automatically.
+            </p>
+          </div>
+          <button type="button" onClick={onClose}>
+            Close
+          </button>
+        </header>
+
+        <div className="patch-review-body">
+          <section className="patch-review-card">
+            <h3>Group metadata</h3>
+            <dl className="patch-metadata">
+              <div>
+                <dt>Patch group ID</dt>
+                <dd>{group.display_id}</dd>
+              </div>
+              <div>
+                <dt>Linked comment ID</dt>
+                <dd>{group.comment_id ?? "None"}</dd>
+              </div>
+              <div>
+                <dt>Source import ID</dt>
+                <dd>{group.source_import_id ?? "Not recorded"}</dd>
+              </div>
+              <div>
+                <dt>Created at</dt>
+                <dd>{formatPatchDate(group.created_at)}</dd>
+              </div>
+              <div>
+                <dt>Status</dt>
+                <dd>{getPatchGroupStatusLabel(group.status)}</dd>
+              </div>
+            </dl>
+            {group.source_chat_url ? (
+              <a
+                className="patch-source-chat-link"
+                href={group.source_chat_url}
+                target="_blank"
+                rel="noreferrer"
+              >
+                Open ChatGPT chat
+              </a>
+            ) : null}
+          </section>
+
+          <section className="patch-review-card">
+            <h3>Status summary</h3>
+            <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
+            <p>{formatPatchGroupApplicabilitySummary(group)}</p>
+          </section>
+
+          {comment ? (
+            <section className="patch-review-card">
+              <h3>Linked comment context</h3>
+              <p>{comment.comment}</p>
+              {latestChatGptReply ? (
+                <blockquote className="patch-linked-reply">
+                  Latest ChatGPT reply: {latestChatGptReply.content}
+                </blockquote>
+              ) : null}
+            </section>
+          ) : null}
+
+          <section className="patch-review-card">
+            <h3>Patches in this group</h3>
+            <div className="patch-group-patch-list">
+              {group.patches.map((patch, index) => (
+                <PatchGroupPatchCard
+                  group={group}
+                  index={index}
+                  key={patch.id}
+                  onReviewPatch={onReviewPatch}
+                  patch={patch}
+                />
+              ))}
+            </div>
+          </section>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function PatchGroupSummaryCard({
+  group,
+  onOpenGroup
+}: {
+  group: DerivedPatchGroup;
+  onOpenGroup: (groupId: string) => void;
+}) {
+  return (
+    <article className="patch-group-summary-card">
+      <div>
+        <span className={`patch-group-status patch-group-status-${group.status}`}>
+          {getPatchGroupStatusLabel(group.status)}
+        </span>
+        <h3>{group.display_id}</h3>
+        <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
+        <p>{formatPatchGroupApplicabilitySummary(group)}</p>
+        {group.comment_id ? <small>Linked comment: {group.comment_id}</small> : null}
+      </div>
+      <button type="button" onClick={() => onOpenGroup(group.id)}>
+        Review group
+      </button>
+    </article>
+  );
+}
+
+function PatchGroupPatchCard({
+  group,
+  index,
+  onReviewPatch,
+  patch
+}: {
+  group: DerivedPatchGroup;
+  index: number;
+  onReviewPatch: (patch: PatchmarkPatch) => void;
+  patch: PatchmarkPatch;
+}) {
+  const applicability = group.applicability_by_patch_id[patch.id] ?? "not_found";
+
+  return (
+    <article className="patch-group-patch-card">
+      <div>
+        <strong>
+          Patch {index + 1} of {group.patches.length}
+        </strong>
+        <span>{patch.id}</span>
+        <span>Status: {patch.status}</span>
+        <span>Target: {patch.target_heading ?? "Not specified"}</span>
+        <span>{getPatchApplicabilityShortLabel(applicability)}</span>
+      </div>
+      <p>{patch.reason}</p>
+      <button type="button" onClick={() => onReviewPatch(patch)}>
+        Review patch
+      </button>
+    </article>
+  );
+}
+
 function PatchReviewDialog({
   applicability,
   comment,
-  hasMultiplePendingPatches,
+  hasMultipleReviewablePatches,
   isPatchActionBusy,
   markdown,
   onAcceptPatch,
+  onBackToGroup,
   onClose,
   onFindOriginalText,
   onNextPatch,
   onPreviousPatch,
   onRejectPatch,
   patch,
+  patchGroup,
   patchIndex,
-  pendingPatchCount
+  reviewablePatchCount
 }: {
   applicability: PatchApplicability;
   comment: PatchmarkComment | null;
-  hasMultiplePendingPatches: boolean;
+  hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
   markdown: string;
   onAcceptPatch: () => void;
+  onBackToGroup?: () => void;
   onClose: () => void;
   onFindOriginalText: () => void;
   onNextPatch: () => void;
   onPreviousPatch: () => void;
   onRejectPatch: () => void;
   patch: PatchmarkPatch;
+  patchGroup: DerivedPatchGroup | null;
   patchIndex: number;
-  pendingPatchCount: number;
+  reviewablePatchCount: number;
 }) {
   const latestChatGptReply = comment
     ? getLatestChatGptThreadEntry(comment)
@@ -3141,6 +3529,11 @@ function PatchReviewDialog({
         </header>
 
         <div className="patch-review-actions">
+          {onBackToGroup ? (
+            <button type="button" onClick={onBackToGroup}>
+              Back to group
+            </button>
+          ) : null}
           <button type="button" onClick={onFindOriginalText}>
             Find original text
           </button>
@@ -3172,7 +3565,7 @@ function PatchReviewDialog({
           ) : (
             <span>{getPatchResolvedStatusMessage(patch)}</span>
           )}
-          {hasMultiplePendingPatches ? (
+          {hasMultipleReviewablePatches ? (
             <>
               <button type="button" onClick={onPreviousPatch}>
                 Previous patch
@@ -3181,7 +3574,7 @@ function PatchReviewDialog({
                 Next patch
               </button>
               <span>
-                Pending patch {patchIndex + 1} of {pendingPatchCount}
+                Patch {patchIndex + 1} of {reviewablePatchCount}
               </span>
             </>
           ) : null}
@@ -3203,6 +3596,24 @@ function PatchReviewDialog({
                 <dt>Patch ID</dt>
                 <dd>{patch.id}</dd>
               </div>
+              {patchGroup ? (
+                <>
+                  <div>
+                    <dt>Patch group ID</dt>
+                    <dd>{patchGroup.display_id}</dd>
+                  </div>
+                  <div>
+                    <dt>Group position</dt>
+                    <dd>
+                      Patch{" "}
+                      {patchGroup.patches.findIndex(
+                        (groupPatch) => groupPatch.id === patch.id
+                      ) + 1}{" "}
+                      of {patchGroup.patches.length}
+                    </dd>
+                  </div>
+                </>
+              ) : null}
               <div>
                 <dt>Status</dt>
                 <dd>{patch.status}</dd>
@@ -3974,6 +4385,8 @@ Do not address unrelated document issues unless they are necessary to resolve th
 
 If you propose changes, return reviewable patch proposals linked to this comment_id.
 
+Document-level comments may produce multiple patch proposals. Keep each patch narrow and reviewable.
+
 Prefer small exact patches over rewriting the whole document.
 `
     : "";
@@ -3993,7 +4406,12 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 - Only the human user can resolve comments in Patchmark.
 - If a comment needs clarification, ask a question linked to that \`comment_id\`.
 - If you suggest a document change, return a patch proposal linked to the \`comment_id\`.
+- If one comment requires multiple document changes, return multiple \`patch_proposals\` with the same \`comment_id\`.
+- Prefer several small exact patch proposals over one large rewrite.
+- Each \`patch_proposal\` must have its own exact \`original_text\` and \`suggested_text\`.
 - Patch proposals must use exact Markdown from the supplied context as \`original_text\`.
+- Do not create a patch proposal unless \`original_text\` is copied exactly from the supplied Markdown context.
+- Do not create or include \`patch_group_id\`; Patchmark creates patch group IDs during import.
 - Do not rewrite the whole document unless explicitly requested.
 - Preserve Markdown structure.
 - Be clear about reason and risk/tradeoff.
@@ -4649,11 +5067,49 @@ function createImportedPatchProposals({
   patchProposals: PatchmarkCommentReplyImport["patch_proposals"];
   sourceChatUrl?: string;
 }): PatchmarkPatch[] {
-  return patchProposals
-    .filter((patchProposal) => knownCommentIds.has(patchProposal.comment_id))
-    .map((patchProposal, index) => ({
+  const validPatchProposals = patchProposals.filter((patchProposal) =>
+    knownCommentIds.has(patchProposal.comment_id)
+  );
+  const groupIdsByCommentId = new Map<string, string>();
+
+  validPatchProposals.forEach((patchProposal) => {
+    if (groupIdsByCommentId.has(patchProposal.comment_id)) {
+      return;
+    }
+
+    groupIdsByCommentId.set(
+      patchProposal.comment_id,
+      createNextPatchGroupId(existingPatches, groupIdsByCommentId.size)
+    );
+  });
+
+  const groupTotalsByCommentId = validPatchProposals.reduce<Map<string, number>>(
+    (totals, patchProposal) => {
+      totals.set(
+        patchProposal.comment_id,
+        (totals.get(patchProposal.comment_id) ?? 0) + 1
+      );
+      return totals;
+    },
+    new Map()
+  );
+  const groupIndexesByCommentId = new Map<string, number>();
+
+  return validPatchProposals.map((patchProposal, index) => {
+    const currentGroupIndex =
+      (groupIndexesByCommentId.get(patchProposal.comment_id) ?? 0) + 1;
+    groupIndexesByCommentId.set(
+      patchProposal.comment_id,
+      currentGroupIndex
+    );
+
+    return {
       id: createNextPatchId(existingPatches, index),
       status: "pending" as const,
+      patch_group_id: groupIdsByCommentId.get(patchProposal.comment_id),
+      patch_group_index: currentGroupIndex,
+      patch_group_total:
+        groupTotalsByCommentId.get(patchProposal.comment_id) ?? 1,
       comment_id: patchProposal.comment_id,
       source_import_id: importId,
       source_chat_url: sourceChatUrl,
@@ -4667,7 +5123,8 @@ function createImportedPatchProposals({
       risk_sources: patchProposal.risk_sources,
       sources: patchProposal.sources,
       created_at: importedAt
-    }));
+    };
+  });
 }
 
 function createNextThreadEntryIdFromEntries(
@@ -4707,6 +5164,28 @@ function createNextPatchId(
   return `PM-PATCH-${String(nextNumber).padStart(4, "0")}`;
 }
 
+function createNextPatchGroupId(
+  patches: PatchmarkPatch[],
+  offset: number
+): string {
+  const nextNumber =
+    patches.reduce((maxNumber, patch) => {
+      const match = /^PM-PATCH-GROUP-(\d+)$/.exec(
+        patch.patch_group_id ?? ""
+      );
+
+      if (!match) {
+        return maxNumber;
+      }
+
+      return Math.max(maxNumber, Number(match[1]));
+    }, 0) +
+    offset +
+    1;
+
+  return `PM-PATCH-GROUP-${String(nextNumber).padStart(4, "0")}`;
+}
+
 function getPendingPatchCountsByCommentId(
   patches: PatchmarkPatch[]
 ): Record<string, number> {
@@ -4718,6 +5197,189 @@ function getPendingPatchCountsByCommentId(
     counts[patch.comment_id] = (counts[patch.comment_id] ?? 0) + 1;
     return counts;
   }, {});
+}
+
+function derivePatchGroups(
+  patches: PatchmarkPatch[],
+  markdown: string
+): DerivedPatchGroup[] {
+  const groupedPatches = new Map<string, PatchmarkPatch[]>();
+  const groupOrder = new Map<string, number>();
+
+  patches.forEach((patch, index) => {
+    const groupId = getDerivedPatchGroupId(patch);
+
+    if (!groupedPatches.has(groupId)) {
+      groupedPatches.set(groupId, []);
+      groupOrder.set(groupId, index);
+    }
+
+    groupedPatches.get(groupId)?.push(patch);
+  });
+
+  return Array.from(groupedPatches.entries())
+    .map(([groupId, groupPatches]) => {
+      const patchesInOrder = [...groupPatches].sort(
+        (firstPatch, secondPatch) =>
+          getPatchGroupSortIndex(firstPatch) - getPatchGroupSortIndex(secondPatch)
+      );
+      const statusSummary = createPatchGroupStatusSummary(patchesInOrder);
+      const applicabilitySummary = createPatchGroupApplicabilitySummary({
+        markdown,
+        patches: patchesInOrder
+      });
+      const applicabilityByPatchId = createPatchGroupApplicabilityByPatchId({
+        markdown,
+        patches: patchesInOrder
+      });
+      const firstPatch = patchesInOrder[0];
+      const hasApplicabilityIssue = patchesInOrder.some(
+        (patch) =>
+          patch.status === "pending" &&
+          applicabilityByPatchId[patch.id] !== "exact_match"
+      );
+
+      return {
+        id: groupId,
+        display_id: firstPatch?.patch_group_id ?? firstPatch?.id ?? groupId,
+        comment_id: firstPatch?.comment_id,
+        source_import_id: firstPatch?.source_import_id,
+        source_chat_url: firstPatch?.source_chat_url,
+        patches: patchesInOrder,
+        created_at: firstPatch?.created_at ?? "",
+        status_summary: statusSummary,
+        applicability_by_patch_id: applicabilityByPatchId,
+        applicability_summary: applicabilitySummary,
+        is_legacy_single_patch_group:
+          patchesInOrder.length === 1 && !firstPatch?.patch_group_id,
+        status: getPatchGroupStatus(statusSummary, hasApplicabilityIssue)
+      };
+    })
+    .sort(
+      (firstGroup, secondGroup) =>
+        (groupOrder.get(firstGroup.id) ?? 0) -
+        (groupOrder.get(secondGroup.id) ?? 0)
+    );
+}
+
+function getDerivedPatchGroupId(patch: PatchmarkPatch): string {
+  return patch.patch_group_id ?? `single-patch:${patch.id}`;
+}
+
+function getPatchGroupSortIndex(patch: PatchmarkPatch): number {
+  return patch.patch_group_index ?? Number.MAX_SAFE_INTEGER;
+}
+
+function createPatchGroupStatusSummary(
+  patches: PatchmarkPatch[]
+): PatchmarkPatchGroup["status_summary"] {
+  return patches.reduce<PatchmarkPatchGroup["status_summary"]>(
+    (summary, patch) => ({
+      total: summary.total + 1,
+      pending: summary.pending + (patch.status === "pending" ? 1 : 0),
+      accepted: summary.accepted + (patch.status === "accepted" ? 1 : 0),
+      rejected: summary.rejected + (patch.status === "rejected" ? 1 : 0),
+      stale: summary.stale + (patch.status === "stale" ? 1 : 0)
+    }),
+    {
+      total: 0,
+      pending: 0,
+      accepted: 0,
+      rejected: 0,
+      stale: 0
+    }
+  );
+}
+
+function createPatchGroupApplicabilitySummary({
+  markdown,
+  patches
+}: {
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): PatchGroupApplicabilitySummary {
+  return patches.reduce<PatchGroupApplicabilitySummary>(
+    (summary, patch) => {
+      const applicability = getPatchApplicability(markdown, patch.original_text);
+
+      return {
+        ...summary,
+        [applicability]: summary[applicability] + 1
+      };
+    },
+    {
+      exact_match: 0,
+      multiple_matches: 0,
+      not_found: 0
+    }
+  );
+}
+
+function createPatchGroupApplicabilityByPatchId({
+  markdown,
+  patches
+}: {
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): Record<string, PatchApplicability> {
+  return Object.fromEntries(
+    patches.map((patch) => [
+      patch.id,
+      getPatchApplicability(markdown, patch.original_text)
+    ])
+  );
+}
+
+function getPatchGroupStatus(
+  statusSummary: PatchmarkPatchGroup["status_summary"],
+  hasApplicabilityIssue: boolean
+): PatchmarkPatchGroupStatus {
+  if (statusSummary.pending > 0 && hasApplicabilityIssue) {
+    return "needs_review";
+  }
+
+  if (statusSummary.pending === statusSummary.total) {
+    return "pending";
+  }
+
+  if (statusSummary.pending === 0) {
+    return "completed";
+  }
+
+  return "in_progress";
+}
+
+function getPatchGroupSummariesByCommentId(
+  patchGroups: DerivedPatchGroup[]
+): Record<string, CommentPatchGroupSummary> {
+  return patchGroups.reduce<Record<string, CommentPatchGroupSummary>>(
+    (summaries, group) => {
+      if (!group.comment_id) {
+        return summaries;
+      }
+
+      const currentSummary = summaries[group.comment_id] ?? {
+        accepted: 0,
+        groupCount: 0,
+        patchCount: 0,
+        pending: 0,
+        rejected: 0,
+        stale: 0
+      };
+
+      summaries[group.comment_id] = {
+        accepted: currentSummary.accepted + group.status_summary.accepted,
+        groupCount: currentSummary.groupCount + 1,
+        patchCount: currentSummary.patchCount + group.status_summary.total,
+        pending: currentSummary.pending + group.status_summary.pending,
+        rejected: currentSummary.rejected + group.status_summary.rejected,
+        stale: currentSummary.stale + group.status_summary.stale
+      };
+
+      return summaries;
+    },
+    {}
+  );
 }
 
 function getPatchApplicability(
@@ -5825,6 +6487,20 @@ function getPatchApplicabilityLabel(applicability: PatchApplicability): string {
   return "Original text was not found.";
 }
 
+function getPatchApplicabilityShortLabel(
+  applicability: PatchApplicability
+): string {
+  if (applicability === "exact_match") {
+    return "Can apply cleanly";
+  }
+
+  if (applicability === "multiple_matches") {
+    return "Multiple matches";
+  }
+
+  return "Original text not found";
+}
+
 function getPatchApplicabilityDetail(
   applicability: PatchApplicability
 ): string {
@@ -5837,6 +6513,45 @@ function getPatchApplicabilityDetail(
   }
 
   return "The patch may be stale because the current document no longer contains the original text.";
+}
+
+function getPatchGroupStatusLabel(status: PatchmarkPatchGroupStatus): string {
+  if (status === "needs_review") {
+    return "Needs review";
+  }
+
+  if (status === "in_progress") {
+    return "In progress";
+  }
+
+  if (status === "completed") {
+    return "Completed";
+  }
+
+  return "Pending";
+}
+
+function formatPatchGroupStatusSummary(
+  statusSummary: PatchmarkPatchGroup["status_summary"]
+): string {
+  return `${statusSummary.total} patch${
+    statusSummary.total === 1 ? "" : "es"
+  } total · ${statusSummary.pending} pending · ${
+    statusSummary.accepted
+  } accepted · ${statusSummary.rejected} rejected · ${statusSummary.stale} stale`;
+}
+
+function formatPatchGroupApplicabilitySummary(
+  group: DerivedPatchGroup
+): string {
+  const cleanCount = group.applicability_summary.exact_match;
+  const needsReviewCount =
+    group.applicability_summary.multiple_matches +
+    group.applicability_summary.not_found;
+
+  return `${cleanCount} can apply cleanly · ${needsReviewCount} need${
+    needsReviewCount === 1 ? "s" : ""
+  } review`;
 }
 
 function getLatestChatGptThreadEntry(
