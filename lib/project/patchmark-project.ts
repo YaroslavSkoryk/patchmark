@@ -11,6 +11,8 @@ import {
   type PatchmarkCommentThreadEntry,
   type PatchmarkCommentType,
   type PatchmarkManifest,
+  type PatchmarkPatch,
+  type PatchmarkPatchStatus,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 
@@ -81,6 +83,12 @@ const commentTypes: PatchmarkCommentType[] = [
 ];
 
 const commentStatuses: PatchmarkCommentStatus[] = ["open", "resolved"];
+const patchStatuses: PatchmarkPatchStatus[] = [
+  "pending",
+  "accepted",
+  "rejected",
+  "stale"
+];
 
 const metadataDirectories = ["versions", "context-packs", "imports"] as const;
 
@@ -450,6 +458,94 @@ export async function writeProjectContextPack({
   await writeTextFile(contextPackFileHandle, contents);
 
   return `${metadataDirectoryName}/context-packs/${fileName}`;
+}
+
+export async function readProjectPatches(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkPatch[]> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+
+  let patchesFileHandle: MarkdownFileHandle;
+
+  try {
+    patchesFileHandle =
+      await metadataDirectoryHandle.getFileHandle("patches.json");
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+
+    patchesFileHandle = await metadataDirectoryHandle.getFileHandle(
+      "patches.json",
+      { create: true }
+    );
+    await writeTextFile(patchesFileHandle, "[]\n");
+    return [];
+  }
+
+  let parsedPatches: unknown;
+
+  try {
+    parsedPatches = JSON.parse(await readTextFile(patchesFileHandle));
+  } catch {
+    throw new Error(
+      ".patchmark/patches.json is invalid JSON. Fix the file before importing ChatGPT responses."
+    );
+  }
+
+  if (!Array.isArray(parsedPatches)) {
+    throw new Error(".patchmark/patches.json must contain an array of patches.");
+  }
+
+  return parsedPatches.map(normalizePatch);
+}
+
+export async function writeProjectPatches(
+  project: PatchmarkProjectHandle,
+  patches: PatchmarkPatch[]
+): Promise<void> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const patchesFileHandle = await metadataDirectoryHandle.getFileHandle(
+    "patches.json",
+    { create: true }
+  );
+
+  await writeTextFile(
+    patchesFileHandle,
+    `${JSON.stringify(patches.map(normalizePatch), null, 2)}\n`
+  );
+}
+
+export async function writeProjectImport({
+  contents,
+  fileName,
+  project
+}: {
+  contents: string;
+  fileName: string;
+  project: PatchmarkProjectHandle;
+}): Promise<string> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const importsDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("imports", {
+      create: true
+    });
+  const importFileHandle = await importsDirectoryHandle.getFileHandle(fileName, {
+    create: true
+  });
+
+  await writeTextFile(importFileHandle, contents);
+
+  return `${metadataDirectoryName}/imports/${fileName}`;
 }
 
 async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> {
@@ -904,7 +1000,56 @@ function normalizeCommentExportState(
     last_export_id:
       typeof exportState.last_export_id === "string"
         ? exportState.last_export_id
+        : undefined,
+    last_imported_at:
+      typeof exportState.last_imported_at === "string"
+        ? exportState.last_imported_at
+        : undefined,
+    last_import_id:
+      typeof exportState.last_import_id === "string"
+        ? exportState.last_import_id
         : undefined
+  };
+}
+
+function normalizePatch(patch: unknown): PatchmarkPatch {
+  if (!isRecord(patch)) {
+    throw new Error(".patchmark/patches.json contains an invalid patch.");
+  }
+
+  if (
+    typeof patch.id !== "string" ||
+    typeof patch.original_text !== "string" ||
+    typeof patch.suggested_text !== "string" ||
+    typeof patch.created_at !== "string"
+  ) {
+    throw new Error(".patchmark/patches.json contains an invalid patch.");
+  }
+
+  return {
+    id: patch.id,
+    status: isPatchmarkPatchStatus(patch.status) ? patch.status : "pending",
+    comment_id:
+      typeof patch.comment_id === "string" ? patch.comment_id : undefined,
+    source_import_id:
+      typeof patch.source_import_id === "string"
+        ? patch.source_import_id
+        : undefined,
+    source_chat_url:
+      typeof patch.source_chat_url === "string"
+        ? patch.source_chat_url
+        : undefined,
+    target_heading:
+      typeof patch.target_heading === "string"
+        ? patch.target_heading
+        : undefined,
+    original_text: patch.original_text,
+    suggested_text: patch.suggested_text,
+    reason: typeof patch.reason === "string" ? patch.reason : "No reason provided.",
+    risk: typeof patch.risk === "string" ? patch.risk : undefined,
+    created_at: patch.created_at,
+    resolved_at:
+      typeof patch.resolved_at === "string" ? patch.resolved_at : undefined
   };
 }
 
@@ -1020,14 +1165,26 @@ function isPatchmarkCommentThreadEntry(
       value.role === "chatgpt" ||
       value.role === "system") &&
     typeof value.content === "string" &&
-    typeof value.created_at === "string"
+    typeof value.created_at === "string" &&
+    (value.source_import_id === undefined ||
+      typeof value.source_import_id === "string") &&
+    (value.source_chat_url === undefined ||
+      typeof value.source_chat_url === "string") &&
+    (value.suggested_user_action === undefined ||
+      isSuggestedUserAction(value.suggested_user_action))
   );
 }
 
 function isCommentFocusState(value: unknown): value is PatchmarkCommentFocusState {
   return (
     typeof value === "string" &&
-    ["idle", "in_focus", "exported", "awaiting_reply"].includes(value)
+    [
+      "idle",
+      "in_focus",
+      "exported",
+      "awaiting_reply",
+      "reply_received"
+    ].includes(value)
   );
 }
 
@@ -1055,6 +1212,26 @@ function isPatchmarkCommentStatus(
   return (
     typeof value === "string" &&
     (commentStatuses as readonly string[]).includes(value)
+  );
+}
+
+function isPatchmarkPatchStatus(value: unknown): value is PatchmarkPatchStatus {
+  return (
+    typeof value === "string" &&
+    (patchStatuses as readonly string[]).includes(value)
+  );
+}
+
+function isSuggestedUserAction(value: unknown): boolean {
+  return (
+    typeof value === "string" &&
+    [
+      "review",
+      "clarify",
+      "apply_patch",
+      "keep_open",
+      "resolve_manually"
+    ].includes(value)
   );
 }
 

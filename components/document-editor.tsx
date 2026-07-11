@@ -40,9 +40,12 @@ import {
   openProjectFolder,
   readProjectVersionMarkdown,
   readProjectComments,
+  readProjectPatches,
   saveProjectDocument,
   writeProjectContextPack,
   writeProjectComments,
+  writeProjectImport,
+  writeProjectPatches,
   type LoadedPatchmarkProject,
   type PatchmarkProjectHandle
 } from "@/lib/project/patchmark-project";
@@ -52,9 +55,12 @@ import {
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
   type PatchmarkCommentType,
+  type PatchmarkCommentReplyImport,
   type PatchmarkCommentThreadEntry,
+  type PatchmarkPatch,
   type PatchmarkSelectedTextAnchorContext,
   type PatchmarkSelectedTextAnchorContextKind,
+  type PatchmarkSuggestedUserAction,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 import {
@@ -100,6 +106,17 @@ type ChatGptPromptDialogState = {
   promptFileName: string;
   jsonText: string;
   promptText: string;
+};
+type ChatGptImportDialogState = {
+  error: string | null;
+  responseJson: string;
+  sourceChatUrl: string;
+};
+type ChatGptImportSummary = {
+  openQuestionsAttached: number;
+  patchProposalsStored: number;
+  repliesAttached: number;
+  warnings: string[];
 };
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
@@ -161,6 +178,7 @@ export function DocumentEditor() {
     []
   );
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
+  const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
   const [markdownSelection, setMarkdownSelection] =
@@ -184,6 +202,8 @@ export function DocumentEditor() {
     useState<SnapshotDialogState | null>(null);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
+  const [chatGptImportDialog, setChatGptImportDialog] =
+    useState<ChatGptImportDialogState | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const markdownSelectionDraft = useMemo(
@@ -224,6 +244,10 @@ export function DocumentEditor() {
       ),
     [comments, headings, markdown]
   );
+  const pendingPatchCountsByCommentId = useMemo(
+    () => getPendingPatchCountsByCommentId(patches),
+    [patches]
+  );
   const isDirty =
     fileName !== null &&
     (baselineMarkdown === null || markdown !== baselineMarkdown);
@@ -246,6 +270,7 @@ export function DocumentEditor() {
     if (!projectHandle) {
       setVersionEntries([]);
       setComments([]);
+      setPatches([]);
       setCommentsError(null);
       return;
     }
@@ -266,6 +291,19 @@ export function DocumentEditor() {
       .catch((error) => {
         if (!isCancelled) {
           setComments([]);
+          setCommentsError(getProjectErrorMessage(error));
+        }
+      });
+
+    void readProjectPatches(projectHandle)
+      .then((projectPatches) => {
+        if (!isCancelled) {
+          setPatches(projectPatches);
+        }
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          setPatches([]);
           setCommentsError(getProjectErrorMessage(error));
         }
       });
@@ -534,7 +572,10 @@ export function DocumentEditor() {
     setCommentAddRequest(null);
     setCommentContextMenu(null);
     setComments([]);
+    setPatches([]);
     setCommentsError(null);
+    setChatGptPromptDialog(null);
+    setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -560,7 +601,10 @@ export function DocumentEditor() {
     setCommentAddRequest(null);
     setCommentContextMenu(null);
     setComments([]);
+    setPatches([]);
     setCommentsError(null);
+    setChatGptPromptDialog(null);
+    setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -940,6 +984,145 @@ export function DocumentEditor() {
         kind: "error",
         message
       });
+    }
+  }
+
+  function handleOpenChatGptImportDialog() {
+    if (!projectHandle) {
+      setSaveFeedback({
+        kind: "info",
+        message: "ChatGPT response import is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    setChatGptImportDialog({
+      error: null,
+      responseJson: "",
+      sourceChatUrl: ""
+    });
+  }
+
+  async function handleImportChatGptResponse(
+    event: React.FormEvent<HTMLFormElement>
+  ) {
+    event.preventDefault();
+
+    if (!projectHandle || !chatGptImportDialog || isCommentBusy) {
+      return;
+    }
+
+    let parsedResponse: PatchmarkCommentReplyImport;
+    let sourceChatUrl: string | undefined;
+
+    try {
+      parsedResponse = parsePatchmarkCommentReplyImport(
+        chatGptImportDialog.responseJson
+      );
+      sourceChatUrl = normalizeSourceChatUrl(
+        chatGptImportDialog.sourceChatUrl
+      );
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setChatGptImportDialog({
+        ...chatGptImportDialog,
+        error: message
+      });
+      setSaveFeedback({
+        kind: "error",
+        message
+      });
+      return;
+    }
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    setSaveFeedback(null);
+
+    try {
+      const importedAt = new Date().toISOString();
+      const importId = createCommentImportId(importedAt);
+      const safeTimestamp = createFileSafeTimestamp(importedAt);
+      const knownCommentIds = new Set(comments.map((comment) => comment.id));
+      const unknownCommentIds = getUnknownImportCommentIds(
+        parsedResponse,
+        knownCommentIds
+      );
+      const importedCommentIds = getKnownImportCommentIds(
+        parsedResponse,
+        knownCommentIds
+      );
+      const existingPatches = await readProjectPatches(projectHandle);
+      const importedPatches = createImportedPatchProposals({
+        existingPatches,
+        importedAt,
+        importId,
+        knownCommentIds,
+        patchProposals: parsedResponse.patch_proposals,
+        sourceChatUrl
+      });
+      const { nextComments, openQuestionsAttached, repliesAttached } =
+        createImportedCommentThreads({
+          comments,
+          importedAt,
+          importId,
+          importedCommentIds,
+          openQuestions: parsedResponse.open_questions,
+          replies: parsedResponse.replies,
+          sourceChatUrl
+        });
+      const importWarnings = unknownCommentIds.map(
+        (commentId) =>
+          `Response referenced a comment that was not found: ${commentId}`
+      );
+      const importWrapper = {
+        import_id: importId,
+        imported_at: importedAt,
+        source_chat_url: sourceChatUrl,
+        raw_response: parsedResponse,
+        warnings: importWarnings
+      };
+
+      await writeProjectImport({
+        contents: `${JSON.stringify(importWrapper, null, 2)}\n`,
+        fileName: `${safeTimestamp}-comment-reply-import.json`,
+        project: projectHandle
+      });
+
+      if (importedPatches.length > 0) {
+        await writeProjectPatches(projectHandle, [
+          ...existingPatches,
+          ...importedPatches
+        ]);
+      }
+
+      await writeProjectComments(projectHandle, nextComments);
+
+      setComments(nextComments);
+      setPatches([...existingPatches, ...importedPatches]);
+      setChatGptImportDialog(null);
+      setSaveFeedback({
+        kind: importWarnings.length > 0 ? "info" : "success",
+        message: createChatGptImportSummaryMessage({
+          openQuestionsAttached,
+          patchProposalsStored: importedPatches.length,
+          repliesAttached,
+          warnings: importWarnings
+        })
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setChatGptImportDialog({
+        ...chatGptImportDialog,
+        error: message
+      });
+      setSaveFeedback({
+        kind: "error",
+        message
+      });
+    } finally {
+      setIsCommentBusy(false);
     }
   }
 
@@ -1447,7 +1630,10 @@ export function DocumentEditor() {
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
     setCommentContextMenu(null);
+    setPatches([]);
     setCommentsError(null);
+    setChatGptPromptDialog(null);
+    setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
   }
@@ -1497,6 +1683,13 @@ export function DocumentEditor() {
               onClick={handleGenerateChatGptPrompt}
             >
               Generate ChatGPT Prompt
+            </button>
+            <button
+              type="button"
+              disabled={isSaving || isCommentBusy}
+              onClick={handleOpenChatGptImportDialog}
+            >
+              Import ChatGPT Response
             </button>
           </div>
 
@@ -1626,6 +1819,7 @@ export function DocumentEditor() {
           onReplyComment={handleReplyToComment}
           onResolveComment={handleResolveComment}
           onUnmarkCommentForExport={handleUnmarkCommentForExport}
+          pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
         />
@@ -1750,6 +1944,83 @@ export function DocumentEditor() {
               <textarea readOnly value={chatGptPromptDialog.jsonText} />
             </details>
           </section>
+        </div>
+      ) : null}
+
+      {chatGptImportDialog ? (
+        <div className="snapshot-dialog-backdrop">
+          <form
+            className="comment-import-dialog"
+            aria-label="Import ChatGPT response"
+            onSubmit={handleImportChatGptResponse}
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Focused comments</span>
+                <h2>Import ChatGPT Response</h2>
+                <p>
+                  Paste the JSON response from ChatGPT. Patchmark will attach
+                  replies to matching comments and store patch proposals for
+                  review.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={() => setChatGptImportDialog(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            {chatGptImportDialog.error ? (
+              <p className="comment-import-error" role="alert">
+                {chatGptImportDialog.error}
+              </p>
+            ) : null}
+            <div className="comment-import-fields">
+              <label>
+                <span>Optional ChatGPT chat URL</span>
+                <input
+                  type="url"
+                  placeholder="https://chatgpt.com/..."
+                  value={chatGptImportDialog.sourceChatUrl}
+                  onChange={(event) =>
+                    setChatGptImportDialog({
+                      ...chatGptImportDialog,
+                      error: null,
+                      sourceChatUrl: event.target.value
+                    })
+                  }
+                />
+              </label>
+              <label>
+                <span>ChatGPT response JSON</span>
+                <textarea
+                  required
+                  value={chatGptImportDialog.responseJson}
+                  onChange={(event) =>
+                    setChatGptImportDialog({
+                      ...chatGptImportDialog,
+                      error: null,
+                      responseJson: event.target.value
+                    })
+                  }
+                />
+              </label>
+            </div>
+            <div className="comment-import-actions">
+              <button type="submit" disabled={isCommentBusy}>
+                Import
+              </button>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={() => setChatGptImportDialog(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </form>
         </div>
       ) : null}
     </section>
@@ -1944,6 +2215,434 @@ Remember: you may suggest \`resolve_manually\`, but you must not claim the comme
 ${jsonText.trimEnd()}
 \`\`\`
 `;
+}
+
+function parsePatchmarkCommentReplyImport(
+  rawInput: string
+): PatchmarkCommentReplyImport {
+  let parsedResponse: unknown;
+
+  try {
+    parsedResponse = JSON.parse(stripMarkdownJsonFence(rawInput));
+  } catch {
+    throw new Error("Invalid JSON. Paste a valid ChatGPT JSON response.");
+  }
+
+  if (!isRecord(parsedResponse)) {
+    throw new Error("Invalid Patchmark response. Expected a JSON object.");
+  }
+
+  if (parsedResponse.protocol !== "patchmark.comment_reply_import") {
+    throw new Error(
+      "Invalid Patchmark response. Expected protocol `patchmark.comment_reply_import`."
+    );
+  }
+
+  if (parsedResponse.protocol_version !== 1) {
+    throw new Error(
+      "Invalid Patchmark response. Expected protocol_version 1."
+    );
+  }
+
+  if (
+    !Array.isArray(parsedResponse.replies) ||
+    !Array.isArray(parsedResponse.patch_proposals) ||
+    !Array.isArray(parsedResponse.open_questions)
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. Expected replies, patch_proposals, and open_questions arrays."
+    );
+  }
+
+  return {
+    protocol: "patchmark.comment_reply_import",
+    protocol_version: 1,
+    summary:
+      typeof parsedResponse.summary === "string"
+        ? parsedResponse.summary
+        : undefined,
+    replies: parsedResponse.replies.map(normalizeImportedReply),
+    patch_proposals:
+      parsedResponse.patch_proposals.map(normalizeImportedPatchProposal),
+    open_questions:
+      parsedResponse.open_questions.map(normalizeImportedOpenQuestion)
+  };
+}
+
+function stripMarkdownJsonFence(rawInput: string): string {
+  const trimmedInput = rawInput.trim();
+  const fencedMatch = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmedInput);
+
+  return fencedMatch ? fencedMatch[1].trim() : trimmedInput;
+}
+
+function normalizeImportedReply(
+  reply: unknown
+): PatchmarkCommentReplyImport["replies"][number] {
+  if (
+    !isRecord(reply) ||
+    typeof reply.comment_id !== "string" ||
+    typeof reply.reply !== "string"
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. Each reply needs comment_id and reply."
+    );
+  }
+
+  return {
+    comment_id: reply.comment_id,
+    reply: reply.reply,
+    suggested_user_action: isSuggestedUserAction(reply.suggested_user_action)
+      ? reply.suggested_user_action
+      : undefined
+  };
+}
+
+function normalizeImportedPatchProposal(
+  patchProposal: unknown
+): PatchmarkCommentReplyImport["patch_proposals"][number] {
+  if (
+    !isRecord(patchProposal) ||
+    typeof patchProposal.comment_id !== "string" ||
+    typeof patchProposal.original_text !== "string" ||
+    typeof patchProposal.suggested_text !== "string" ||
+    typeof patchProposal.reason !== "string"
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. Each patch proposal needs comment_id, original_text, suggested_text, and reason."
+    );
+  }
+
+  return {
+    comment_id: patchProposal.comment_id,
+    target_heading:
+      typeof patchProposal.target_heading === "string"
+        ? patchProposal.target_heading
+        : undefined,
+    original_text: patchProposal.original_text,
+    suggested_text: patchProposal.suggested_text,
+    reason: patchProposal.reason,
+    risk:
+      typeof patchProposal.risk === "string" ? patchProposal.risk : undefined
+  };
+}
+
+function normalizeImportedOpenQuestion(
+  openQuestion: unknown
+): PatchmarkCommentReplyImport["open_questions"][number] {
+  if (
+    !isRecord(openQuestion) ||
+    typeof openQuestion.comment_id !== "string" ||
+    typeof openQuestion.question !== "string"
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. Each open question needs comment_id and question."
+    );
+  }
+
+  return {
+    comment_id: openQuestion.comment_id,
+    question: openQuestion.question
+  };
+}
+
+function normalizeSourceChatUrl(sourceChatUrl: string): string | undefined {
+  const trimmedUrl = sourceChatUrl.trim();
+
+  if (!trimmedUrl) {
+    return undefined;
+  }
+
+  try {
+    const url = new URL(trimmedUrl);
+
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error("Invalid protocol.");
+    }
+
+    return url.toString();
+  } catch {
+    throw new Error("Source ChatGPT URL must be a valid http(s) URL.");
+  }
+}
+
+function createCommentImportId(importedAt: string): string {
+  return `PM-IMPORT-${createFileSafeTimestamp(importedAt)}`;
+}
+
+function getUnknownImportCommentIds(
+  response: PatchmarkCommentReplyImport,
+  knownCommentIds: Set<string>
+): string[] {
+  const referencedCommentIds = [
+    ...response.replies.map((reply) => reply.comment_id),
+    ...response.patch_proposals.map((patchProposal) => patchProposal.comment_id),
+    ...response.open_questions.map((openQuestion) => openQuestion.comment_id)
+  ];
+
+  return Array.from(
+    new Set(
+      referencedCommentIds.filter((commentId) => !knownCommentIds.has(commentId))
+    )
+  );
+}
+
+function getKnownImportCommentIds(
+  response: PatchmarkCommentReplyImport,
+  knownCommentIds: Set<string>
+): Set<string> {
+  return new Set(
+    [
+      ...response.replies.map((reply) => reply.comment_id),
+      ...response.patch_proposals.map((patchProposal) => patchProposal.comment_id),
+      ...response.open_questions.map((openQuestion) => openQuestion.comment_id)
+    ].filter((commentId) => knownCommentIds.has(commentId))
+  );
+}
+
+function createImportedCommentThreads({
+  comments,
+  importedAt,
+  importId,
+  importedCommentIds,
+  openQuestions,
+  replies,
+  sourceChatUrl
+}: {
+  comments: PatchmarkComment[];
+  importedAt: string;
+  importId: string;
+  importedCommentIds: Set<string>;
+  openQuestions: PatchmarkCommentReplyImport["open_questions"];
+  replies: PatchmarkCommentReplyImport["replies"];
+  sourceChatUrl?: string;
+}): {
+  nextComments: PatchmarkComment[];
+  openQuestionsAttached: number;
+  repliesAttached: number;
+} {
+  let openQuestionsAttached = 0;
+  let repliesAttached = 0;
+
+  const nextComments = comments.map((comment) => {
+    const matchingReplies = replies.filter(
+      (reply) => reply.comment_id === comment.id
+    );
+    const matchingOpenQuestions = openQuestions.filter(
+      (openQuestion) => openQuestion.comment_id === comment.id
+    );
+
+    if (
+      matchingReplies.length === 0 &&
+      matchingOpenQuestions.length === 0 &&
+      !importedCommentIds.has(comment.id)
+    ) {
+      return comment;
+    }
+
+    let nextThread = comment.thread;
+
+    for (const reply of matchingReplies) {
+      nextThread = [
+        ...nextThread,
+        createChatGptThreadEntry({
+          content: reply.reply,
+          createdAt: importedAt,
+          importId,
+          sourceChatUrl,
+          suggestedUserAction: reply.suggested_user_action,
+          thread: nextThread
+        })
+      ];
+      repliesAttached += 1;
+    }
+
+    for (const openQuestion of matchingOpenQuestions) {
+      nextThread = [
+        ...nextThread,
+        createChatGptThreadEntry({
+          content: `Question: ${openQuestion.question}`,
+          createdAt: importedAt,
+          importId,
+          sourceChatUrl,
+          thread: nextThread
+        })
+      ];
+      openQuestionsAttached += 1;
+    }
+
+    return {
+      ...comment,
+      thread: nextThread,
+      export_state: {
+        ...comment.export_state,
+        focus_state: "reply_received" as const,
+        marked_for_export_at: undefined,
+        last_imported_at: importedAt,
+        last_import_id: importId
+      },
+      updated_at: importedAt
+    };
+  });
+
+  return {
+    nextComments,
+    openQuestionsAttached,
+    repliesAttached
+  };
+}
+
+function createChatGptThreadEntry({
+  content,
+  createdAt,
+  importId,
+  sourceChatUrl,
+  suggestedUserAction,
+  thread
+}: {
+  content: string;
+  createdAt: string;
+  importId: string;
+  sourceChatUrl?: string;
+  suggestedUserAction?: PatchmarkSuggestedUserAction;
+  thread: PatchmarkCommentThreadEntry[];
+}): PatchmarkCommentThreadEntry {
+  return {
+    id: createNextThreadEntryIdFromEntries(thread),
+    role: "chatgpt",
+    content,
+    created_at: createdAt,
+    source_import_id: importId,
+    source_chat_url: sourceChatUrl,
+    suggested_user_action: suggestedUserAction
+  };
+}
+
+function createImportedPatchProposals({
+  existingPatches,
+  importedAt,
+  importId,
+  knownCommentIds,
+  patchProposals,
+  sourceChatUrl
+}: {
+  existingPatches: PatchmarkPatch[];
+  importedAt: string;
+  importId: string;
+  knownCommentIds: Set<string>;
+  patchProposals: PatchmarkCommentReplyImport["patch_proposals"];
+  sourceChatUrl?: string;
+}): PatchmarkPatch[] {
+  return patchProposals
+    .filter((patchProposal) => knownCommentIds.has(patchProposal.comment_id))
+    .map((patchProposal, index) => ({
+      id: createNextPatchId(existingPatches, index),
+      status: "pending" as const,
+      comment_id: patchProposal.comment_id,
+      source_import_id: importId,
+      source_chat_url: sourceChatUrl,
+      target_heading: patchProposal.target_heading,
+      original_text: patchProposal.original_text,
+      suggested_text: patchProposal.suggested_text,
+      reason: patchProposal.reason,
+      risk: patchProposal.risk,
+      created_at: importedAt
+    }));
+}
+
+function createNextThreadEntryIdFromEntries(
+  thread: PatchmarkCommentThreadEntry[]
+): string {
+  const nextNumber =
+    thread.reduce((maxNumber, entry) => {
+      const match = /^PM-THREAD-(\d+)$/.exec(entry.id);
+
+      if (!match) {
+        return maxNumber;
+      }
+
+      return Math.max(maxNumber, Number(match[1]));
+    }, 0) + 1;
+
+  return `PM-THREAD-${String(nextNumber).padStart(4, "0")}`;
+}
+
+function createNextPatchId(
+  patches: PatchmarkPatch[],
+  offset: number
+): string {
+  const nextNumber =
+    patches.reduce((maxNumber, patch) => {
+      const match = /^PM-PATCH-(\d+)$/.exec(patch.id);
+
+      if (!match) {
+        return maxNumber;
+      }
+
+      return Math.max(maxNumber, Number(match[1]));
+    }, 0) +
+    offset +
+    1;
+
+  return `PM-PATCH-${String(nextNumber).padStart(4, "0")}`;
+}
+
+function getPendingPatchCountsByCommentId(
+  patches: PatchmarkPatch[]
+): Record<string, number> {
+  return patches.reduce<Record<string, number>>((counts, patch) => {
+    if (patch.status !== "pending" || !patch.comment_id) {
+      return counts;
+    }
+
+    counts[patch.comment_id] = (counts[patch.comment_id] ?? 0) + 1;
+    return counts;
+  }, {});
+}
+
+function createChatGptImportSummaryMessage({
+  openQuestionsAttached,
+  patchProposalsStored,
+  repliesAttached,
+  warnings
+}: ChatGptImportSummary): string {
+  const summary = [
+    "Imported ChatGPT response.",
+    `Replies attached: ${repliesAttached}`,
+    `Open questions attached: ${openQuestionsAttached}`,
+    `Patch proposals stored: ${patchProposalsStored}`,
+    `Warnings: ${warnings.length}`
+  ];
+
+  if (warnings.length > 0) {
+    summary.push(`Some response items referenced comments that were not found: ${
+      warnings
+        .map((warning) => warning.split(": ").at(-1))
+        .filter(Boolean)
+        .join(", ")
+    }`);
+  }
+
+  return summary.join(" ");
+}
+
+function isSuggestedUserAction(
+  value: unknown
+): value is PatchmarkSuggestedUserAction {
+  return (
+    typeof value === "string" &&
+    [
+      "review",
+      "clarify",
+      "apply_patch",
+      "keep_open",
+      "resolve_manually"
+    ].includes(value)
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
 }
 
 function createFocusedCommentsExportPayload({

@@ -19,7 +19,8 @@ export type PatchmarkCommentFocusState =
   | "idle"
   | "in_focus"
   | "exported"
-  | "awaiting_reply";
+  | "awaiting_reply"
+  | "reply_received";
 
 export type PatchmarkCommentActionScope =
   | "display_target"
@@ -47,6 +48,9 @@ export type PatchmarkCommentThreadEntry = {
   role: "user" | "chatgpt" | "system";
   content: string;
   created_at: string;
+  source_import_id?: string;
+  source_chat_url?: string;
+  suggested_user_action?: PatchmarkSuggestedUserAction;
 };
 
 export type PatchmarkCommentExportState = {
@@ -54,6 +58,8 @@ export type PatchmarkCommentExportState = {
   marked_for_export_at?: string;
   last_exported_at?: string;
   last_export_id?: string;
+  last_imported_at?: string;
+  last_import_id?: string;
 };
 
 export type PatchmarkSuggestedUserAction =
@@ -174,13 +180,22 @@ export type PatchmarkComment = {
   resolved_at?: string;
 };
 
+export type PatchmarkPatchStatus =
+  | "pending"
+  | "accepted"
+  | "rejected"
+  | "stale";
+
 export type PatchmarkPatch = {
   id: string;
-  status: "pending" | "accepted" | "rejected" | "stale";
+  status: PatchmarkPatchStatus;
+  comment_id?: string;
+  source_import_id?: string;
+  source_chat_url?: string;
   target_heading?: string;
   original_text: string;
   suggested_text: string;
-  reason?: string;
+  reason: string;
   risk?: string;
   created_at: string;
   resolved_at?: string;

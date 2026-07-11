@@ -54,6 +54,7 @@ type CommentsPanelProps = {
   onReplyComment: (commentId: string, content: string) => Promise<void>;
   onResolveComment: (commentId: string) => Promise<void>;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  pendingPatchCountsByCommentId: Record<string, number>;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
 };
@@ -85,6 +86,7 @@ export function CommentsPanel({
   onReplyComment,
   onResolveComment,
   onUnmarkCommentForExport,
+  pendingPatchCountsByCommentId,
   selectedAnchorContextKind,
   selectedTextPreview
 }: CommentsPanelProps) {
@@ -362,6 +364,7 @@ export function CommentsPanel({
               setReplyComment("");
             }}
             onUnmarkCommentForExport={onUnmarkCommentForExport}
+            pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
             replyingCommentId={replyingCommentId}
             replyComment={replyComment}
           />
@@ -395,6 +398,7 @@ type CommentGroupProps = {
   onStopEditing: () => void;
   onStopReplying: () => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  pendingPatchCountsByCommentId: Record<string, number>;
   quiet?: boolean;
   replyingCommentId: string | null;
   replyComment: string;
@@ -434,6 +438,7 @@ function FloatingCommentList({
   onStopEditing,
   onStopReplying,
   onUnmarkCommentForExport,
+  pendingPatchCountsByCommentId,
   replyingCommentId,
   replyComment
 }: FloatingCommentListProps) {
@@ -514,6 +519,7 @@ function FloatingCommentList({
                 onStopEditing={onStopEditing}
                 onStopReplying={onStopReplying}
                 onUnmarkCommentForExport={onUnmarkCommentForExport}
+                pendingPatchCount={pendingPatchCountsByCommentId[comment.id] ?? 0}
                 quiet={comment.status === "resolved"}
                 replyingCommentId={replyingCommentId}
                 replyComment={replyComment}
@@ -550,6 +556,7 @@ function FloatingCommentList({
           onStopEditing={onStopEditing}
           onStopReplying={onStopReplying}
           onUnmarkCommentForExport={onUnmarkCommentForExport}
+          pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           quiet
           replyingCommentId={replyingCommentId}
           replyComment={replyComment}
@@ -601,6 +608,7 @@ function CommentGroup({
   onStopEditing,
   onStopReplying,
   onUnmarkCommentForExport,
+  pendingPatchCountsByCommentId,
   replyingCommentId,
   replyComment,
   quiet = false
@@ -637,6 +645,7 @@ function CommentGroup({
                   onStopEditing={onStopEditing}
                   onStopReplying={onStopReplying}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
+                  pendingPatchCount={pendingPatchCountsByCommentId[comment.id] ?? 0}
                   quiet={quiet}
                   replyingCommentId={replyingCommentId}
                   replyComment={replyComment}
@@ -672,6 +681,7 @@ type CommentCardProps = {
   onStopEditing: () => void;
   onStopReplying: () => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  pendingPatchCount: number;
   quiet?: boolean;
   replyingCommentId: string | null;
   replyComment: string;
@@ -699,6 +709,7 @@ function CommentCard({
   onStopEditing,
   onStopReplying,
   onUnmarkCommentForExport,
+  pendingPatchCount,
   replyingCommentId,
   replyComment,
   quiet = false
@@ -707,9 +718,7 @@ function CommentCard({
     label: getCommentAnchorLabel(comment),
     status: "document" as const
   };
-  const latestUserReply = [...comment.thread]
-    .reverse()
-    .find((entry) => entry.role === "user");
+  const threadPreviewEntries = comment.thread.slice(-3);
   const isReplying = replyingCommentId === comment.id;
   const isQueuedForExport =
     comment.export_state.focus_state === "in_focus" ||
@@ -805,19 +814,45 @@ function CommentCard({
             </>
           ) : null}
           <p>{comment.comment}</p>
-          {latestUserReply ? (
+          {pendingPatchCount > 0 ? (
+            <span className="comment-pending-patches">
+              Pending patch proposal{pendingPatchCount === 1 ? "" : "s"}:{" "}
+              {pendingPatchCount}
+            </span>
+          ) : null}
+          {threadPreviewEntries.length > 0 ? (
             <div className="comment-thread-preview">
               <span>
-                User reply
-                {comment.thread.length > 1 ? ` · ${comment.thread.length} total` : ""}
+                Thread preview
+                {comment.thread.length > threadPreviewEntries.length
+                  ? ` · latest ${threadPreviewEntries.length} of ${
+                      comment.thread.length
+                    }`
+                  : ` · ${comment.thread.length} entr${
+                      comment.thread.length === 1 ? "y" : "ies"
+                    }`}
               </span>
-              <p>{latestUserReply.content}</p>
+              {threadPreviewEntries.map((entry) => (
+                <div className="comment-thread-entry" key={entry.id}>
+                  <strong>{getThreadRoleLabel(entry.role)}:</strong>
+                  <p>{entry.content}</p>
+                  {entry.suggested_user_action ? (
+                    <span>
+                      Suggested action: {entry.suggested_user_action}
+                    </span>
+                  ) : null}
+                  {entry.source_chat_url ? (
+                    <a
+                      href={entry.source_chat_url}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      Open ChatGPT chat
+                    </a>
+                  ) : null}
+                </div>
+              ))}
             </div>
-          ) : comment.thread.length > 0 ? (
-            <span className="comment-thread-count">
-              {comment.thread.length} thread entr
-              {comment.thread.length === 1 ? "y" : "ies"}
-            </span>
           ) : null}
           {isReplying ? (
             <form className="comment-form comment-reply-form" onSubmit={onReplyComment}>
@@ -1133,7 +1168,23 @@ function getCommentFocusStateLabel(comment: PatchmarkComment): string {
     return "Awaiting reply";
   }
 
+  if (comment.export_state.focus_state === "reply_received") {
+    return "Reply received";
+  }
+
   return "Idle";
+}
+
+function getThreadRoleLabel(role: PatchmarkComment["thread"][number]["role"]): string {
+  if (role === "chatgpt") {
+    return "ChatGPT reply";
+  }
+
+  if (role === "system") {
+    return "System";
+  }
+
+  return "User reply";
 }
 
 function sortCommentsByStatus(comments: PatchmarkComment[]): PatchmarkComment[] {
