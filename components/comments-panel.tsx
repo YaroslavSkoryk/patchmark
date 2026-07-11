@@ -1009,6 +1009,25 @@ function CommentCard({
                       Open ChatGPT chat
                     </a>
                   ) : null}
+                  {entry.sources?.length ? (
+                    <div className="comment-thread-sources">
+                      <span>Sources</span>
+                      <ul>
+                        {entry.sources.map((source, index) => (
+                          <li key={`${source.url}-${index}`}>
+                            <a
+                              href={source.url}
+                              target="_blank"
+                              rel="noreferrer"
+                            >
+                              {source.title || source.url}
+                            </a>
+                            {source.note ? <small>{source.note}</small> : null}
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  ) : null}
                 </div>
               ))}
             </div>

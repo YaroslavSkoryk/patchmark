@@ -850,12 +850,42 @@ button {
 }
 
 .comment-import-error {
+  display: grid;
+  gap: 10px;
   margin: 0;
   border-bottom: 1px solid #efb7a9;
   background: #fff0ea;
   color: #8d2f18;
   padding: 12px 18px;
   font-weight: 700;
+}
+
+.comment-import-error p {
+  margin: 0;
+}
+
+.comment-import-error label {
+  display: grid;
+  gap: 6px;
+}
+
+.comment-import-error span {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+}
+
+.comment-import-error textarea {
+  min-height: 120px;
+  resize: vertical;
+  border: 1px solid #efb7a9;
+  outline: none;
+  background: #fffaf7;
+  color: #53210f;
+  padding: 10px;
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.78rem;
+  line-height: 1.45;
 }
 
 .comment-import-fields {
@@ -1281,6 +1311,30 @@ button {
   color: var(--accent-strong);
   font-size: 0.76rem;
   font-weight: 800;
+}
+
+.comment-thread-sources {
+  display: grid;
+  gap: 4px;
+}
+
+.comment-thread-sources ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding-left: 16px;
+}
+
+.comment-thread-sources li {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+}
+
+.comment-thread-sources small {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
 }
 
 .comment-reply-form {

@@ -60,6 +60,7 @@ import {
   type PatchmarkPatch,
   type PatchmarkSelectedTextAnchorContext,
   type PatchmarkSelectedTextAnchorContextKind,
+  type PatchmarkSourceReference,
   type PatchmarkSuggestedUserAction,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
@@ -156,6 +157,15 @@ const ANCHOR_CONTEXT_CHARS = 160;
 const SHORT_SELECTION_HELP =
   "Could not create a reliable anchor. Try selecting a larger phrase or add a section comment.";
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
+const STRICT_CHATGPT_IMPORT_ERROR =
+  "Invalid Patchmark response. ChatGPT returned text outside the JSON protocol. Ask ChatGPT to return exactly one valid JSON object with all sources inside sources arrays.";
+const CHATGPT_IMPORT_REPAIR_PROMPT = `Please convert your previous answer into one valid Patchmark JSON object only.
+
+Do not include Markdown fences.
+Do not include text before or after the JSON.
+Do not use footnotes or reference links.
+Put all source URLs inside sources arrays.
+Use protocol: patchmark.comment_reply_import.`;
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -1079,6 +1089,7 @@ export function DocumentEditor() {
         import_id: importId,
         imported_at: importedAt,
         source_chat_url: sourceChatUrl,
+        sources: parsedResponse.sources,
         raw_response: parsedResponse,
         warnings: importWarnings
       };
@@ -1973,9 +1984,13 @@ export function DocumentEditor() {
               </button>
             </header>
             {chatGptImportDialog.error ? (
-              <p className="comment-import-error" role="alert">
-                {chatGptImportDialog.error}
-              </p>
+              <div className="comment-import-error" role="alert">
+                <p>{chatGptImportDialog.error}</p>
+                <label>
+                  <span>Repair prompt</span>
+                  <textarea readOnly value={CHATGPT_IMPORT_REPAIR_PROMPT} />
+                </label>
+              </div>
             ) : null}
             <div className="comment-import-fields">
               <label>
@@ -2158,9 +2173,23 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 
 ## Required Response Format
 
-Return only valid JSON.
+Return exactly one JSON object.
 
 Do not wrap the JSON in Markdown fences.
+
+Do not include any text before or after the JSON.
+
+Do not include Markdown reference links such as [1] or [source][1].
+
+Do not include footnotes or link definitions after the JSON.
+
+Do not use Markdown links in reply text.
+
+If you use sources, include them only in sources arrays inside the JSON.
+
+Every URL must be inside a sources array.
+
+If you do not use sources, return an empty sources array.
 
 Use this exact protocol:
 
@@ -2169,11 +2198,13 @@ Use this exact protocol:
   "protocol": "patchmark.comment_reply_import",
   "protocol_version": 1,
   "summary": "Brief summary of what you did.",
+  "sources": [],
   "replies": [
     {
       "comment_id": "PM-COMMENT-0001",
       "reply": "Your reply to the comment.",
-      "suggested_user_action": "review"
+      "suggested_user_action": "review",
+      "sources": []
     }
   ],
   "patch_proposals": [
@@ -2183,7 +2214,8 @@ Use this exact protocol:
       "original_text": "Exact Markdown text to replace.",
       "suggested_text": "Replacement Markdown text.",
       "reason": "Why this change helps.",
-      "risk": "Tradeoff or caution."
+      "risk": "Tradeoff or caution.",
+      "sources": []
     }
   ],
   "open_questions": [
@@ -2225,7 +2257,7 @@ function parsePatchmarkCommentReplyImport(
   try {
     parsedResponse = JSON.parse(stripMarkdownJsonFence(rawInput));
   } catch {
-    throw new Error("Invalid JSON. Paste a valid ChatGPT JSON response.");
+    throw new Error(STRICT_CHATGPT_IMPORT_ERROR);
   }
 
   if (!isRecord(parsedResponse)) {
@@ -2261,6 +2293,7 @@ function parsePatchmarkCommentReplyImport(
       typeof parsedResponse.summary === "string"
         ? parsedResponse.summary
         : undefined,
+    sources: normalizeImportedSources(parsedResponse.sources),
     replies: parsedResponse.replies.map(normalizeImportedReply),
     patch_proposals:
       parsedResponse.patch_proposals.map(normalizeImportedPatchProposal),
@@ -2294,7 +2327,8 @@ function normalizeImportedReply(
     reply: reply.reply,
     suggested_user_action: isSuggestedUserAction(reply.suggested_user_action)
       ? reply.suggested_user_action
-      : undefined
+      : undefined,
+    sources: normalizeImportedSources(reply.sources)
   };
 }
 
@@ -2323,7 +2357,73 @@ function normalizeImportedPatchProposal(
     suggested_text: patchProposal.suggested_text,
     reason: patchProposal.reason,
     risk:
-      typeof patchProposal.risk === "string" ? patchProposal.risk : undefined
+      typeof patchProposal.risk === "string" ? patchProposal.risk : undefined,
+    sources: normalizeImportedSources(patchProposal.sources)
+  };
+}
+
+function normalizeImportedSources(
+  sources: unknown
+): PatchmarkSourceReference[] | undefined {
+  if (sources === undefined) {
+    return undefined;
+  }
+
+  if (!Array.isArray(sources)) {
+    throw new Error(
+      "Invalid Patchmark response. Sources must be arrays of source objects."
+    );
+  }
+
+  return sources.map(normalizeImportedSourceReference);
+}
+
+function normalizeImportedSourceReference(
+  source: unknown
+): PatchmarkSourceReference {
+  if (!isRecord(source) || typeof source.url !== "string") {
+    throw new Error(
+      "Invalid Patchmark response. Each source needs a url."
+    );
+  }
+
+  const rawUrl = source.url.trim();
+
+  if (!rawUrl) {
+    throw new Error(
+      "Invalid Patchmark response. Each source needs a url."
+    );
+  }
+
+  let normalizedUrl: string;
+
+  try {
+    const url = new URL(rawUrl);
+
+    if (url.protocol !== "https:" && url.protocol !== "http:") {
+      throw new Error("Invalid protocol.");
+    }
+
+    normalizedUrl = url.toString();
+  } catch {
+    throw new Error(
+      "Invalid Patchmark response. Each source url must be a valid http(s) URL."
+    );
+  }
+
+  const title =
+    typeof source.title === "string" && source.title.trim()
+      ? source.title.trim()
+      : undefined;
+  const note =
+    typeof source.note === "string" && source.note.trim()
+      ? source.note.trim()
+      : undefined;
+
+  return {
+    title,
+    url: normalizedUrl,
+    note
   };
 }
 
@@ -2449,6 +2549,7 @@ function createImportedCommentThreads({
           content: reply.reply,
           createdAt: importedAt,
           importId,
+          sources: reply.sources,
           sourceChatUrl,
           suggestedUserAction: reply.suggested_user_action,
           thread: nextThread
@@ -2497,6 +2598,7 @@ function createChatGptThreadEntry({
   content,
   createdAt,
   importId,
+  sources,
   sourceChatUrl,
   suggestedUserAction,
   thread
@@ -2504,6 +2606,7 @@ function createChatGptThreadEntry({
   content: string;
   createdAt: string;
   importId: string;
+  sources?: PatchmarkSourceReference[];
   sourceChatUrl?: string;
   suggestedUserAction?: PatchmarkSuggestedUserAction;
   thread: PatchmarkCommentThreadEntry[];
@@ -2513,6 +2616,7 @@ function createChatGptThreadEntry({
     role: "chatgpt",
     content,
     created_at: createdAt,
+    sources,
     source_import_id: importId,
     source_chat_url: sourceChatUrl,
     suggested_user_action: suggestedUserAction
@@ -2547,6 +2651,7 @@ function createImportedPatchProposals({
       suggested_text: patchProposal.suggested_text,
       reason: patchProposal.reason,
       risk: patchProposal.risk,
+      sources: patchProposal.sources,
       created_at: importedAt
     }));
 }

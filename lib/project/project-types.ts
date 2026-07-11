@@ -51,6 +51,7 @@ export type PatchmarkCommentThreadEntry = {
   source_import_id?: string;
   source_chat_url?: string;
   suggested_user_action?: PatchmarkSuggestedUserAction;
+  sources?: PatchmarkSourceReference[];
 };
 
 export type PatchmarkCommentExportState = {
@@ -69,15 +70,22 @@ export type PatchmarkSuggestedUserAction =
   | "keep_open"
   | "resolve_manually";
 
+export type PatchmarkSourceReference = {
+  title?: string;
+  url: string;
+  note?: string;
+};
+
 export type PatchmarkCommentReplyImport = {
   protocol: "patchmark.comment_reply_import";
   protocol_version: 1;
   summary?: string;
-  source_chat_url?: string;
+  sources?: PatchmarkSourceReference[];
   replies: Array<{
     comment_id: string;
     reply: string;
     suggested_user_action?: PatchmarkSuggestedUserAction;
+    sources?: PatchmarkSourceReference[];
   }>;
   patch_proposals: Array<{
     comment_id: string;
@@ -86,6 +94,7 @@ export type PatchmarkCommentReplyImport = {
     suggested_text: string;
     reason: string;
     risk?: string;
+    sources?: PatchmarkSourceReference[];
   }>;
   open_questions: Array<{
     comment_id: string;
@@ -197,6 +206,7 @@ export type PatchmarkPatch = {
   suggested_text: string;
   reason: string;
   risk?: string;
+  sources?: PatchmarkSourceReference[];
   created_at: string;
   resolved_at?: string;
 };

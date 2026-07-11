@@ -13,6 +13,7 @@ import {
   type PatchmarkManifest,
   type PatchmarkPatch,
   type PatchmarkPatchStatus,
+  type PatchmarkSourceReference,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 
@@ -973,7 +974,24 @@ function normalizeCommentThread(thread: unknown): PatchmarkCommentThreadEntry[] 
     return [];
   }
 
-  return thread.filter(isPatchmarkCommentThreadEntry);
+  return thread
+    .filter(isPatchmarkCommentThreadEntry)
+    .map(normalizeCommentThreadEntry);
+}
+
+function normalizeCommentThreadEntry(
+  entry: PatchmarkCommentThreadEntry
+): PatchmarkCommentThreadEntry {
+  return {
+    id: entry.id,
+    role: entry.role,
+    content: entry.content,
+    created_at: entry.created_at,
+    source_import_id: entry.source_import_id,
+    source_chat_url: entry.source_chat_url,
+    suggested_user_action: entry.suggested_user_action,
+    sources: normalizeSourceReferences(entry.sources)
+  };
 }
 
 function normalizeCommentExportState(
@@ -1047,10 +1065,29 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
     suggested_text: patch.suggested_text,
     reason: typeof patch.reason === "string" ? patch.reason : "No reason provided.",
     risk: typeof patch.risk === "string" ? patch.risk : undefined,
+    sources: normalizeSourceReferences(patch.sources),
     created_at: patch.created_at,
     resolved_at:
       typeof patch.resolved_at === "string" ? patch.resolved_at : undefined
   };
+}
+
+function normalizeSourceReferences(
+  sources: unknown
+): PatchmarkSourceReference[] | undefined {
+  if (!Array.isArray(sources)) {
+    return undefined;
+  }
+
+  const normalizedSources = sources
+    .filter(isPatchmarkSourceReference)
+    .map((source) => ({
+      title: source.title,
+      url: source.url,
+      note: source.note
+    }));
+
+  return normalizedSources.length > 0 ? normalizedSources : undefined;
 }
 
 function createDefaultActionContext(
@@ -1171,7 +1208,10 @@ function isPatchmarkCommentThreadEntry(
     (value.source_chat_url === undefined ||
       typeof value.source_chat_url === "string") &&
     (value.suggested_user_action === undefined ||
-      isSuggestedUserAction(value.suggested_user_action))
+      isSuggestedUserAction(value.suggested_user_action)) &&
+    (value.sources === undefined ||
+      (Array.isArray(value.sources) &&
+        value.sources.every(isPatchmarkSourceReference)))
   );
 }
 
@@ -1232,6 +1272,18 @@ function isSuggestedUserAction(value: unknown): boolean {
       "keep_open",
       "resolve_manually"
     ].includes(value)
+  );
+}
+
+function isPatchmarkSourceReference(
+  value: unknown
+): value is PatchmarkSourceReference {
+  return (
+    isRecord(value) &&
+    typeof value.url === "string" &&
+    value.url.trim().length > 0 &&
+    (value.title === undefined || typeof value.title === "string") &&
+    (value.note === undefined || typeof value.note === "string")
   );
 }
 
