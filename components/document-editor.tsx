@@ -159,17 +159,27 @@ const SHORT_SELECTION_HELP =
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
 const STRICT_CHATGPT_IMPORT_ERROR =
   "Invalid Patchmark response. All references must be inside the JSON, placed in the field-local sources arrays.";
-const CHATGPT_IMPORT_REPAIR_PROMPT = `Please convert your previous answer into one valid Patchmark JSON object only.
+const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into one valid Patchmark JSON object only.
+
+Do not change the substance of the reply or patch.
 
 Do not include Markdown fences.
 Do not include text before or after the JSON.
 Do not use footnotes or reference links.
-Put all source URLs inside the nearest field-local sources array.
-Use protocol: patchmark.comment_reply_import.`;
+
+Source rules:
+- Every \`url\` must be a raw URL string starting with \`https://\` or \`http://\`.
+- Do not use Markdown links.
+- Do not include \`[\`, \`]\`, \`(\`, or \`)\` around URLs.
+- Do not include quotes, escaped quotes, or backslashes in URLs.
+- Put all URLs only inside field-local source arrays.
+- \`supports\` must be plain text only.`;
 const PROTOCOL_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
 const PROTOCOL_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\([^)]+\)/;
+const PROTOCOL_BROKEN_MARKDOWN_LINK_PATTERN = /\]\(/;
 const PROTOCOL_REFERENCE_LINK_PATTERN = /\[[^\]]+\]\[[^\]]+\]|\[\d+\]/;
 const PROTOCOL_FOOTNOTE_PATTERN = /\[\^[^\]]+\]/;
+const SOURCE_URL_MARKDOWN_PATTERN = /[\[\]\(\)"\\]/;
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -2211,6 +2221,18 @@ If the same source supports multiple fields, repeat it in each relevant field-lo
 
 If a field uses no sources, return an empty array for that field's source array.
 
+Source object rules:
+
+- Every source must be an object with a raw \`url\` string.
+- The \`url\` value must start with \`https://\` or \`http://\`.
+- Do not wrap URLs in Markdown syntax.
+- Do not include \`[\` or \`]\` in URLs.
+- Do not include \`(\` or \`)\` in URLs.
+- Do not include quotes, escaped quotes, or backslashes in URLs.
+- Do not put URLs inside \`reply\`, \`reason\`, \`risk\`, \`suggested_text\`, or \`question\` text fields.
+- Put URLs only in field-local source arrays.
+- \`supports\` must be plain text describing what the source supports.
+
 Use this exact protocol:
 
 \`\`\`json
@@ -2259,7 +2281,7 @@ Example sourced reply object:
     {
       "title": "Crust Chant — Bread Collection",
       "url": "https://crustchant.com/en/collections/bread/",
-      "supports": "Shows Campaillou in the public bread catalogue."
+      "supports": "Shows that Campaillou appears in the public bread catalogue."
     }
   ],
   "suggested_user_action": "apply_patch"
@@ -2332,12 +2354,18 @@ function parsePatchmarkCommentReplyImport(
       typeof parsedResponse.summary === "string"
         ? validateProtocolTextField(parsedResponse.summary, "summary")
         : undefined,
-    sources: normalizeImportedSources(parsedResponse.sources),
-    replies: parsedResponse.replies.map(normalizeImportedReply),
+    sources: normalizeImportedSources(parsedResponse.sources, "sources"),
+    replies: parsedResponse.replies.map((reply, index) =>
+      normalizeImportedReply(reply, index)
+    ),
     patch_proposals:
-      parsedResponse.patch_proposals.map(normalizeImportedPatchProposal),
+      parsedResponse.patch_proposals.map((patchProposal, index) =>
+        normalizeImportedPatchProposal(patchProposal, index)
+      ),
     open_questions:
-      parsedResponse.open_questions.map(normalizeImportedOpenQuestion)
+      parsedResponse.open_questions.map((openQuestion, index) =>
+        normalizeImportedOpenQuestion(openQuestion, index)
+      )
   };
 }
 
@@ -2349,7 +2377,8 @@ function stripMarkdownJsonFence(rawInput: string): string {
 }
 
 function normalizeImportedReply(
-  reply: unknown
+  reply: unknown,
+  index: number
 ): PatchmarkCommentReplyImport["replies"][number] {
   if (
     !isRecord(reply) ||
@@ -2361,21 +2390,30 @@ function normalizeImportedReply(
     );
   }
 
+  const replyPath = `replies[${index}]`;
+  const replySourcesInput = reply.reply_sources ?? reply.sources;
+  const replySourcesPath =
+    reply.reply_sources === undefined
+      ? `${replyPath}.sources`
+      : `${replyPath}.reply_sources`;
+
   return {
     comment_id: reply.comment_id,
-    reply: validateProtocolTextField(reply.reply, "reply"),
+    reply: validateProtocolTextField(reply.reply, `${replyPath}.reply`),
     reply_sources: normalizeImportedSources(
-      reply.reply_sources ?? reply.sources
+      replySourcesInput,
+      replySourcesPath
     ),
     suggested_user_action: isSuggestedUserAction(reply.suggested_user_action)
       ? reply.suggested_user_action
       : undefined,
-    sources: normalizeImportedSources(reply.sources)
+    sources: normalizeImportedSources(reply.sources, `${replyPath}.sources`)
   };
 }
 
 function normalizeImportedPatchProposal(
-  patchProposal: unknown
+  patchProposal: unknown,
+  index: number
 ): PatchmarkCommentReplyImport["patch_proposals"][number] {
   if (
     !isRecord(patchProposal) ||
@@ -2389,6 +2427,14 @@ function normalizeImportedPatchProposal(
     );
   }
 
+  const patchProposalPath = `patch_proposals[${index}]`;
+  const reasonSourcesInput =
+    patchProposal.reason_sources ?? patchProposal.sources;
+  const reasonSourcesPath =
+    patchProposal.reason_sources === undefined
+      ? `${patchProposalPath}.sources`
+      : `${patchProposalPath}.reason_sources`;
+
   return {
     comment_id: patchProposal.comment_id,
     target_heading:
@@ -2398,21 +2444,32 @@ function normalizeImportedPatchProposal(
     original_text: patchProposal.original_text,
     suggested_text: validateProtocolTextField(
       patchProposal.suggested_text,
-      "suggested_text"
+      `${patchProposalPath}.suggested_text`
     ),
     suggested_text_sources: normalizeImportedSources(
-      patchProposal.suggested_text_sources
+      patchProposal.suggested_text_sources,
+      `${patchProposalPath}.suggested_text_sources`
     ),
-    reason: validateProtocolTextField(patchProposal.reason, "reason"),
+    reason: validateProtocolTextField(
+      patchProposal.reason,
+      `${patchProposalPath}.reason`
+    ),
     reason_sources: normalizeImportedSources(
-      patchProposal.reason_sources ?? patchProposal.sources
+      reasonSourcesInput,
+      reasonSourcesPath
     ),
     risk:
       typeof patchProposal.risk === "string"
-        ? validateProtocolTextField(patchProposal.risk, "risk")
+        ? validateProtocolTextField(patchProposal.risk, `${patchProposalPath}.risk`)
         : undefined,
-    risk_sources: normalizeImportedSources(patchProposal.risk_sources),
-    sources: normalizeImportedSources(patchProposal.sources)
+    risk_sources: normalizeImportedSources(
+      patchProposal.risk_sources,
+      `${patchProposalPath}.risk_sources`
+    ),
+    sources: normalizeImportedSources(
+      patchProposal.sources,
+      `${patchProposalPath}.sources`
+    )
   };
 }
 
@@ -2420,6 +2477,7 @@ function validateProtocolTextField(value: string, fieldName: string): string {
   if (
     PROTOCOL_URL_PATTERN.test(value) ||
     PROTOCOL_MARKDOWN_LINK_PATTERN.test(value) ||
+    PROTOCOL_BROKEN_MARKDOWN_LINK_PATTERN.test(value) ||
     PROTOCOL_REFERENCE_LINK_PATTERN.test(value) ||
     PROTOCOL_FOOTNOTE_PATTERN.test(value)
   ) {
@@ -2429,8 +2487,26 @@ function validateProtocolTextField(value: string, fieldName: string): string {
   return value;
 }
 
+function normalizeSourceTextField(
+  value: unknown,
+  fieldPath: string
+): string | undefined {
+  if (typeof value !== "string") {
+    throw new Error(
+      `Invalid source field at ${fieldPath}. Source title, note, and supports must be plain text strings.`
+    );
+  }
+
+  const trimmedValue = value.trim();
+
+  return trimmedValue
+    ? validateProtocolTextField(trimmedValue, fieldPath)
+    : undefined;
+}
+
 function normalizeImportedSources(
-  sources: unknown
+  sources: unknown,
+  arrayPath: string
 ): PatchmarkSourceReference[] | undefined {
   if (sources === undefined) {
     return undefined;
@@ -2438,27 +2514,45 @@ function normalizeImportedSources(
 
   if (!Array.isArray(sources)) {
     throw new Error(
-      "Invalid Patchmark response. Sources must be arrays of source objects."
+      `Invalid source array at ${arrayPath}. Sources must be arrays of source objects.`
     );
   }
 
-  return sources.map(normalizeImportedSourceReference);
+  return sources.map((source, index) =>
+    normalizeImportedSourceReference(source, `${arrayPath}[${index}]`)
+  );
 }
 
 function normalizeImportedSourceReference(
-  source: unknown
+  source: unknown,
+  sourcePath: string
 ): PatchmarkSourceReference {
-  if (!isRecord(source) || typeof source.url !== "string") {
+  if (!isRecord(source)) {
     throw new Error(
-      "Invalid Patchmark response. Each source needs a url."
+      `Invalid source object at ${sourcePath}. Every source must be an object with a raw url string.`
     );
   }
 
-  const rawUrl = source.url.trim();
-
-  if (!rawUrl) {
+  if (typeof source.url !== "string") {
     throw new Error(
-      "Invalid Patchmark response. Each source needs a url."
+      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
+    );
+  }
+
+  const rawUrl = source.url;
+
+  if (!rawUrl.trim() || rawUrl.trim() !== rawUrl) {
+    throw new Error(
+      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
+    );
+  }
+
+  if (
+    (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://")) ||
+    SOURCE_URL_MARKDOWN_PATTERN.test(rawUrl)
+  ) {
+    throw new Error(
+      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
     );
   }
 
@@ -2474,22 +2568,22 @@ function normalizeImportedSourceReference(
     normalizedUrl = url.toString();
   } catch {
     throw new Error(
-      "Invalid Patchmark response. Each source url must be a valid http(s) URL."
+      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
     );
   }
 
   const title =
-    typeof source.title === "string" && source.title.trim()
-      ? validateProtocolTextField(source.title.trim(), "source.title")
-      : undefined;
+    source.title === undefined
+      ? undefined
+      : normalizeSourceTextField(source.title, `${sourcePath}.title`);
   const note =
-    typeof source.note === "string" && source.note.trim()
-      ? validateProtocolTextField(source.note.trim(), "source.note")
-      : undefined;
+    source.note === undefined
+      ? undefined
+      : normalizeSourceTextField(source.note, `${sourcePath}.note`);
   const supports =
-    typeof source.supports === "string" && source.supports.trim()
-      ? validateProtocolTextField(source.supports.trim(), "source.supports")
-      : undefined;
+    source.supports === undefined
+      ? undefined
+      : normalizeSourceTextField(source.supports, `${sourcePath}.supports`);
 
   return {
     title,
@@ -2500,7 +2594,8 @@ function normalizeImportedSourceReference(
 }
 
 function normalizeImportedOpenQuestion(
-  openQuestion: unknown
+  openQuestion: unknown,
+  index: number
 ): PatchmarkCommentReplyImport["open_questions"][number] {
   if (
     !isRecord(openQuestion) ||
@@ -2512,10 +2607,18 @@ function normalizeImportedOpenQuestion(
     );
   }
 
+  const openQuestionPath = `open_questions[${index}]`;
+
   return {
     comment_id: openQuestion.comment_id,
-    question: validateProtocolTextField(openQuestion.question, "question"),
-    question_sources: normalizeImportedSources(openQuestion.question_sources)
+    question: validateProtocolTextField(
+      openQuestion.question,
+      `${openQuestionPath}.question`
+    ),
+    question_sources: normalizeImportedSources(
+      openQuestion.question_sources,
+      `${openQuestionPath}.question_sources`
+    )
   };
 }
 
