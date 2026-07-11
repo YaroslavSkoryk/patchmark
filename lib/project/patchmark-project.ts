@@ -5,8 +5,10 @@ import {
   type PatchmarkCommentActionScope,
   type PatchmarkCommentAnchor,
   type PatchmarkComment,
+  type PatchmarkCommentAnchorHistoryEntry,
   type PatchmarkCommentExportState,
   type PatchmarkCommentFocusState,
+  type PatchmarkCommentPatchImpact,
   type PatchmarkCommentStatus,
   type PatchmarkCommentThreadEntry,
   type PatchmarkCommentType,
@@ -84,6 +86,26 @@ const commentTypes: PatchmarkCommentType[] = [
 ];
 
 const commentStatuses: PatchmarkCommentStatus[] = ["open", "resolved"];
+const commentAnchorHistoryReasons: PatchmarkCommentAnchorHistoryEntry["reason"][] = [
+  "patch_applied",
+  "offset_shifted_after_patch",
+  "anchor_reanchored_after_patch",
+  "anchor_marked_needs_review_after_patch"
+];
+const patchCommentImpactKinds: PatchmarkCommentPatchImpact["impact_kind"][] = [
+  "linked_comment",
+  "anchor_inside_replaced_range",
+  "anchor_intersects_replaced_range",
+  "anchor_after_replaced_range",
+  "section_may_have_shifted",
+  "unaffected"
+];
+const patchCommentImpactResults: PatchmarkCommentPatchImpact["result"][] = [
+  "reanchored",
+  "offset_shifted",
+  "unchanged",
+  "needs_review"
+];
 const patchStatuses: PatchmarkPatchStatus[] = [
   "pending",
   "accepted",
@@ -206,10 +228,12 @@ export async function saveProjectDocument(
 }
 
 export async function createProjectSnapshot({
+  allowDuplicate = false,
   project,
   markdown,
   reason = "manual snapshot"
 }: {
+  allowDuplicate?: boolean;
   project: PatchmarkProjectHandle;
   markdown: string;
   reason?: string;
@@ -219,6 +243,7 @@ export async function createProjectSnapshot({
   const contentHash = await createMarkdownHash(markdown);
 
   if (
+    !allowDuplicate &&
     latestVersion &&
     (await isSameAsLatestSnapshot({
       contentHash,
@@ -782,6 +807,8 @@ function normalizeComment(comment: unknown): PatchmarkComment {
     comment: comment.comment,
     thread: normalizeCommentThread(comment.thread),
     export_state: normalizeCommentExportState(comment.export_state),
+    anchor_history: normalizeCommentAnchorHistory(comment.anchor_history),
+    patch_impacts: normalizeCommentPatchImpacts(comment.patch_impacts),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     resolved_at:
@@ -789,6 +816,49 @@ function normalizeComment(comment: unknown): PatchmarkComment {
         ? comment.resolved_at
         : undefined
   };
+}
+
+function normalizeCommentAnchorHistory(
+  history: unknown
+): PatchmarkCommentAnchorHistoryEntry[] | undefined {
+  if (!Array.isArray(history)) {
+    return undefined;
+  }
+
+  const normalizedHistory = history
+    .filter(isPatchmarkCommentAnchorHistoryEntry)
+    .map((entry) => ({
+      changed_at: entry.changed_at,
+      reason: entry.reason,
+      source_patch_id: entry.source_patch_id,
+      previous_anchor: normalizeKnownCommentAnchor(entry.previous_anchor, "note"),
+      new_anchor: entry.new_anchor
+        ? normalizeKnownCommentAnchor(entry.new_anchor, "note")
+        : undefined,
+      impact_kind: entry.impact_kind
+    }));
+
+  return normalizedHistory.length > 0 ? normalizedHistory : undefined;
+}
+
+function normalizeCommentPatchImpacts(
+  impacts: unknown
+): PatchmarkCommentPatchImpact[] | undefined {
+  if (!Array.isArray(impacts)) {
+    return undefined;
+  }
+
+  const normalizedImpacts = impacts
+    .filter(isPatchmarkCommentPatchImpact)
+    .map((impact) => ({
+      patch_id: impact.patch_id,
+      impacted_at: impact.impacted_at,
+      impact_kind: impact.impact_kind,
+      result: impact.result,
+      note: impact.note
+    }));
+
+  return normalizedImpacts.length > 0 ? normalizedImpacts : undefined;
 }
 
 function normalizeCommentAnchor(
@@ -989,6 +1059,7 @@ function normalizeCommentThreadEntry(
     created_at: entry.created_at,
     source_import_id: entry.source_import_id,
     source_chat_url: entry.source_chat_url,
+    source_patch_id: entry.source_patch_id,
     suggested_user_action: entry.suggested_user_action,
     sources: normalizeSourceReferences(entry.sources)
   };
@@ -1073,7 +1144,21 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
     sources: normalizeSourceReferences(patch.sources),
     created_at: patch.created_at,
     resolved_at:
-      typeof patch.resolved_at === "string" ? patch.resolved_at : undefined
+      typeof patch.resolved_at === "string" ? patch.resolved_at : undefined,
+    accepted_at:
+      typeof patch.accepted_at === "string" ? patch.accepted_at : undefined,
+    applied_at:
+      typeof patch.applied_at === "string" ? patch.applied_at : undefined,
+    rejected_at:
+      typeof patch.rejected_at === "string" ? patch.rejected_at : undefined,
+    pre_apply_snapshot_id:
+      typeof patch.pre_apply_snapshot_id === "string"
+        ? patch.pre_apply_snapshot_id
+        : undefined,
+    pre_apply_snapshot_file:
+      typeof patch.pre_apply_snapshot_file === "string"
+        ? patch.pre_apply_snapshot_file
+        : undefined
   };
 }
 
@@ -1131,6 +1216,67 @@ function getActionIntentForCommentType(
   }
 
   return "note";
+}
+
+function isPatchmarkCommentAnchorHistoryEntry(
+  value: unknown
+): value is PatchmarkCommentAnchorHistoryEntry {
+  return (
+    isRecord(value) &&
+    typeof value.changed_at === "string" &&
+    isCommentAnchorHistoryReason(value.reason) &&
+    (value.source_patch_id === undefined ||
+      typeof value.source_patch_id === "string") &&
+    isPatchmarkCommentAnchor(value.previous_anchor) &&
+    (value.new_anchor === undefined || isPatchmarkCommentAnchor(value.new_anchor)) &&
+    (value.impact_kind === undefined || isPatchCommentImpactKind(value.impact_kind))
+  );
+}
+
+function isPatchmarkCommentPatchImpact(
+  value: unknown
+): value is PatchmarkCommentPatchImpact {
+  return (
+    isRecord(value) &&
+    typeof value.patch_id === "string" &&
+    typeof value.impacted_at === "string" &&
+    isPatchCommentImpactKind(value.impact_kind) &&
+    isPatchCommentImpactResult(value.result) &&
+    (value.note === undefined || typeof value.note === "string")
+  );
+}
+
+function isCommentAnchorHistoryReason(
+  value: unknown
+): value is PatchmarkCommentAnchorHistoryEntry["reason"] {
+  return (
+    typeof value === "string" &&
+    commentAnchorHistoryReasons.includes(
+      value as PatchmarkCommentAnchorHistoryEntry["reason"]
+    )
+  );
+}
+
+function isPatchCommentImpactKind(
+  value: unknown
+): value is PatchmarkCommentPatchImpact["impact_kind"] {
+  return (
+    typeof value === "string" &&
+    patchCommentImpactKinds.includes(
+      value as PatchmarkCommentPatchImpact["impact_kind"]
+    )
+  );
+}
+
+function isPatchCommentImpactResult(
+  value: unknown
+): value is PatchmarkCommentPatchImpact["result"] {
+  return (
+    typeof value === "string" &&
+    patchCommentImpactResults.includes(
+      value as PatchmarkCommentPatchImpact["result"]
+    )
+  );
 }
 
 function isPatchmarkCommentAnchor(
@@ -1213,6 +1359,8 @@ function isPatchmarkCommentThreadEntry(
       typeof value.source_import_id === "string") &&
     (value.source_chat_url === undefined ||
       typeof value.source_chat_url === "string") &&
+    (value.source_patch_id === undefined ||
+      typeof value.source_patch_id === "string") &&
     (value.suggested_user_action === undefined ||
       isSuggestedUserAction(value.suggested_user_action)) &&
     (value.sources === undefined ||
@@ -1309,11 +1457,10 @@ function createProjectName(
 }
 
 function createSnapshotId(createdAt: string): string {
-  const timestamp = createdAt
-    .replace(/[-:]/g, "")
-    .replace(/\.\d{3}Z$/, "Z")
-    .replace("T", "-")
-    .replace("Z", "");
+  const [datePart, timePart = ""] = createdAt.replace("Z", "").split("T");
+  const timestamp = `${datePart.replace(/-/g, "")}-${timePart
+    .replace(/:/g, "")
+    .replace(".", "-")}`;
 
   return `snapshot-${timestamp}`;
 }

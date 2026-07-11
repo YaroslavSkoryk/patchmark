@@ -50,6 +50,7 @@ export type PatchmarkCommentThreadEntry = {
   created_at: string;
   source_import_id?: string;
   source_chat_url?: string;
+  source_patch_id?: string;
   suggested_user_action?: PatchmarkSuggestedUserAction;
   sources?: PatchmarkSourceReference[];
 };
@@ -157,7 +158,7 @@ export type PatchmarkCommentAnchor =
       containing_heading_level?: number;
       containing_heading_line?: number;
       containing_heading_path?: string[];
-      anchor_source?: "visual" | "markdown";
+      anchor_source?: "visual" | "markdown" | "patch";
       fallback_section_start_offset?: number;
       fallback_section_end_offset?: number;
       action_context?: PatchmarkCommentActionContext;
@@ -172,6 +173,14 @@ export type CommentAnchorStatus =
   | "ambiguous"
   | "document";
 
+export type PatchCommentImpactKind =
+  | "linked_comment"
+  | "anchor_inside_replaced_range"
+  | "anchor_intersects_replaced_range"
+  | "anchor_after_replaced_range"
+  | "section_may_have_shifted"
+  | "unaffected";
+
 export type PatchmarkManifest = {
   schema_version: 1;
   project_name: string;
@@ -182,6 +191,27 @@ export type PatchmarkManifest = {
   versions?: PatchmarkVersionEntry[];
 };
 
+export type PatchmarkCommentAnchorHistoryEntry = {
+  changed_at: string;
+  reason:
+    | "patch_applied"
+    | "offset_shifted_after_patch"
+    | "anchor_reanchored_after_patch"
+    | "anchor_marked_needs_review_after_patch";
+  source_patch_id?: string;
+  previous_anchor: PatchmarkCommentAnchor;
+  new_anchor?: PatchmarkCommentAnchor;
+  impact_kind?: PatchCommentImpactKind;
+};
+
+export type PatchmarkCommentPatchImpact = {
+  patch_id: string;
+  impacted_at: string;
+  impact_kind: PatchCommentImpactKind;
+  result: "reanchored" | "offset_shifted" | "unchanged" | "needs_review";
+  note?: string;
+};
+
 export type PatchmarkComment = {
   id: string;
   type: PatchmarkCommentType;
@@ -190,6 +220,8 @@ export type PatchmarkComment = {
   comment: string;
   thread: PatchmarkCommentThreadEntry[];
   export_state: PatchmarkCommentExportState;
+  anchor_history?: PatchmarkCommentAnchorHistoryEntry[];
+  patch_impacts?: PatchmarkCommentPatchImpact[];
   created_at: string;
   updated_at: string;
   resolved_at?: string;
@@ -218,4 +250,9 @@ export type PatchmarkPatch = {
   sources?: PatchmarkSourceReference[];
   created_at: string;
   resolved_at?: string;
+  accepted_at?: string;
+  applied_at?: string;
+  rejected_at?: string;
+  pre_apply_snapshot_id?: string;
+  pre_apply_snapshot_file?: string;
 };

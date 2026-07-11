@@ -61,6 +61,8 @@ import {
   type PatchmarkCommentAnchor,
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
+  type PatchCommentImpactKind,
+  type PatchmarkCommentPatchImpact,
   type PatchmarkCommentType,
   type PatchmarkCommentReplyImport,
   type PatchmarkCommentThreadEntry,
@@ -1597,6 +1599,289 @@ export function DocumentEditor() {
     });
   }
 
+  async function handleAcceptPatch(patch: PatchmarkPatch) {
+    if (!projectHandle) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Accept Patch is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    const currentPatch = patches.find((candidate) => candidate.id === patch.id) ?? patch;
+
+    if (currentPatch.status !== "pending") {
+      setSaveFeedback({
+        kind: "info",
+        message: `Patch ${currentPatch.id} is already ${currentPatch.status}.`
+      });
+      return;
+    }
+
+    const acceptBlocker = getPatchAcceptDisabledMessage(
+      currentPatch,
+      getPatchApplicability(markdown, currentPatch.original_text)
+    );
+
+    if (acceptBlocker) {
+      setSaveFeedback({
+        kind: "error",
+        message: acceptBlocker
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Apply this patch to the document?\n\nPatchmark will create a snapshot before changing document.md.\nThe linked comment will remain open until you resolve it."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    const occurrenceCount = countOccurrences(markdown, currentPatch.original_text);
+    const originalStart = markdown.indexOf(currentPatch.original_text);
+    const originalEnd = originalStart + currentPatch.original_text.length;
+    const lengthDelta =
+      currentPatch.suggested_text.length - currentPatch.original_text.length;
+
+    if (occurrenceCount !== 1 || originalStart === -1) {
+      setSaveFeedback({
+        kind: "error",
+        message:
+          occurrenceCount > 1
+            ? "Cannot apply automatically because the original text appears multiple times."
+            : "Cannot apply because the original text was not found in the current document."
+      });
+      return;
+    }
+
+    const affectedComments = analyzeCommentsAffectedByPatch({
+      comments,
+      currentMarkdown: markdown,
+      originalEnd,
+      originalStart,
+      patch: currentPatch
+    });
+
+    setSaveStatus("saving");
+    setCommentsError(null);
+    setSaveFeedback(null);
+
+    try {
+      const snapshotResult = await createProjectSnapshot({
+        allowDuplicate: true,
+        project: projectHandle,
+        markdown,
+        reason: `before accepting patch ${currentPatch.id}`
+      });
+
+      if (!snapshotResult.created) {
+        throw new Error("Patchmark could not create a pre-apply safety snapshot.");
+      }
+
+      const nextMarkdown = replaceSingleOccurrenceAt({
+        replacement: currentPatch.suggested_text,
+        search: currentPatch.original_text,
+        start: originalStart,
+        text: markdown
+      });
+      const replacementStart = originalStart;
+      const replacementEnd = replacementStart + currentPatch.suggested_text.length;
+      const nextProjectHandle = await saveProjectDocument(
+        snapshotResult.project,
+        nextMarkdown
+      );
+      const appliedAt = new Date().toISOString();
+      const affectedCommentUpdate = updateAffectedCommentAnchors({
+        affectedComments,
+        comments,
+        createdAt: appliedAt,
+        lengthDelta,
+        newMarkdown: nextMarkdown,
+        patch: currentPatch,
+        replacementEnd,
+        replacementStart
+      });
+      const nextPatches = patches.map((candidate) =>
+        candidate.id === currentPatch.id
+          ? {
+              ...candidate,
+              status: "accepted" as const,
+              resolved_at: appliedAt,
+              accepted_at: appliedAt,
+              applied_at: appliedAt,
+              pre_apply_snapshot_id: snapshotResult.version.id,
+              pre_apply_snapshot_file: snapshotResult.version.file
+            }
+          : candidate
+      );
+
+      setProjectHandle(nextProjectHandle);
+      setMarkdown(nextMarkdown);
+      setBaselineMarkdown(nextMarkdown);
+      setRestoredMarkdown(null);
+      setVersionEntries(nextProjectHandle.manifest.versions ?? []);
+      setDocumentVersion((currentVersion) => currentVersion + 1);
+
+      try {
+        await writeProjectPatches(nextProjectHandle, nextPatches);
+      } catch (error) {
+        setSaveStatus("failed");
+        setSaveFeedback({
+          kind: "error",
+          message: `Patch was applied to document.md, but Patchmark could not update patches.json: ${getProjectErrorMessage(error)}`
+        });
+        return;
+      }
+
+      setPatches(nextPatches);
+      const linkedCommentMissing =
+        Boolean(currentPatch.comment_id) && !affectedCommentUpdate.linkedCommentFound;
+
+      try {
+        await writeProjectComments(nextProjectHandle, affectedCommentUpdate.comments);
+        setComments(affectedCommentUpdate.comments);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind:
+            linkedCommentMissing || affectedCommentUpdate.needsReviewCount > 0
+              ? "info"
+              : "success",
+          message: linkedCommentMissing
+            ? "Patch applied, but the linked comment was not found. Other comment anchors were updated where needed."
+            : affectedCommentUpdate.needsReviewCount > 0
+              ? `Patch applied. ${affectedCommentUpdate.needsReviewCount} comment anchor${affectedCommentUpdate.needsReviewCount === 1 ? "" : "s"} need review.`
+              : "Patch applied. Comment anchors were updated where needed."
+        });
+      } catch (error) {
+        const message = getProjectErrorMessage(error);
+        setCommentsError(message);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "info",
+          message:
+            "Patch applied, but Patchmark could not update the linked comment thread."
+        });
+      }
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleRejectPatch(patch: PatchmarkPatch) {
+    if (!projectHandle) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Reject Patch is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    const currentPatch = patches.find((candidate) => candidate.id === patch.id) ?? patch;
+
+    if (currentPatch.status !== "pending") {
+      setSaveFeedback({
+        kind: "info",
+        message: `Patch ${currentPatch.id} is already ${currentPatch.status}.`
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Reject this patch proposal?\n\nThe document will not be changed.\nThe linked comment will remain open."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setSaveStatus("saving");
+    setCommentsError(null);
+    setSaveFeedback(null);
+
+    const rejectedAt = new Date().toISOString();
+    const nextPatches = patches.map((candidate) =>
+      candidate.id === currentPatch.id
+        ? {
+            ...candidate,
+            status: "rejected" as const,
+            resolved_at: rejectedAt,
+            rejected_at: rejectedAt
+          }
+        : candidate
+    );
+
+    try {
+      await writeProjectPatches(projectHandle, nextPatches);
+      setPatches(nextPatches);
+
+      if (!currentPatch.comment_id) {
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "success",
+          message: "Patch rejected."
+        });
+        return;
+      }
+
+      const nextComments = appendPatchSystemThreadEntry({
+        comments,
+        commentId: currentPatch.comment_id,
+        content: `Patch ${currentPatch.id} was rejected.`,
+        createdAt: rejectedAt,
+        patchId: currentPatch.id
+      });
+
+      if (!nextComments) {
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "info",
+          message:
+            "Patch rejected, but the linked comment was not found. Comment remains unresolved."
+        });
+        return;
+      }
+
+      try {
+        await writeProjectComments(projectHandle, nextComments);
+        setComments(nextComments);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "success",
+          message: "Patch rejected. Comment remains open."
+        });
+      } catch (error) {
+        const message = getProjectErrorMessage(error);
+        setCommentsError(message);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "info",
+          message:
+            "Patch rejected, but Patchmark could not update the linked comment thread."
+        });
+      }
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
   function jumpToMarkdownSelection(start: number, end: number) {
     setMode("markdown");
     setMarkdownSelectionRequest({
@@ -2202,7 +2487,9 @@ export function DocumentEditor() {
           applicability={selectedPatchApplicability}
           comment={selectedPatchComment}
           hasMultiplePendingPatches={reviewablePatches.length > 1}
+          isPatchActionBusy={isSaving}
           markdown={markdown}
+          onAcceptPatch={() => handleAcceptPatch(selectedPatch)}
           onClose={() => {
             setSelectedPatchId(null);
             setPatchReviewCommentScopeId(null);
@@ -2210,6 +2497,7 @@ export function DocumentEditor() {
           onFindOriginalText={() => handleFindPatchOriginalText(selectedPatch)}
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
+          onRejectPatch={() => handleRejectPatch(selectedPatch)}
           patch={selectedPatch}
           patchIndex={Math.max(
             0,
@@ -2226,11 +2514,14 @@ function PatchReviewDialog({
   applicability,
   comment,
   hasMultiplePendingPatches,
+  isPatchActionBusy,
   markdown,
+  onAcceptPatch,
   onClose,
   onFindOriginalText,
   onNextPatch,
   onPreviousPatch,
+  onRejectPatch,
   patch,
   patchIndex,
   pendingPatchCount
@@ -2238,11 +2529,14 @@ function PatchReviewDialog({
   applicability: PatchApplicability;
   comment: PatchmarkComment | null;
   hasMultiplePendingPatches: boolean;
+  isPatchActionBusy: boolean;
   markdown: string;
+  onAcceptPatch: () => void;
   onClose: () => void;
   onFindOriginalText: () => void;
   onNextPatch: () => void;
   onPreviousPatch: () => void;
+  onRejectPatch: () => void;
   patch: PatchmarkPatch;
   patchIndex: number;
   pendingPatchCount: number;
@@ -2258,21 +2552,28 @@ function PatchReviewDialog({
     () => createPatchVisualPreview(markdown, patch),
     [markdown, patch]
   );
+  const acceptDisabledMessage = getPatchAcceptDisabledMessage(
+    patch,
+    applicability
+  );
+  const canAcceptPatch =
+    patch.status === "pending" && !acceptDisabledMessage && !isPatchActionBusy;
+  const canRejectPatch = patch.status === "pending" && !isPatchActionBusy;
 
   useEffect(() => {
     setReviewMode("visual");
   }, [patch.id]);
 
   return (
-    <div className="snapshot-dialog-backdrop">
+    <div className="snapshot-dialog-backdrop patch-review-backdrop">
       <section className="patch-review-dialog" aria-label="Review Patch Proposal">
         <header className="snapshot-dialog-header">
           <div>
             <span>Patch proposal</span>
             <h2>Review Patch Proposal</h2>
             <p>
-              Inspect this ChatGPT proposal. Patchmark will not apply or mutate
-              the document in this phase.
+              Inspect this ChatGPT proposal. Accepting applies the exact
+              suggested replacement after a safety snapshot.
             </p>
           </div>
           <button type="button" onClick={onClose}>
@@ -2284,6 +2585,34 @@ function PatchReviewDialog({
           <button type="button" onClick={onFindOriginalText}>
             Find original text
           </button>
+          {patch.status === "pending" ? (
+            <div className="patch-decision-actions">
+              <button
+                type="button"
+                className="patch-accept-button"
+                disabled={!canAcceptPatch}
+                onClick={onAcceptPatch}
+              >
+                Accept Patch
+              </button>
+              <button
+                type="button"
+                disabled={!canRejectPatch}
+                onClick={onRejectPatch}
+              >
+                Reject Patch
+              </button>
+              {acceptDisabledMessage ? (
+                <span>{acceptDisabledMessage}</span>
+              ) : (
+                <span>
+                  Accepting creates a safety snapshot. The linked comment stays open.
+                </span>
+              )}
+            </div>
+          ) : (
+            <span>{getPatchResolvedStatusMessage(patch)}</span>
+          )}
           {hasMultiplePendingPatches ? (
             <>
               <button type="button" onClick={onPreviousPatch}>
@@ -2335,6 +2664,30 @@ function PatchReviewDialog({
                 <dt>Source import ID</dt>
                 <dd>{patch.source_import_id ?? "Not recorded"}</dd>
               </div>
+              {patch.accepted_at ? (
+                <div>
+                  <dt>Accepted at</dt>
+                  <dd>{formatPatchDate(patch.accepted_at)}</dd>
+                </div>
+              ) : null}
+              {patch.applied_at ? (
+                <div>
+                  <dt>Applied at</dt>
+                  <dd>{formatPatchDate(patch.applied_at)}</dd>
+                </div>
+              ) : null}
+              {patch.rejected_at ? (
+                <div>
+                  <dt>Rejected at</dt>
+                  <dd>{formatPatchDate(patch.rejected_at)}</dd>
+                </div>
+              ) : null}
+              {patch.pre_apply_snapshot_id ? (
+                <div>
+                  <dt>Pre-apply snapshot</dt>
+                  <dd>{patch.pre_apply_snapshot_id}</dd>
+                </div>
+              ) : null}
             </dl>
             {patch.source_chat_url ? (
               <a
@@ -3799,6 +4152,1082 @@ function getPatchApplicability(
   }
 
   return "not_found";
+}
+
+function getPatchAcceptDisabledMessage(
+  patch: PatchmarkPatch,
+  applicability: PatchApplicability
+): string | null {
+  if (patch.status !== "pending") {
+    return "Only pending patches can be accepted.";
+  }
+
+  if (!patch.original_text) {
+    return "Cannot apply because the original text is empty.";
+  }
+
+  if (applicability === "multiple_matches") {
+    return "Cannot apply automatically because the original text appears multiple times.";
+  }
+
+  if (applicability === "not_found") {
+    return "Cannot apply because the original text was not found in the current document.";
+  }
+
+  return null;
+}
+
+function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {
+  if (patch.status === "accepted") {
+    return patch.applied_at
+      ? `Accepted · Applied at ${formatPatchDate(patch.applied_at)}`
+      : "Accepted";
+  }
+
+  if (patch.status === "rejected") {
+    return patch.rejected_at
+      ? `Rejected · Rejected at ${formatPatchDate(patch.rejected_at)}`
+      : "Rejected";
+  }
+
+  if (patch.status === "stale") {
+    return "Stale";
+  }
+
+  return "Pending";
+}
+
+function countOccurrences(text: string, search: string): number {
+  if (search.length === 0) {
+    return 0;
+  }
+
+  let count = 0;
+  let searchIndex = 0;
+
+  while (searchIndex <= text.length) {
+    const matchIndex = text.indexOf(search, searchIndex);
+
+    if (matchIndex === -1) {
+      break;
+    }
+
+    count += 1;
+    searchIndex = matchIndex + search.length;
+  }
+
+  return count;
+}
+
+function replaceSingleOccurrenceAt({
+  replacement,
+  search,
+  start,
+  text
+}: {
+  replacement: string;
+  search: string;
+  start: number;
+  text: string;
+}): string {
+  return text.slice(0, start) + replacement + text.slice(start + search.length);
+}
+
+type AffectedPatchComment = {
+  commentId: string;
+  impactKind: PatchCommentImpactKind;
+};
+
+type AffectedPatchCommentUpdate = {
+  comments: PatchmarkComment[];
+  linkedCommentFound: boolean;
+  needsReviewCount: number;
+  offsetShiftedCount: number;
+  reanchoredCount: number;
+  unchangedCount: number;
+};
+
+function analyzeCommentsAffectedByPatch({
+  comments,
+  currentMarkdown,
+  originalEnd,
+  originalStart,
+  patch
+}: {
+  comments: PatchmarkComment[];
+  currentMarkdown: string;
+  originalEnd: number;
+  originalStart: number;
+  patch: PatchmarkPatch;
+}): AffectedPatchComment[] {
+  const headings = parseMarkdownHeadings(currentMarkdown);
+
+  return comments.flatMap((comment) => {
+    const impactKind = getPatchCommentImpactKind({
+      comment,
+      currentMarkdown,
+      headings,
+      originalEnd,
+      originalStart,
+      patch
+    });
+
+    return impactKind === "unaffected"
+      ? []
+      : [
+          {
+            commentId: comment.id,
+            impactKind
+          }
+        ];
+  });
+}
+
+function getPatchCommentImpactKind({
+  comment,
+  currentMarkdown,
+  headings,
+  originalEnd,
+  originalStart,
+  patch
+}: {
+  comment: PatchmarkComment;
+  currentMarkdown: string;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  originalEnd: number;
+  originalStart: number;
+  patch: PatchmarkPatch;
+}): PatchCommentImpactKind {
+  if (comment.id === patch.comment_id) {
+    return "linked_comment";
+  }
+
+  const { anchor } = comment;
+
+  if (anchor.kind === "document") {
+    return "unaffected";
+  }
+
+  if (anchor.kind === "section") {
+    const sectionRange = getSectionAnchorRangeForImpact({
+      anchor,
+      headings,
+      markdown: currentMarkdown
+    });
+
+    if (!sectionRange) {
+      return "unaffected";
+    }
+
+    return sectionRange.start >= originalEnd ||
+      rangesOverlap(sectionRange.start, sectionRange.end, originalStart, originalEnd)
+      ? "section_may_have_shifted"
+      : "unaffected";
+  }
+
+  const selectedRange = getSelectedAnchorRangeForImpact({
+    anchor,
+    originalStart,
+    patch
+  });
+
+  if (!selectedRange) {
+    return "unaffected";
+  }
+
+  if (selectedRange.start >= originalEnd) {
+    return "anchor_after_replaced_range";
+  }
+
+  if (selectedRange.start >= originalStart && selectedRange.end <= originalEnd) {
+    return "anchor_inside_replaced_range";
+  }
+
+  return rangesOverlap(
+    selectedRange.start,
+    selectedRange.end,
+    originalStart,
+    originalEnd
+  )
+    ? "anchor_intersects_replaced_range"
+    : "unaffected";
+}
+
+function getSectionAnchorRangeForImpact({
+  anchor,
+  headings,
+  markdown
+}: {
+  anchor: Extract<PatchmarkCommentAnchor, { kind: "section" }>;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): { end: number; start: number } | null {
+  const currentHeading = findMatchingHeading(headings, {
+    level: anchor.heading_level,
+    text: anchor.heading
+  });
+
+  if (currentHeading) {
+    return getSectionRange(markdown, headings, currentHeading);
+  }
+
+  if (
+    typeof anchor.section_start_offset === "number" &&
+    typeof anchor.section_end_offset === "number"
+  ) {
+    return {
+      start: anchor.section_start_offset,
+      end: anchor.section_end_offset
+    };
+  }
+
+  return null;
+}
+
+function getSelectedAnchorRangeForImpact({
+  anchor,
+  originalStart,
+  patch
+}: {
+  anchor: SelectedTextAnchor;
+  originalStart: number;
+  patch: PatchmarkPatch;
+}): { end: number; start: number } | null {
+  if (
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.markdown_start_offset,
+      end: anchor.markdown_end_offset
+    };
+  }
+
+  const matchesInOriginalText = findExactTextMatches(
+    patch.original_text,
+    anchor.selected_text
+  );
+
+  if (matchesInOriginalText.length === 0) {
+    return null;
+  }
+
+  return {
+    start: originalStart + matchesInOriginalText[0].start,
+    end: originalStart + matchesInOriginalText[0].end
+  };
+}
+
+function rangesOverlap(
+  firstStart: number,
+  firstEnd: number,
+  secondStart: number,
+  secondEnd: number
+): boolean {
+  return firstStart < secondEnd && firstEnd > secondStart;
+}
+
+function updateAffectedCommentAnchors({
+  affectedComments,
+  comments,
+  createdAt,
+  lengthDelta,
+  newMarkdown,
+  patch,
+  replacementEnd,
+  replacementStart
+}: {
+  affectedComments: AffectedPatchComment[];
+  comments: PatchmarkComment[];
+  createdAt: string;
+  lengthDelta: number;
+  newMarkdown: string;
+  patch: PatchmarkPatch;
+  replacementEnd: number;
+  replacementStart: number;
+}): AffectedPatchCommentUpdate {
+  const affectedByCommentId = new Map(
+    affectedComments.map((affectedComment) => [
+      affectedComment.commentId,
+      affectedComment
+    ])
+  );
+  let linkedCommentFound = false;
+  let needsReviewCount = 0;
+  let offsetShiftedCount = 0;
+  let reanchoredCount = 0;
+  let unchangedCount = 0;
+
+  const nextComments = comments.map((comment) => {
+    const affectedComment = affectedByCommentId.get(comment.id);
+
+    if (!affectedComment) {
+      return comment;
+    }
+
+    if (comment.id === patch.comment_id) {
+      linkedCommentFound = true;
+    }
+
+    const update = updateSingleAffectedCommentAnchor({
+      comment,
+      createdAt,
+      impactKind: affectedComment.impactKind,
+      lengthDelta,
+      newMarkdown,
+      patch,
+      replacementEnd,
+      replacementStart
+    });
+
+    if (update.result === "needs_review") {
+      needsReviewCount += 1;
+    } else if (update.result === "offset_shifted") {
+      offsetShiftedCount += 1;
+    } else if (update.result === "reanchored") {
+      reanchoredCount += 1;
+    } else {
+      unchangedCount += 1;
+    }
+
+    return update.comment;
+  });
+
+  return {
+    comments: nextComments,
+    linkedCommentFound,
+    needsReviewCount,
+    offsetShiftedCount,
+    reanchoredCount,
+    unchangedCount
+  };
+}
+
+function updateSingleAffectedCommentAnchor({
+  comment,
+  createdAt,
+  impactKind,
+  lengthDelta,
+  newMarkdown,
+  patch,
+  replacementEnd,
+  replacementStart
+}: {
+  comment: PatchmarkComment;
+  createdAt: string;
+  impactKind: PatchCommentImpactKind;
+  lengthDelta: number;
+  newMarkdown: string;
+  patch: PatchmarkPatch;
+  replacementEnd: number;
+  replacementStart: number;
+}): { comment: PatchmarkComment; result: PatchmarkCommentPatchImpact["result"] } {
+  const isLinkedComment = comment.id === patch.comment_id;
+
+  if (comment.anchor.kind === "document") {
+    const nextComment = appendPatchImpactToComment({
+      comment,
+      createdAt,
+      impactKind,
+      note: isLinkedComment
+        ? "Linked document-level comment remains attached to the whole document."
+        : "Document-level comment was not affected by this patch.",
+      patchId: patch.id,
+      result: "unchanged"
+    });
+
+    return {
+      comment: isLinkedComment
+        ? appendSystemThreadEntryToComment({
+            comment: nextComment,
+            content: `Patch ${patch.id} was applied to the document.`,
+            createdAt,
+            patchId: patch.id
+          })
+        : nextComment,
+      result: "unchanged"
+    };
+  }
+
+  if (comment.anchor.kind === "section") {
+    return updateAffectedSectionCommentAnchor({
+      comment,
+      createdAt,
+      impactKind,
+      isLinkedComment,
+      newMarkdown,
+      patch
+    });
+  }
+
+  if (isLinkedComment) {
+    const newAnchor = createPatchReplacementAnchor({
+      comment,
+      newMarkdown,
+      patch,
+      replacementEnd,
+      replacementStart
+    });
+
+    if (!newAnchor) {
+      return markCommentAnchorNeedsReviewAfterPatch({
+        comment,
+        content: `Patch ${patch.id} was applied to the document, but Patchmark could not re-anchor this comment automatically.`,
+        createdAt,
+        impactKind,
+        note: "The linked selected-text comment could not be re-anchored automatically.",
+        patch
+      });
+    }
+
+    return updateCommentAnchorAfterPatch({
+      comment,
+      content: `Patch ${patch.id} was applied to the document and this comment was re-anchored to the applied replacement.`,
+      createdAt,
+      impactKind,
+      newAnchor,
+      patch,
+      reason: "patch_applied",
+      result: "reanchored"
+    });
+  }
+
+  if (impactKind === "anchor_after_replaced_range") {
+    const shiftedAnchor = shiftSelectedTextAnchorAfterPatch({
+      anchor: comment.anchor,
+      lengthDelta,
+      newMarkdown
+    });
+
+    if (!shiftedAnchor) {
+      return markCommentAnchorNeedsReviewAfterPatch({
+        comment,
+        content: `Patch ${patch.id} may have affected this comment anchor. Please review it.`,
+        createdAt,
+        impactKind,
+        note: "Patchmark could not verify the shifted selected-text anchor.",
+        patch
+      });
+    }
+
+    return updateCommentAnchorAfterPatch({
+      comment,
+      createdAt,
+      impactKind,
+      newAnchor: shiftedAnchor,
+      patch,
+      reason: "offset_shifted_after_patch",
+      result: "offset_shifted"
+    });
+  }
+
+  if (impactKind === "anchor_inside_replaced_range") {
+    const preservedAnchor = createPreservedSelectedTextAnchorInsidePatch({
+      anchor: comment.anchor,
+      comment,
+      newMarkdown,
+      patch,
+      replacementStart
+    });
+
+    if (preservedAnchor) {
+      return updateCommentAnchorAfterPatch({
+        comment,
+        content: `Patch ${patch.id} changed nearby text and this comment anchor was updated.`,
+        createdAt,
+        impactKind,
+        newAnchor: preservedAnchor,
+        patch,
+        reason: "anchor_reanchored_after_patch",
+        result: "reanchored"
+      });
+    }
+
+    return markCommentAnchorNeedsReviewAfterPatch({
+      comment,
+      content: `Patch ${patch.id} may have affected this comment anchor. Please review it.`,
+      createdAt,
+      impactKind,
+      note: "The selected text was inside the replaced range but could not be found exactly once in the replacement.",
+      patch
+    });
+  }
+
+  if (impactKind === "anchor_intersects_replaced_range") {
+    return markCommentAnchorNeedsReviewAfterPatch({
+      comment,
+      content: `Patch ${patch.id} changed text overlapping this comment anchor. Please review the comment anchor.`,
+      createdAt,
+      impactKind,
+      note: "The selected-text anchor partially overlapped the replaced range.",
+      patch
+    });
+  }
+
+  return {
+    comment: appendPatchImpactToComment({
+      comment,
+      createdAt,
+      impactKind,
+      note: "Comment was classified as affected, but no anchor change was required.",
+      patchId: patch.id,
+      result: "unchanged"
+    }),
+    result: "unchanged"
+  };
+}
+
+function createPatchReplacementAnchor({
+  comment,
+  newMarkdown,
+  patch,
+  replacementEnd,
+  replacementStart
+}: {
+  comment: PatchmarkComment;
+  newMarkdown: string;
+  patch: PatchmarkPatch;
+  replacementEnd: number;
+  replacementStart: number;
+}): SelectedTextAnchor | null {
+  if (patch.suggested_text.length === 0 || replacementEnd < replacementStart) {
+    return null;
+  }
+
+  return createSelectedTextAnchorAtRange({
+    anchor: comment.anchor.kind === "selected_text" ? comment.anchor : undefined,
+    anchorSource: "patch",
+    comment,
+    context: {
+      kind: "block",
+      plain_text: patch.suggested_text,
+      markdown_text: patch.suggested_text,
+      selected_start_in_context: 0,
+      selected_end_in_context: patch.suggested_text.length,
+      markdown_start_offset: replacementStart,
+      markdown_end_offset: replacementEnd
+    },
+    markdown: newMarkdown,
+    preferredHeadingText: patch.target_heading,
+    selectedText: patch.suggested_text,
+    start: replacementStart,
+    end: replacementEnd
+  });
+}
+
+function updateAffectedSectionCommentAnchor({
+  comment,
+  createdAt,
+  impactKind,
+  isLinkedComment,
+  newMarkdown,
+  patch
+}: {
+  comment: PatchmarkComment;
+  createdAt: string;
+  impactKind: PatchCommentImpactKind;
+  isLinkedComment: boolean;
+  newMarkdown: string;
+  patch: PatchmarkPatch;
+}): { comment: PatchmarkComment; result: PatchmarkCommentPatchImpact["result"] } {
+  if (comment.anchor.kind !== "section") {
+    return {
+      comment,
+      result: "unchanged"
+    };
+  }
+
+  const newAnchor = refreshSectionAnchorAfterPatch({
+    anchor: comment.anchor,
+    newMarkdown
+  });
+
+  if (!newAnchor) {
+    return markCommentAnchorNeedsReviewAfterPatch({
+      comment,
+      content: isLinkedComment
+        ? `Patch ${patch.id} was applied to the document, but Patchmark could not re-anchor this comment automatically.`
+        : `Patch ${patch.id} may have affected this comment anchor. Please review it.`,
+      createdAt,
+      impactKind,
+      note: "The section heading could not be found after applying the patch.",
+      patch
+    });
+  }
+
+  if (areCommentAnchorsEqual(comment.anchor, newAnchor)) {
+    const nextComment = appendPatchImpactToComment({
+      comment,
+      createdAt,
+      impactKind,
+      note: "Section comment remains attached to the same heading.",
+      patchId: patch.id,
+      result: "unchanged"
+    });
+
+    return {
+      comment: isLinkedComment
+        ? appendSystemThreadEntryToComment({
+            comment: nextComment,
+            content: `Patch ${patch.id} was applied to the document.`,
+            createdAt,
+            patchId: patch.id
+          })
+        : nextComment,
+      result: "unchanged"
+    };
+  }
+
+  return updateCommentAnchorAfterPatch({
+    comment,
+    content: isLinkedComment
+      ? `Patch ${patch.id} was applied to the document and this comment was re-anchored to the applied replacement.`
+      : undefined,
+    createdAt,
+    impactKind,
+    newAnchor,
+    patch,
+    reason: "offset_shifted_after_patch",
+    result: "offset_shifted"
+  });
+}
+
+function refreshSectionAnchorAfterPatch({
+  anchor,
+  newMarkdown
+}: {
+  anchor: Extract<PatchmarkCommentAnchor, { kind: "section" }>;
+  newMarkdown: string;
+}): Extract<PatchmarkCommentAnchor, { kind: "section" }> | null {
+  const nextHeadings = parseMarkdownHeadings(newMarkdown);
+  const targetHeading = findMatchingHeading(nextHeadings, {
+    level: anchor.heading_level,
+    text: anchor.heading
+  });
+
+  if (!targetHeading) {
+    return null;
+  }
+
+  const sectionRange = getSectionRange(newMarkdown, nextHeadings, targetHeading);
+
+  return {
+    ...anchor,
+    heading: targetHeading.text,
+    heading_level: targetHeading.level,
+    heading_line: targetHeading.line,
+    heading_path: getHeadingPath(nextHeadings, targetHeading),
+    section_start_offset: sectionRange.start,
+    section_end_offset: sectionRange.end
+  };
+}
+
+function createPreservedSelectedTextAnchorInsidePatch({
+  anchor,
+  comment,
+  newMarkdown,
+  patch,
+  replacementStart
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  newMarkdown: string;
+  patch: PatchmarkPatch;
+  replacementStart: number;
+}): SelectedTextAnchor | null {
+  const matchesInSuggestedText = findExactTextMatches(
+    patch.suggested_text,
+    anchor.selected_text
+  );
+
+  if (matchesInSuggestedText.length !== 1) {
+    return null;
+  }
+
+  const start = replacementStart + matchesInSuggestedText[0].start;
+  const end = replacementStart + matchesInSuggestedText[0].end;
+
+  return createSelectedTextAnchorAtRange({
+    anchor,
+    anchorSource: "patch",
+    comment,
+    context: {
+      kind: anchor.anchor_context?.kind ?? "block",
+      plain_text: anchor.selected_text,
+      markdown_text: anchor.selected_text,
+      selected_start_in_context: 0,
+      selected_end_in_context: anchor.selected_text.length,
+      markdown_start_offset: start,
+      markdown_end_offset: end
+    },
+    markdown: newMarkdown,
+    preferredHeadingText: patch.target_heading,
+    selectedText: anchor.selected_text,
+    start,
+    end
+  });
+}
+
+function shiftSelectedTextAnchorAfterPatch({
+  anchor,
+  lengthDelta,
+  newMarkdown
+}: {
+  anchor: SelectedTextAnchor;
+  lengthDelta: number;
+  newMarkdown: string;
+}): SelectedTextAnchor | null {
+  if (
+    typeof anchor.markdown_start_offset !== "number" ||
+    typeof anchor.markdown_end_offset !== "number"
+  ) {
+    return null;
+  }
+
+  const start = anchor.markdown_start_offset + lengthDelta;
+  const end = anchor.markdown_end_offset + lengthDelta;
+
+  if (start < 0 || end < start || newMarkdown.slice(start, end) !== anchor.selected_text) {
+    return null;
+  }
+
+  const shiftedContext = shiftAnchorContextOffsets(
+    anchor.anchor_context,
+    lengthDelta
+  );
+
+  return refreshSelectedAnchorPositionMetadata({
+    anchor: {
+      ...anchor,
+      anchor_context: shiftedContext,
+      markdown_start_offset: start,
+      markdown_end_offset: end
+    },
+    markdown: newMarkdown,
+    start,
+    end
+  });
+}
+
+function shiftAnchorContextOffsets(
+  context: PatchmarkSelectedTextAnchorContext | undefined,
+  lengthDelta: number
+): PatchmarkSelectedTextAnchorContext | undefined {
+  if (!context) {
+    return undefined;
+  }
+
+  return {
+    ...context,
+    markdown_start_offset:
+      typeof context.markdown_start_offset === "number"
+        ? context.markdown_start_offset + lengthDelta
+        : undefined,
+    markdown_end_offset:
+      typeof context.markdown_end_offset === "number"
+        ? context.markdown_end_offset + lengthDelta
+        : undefined
+  };
+}
+
+function createSelectedTextAnchorAtRange({
+  anchor,
+  anchorSource,
+  comment,
+  context,
+  markdown,
+  preferredHeadingText,
+  selectedText,
+  start,
+  end
+}: {
+  anchor?: SelectedTextAnchor;
+  anchorSource: SelectedTextAnchor["anchor_source"];
+  comment: PatchmarkComment;
+  context: PatchmarkSelectedTextAnchorContext;
+  markdown: string;
+  preferredHeadingText?: string;
+  selectedText: string;
+  start: number;
+  end: number;
+}): SelectedTextAnchor {
+  return refreshSelectedAnchorPositionMetadata({
+    anchor: {
+      kind: "selected_text",
+      selected_text: selectedText,
+      selected_text_hash: anchor?.selected_text_hash,
+      anchor_context: context,
+      markdown_start_offset: start,
+      markdown_end_offset: end,
+      anchor_source: anchorSource,
+      action_context:
+        anchor?.action_context ??
+        getDefaultCommentActionContext(comment.type, "selected_text")
+    },
+    markdown,
+    preferredHeadingText,
+    start,
+    end
+  });
+}
+
+function refreshSelectedAnchorPositionMetadata({
+  anchor,
+  markdown,
+  preferredHeadingText,
+  start,
+  end
+}: {
+  anchor: SelectedTextAnchor;
+  markdown: string;
+  preferredHeadingText?: string;
+  start: number;
+  end: number;
+}): SelectedTextAnchor {
+  const headings = parseMarkdownHeadings(markdown);
+  const containingHeadingByOffset = getHeadingContainingOffset(
+    markdown,
+    headings,
+    start
+  );
+  const targetHeading = preferredHeadingText
+    ? headings.find((heading) => heading.text === preferredHeadingText) ??
+      containingHeadingByOffset
+    : containingHeadingByOffset;
+  const fallbackSectionRange = targetHeading
+    ? getSectionRange(markdown, headings, targetHeading)
+    : null;
+
+  return {
+    ...anchor,
+    markdown_start_offset: start,
+    markdown_end_offset: end,
+    context_before: markdown.slice(
+      Math.max(0, start - ANCHOR_CONTEXT_CHARS),
+      start
+    ),
+    context_after: markdown.slice(
+      end,
+      Math.min(markdown.length, end + ANCHOR_CONTEXT_CHARS)
+    ),
+    containing_heading: preferredHeadingText ?? targetHeading?.text,
+    containing_heading_level: targetHeading?.level,
+    containing_heading_line: targetHeading?.line,
+    containing_heading_path: targetHeading
+      ? getHeadingPath(headings, targetHeading)
+      : undefined,
+    fallback_section_start_offset: fallbackSectionRange?.start,
+    fallback_section_end_offset: fallbackSectionRange?.end
+  };
+}
+
+function updateCommentAnchorAfterPatch({
+  comment,
+  content,
+  createdAt,
+  impactKind,
+  newAnchor,
+  patch,
+  reason,
+  result
+}: {
+  comment: PatchmarkComment;
+  content?: string;
+  createdAt: string;
+  impactKind: PatchCommentImpactKind;
+  newAnchor: PatchmarkCommentAnchor;
+  patch: PatchmarkPatch;
+  reason: NonNullable<PatchmarkComment["anchor_history"]>[number]["reason"];
+  result: PatchmarkCommentPatchImpact["result"];
+}): { comment: PatchmarkComment; result: PatchmarkCommentPatchImpact["result"] } {
+  let nextComment = appendPatchImpactToComment({
+    comment: {
+      ...comment,
+      anchor: newAnchor,
+      anchor_history: [
+        ...(comment.anchor_history ?? []),
+        {
+          changed_at: createdAt,
+          reason,
+          source_patch_id: patch.id,
+          previous_anchor: comment.anchor,
+          new_anchor: newAnchor,
+          impact_kind: impactKind
+        }
+      ]
+    },
+    createdAt,
+    impactKind,
+    patchId: patch.id,
+    result
+  });
+
+  if (content) {
+    nextComment = appendSystemThreadEntryToComment({
+      comment: nextComment,
+      content,
+      createdAt,
+      patchId: patch.id
+    });
+  }
+
+  return {
+    comment: nextComment,
+    result
+  };
+}
+
+function markCommentAnchorNeedsReviewAfterPatch({
+  comment,
+  content,
+  createdAt,
+  impactKind,
+  note,
+  patch
+}: {
+  comment: PatchmarkComment;
+  content: string;
+  createdAt: string;
+  impactKind: PatchCommentImpactKind;
+  note: string;
+  patch: PatchmarkPatch;
+}): { comment: PatchmarkComment; result: "needs_review" } {
+  const nextComment = appendSystemThreadEntryToComment({
+    comment: appendPatchImpactToComment({
+      comment: {
+        ...comment,
+        anchor_history: [
+          ...(comment.anchor_history ?? []),
+          {
+            changed_at: createdAt,
+            reason: "anchor_marked_needs_review_after_patch",
+            source_patch_id: patch.id,
+            previous_anchor: comment.anchor,
+            impact_kind: impactKind
+          }
+        ]
+      },
+      createdAt,
+      impactKind,
+      note,
+      patchId: patch.id,
+      result: "needs_review"
+    }),
+    content,
+    createdAt,
+    patchId: patch.id
+  });
+
+  return {
+    comment: nextComment,
+    result: "needs_review"
+  };
+}
+
+function appendPatchImpactToComment({
+  comment,
+  createdAt,
+  impactKind,
+  note,
+  patchId,
+  result
+}: {
+  comment: PatchmarkComment;
+  createdAt: string;
+  impactKind: PatchCommentImpactKind;
+  note?: string;
+  patchId: string;
+  result: PatchmarkCommentPatchImpact["result"];
+}): PatchmarkComment {
+  return {
+    ...comment,
+    patch_impacts: [
+      ...(comment.patch_impacts ?? []),
+      {
+        patch_id: patchId,
+        impacted_at: createdAt,
+        impact_kind: impactKind,
+        result,
+        note
+      }
+    ],
+    updated_at: createdAt
+  };
+}
+
+function areCommentAnchorsEqual(
+  firstAnchor: PatchmarkCommentAnchor,
+  secondAnchor: PatchmarkCommentAnchor
+): boolean {
+  return JSON.stringify(firstAnchor) === JSON.stringify(secondAnchor);
+}
+
+function appendSystemThreadEntryToComment({
+  comment,
+  content,
+  createdAt,
+  patchId
+}: {
+  comment: PatchmarkComment;
+  content: string;
+  createdAt: string;
+  patchId: string;
+}): PatchmarkComment {
+  return {
+    ...comment,
+    thread: [
+      ...comment.thread,
+      {
+        id: createNextThreadEntryId(comment),
+        role: "system" as const,
+        content,
+        created_at: createdAt,
+        source_patch_id: patchId
+      }
+    ],
+    updated_at: createdAt
+  };
+}
+
+function appendPatchSystemThreadEntry({
+  comments,
+  commentId,
+  content,
+  createdAt,
+  patchId
+}: {
+  comments: PatchmarkComment[];
+  commentId: string;
+  content: string;
+  createdAt: string;
+  patchId: string;
+}): PatchmarkComment[] | null {
+  let didAppend = false;
+
+  const nextComments = comments.map((comment) => {
+    if (comment.id !== commentId) {
+      return comment;
+    }
+
+    didAppend = true;
+
+    return {
+      ...comment,
+      thread: [
+        ...comment.thread,
+        {
+          id: createNextThreadEntryId(comment),
+          role: "system" as const,
+          content,
+          created_at: createdAt,
+          source_patch_id: patchId
+        }
+      ],
+      updated_at: createdAt
+    };
+  });
+
+  return didAppend ? nextComments : null;
 }
 
 function getPatchApplicabilityLabel(applicability: PatchApplicability): string {
@@ -5676,17 +7105,37 @@ function getCommentAnchorSummary(
   };
 }
 
+function getLatestNeedsReviewPatchImpact(
+  comment: PatchmarkComment
+): PatchmarkCommentPatchImpact | null {
+  const latestImpact = comment.patch_impacts?.at(-1);
+
+  return latestImpact?.result === "needs_review" ? latestImpact : null;
+}
+
 function resolveCommentAnchor(
   comment: PatchmarkComment,
   markdown: string,
   headings: ReturnType<typeof parseMarkdownHeadings>
 ): CommentAnchorResolution {
   const { anchor } = comment;
+  const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
 
   if (anchor.kind === "document") {
     return {
       label: "Whole document",
       status: "document"
+    };
+  }
+
+  if (latestNeedsReviewImpact) {
+    return {
+      detail: `Affected by ${latestNeedsReviewImpact.patch_id}. Please review this anchor.`,
+      label:
+        anchor.kind === "section"
+          ? `Whole section: ${anchor.heading}`
+          : `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "not_found"
     };
   }
 

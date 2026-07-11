@@ -1269,6 +1269,23 @@ button {
   color: #8d2f18;
 }
 
+.comment-patch-impact {
+  border-style: dashed;
+}
+
+.comment-patch-impact-needs_review {
+  border-color: #efb7a9;
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.comment-patch-impact-reanchored,
+.comment-patch-impact-offset_shifted {
+  border-color: #b9d8ca;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
 .comment-selected-text {
   margin: 0;
   border-left: 3px solid var(--border);
@@ -1376,10 +1393,17 @@ button {
   font-size: 0.74rem;
 }
 
+.patch-review-backdrop {
+  place-items: stretch;
+  padding: 16px;
+}
+
 .patch-review-dialog {
   display: flex;
-  width: min(1120px, 100%);
-  max-height: min(90vh, 920px);
+  width: 100%;
+  height: calc(100dvh - 32px);
+  max-height: none;
+  min-height: 0;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -1412,6 +1436,31 @@ button {
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 700;
+}
+
+.patch-decision-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-left: auto;
+}
+
+.patch-review-actions .patch-accept-button {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: white;
+}
+
+.patch-review-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.patch-review-actions .patch-accept-button:disabled {
+  border-color: var(--border);
+  background: var(--surface-muted);
+  color: var(--muted);
 }
 
 .patch-applicability {
@@ -1774,6 +1823,14 @@ button {
 
   .snapshot-dialog {
     max-height: calc(100vh - 24px);
+  }
+
+  .patch-review-backdrop {
+    padding: 8px;
+  }
+
+  .patch-review-dialog {
+    height: calc(100dvh - 16px);
   }
 
   .snapshot-dialog-header,

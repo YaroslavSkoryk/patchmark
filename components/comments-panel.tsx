@@ -912,6 +912,8 @@ function CommentCard({
   const isQueuedForExport =
     comment.export_state.focus_state === "in_focus" ||
     comment.export_state.focus_state === "awaiting_reply";
+  const latestAnchorPatchId = comment.anchor_history?.at(-1)?.source_patch_id;
+  const latestPatchImpact = comment.patch_impacts?.at(-1);
 
   return (
     <article className={`comment-card ${quiet ? "comment-card-quiet" : ""}`}>
@@ -971,6 +973,23 @@ function CommentCard({
           </span>
           {anchorSummary.detail ? (
             <span className="comment-anchor-detail">{anchorSummary.detail}</span>
+          ) : null}
+          {latestPatchImpact ? (
+            <>
+              <span
+                className={`comment-anchor-status comment-patch-impact comment-patch-impact-${latestPatchImpact.result}`}
+              >
+                {getPatchImpactStatusLabel(latestPatchImpact.result)}
+              </span>
+              <span className="comment-anchor-detail">
+                Affected by {latestPatchImpact.patch_id}
+              </span>
+            </>
+          ) : null}
+          {latestAnchorPatchId ? (
+            <span className="comment-anchor-detail">
+              Anchor updated by {latestAnchorPatchId}
+            </span>
           ) : null}
           {comment.anchor.kind === "selected_text" ? (
             <>
@@ -1286,6 +1305,24 @@ function getAnchorStatusLabel(status: CommentAnchorStatus): string {
   }
 
   return "Anchor not found";
+}
+
+function getPatchImpactStatusLabel(
+  result: NonNullable<PatchmarkComment["patch_impacts"]>[number]["result"]
+): string {
+  if (result === "needs_review") {
+    return "Needs review";
+  }
+
+  if (result === "reanchored") {
+    return "Re-anchored after patch";
+  }
+
+  if (result === "offset_shifted") {
+    return "Offset shifted after patch";
+  }
+
+  return "Affected by patch";
 }
 
 function getAddAnchorPreviewLabel(
