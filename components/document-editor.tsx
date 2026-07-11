@@ -2349,6 +2349,114 @@ export function DocumentEditor() {
     }
   }
 
+  async function handleRejectPatchGroup(group: DerivedPatchGroup) {
+    if (!projectHandle) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Reject Patch Group is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    const pendingPatchIds = new Set(
+      group.patches
+        .filter((patch) => patch.status === "pending")
+        .map((patch) => patch.id)
+    );
+
+    if (pendingPatchIds.size === 0) {
+      setSaveFeedback({
+        kind: "info",
+        message: "This patch group has no pending patches to reject."
+      });
+      return;
+    }
+
+    const confirmed = window.confirm(
+      "Reject all pending patches in this group? The document will not be changed."
+    );
+
+    if (!confirmed) {
+      return;
+    }
+
+    setSaveStatus("saving");
+    setCommentsError(null);
+    setSaveFeedback(null);
+
+    const rejectedAt = new Date().toISOString();
+    const nextPatches = patches.map((candidate) =>
+      pendingPatchIds.has(candidate.id) && candidate.status === "pending"
+        ? {
+            ...candidate,
+            status: "rejected" as const,
+            resolved_at: rejectedAt,
+            rejected_at: rejectedAt
+          }
+        : candidate
+    );
+
+    try {
+      await writeProjectPatches(projectHandle, nextPatches);
+      setPatches(nextPatches);
+
+      if (!group.comment_id) {
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "success",
+          message: "Pending patches in group rejected."
+        });
+        return;
+      }
+
+      const nextComments = appendPatchSystemThreadEntry({
+        comments,
+        commentId: group.comment_id,
+        content: `Pending patches in ${group.display_id} were rejected.`,
+        createdAt: rejectedAt
+      });
+
+      if (!nextComments) {
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "info",
+          message:
+            "Pending patches in group rejected, but the linked comment was not found. Comment remains unresolved."
+        });
+        return;
+      }
+
+      try {
+        await writeProjectComments(projectHandle, nextComments);
+        setComments(nextComments);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "success",
+          message: "Pending patches in group rejected. Comment remains open."
+        });
+      } catch (error) {
+        const message = getProjectErrorMessage(error);
+        setCommentsError(message);
+        setSaveStatus("idle");
+        setSaveFeedback({
+          kind: "info",
+          message:
+            "Pending patches in group rejected, but Patchmark could not update the linked comment thread."
+        });
+      }
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
   function jumpToMarkdownSelection(start: number, end: number) {
     setMode("markdown");
     setMarkdownSelectionRequest({
@@ -3198,10 +3306,12 @@ export function DocumentEditor() {
         <PatchGroupReviewDialog
           comment={selectedPatchGroupComment}
           group={selectedPatchGroup}
+          isPatchActionBusy={isSaving}
           onClose={() => {
             setSelectedPatchGroupId(null);
             setPatchReviewGroupScopeId(null);
           }}
+          onRejectPendingPatches={() => handleRejectPatchGroup(selectedPatchGroup)}
           onReviewPatch={(patch) =>
             handleReviewPatchFromGroup(selectedPatchGroup, patch)
           }
@@ -3296,17 +3406,26 @@ function PatchGroupListDialog({
 function PatchGroupReviewDialog({
   comment,
   group,
+  isPatchActionBusy,
   onClose,
+  onRejectPendingPatches,
   onReviewPatch
 }: {
   comment: PatchmarkComment | null;
   group: DerivedPatchGroup;
+  isPatchActionBusy: boolean;
   onClose: () => void;
+  onRejectPendingPatches: () => void;
   onReviewPatch: (patch: PatchmarkPatch) => void;
 }) {
   const latestChatGptReply = comment
     ? getLatestChatGptThreadEntry(comment)
     : null;
+  const pendingPatchCount = group.status_summary.pending;
+  const rejectGroupButtonLabel =
+    pendingPatchCount > 0 && pendingPatchCount < group.status_summary.total
+      ? "Reject remaining pending patches"
+      : "Reject Patch Group";
 
   return (
     <div className="snapshot-dialog-backdrop patch-review-backdrop">
@@ -3366,6 +3485,23 @@ function PatchGroupReviewDialog({
             <h3>Status summary</h3>
             <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
             <p>{formatPatchGroupApplicabilitySummary(group)}</p>
+            <div className="patch-group-review-actions">
+              <button
+                type="button"
+                className="patch-group-reject-button"
+                disabled={isPatchActionBusy || pendingPatchCount === 0}
+                onClick={onRejectPendingPatches}
+              >
+                {rejectGroupButtonLabel}
+              </button>
+              <span>
+                {pendingPatchCount > 0
+                  ? `Rejects ${pendingPatchCount} pending patch${
+                      pendingPatchCount === 1 ? "" : "es"
+                    } only. The document will not be changed.`
+                  : "No pending patches remain in this group."}
+              </span>
+            </div>
           </section>
 
           {comment ? (
@@ -6517,7 +6653,7 @@ function appendPatchSystemThreadEntry({
   commentId: string;
   content: string;
   createdAt: string;
-  patchId: string;
+  patchId?: string;
 }): PatchmarkComment[] | null {
   let didAppend = false;
 
@@ -6537,7 +6673,7 @@ function appendPatchSystemThreadEntry({
           role: "system" as const,
           content,
           created_at: createdAt,
-          source_patch_id: patchId
+          ...(patchId ? { source_patch_id: patchId } : {})
         }
       ],
       updated_at: createdAt

@@ -1635,6 +1635,15 @@ function getThreadRoleLabel(role: PatchmarkComment["thread"][number]["role"]): s
 function getCommentPatchGroupSummaryLabel(
   summary: CommentPatchGroupSummary
 ): string {
+  if (
+    summary.groupCount === 1 &&
+    summary.pending === 0 &&
+    summary.accepted === 0 &&
+    summary.rejected > 0
+  ) {
+    return "Patch group rejected";
+  }
+
   if (summary.groupCount > 1) {
     return `Patch groups: ${summary.groupCount}`;
   }
