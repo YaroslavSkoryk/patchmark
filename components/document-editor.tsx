@@ -219,7 +219,7 @@ const SHORT_SELECTION_HELP =
   "Could not create a reliable anchor. Try selecting a larger phrase or add a section comment.";
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
 const STRICT_CHATGPT_IMPORT_ERROR =
-  "Invalid Patchmark response. All references must be inside the JSON, placed in the field-local sources arrays.";
+  "Invalid Patchmark response. Metadata references must be inside field-local sources arrays. Markdown links are allowed only in original_text and suggested_text.";
 const INVALID_CHATGPT_JSON_ERROR =
   "Invalid JSON. Ask ChatGPT to return one fenced json code block containing valid Patchmark JSON.";
 const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into exactly one fenced json code block containing valid Patchmark JSON.
@@ -234,17 +234,21 @@ Do not use footnotes or reference links.
 
 Source rules:
 - Every \`url\` must be a raw URL string starting with \`https://\` or \`http://\`.
-- Do not use Markdown links.
+- Do not use Markdown links in metadata or source fields.
 - Do not include \`[\`, \`]\`, \`(\`, or \`)\` around URLs.
 - Do not include quotes, escaped quotes, or backslashes in URLs.
 - Put all URLs only inside field-local source arrays.
-- \`supports\` must be plain text only.`;
+- \`supports\` must be plain text only.
+- Markdown links are allowed only in document Markdown fields: \`original_text\` and \`suggested_text\`.`;
 const PROTOCOL_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
 const PROTOCOL_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\([^)]+\)/;
 const PROTOCOL_BROKEN_MARKDOWN_LINK_PATTERN = /\]\(/;
 const PROTOCOL_REFERENCE_LINK_PATTERN = /\[[^\]]+\]\[[^\]]+\]|\[\d+\]/;
 const PROTOCOL_FOOTNOTE_PATTERN = /\[\^[^\]]+\]/;
 const SOURCE_URL_MARKDOWN_PATTERN = /[\[\]\(\)"\\]/;
+const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/i;
+const DOCUMENT_RAW_URL_PATTERN = /\bhttps?:\/\/\S+/i;
+const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -3503,6 +3507,7 @@ function PatchReviewDialog({
     patch,
     applicability
   );
+  const sourceReferenceWarnings = getPatchSourceReferenceWarnings(patch);
   const canAcceptPatch =
     patch.status === "pending" && !acceptDisabledMessage && !isPatchActionBusy;
   const canRejectPatch = patch.status === "pending" && !isPatchActionBusy;
@@ -3587,6 +3592,14 @@ function PatchReviewDialog({
           <strong>{getPatchApplicabilityLabel(applicability)}</strong>
           <span>{getPatchApplicabilityDetail(applicability)}</span>
         </div>
+
+        {sourceReferenceWarnings.length > 0 ? (
+          <div className="patch-review-warnings" role="note">
+            {sourceReferenceWarnings.map((warning) => (
+              <p key={warning}>{warning}</p>
+            ))}
+          </div>
+        ) : null}
 
         <div className="patch-review-body">
           <section className="patch-review-card">
@@ -4387,6 +4400,8 @@ If you propose changes, return reviewable patch proposals linked to this comment
 
 Document-level comments may produce multiple patch proposals. Keep each patch narrow and reviewable.
 
+For reference-cleanup tasks, preserve necessary references in the actual Markdown document. Prefer concise inline Markdown links near the claims they support. Do not rely only on Patchmark source arrays, because those are review metadata and may not appear in the final Markdown export.
+
 Prefer small exact patches over rewriting the whole document.
 `
     : "";
@@ -4434,7 +4449,15 @@ Do not include any text after the closing fence.
 
 Inside the JSON:
 
-Do not use Markdown links in text fields.
+Markdown links are allowed only inside \`original_text\` and \`suggested_text\`, because those fields represent document Markdown.
+
+Do not use Markdown links in \`reply\`, \`reason\`, \`risk\`, \`question\`, \`supports\`, \`note\`, or \`title\`.
+
+If the comment asks to make references inline, every reference that remains necessary must be preserved directly inside \`suggested_text\` as Markdown document content.
+
+Do not remove a final references/source-notes section unless the relevant source information has been preserved in the proposed document text through inline Markdown links or another visible Markdown source format.
+
+If you propose deleting a Source Notes / References section, explain in \`risk\` whether visible source information would be lost.
 
 Do not include footnotes.
 
@@ -4442,7 +4465,7 @@ Do not include reference-link definitions like [1]: https://...
 
 Do not use [1] or [source][1] citations.
 
-Do not put URLs inside prose fields.
+Do not put URLs inside prose metadata fields.
 
 Every source URL must be placed in the nearest field-local sources array.
 
@@ -4481,9 +4504,23 @@ Source object rules:
 - Do not include \`[\` or \`]\` in URLs.
 - Do not include \`(\` or \`)\` in URLs.
 - Do not include quotes, escaped quotes, or backslashes in URLs.
-- Do not put URLs inside \`reply\`, \`reason\`, \`risk\`, \`suggested_text\`, or \`question\` text fields.
+- Do not put URLs inside \`reply\`, \`reason\`, \`risk\`, or \`question\` text fields.
 - Put URLs only in field-local source arrays.
 - \`supports\` must be plain text describing what the source supports.
+
+Source preservation rule:
+
+- Patchmark sidecar source arrays are review metadata.
+- If a reference must remain visible in the final Markdown document, include it directly in \`suggested_text\` as a Markdown link or another visible Markdown source format.
+- Do not rely only on \`suggested_text_sources\` when the task asks for inline references.
+
+Good inline-reference \`suggested_text\`:
+\`"Thailand foodservice remains resilient. [USDA FAS estimated Thailand foodservice at about USD 35.4 billion in 2025](https://apps.fas.usda.gov/newgainapi/api/Report/DownloadReportByFileName?fileName=Food+Service+-+Hotel+Restaurant+Institutional+Annual_Bangkok_Thailand_TH2025-0045.pdf), despite modest economic growth."\`
+
+Bad inline-reference \`suggested_text\`:
+\`"Thailand foodservice remains resilient. USDA FAS estimated Thailand foodservice at about USD 35.4 billion in 2025, despite modest economic growth."\`
+
+The bad version loses the visible source if Patchmark sidecar metadata is not exported.
 
 Use this exact protocol:
 
@@ -4694,10 +4731,7 @@ function normalizeImportedPatchProposal(
         ? patchProposal.target_heading
         : undefined,
     original_text: patchProposal.original_text,
-    suggested_text: validateProtocolTextField(
-      patchProposal.suggested_text,
-      `${patchProposalPath}.suggested_text`
-    ),
+    suggested_text: patchProposal.suggested_text,
     suggested_text_sources: normalizeImportedSources(
       patchProposal.suggested_text_sources,
       `${patchProposalPath}.suggested_text_sources`
@@ -5420,6 +5454,44 @@ function getPatchAcceptDisabledMessage(
   }
 
   return null;
+}
+
+function getPatchSourceReferenceWarnings(patch: PatchmarkPatch): string[] {
+  const warnings: string[] = [];
+
+  if (isSourceReferenceSectionDeletionPatch(patch)) {
+    warnings.push(
+      "This patch deletes a source/reference section. Confirm that all necessary references are preserved inline in the document before accepting."
+    );
+  }
+
+  if (
+    (patch.suggested_text_sources?.length ?? 0) > 0 &&
+    !containsVisibleSourceReference(patch.suggested_text)
+  ) {
+    warnings.push(
+      "This patch has source metadata, but the suggested Markdown does not contain a visible source reference. If accepted, the document may not show this source unless Patchmark export later renders sidecar sources."
+    );
+  }
+
+  return warnings;
+}
+
+function isSourceReferenceSectionDeletionPatch(patch: PatchmarkPatch): boolean {
+  if (patch.suggested_text.trim().length > 0) {
+    return false;
+  }
+
+  const sourceLabelText = `${patch.target_heading ?? ""}\n${patch.original_text}`;
+
+  return SOURCE_SECTION_HEADING_PATTERN.test(sourceLabelText);
+}
+
+function containsVisibleSourceReference(markdown: string): boolean {
+  return (
+    DOCUMENT_MARKDOWN_LINK_PATTERN.test(markdown) ||
+    DOCUMENT_RAW_URL_PATTERN.test(markdown)
+  );
 }
 
 function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {

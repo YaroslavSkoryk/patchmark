@@ -1639,6 +1639,22 @@ button {
   color: #8d2f18;
 }
 
+.patch-review-warnings {
+  display: grid;
+  gap: 6px;
+  border-bottom: 1px solid #eccd8f;
+  background: #fff8e8;
+  color: #76510f;
+  padding: 12px 18px;
+}
+
+.patch-review-warnings p {
+  margin: 0;
+  font-size: 0.86rem;
+  font-weight: 800;
+  line-height: 1.45;
+}
+
 .patch-review-body {
   display: grid;
   gap: 14px;
