@@ -727,6 +727,30 @@ button {
   box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
 }
 
+.document-export-guard-dialog {
+  width: min(760px, 100%);
+}
+
+.document-export-guard-body {
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.document-export-guard-body p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.5;
+}
+
+.document-export-guard-list {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
 .comment-import-dialog {
   display: flex;
   width: min(900px, 100%);

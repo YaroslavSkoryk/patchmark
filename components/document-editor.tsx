@@ -111,6 +111,7 @@ type CommentContextMenuState = {
 };
 type ChatGptPromptDialogState = {
   commentIds: string[];
+  dedicatedDocumentReview: boolean;
   exportId: string;
   exportedAt: string;
   payloadFileName: string;
@@ -118,6 +119,34 @@ type ChatGptPromptDialogState = {
   jsonText: string;
   promptText: string;
 };
+type DocumentLevelExportGuardDialogState =
+  | {
+      documentCommentIds: string[];
+      kind: "multiple_document_comments";
+      nonDocumentCommentIds: string[];
+    }
+  | {
+      documentCommentId: string;
+      kind: "mixed_document_comment";
+      nonDocumentCommentIds: string[];
+    };
+type MarkCommentFocusGuardDialogState =
+  | {
+      documentCommentIds: string[];
+      kind: "mark_non_document_with_document_focus";
+      targetCommentId: string;
+    }
+  | {
+      kind: "mark_document_with_non_document_focus";
+      nonDocumentCommentIds: string[];
+      targetCommentId: string;
+    }
+  | {
+      documentCommentIds: string[];
+      kind: "mark_document_with_document_focus";
+      nonDocumentCommentIds: string[];
+      targetCommentId: string;
+    };
 type ChatGptImportDialogState = {
   error: string | null;
   responseJson: string;
@@ -244,6 +273,10 @@ export function DocumentEditor() {
     useState<SnapshotDialogState | null>(null);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
+  const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
+    useState<DocumentLevelExportGuardDialogState | null>(null);
+  const [markCommentFocusGuardDialog, setMarkCommentFocusGuardDialog] =
+    useState<MarkCommentFocusGuardDialogState | null>(null);
   const [chatGptImportDialog, setChatGptImportDialog] =
     useState<ChatGptImportDialogState | null>(null);
   const [selectedPatchId, setSelectedPatchId] = useState<string | null>(null);
@@ -666,6 +699,8 @@ export function DocumentEditor() {
     setPatchReviewCommentScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setDocumentLevelExportGuardDialog(null);
+    setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
@@ -697,6 +732,8 @@ export function DocumentEditor() {
     setPatchReviewCommentScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setDocumentLevelExportGuardDialog(null);
+    setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
@@ -941,11 +978,71 @@ export function DocumentEditor() {
       return;
     }
 
+    const documentLevelFocusedComments = focusedComments.filter(
+      (comment) => comment.anchor.kind === "document"
+    );
+    const nonDocumentFocusedComments = focusedComments.filter(
+      (comment) => comment.anchor.kind !== "document"
+    );
+
+    if (documentLevelFocusedComments.length > 1) {
+      setDocumentLevelExportGuardDialog({
+        documentCommentIds: documentLevelFocusedComments.map((comment) => comment.id),
+        kind: "multiple_document_comments",
+        nonDocumentCommentIds: nonDocumentFocusedComments.map(
+          (comment) => comment.id
+        )
+      });
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Only one document-level comment can be exported at a time."
+      });
+      return;
+    }
+
+    if (
+      documentLevelFocusedComments.length === 1 &&
+      nonDocumentFocusedComments.length > 0
+    ) {
+      setDocumentLevelExportGuardDialog({
+        documentCommentId: documentLevelFocusedComments[0].id,
+        kind: "mixed_document_comment",
+        nonDocumentCommentIds: nonDocumentFocusedComments.map(
+          (comment) => comment.id
+        )
+      });
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Document-level comments require a dedicated ChatGPT round."
+      });
+      return;
+    }
+
+    openChatGptPromptDialog({
+      dedicatedDocumentReview: documentLevelFocusedComments.length === 1,
+      focusedComments
+    });
+  }
+
+  function openChatGptPromptDialog({
+    dedicatedDocumentReview,
+    focusedComments
+  }: {
+    dedicatedDocumentReview: boolean;
+    focusedComments: PatchmarkComment[];
+  }) {
+    if (!projectHandle) {
+      return;
+    }
+
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
     const fileTimestamp = createFileSafeTimestamp(exportedAt);
     const exportPayload = createFocusedCommentsExportPayload({
       comments: focusedComments,
+      dedicatedDocumentReview,
       exportedAt,
       exportId,
       headings,
@@ -953,23 +1050,116 @@ export function DocumentEditor() {
       project: projectHandle
     });
     const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
-    const promptText = createFocusedCommentsChatGptPrompt(jsonText);
+    const promptText = createFocusedCommentsChatGptPrompt(jsonText, {
+      dedicatedDocumentReview
+    });
+    const fileNamePrefix = dedicatedDocumentReview
+      ? "document-comment"
+      : "focused-comments";
 
     setChatGptPromptDialog({
       commentIds: focusedComments.map((comment) => comment.id),
+      dedicatedDocumentReview,
       exportedAt,
       exportId,
-      payloadFileName: `${fileTimestamp}-focused-comments-payload.json`,
-      promptFileName: `${fileTimestamp}-focused-comments-prompt.md`,
+      payloadFileName: `${fileTimestamp}-${fileNamePrefix}-payload.json`,
+      promptFileName: `${fileTimestamp}-${fileNamePrefix}-prompt.md`,
       jsonText,
       promptText
     });
     setSaveFeedback({
       kind: "info",
-      message: `Generated a ChatGPT prompt for ${focusedComments.length} focused comment${
-        focusedComments.length === 1 ? "" : "s"
-      }.`
+      message: dedicatedDocumentReview
+        ? "Generated a dedicated ChatGPT prompt for one document-level comment."
+        : `Generated a ChatGPT prompt for ${focusedComments.length} focused comment${
+            focusedComments.length === 1 ? "" : "s"
+          }.`
     });
+  }
+
+  function handleGenerateDedicatedDocumentPromptFromGuard() {
+    if (
+      !documentLevelExportGuardDialog ||
+      documentLevelExportGuardDialog.kind !== "mixed_document_comment"
+    ) {
+      return;
+    }
+
+    const documentComment = comments.find(
+      (comment) =>
+        comment.id === documentLevelExportGuardDialog.documentCommentId &&
+        comment.status === "open"
+    );
+
+    if (!documentComment) {
+      setDocumentLevelExportGuardDialog(null);
+      setSaveFeedback({
+        kind: "error",
+        message: "The document-level comment was not found."
+      });
+      return;
+    }
+
+    setDocumentLevelExportGuardDialog(null);
+    openChatGptPromptDialog({
+      dedicatedDocumentReview: true,
+      focusedComments: [documentComment]
+    });
+  }
+
+  async function handleUnmarkOtherFocusedCommentsAndGenerate() {
+    if (
+      !documentLevelExportGuardDialog ||
+      documentLevelExportGuardDialog.kind !== "mixed_document_comment"
+    ) {
+      return;
+    }
+
+    const otherCommentIds = new Set(
+      documentLevelExportGuardDialog.nonDocumentCommentIds
+    );
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      otherCommentIds.has(comment.id) && comment.status === "open"
+        ? {
+            ...comment,
+            export_state: {
+              ...comment.export_state,
+              focus_state: "idle" as const,
+              marked_for_export_at: undefined
+            },
+            updated_at: now
+          }
+        : comment
+    );
+    const documentComment = nextComments.find(
+      (comment) =>
+        comment.id === documentLevelExportGuardDialog.documentCommentId &&
+        comment.status === "open"
+    );
+
+    if (!documentComment) {
+      setDocumentLevelExportGuardDialog(null);
+      setSaveFeedback({
+        kind: "error",
+        message: "The document-level comment was not found."
+      });
+      return;
+    }
+
+    try {
+      await persistComments(
+        nextComments,
+        "Unmarked other comments for this dedicated ChatGPT round."
+      );
+      setDocumentLevelExportGuardDialog(null);
+      openChatGptPromptDialog({
+        dedicatedDocumentReview: true,
+        focusedComments: [documentComment]
+      });
+    } catch {
+      // persistComments already surfaced the error.
+    }
   }
 
   async function handleCopyChatGptPrompt() {
@@ -1413,22 +1603,163 @@ export function DocumentEditor() {
   }
 
   async function handleMarkCommentForExport(commentId: string) {
-    const now = new Date().toISOString();
-    const nextComments = comments.map((comment) =>
-      comment.id === commentId && comment.status === "open"
-        ? {
-            ...comment,
-            export_state: {
-              ...comment.export_state,
-              focus_state: "in_focus" as const,
-              marked_for_export_at: now
-            },
-            updated_at: now
-          }
-        : comment
+    const targetComment = comments.find(
+      (comment) => comment.id === commentId && comment.status === "open"
     );
 
-    await persistComments(nextComments, "Marked comment for ChatGPT.");
+    if (!targetComment) {
+      setSaveFeedback({
+        kind: "error",
+        message: "The comment was not found."
+      });
+      return;
+    }
+
+    const otherFocusedComments = getFocusedCommentsForExport(comments).filter(
+      (comment) => comment.id !== commentId
+    );
+    const focusedDocumentComments = otherFocusedComments.filter(
+      (comment) => comment.anchor.kind === "document"
+    );
+    const focusedNonDocumentComments = otherFocusedComments.filter(
+      (comment) => comment.anchor.kind !== "document"
+    );
+
+    if (
+      targetComment.anchor.kind !== "document" &&
+      focusedDocumentComments.length > 0
+    ) {
+      setMarkCommentFocusGuardDialog({
+        documentCommentIds: focusedDocumentComments.map((comment) => comment.id),
+        kind: "mark_non_document_with_document_focus",
+        targetCommentId: commentId
+      });
+      return;
+    }
+
+    if (targetComment.anchor.kind === "document") {
+      if (focusedDocumentComments.length > 0) {
+        setMarkCommentFocusGuardDialog({
+          documentCommentIds: focusedDocumentComments.map(
+            (comment) => comment.id
+          ),
+          kind: "mark_document_with_document_focus",
+          nonDocumentCommentIds: focusedNonDocumentComments.map(
+            (comment) => comment.id
+          ),
+          targetCommentId: commentId
+        });
+        return;
+      }
+
+      if (focusedNonDocumentComments.length > 0) {
+        setMarkCommentFocusGuardDialog({
+          kind: "mark_document_with_non_document_focus",
+          nonDocumentCommentIds: focusedNonDocumentComments.map(
+            (comment) => comment.id
+          ),
+          targetCommentId: commentId
+        });
+        return;
+      }
+    }
+
+    await markCommentForExportWithFocusChanges({
+      commentId,
+      idleCommentIds: [],
+      successMessage: "Marked comment for ChatGPT."
+    });
+  }
+
+  async function handleConfirmMarkCommentFocusGuard() {
+    if (!markCommentFocusGuardDialog) {
+      return;
+    }
+
+    const guardDialog = markCommentFocusGuardDialog;
+    const idleCommentIds =
+      guardDialog.kind === "mark_non_document_with_document_focus"
+        ? guardDialog.documentCommentIds
+        : guardDialog.kind === "mark_document_with_non_document_focus"
+          ? guardDialog.nonDocumentCommentIds
+          : [
+              ...guardDialog.documentCommentIds,
+              ...guardDialog.nonDocumentCommentIds
+            ];
+    const successMessage =
+      guardDialog.kind === "mark_non_document_with_document_focus"
+        ? "Unmarked document-level comment and marked this comment for ChatGPT."
+        : guardDialog.kind === "mark_document_with_document_focus" &&
+            guardDialog.nonDocumentCommentIds.length === 0
+          ? "Unmarked other document-level comment and marked this one for ChatGPT."
+          : "Unmarked other focused comments and marked document-level comment for ChatGPT.";
+
+    try {
+      await markCommentForExportWithFocusChanges({
+        commentId: guardDialog.targetCommentId,
+        idleCommentIds,
+        successMessage
+      });
+      setMarkCommentFocusGuardDialog(null);
+    } catch {
+      // persistComments already surfaced the error.
+    }
+  }
+
+  async function markCommentForExportWithFocusChanges({
+    commentId,
+    idleCommentIds,
+    successMessage
+  }: {
+    commentId: string;
+    idleCommentIds: string[];
+    successMessage: string;
+  }) {
+    const targetComment = comments.find(
+      (comment) => comment.id === commentId && comment.status === "open"
+    );
+
+    if (!targetComment) {
+      setSaveFeedback({
+        kind: "error",
+        message: "The comment was not found."
+      });
+      return;
+    }
+
+    const now = new Date().toISOString();
+    const idleCommentIdSet = new Set(
+      idleCommentIds.filter((idleCommentId) => idleCommentId !== commentId)
+    );
+    const nextComments = comments.map((comment) => {
+      if (comment.id === commentId && comment.status === "open") {
+        return {
+          ...comment,
+          export_state: {
+            ...comment.export_state,
+            focus_state: "in_focus" as const,
+            marked_for_export_at: now
+          },
+          updated_at: now
+        };
+      }
+
+      if (idleCommentIdSet.has(comment.id) && comment.status === "open") {
+        return {
+          ...comment,
+          export_state: {
+            ...comment.export_state,
+            focus_state: "idle" as const,
+            marked_for_export_at: undefined
+          },
+          updated_at: now
+        };
+      }
+
+      return comment;
+    });
+
+    await persistComments(nextComments, successMessage);
   }
 
   async function handleUnmarkCommentForExport(commentId: string) {
@@ -2085,6 +2416,8 @@ export function DocumentEditor() {
     setPatchReviewCommentScopeId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setDocumentLevelExportGuardDialog(null);
+    setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
@@ -2339,6 +2672,224 @@ export function DocumentEditor() {
         />
       ) : null}
 
+      {markCommentFocusGuardDialog ? (
+        <div className="snapshot-dialog-backdrop">
+          <section
+            className="comment-export-dialog document-export-guard-dialog"
+            aria-label="Mark for ChatGPT compatibility guard"
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Mark for ChatGPT</span>
+                <h2>Document-level comments require a dedicated ChatGPT round.</h2>
+                <p>
+                  Full-document comments are exclusive focused units for the
+                  current ChatGPT round.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={() => setMarkCommentFocusGuardDialog(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            <div className="document-export-guard-body">
+              {markCommentFocusGuardDialog.kind ===
+              "mark_non_document_with_document_focus" ? (
+                <>
+                  <p>
+                    A document-level comment is already marked for ChatGPT. To
+                    mark this comment, unmark the document-level comment first.
+                  </p>
+                  <div className="comment-export-actions">
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => {
+                        void handleConfirmMarkCommentFocusGuard();
+                      }}
+                    >
+                      Unmark document-level comment and mark this comment
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => setMarkCommentFocusGuardDialog(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : markCommentFocusGuardDialog.kind ===
+                "mark_document_with_non_document_focus" ? (
+                <>
+                  <p>
+                    This is a document-level comment. Marking it will unmark{" "}
+                    {markCommentFocusGuardDialog.nonDocumentCommentIds.length}{" "}
+                    other focused comment
+                    {markCommentFocusGuardDialog.nonDocumentCommentIds
+                      .length === 1
+                      ? ""
+                      : "s"}
+                    .
+                  </p>
+                  <div className="comment-export-actions">
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => {
+                        void handleConfirmMarkCommentFocusGuard();
+                      }}
+                    >
+                      Unmark other comments and mark document-level comment
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => setMarkCommentFocusGuardDialog(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Another document-level comment is already marked for
+                    ChatGPT. Only one document-level comment can be focused at a
+                    time.
+                  </p>
+                  {markCommentFocusGuardDialog.nonDocumentCommentIds.length >
+                  0 ? (
+                    <p>
+                      Patchmark also found{" "}
+                      {markCommentFocusGuardDialog.nonDocumentCommentIds.length}{" "}
+                      other focused comment
+                      {markCommentFocusGuardDialog.nonDocumentCommentIds
+                        .length === 1
+                        ? ""
+                        : "s"}
+                      , which will be unmarked so this document-level comment can
+                      be handled alone.
+                    </p>
+                  ) : null}
+                  <div className="comment-export-actions">
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => {
+                        void handleConfirmMarkCommentFocusGuard();
+                      }}
+                    >
+                      Unmark other document-level comment and mark this one
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => setMarkCommentFocusGuardDialog(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
+      {documentLevelExportGuardDialog ? (
+        <div className="snapshot-dialog-backdrop">
+          <section
+            className="comment-export-dialog document-export-guard-dialog"
+            aria-label="Document-level ChatGPT export guard"
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Focused comments</span>
+                <h2>Document-level comments require a dedicated ChatGPT round.</h2>
+                <p>
+                  Whole-document comments use full-document context and should
+                  not be mixed with smaller section or selected-text tasks.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setDocumentLevelExportGuardDialog(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            <div className="document-export-guard-body">
+              {documentLevelExportGuardDialog.kind === "mixed_document_comment" ? (
+                <>
+                  <p>
+                    This focused set includes a whole-document comment plus{" "}
+                    {documentLevelExportGuardDialog.nonDocumentCommentIds.length}{" "}
+                    other focused comment
+                    {documentLevelExportGuardDialog.nonDocumentCommentIds.length === 1
+                      ? ""
+                      : "s"}
+                    . Generate a dedicated prompt for the document-level comment,
+                    or unmark the other comments first.
+                  </p>
+                  <div className="comment-export-actions">
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={handleGenerateDedicatedDocumentPromptFromGuard}
+                    >
+                      Generate dedicated prompt
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => {
+                        void handleUnmarkOtherFocusedCommentsAndGenerate();
+                      }}
+                    >
+                      Unmark other comments and continue
+                    </button>
+                    <button
+                      type="button"
+                      disabled={isCommentBusy}
+                      onClick={() => setDocumentLevelExportGuardDialog(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <>
+                  <p>
+                    Only one document-level comment can be exported at a time.
+                    Choose one document-level comment for this ChatGPT round and
+                    unmark the others.
+                  </p>
+                  <ul className="document-export-guard-list">
+                    {documentLevelExportGuardDialog.documentCommentIds.map(
+                      (commentId) => (
+                        <li key={commentId}>{commentId}</li>
+                      )
+                    )}
+                  </ul>
+                  <div className="comment-export-actions">
+                    <button
+                      type="button"
+                      onClick={() => setDocumentLevelExportGuardDialog(null)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </>
+              )}
+            </div>
+          </section>
+        </div>
+      ) : null}
+
       {chatGptPromptDialog ? (
         <div className="snapshot-dialog-backdrop">
           <section
@@ -2347,12 +2898,20 @@ export function DocumentEditor() {
           >
             <header className="snapshot-dialog-header">
               <div>
-                <span>Focused comments</span>
-                <h2>Generate ChatGPT Prompt</h2>
+                <span>
+                  {chatGptPromptDialog.dedicatedDocumentReview
+                    ? "Document-level comment"
+                    : "Focused comments"}
+                </span>
+                <h2>
+                  {chatGptPromptDialog.dedicatedDocumentReview
+                    ? "Generate Dedicated ChatGPT Prompt"
+                    : "Generate ChatGPT Prompt"}
+                </h2>
                 <p>
-                  This Markdown prompt is ready to paste into ChatGPT. Copying
-                  or saving marks focused comments as exported, but does not
-                  resolve them.
+                  {chatGptPromptDialog.dedicatedDocumentReview
+                    ? "This Markdown prompt is dedicated to one whole-document comment. Copying or saving marks only that comment as exported."
+                    : "This Markdown prompt is ready to paste into ChatGPT. Copying or saving marks focused comments as exported, but does not resolve them."}
                 </p>
               </div>
               <button type="button" onClick={() => setChatGptPromptDialog(null)}>
@@ -3395,7 +3954,30 @@ function createFileSafeTimestamp(exportedAt: string): string {
     .replace("Z", "");
 }
 
-function createFocusedCommentsChatGptPrompt(jsonText: string): string {
+function createFocusedCommentsChatGptPrompt(
+  jsonText: string,
+  {
+    dedicatedDocumentReview
+  }: {
+    dedicatedDocumentReview: boolean;
+  }
+): string {
+  const dedicatedDocumentReviewNote = dedicatedDocumentReview
+    ? `
+## Dedicated Whole-Document Review Task
+
+This is a dedicated whole-document review task.
+
+Focus only on the exported document-level comment.
+
+Do not address unrelated document issues unless they are necessary to resolve this comment.
+
+If you propose changes, return reviewable patch proposals linked to this comment_id.
+
+Prefer small exact patches over rewriting the whole document.
+`
+    : "";
+
   return `# Patchmark Focused Comments Review
 
 You are helping review and improve a Markdown document through Patchmark.
@@ -3416,6 +3998,7 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 - Preserve Markdown structure.
 - Be clear about reason and risk/tradeoff.
 - Drafting support only. Legal review may still be required.
+${dedicatedDocumentReviewNote}
 
 ## Required Response Format
 
@@ -5326,6 +5909,7 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function createFocusedCommentsExportPayload({
   comments,
+  dedicatedDocumentReview,
   exportedAt,
   exportId,
   headings,
@@ -5333,6 +5917,7 @@ function createFocusedCommentsExportPayload({
   project
 }: {
   comments: PatchmarkComment[];
+  dedicatedDocumentReview: boolean;
   exportedAt: string;
   exportId: string;
   headings: ReturnType<typeof parseMarkdownHeadings>;
@@ -5343,6 +5928,9 @@ function createFocusedCommentsExportPayload({
     protocol: "patchmark.comment_export",
     protocol_version: 1,
     export_id: exportId,
+    export_scope: dedicatedDocumentReview
+      ? "dedicated_document_comment"
+      : "focused_comments",
     project: {
       project_name: project.manifest.project_name,
       document_file: project.manifest.document_file,
@@ -5357,7 +5945,15 @@ function createFocusedCommentsExportPayload({
         "If you suggest a document change, return a patch proposal linked to the comment_id.",
         "If more information is needed, ask a clarification question linked to the comment_id.",
         "Preserve Markdown structure.",
-        "Drafting support only. Legal review may still be required."
+        "Drafting support only. Legal review may still be required.",
+        ...(dedicatedDocumentReview
+          ? [
+              "This is a dedicated whole-document review task.",
+              "Focus only on the exported document-level comment.",
+              "Do not address unrelated document issues unless they are necessary to resolve this comment.",
+              "Prefer small exact patches over rewriting the whole document."
+            ]
+          : [])
       ],
       expected_response_format: "patchmark.comment_reply_import"
     },
@@ -5381,8 +5977,15 @@ function createFocusedCommentExportEntry({
   markdown: string;
 }) {
   const actionContext =
-    comment.anchor.action_context ??
-    getDefaultCommentActionContext(comment.type, comment.anchor.kind);
+    comment.anchor.kind === "document"
+      ? {
+          ...(comment.anchor.action_context ??
+            getDefaultCommentActionContext(comment.type, comment.anchor.kind)),
+          default_scope: "full_document" as const,
+          include_document_brief: true
+        }
+      : comment.anchor.action_context ??
+        getDefaultCommentActionContext(comment.type, comment.anchor.kind);
 
   return {
     comment_id: comment.id,
