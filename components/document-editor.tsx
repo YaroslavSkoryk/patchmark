@@ -159,12 +159,16 @@ const SHORT_SELECTION_HELP =
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
 const STRICT_CHATGPT_IMPORT_ERROR =
   "Invalid Patchmark response. All references must be inside the JSON, placed in the field-local sources arrays.";
-const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into one valid Patchmark JSON object only.
+const INVALID_CHATGPT_JSON_ERROR =
+  "Invalid JSON. Ask ChatGPT to return one fenced json code block containing valid Patchmark JSON.";
+const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into exactly one fenced json code block containing valid Patchmark JSON.
 
 Do not change the substance of the reply or patch.
 
-Do not include Markdown fences.
-Do not include text before or after the JSON.
+Use one opening \`\`\`json fence.
+Use one closing \`\`\` fence.
+Do not include text before the opening fence.
+Do not include text after the closing fence.
 Do not use footnotes or reference links.
 
 Source rules:
@@ -2187,11 +2191,19 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 
 ## Required Response Format
 
-Return exactly one JSON object.
+Return exactly one fenced JSON code block.
 
-Do not wrap the JSON in Markdown fences.
+The response must contain:
 
-Do not include any text before or after the JSON.
+- one opening \`\`\`json fence
+- one valid JSON object
+- one closing \`\`\` fence
+
+Do not include any text before the opening fence.
+
+Do not include any text after the closing fence.
+
+Inside the JSON:
 
 Do not use Markdown links in text fields.
 
@@ -2208,6 +2220,17 @@ Every source URL must be placed in the nearest field-local sources array.
 Do not collect field evidence in a top-level \`sources\` array.
 
 Do not put source links after the JSON.
+
+If you need to mention a phrase such as Core sourdough breads inside a JSON string, do not wrap it in straight double quotes. Either omit the quotes or use escaped JSON quotes.
+
+Good:
+\`"Change wording from Core sourdough breads to Current bread catalogue."\`
+
+Also valid:
+\`"Change wording from \\"Core sourdough breads\\" to \\"Current bread catalogue\\"."\`
+
+Invalid:
+\`"Change wording from "Core sourdough breads" to "Current bread catalogue"."\`
 
 Place each source in the closest matching field:
 
@@ -2318,7 +2341,7 @@ function parsePatchmarkCommentReplyImport(
   try {
     parsedResponse = JSON.parse(stripMarkdownJsonFence(rawInput));
   } catch {
-    throw new Error(STRICT_CHATGPT_IMPORT_ERROR);
+    throw new Error(INVALID_CHATGPT_JSON_ERROR);
   }
 
   if (!isRecord(parsedResponse)) {
@@ -2371,7 +2394,7 @@ function parsePatchmarkCommentReplyImport(
 
 function stripMarkdownJsonFence(rawInput: string): string {
   const trimmedInput = rawInput.trim();
-  const fencedMatch = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmedInput);
+  const fencedMatch = /^```json\s*([\s\S]*?)\s*```$/i.exec(trimmedInput);
 
   return fencedMatch ? fencedMatch[1].trim() : trimmedInput;
 }
