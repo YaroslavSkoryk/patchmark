@@ -1486,6 +1486,146 @@ button {
   overflow-wrap: anywhere;
 }
 
+.patch-review-mode-card {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+
+.patch-review-mode-switcher {
+  display: inline-flex;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.patch-review-mode-switcher button {
+  border: 0;
+  border-right: 1px solid var(--border);
+  background: transparent;
+  color: var(--muted);
+  padding: 8px 12px;
+  font-weight: 800;
+}
+
+.patch-review-mode-switcher button:last-child {
+  border-right: 0;
+}
+
+.patch-review-mode-switcher button[aria-pressed="true"] {
+  background: var(--accent);
+  color: white;
+}
+
+.patch-review-preview-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.patch-review-preview-note,
+.patch-review-source-note {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.markdown-snippet-preview {
+  display: grid;
+  gap: 12px;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 14px;
+  line-height: 1.55;
+}
+
+.markdown-snippet-preview h1,
+.markdown-snippet-preview h2,
+.markdown-snippet-preview h3,
+.markdown-snippet-preview h4,
+.markdown-snippet-preview h5,
+.markdown-snippet-preview h6,
+.markdown-snippet-preview p,
+.markdown-snippet-preview ul,
+.markdown-snippet-preview ol,
+.markdown-snippet-preview blockquote {
+  margin: 0;
+}
+
+.markdown-snippet-preview h1 {
+  font-size: 1.5rem;
+}
+
+.markdown-snippet-preview h2 {
+  font-size: 1.28rem;
+}
+
+.markdown-snippet-preview h3 {
+  font-size: 1.1rem;
+}
+
+.markdown-snippet-preview ul,
+.markdown-snippet-preview ol {
+  padding-left: 22px;
+}
+
+.markdown-snippet-preview blockquote {
+  border-left: 3px solid var(--border);
+  color: var(--muted);
+  padding-left: 10px;
+}
+
+.markdown-snippet-preview code,
+.markdown-snippet-code {
+  font-family:
+    "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.markdown-snippet-preview code {
+  background: var(--surface-muted);
+  padding: 1px 4px;
+}
+
+.markdown-snippet-code {
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: #101815;
+  color: #f4f7f5;
+  padding: 10px;
+  white-space: pre-wrap;
+}
+
+.markdown-snippet-table-scroll {
+  overflow: auto;
+}
+
+.markdown-snippet-preview table {
+  width: 100%;
+  min-width: 520px;
+  border-collapse: collapse;
+  font-size: 0.88rem;
+}
+
+.markdown-snippet-preview th,
+.markdown-snippet-preview td {
+  border: 1px solid var(--border);
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown-snippet-preview th {
+  background: var(--surface-muted);
+  color: var(--text);
+  font-weight: 800;
+}
+
+.markdown-snippet-empty {
+  margin: 0;
+  color: var(--muted);
+  font-style: italic;
+}
+
 .patch-metadata {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));

@@ -1,6 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode
+} from "react";
 import {
   CommentsPanel,
   type CommentAddRequest,
@@ -72,6 +79,7 @@ import {
 } from "@/lib/storage/document-draft-storage";
 
 type EditorMode = "visual" | "markdown";
+type PatchReviewMode = "visual" | "markdown-source";
 type SaveStatus = "idle" | "saving" | "failed" | "unavailable";
 type SaveFeedback = {
   kind: "success" | "error" | "info";
@@ -2194,6 +2202,7 @@ export function DocumentEditor() {
           applicability={selectedPatchApplicability}
           comment={selectedPatchComment}
           hasMultiplePendingPatches={reviewablePatches.length > 1}
+          markdown={markdown}
           onClose={() => {
             setSelectedPatchId(null);
             setPatchReviewCommentScopeId(null);
@@ -2217,6 +2226,7 @@ function PatchReviewDialog({
   applicability,
   comment,
   hasMultiplePendingPatches,
+  markdown,
   onClose,
   onFindOriginalText,
   onNextPatch,
@@ -2228,6 +2238,7 @@ function PatchReviewDialog({
   applicability: PatchApplicability;
   comment: PatchmarkComment | null;
   hasMultiplePendingPatches: boolean;
+  markdown: string;
   onClose: () => void;
   onFindOriginalText: () => void;
   onNextPatch: () => void;
@@ -2242,6 +2253,15 @@ function PatchReviewDialog({
   const suggestedTextSources = patch.suggested_text_sources ?? [];
   const reasonSources = patch.reason_sources ?? patch.sources ?? [];
   const riskSources = patch.risk_sources ?? [];
+  const [reviewMode, setReviewMode] = useState<PatchReviewMode>("visual");
+  const visualPreview = useMemo(
+    () => createPatchVisualPreview(markdown, patch),
+    [markdown, patch]
+  );
+
+  useEffect(() => {
+    setReviewMode("visual");
+  }, [patch.id]);
 
   return (
     <div className="snapshot-dialog-backdrop">
@@ -2340,19 +2360,85 @@ function PatchReviewDialog({
             </section>
           ) : null}
 
-          <section className="patch-review-card">
-            <h3>Original text</h3>
-            <pre>{patch.original_text}</pre>
+          <section className="patch-review-card patch-review-mode-card">
+            <div>
+              <h3>Review mode</h3>
+              <p>
+                Visual mode is for readability only. Markdown remains the source
+                of truth.
+              </p>
+            </div>
+            <div className="patch-review-mode-switcher" aria-label="Patch review mode">
+              <button
+                type="button"
+                aria-pressed={reviewMode === "visual"}
+                onClick={() => setReviewMode("visual")}
+              >
+                Visual
+              </button>
+              <button
+                type="button"
+                aria-pressed={reviewMode === "markdown-source"}
+                onClick={() => setReviewMode("markdown-source")}
+              >
+                Markdown Source
+              </button>
+            </div>
           </section>
 
-          <section className="patch-review-card">
-            <h3>Suggested replacement</h3>
-            <pre>{patch.suggested_text}</pre>
-            <PatchSourceList
-              label="Suggested text sources"
-              sources={suggestedTextSources}
-            />
-          </section>
+          {reviewMode === "visual" ? (
+            <div className="patch-review-preview-grid">
+              <section className="patch-review-card">
+                <h3>Current</h3>
+                <MarkdownSnippetPreview markdown={visualPreview.originalMarkdown} />
+                {visualPreview.usesTableContext ? (
+                  <p className="patch-review-preview-note">
+                    Table header context is shown for readability only. Exact
+                    matching still uses the original patch text.
+                  </p>
+                ) : null}
+              </section>
+
+              <section className="patch-review-card">
+                <h3>Proposed</h3>
+                <MarkdownSnippetPreview markdown={visualPreview.suggestedMarkdown} />
+                {visualPreview.usesTableContext ? (
+                  <p className="patch-review-preview-note">
+                    Table header context is display-only and will not be stored
+                    with the patch.
+                  </p>
+                ) : null}
+                <PatchSourceList
+                  label="Suggested text sources"
+                  sources={suggestedTextSources}
+                />
+              </section>
+            </div>
+          ) : (
+            <>
+              <section className="patch-review-card">
+                <h3>Original text</h3>
+                <p className="patch-review-source-note">
+                  Exact Markdown Patchmark will use for matching/replacement in
+                  Phase 3B.
+                </p>
+                <pre>{patch.original_text}</pre>
+              </section>
+
+              <section className="patch-review-card">
+                <h3>Suggested replacement</h3>
+                <p className="patch-review-source-note">
+                  Exact Markdown Patchmark will use for matching/replacement in
+                  Phase 3B.
+                </p>
+                <pre>{patch.suggested_text}</pre>
+                <PatchSourceList
+                  label="Suggested text sources"
+                  sources={suggestedTextSources}
+                />
+              </section>
+            </>
+          )}
 
           <section className="patch-review-card">
             <h3>Reason</h3>
@@ -2371,6 +2457,453 @@ function PatchReviewDialog({
       </section>
     </div>
   );
+}
+
+type PatchVisualPreview = {
+  originalMarkdown: string;
+  suggestedMarkdown: string;
+  usesTableContext: boolean;
+};
+
+function MarkdownSnippetPreview({ markdown }: { markdown: string }) {
+  const previewBlocks = useMemo(
+    () => renderMarkdownPreviewBlocks(markdown),
+    [markdown]
+  );
+
+  if (markdown.trim().length === 0) {
+    return <p className="markdown-snippet-empty">Empty Markdown snippet.</p>;
+  }
+
+  return <div className="markdown-snippet-preview">{previewBlocks}</div>;
+}
+
+function renderMarkdownPreviewBlocks(markdown: string): ReactNode[] {
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const lines = normalizedMarkdown.split("\n");
+  const blocks: ReactNode[] = [];
+  let index = 0;
+  let blockIndex = 0;
+
+  while (index < lines.length) {
+    const line = lines[index] ?? "";
+    const trimmedLine = line.trim();
+
+    if (trimmedLine.length === 0) {
+      index += 1;
+      continue;
+    }
+
+    if (trimmedLine.startsWith("```") || trimmedLine.startsWith("~~~")) {
+      const fence = trimmedLine.slice(0, 3);
+      const codeLines: string[] = [];
+      index += 1;
+
+      while (index < lines.length && !(lines[index] ?? "").trim().startsWith(fence)) {
+        codeLines.push(lines[index] ?? "");
+        index += 1;
+      }
+
+      if (index < lines.length) {
+        index += 1;
+      }
+
+      blocks.push(
+        <pre key={`code-${blockIndex}`} className="markdown-snippet-code">
+          {codeLines.join("\n")}
+        </pre>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const headingMatch = /^(#{1,6})\s+(.+?)\s*#*$/.exec(trimmedLine);
+    if (headingMatch) {
+      blocks.push(
+        renderMarkdownPreviewHeading(
+          headingMatch[1].length,
+          headingMatch[2],
+          `heading-${blockIndex}`
+        )
+      );
+      blockIndex += 1;
+      index += 1;
+      continue;
+    }
+
+    if (
+      isMarkdownTableRowLine(line) &&
+      index + 1 < lines.length &&
+      isMarkdownTableSeparatorRow(lines[index + 1] ?? "")
+    ) {
+      const tableLines = [line, lines[index + 1] ?? ""];
+      index += 2;
+
+      while (index < lines.length && isMarkdownTableRowLine(lines[index] ?? "")) {
+        tableLines.push(lines[index] ?? "");
+        index += 1;
+      }
+
+      blocks.push(renderMarkdownPreviewTable(tableLines, `table-${blockIndex}`));
+      blockIndex += 1;
+      continue;
+    }
+
+    const unorderedMatch = /^[-*+]\s+(.+)$/.exec(trimmedLine);
+    if (unorderedMatch) {
+      const items: string[] = [];
+
+      while (index < lines.length) {
+        const itemMatch = /^[-*+]\s+(.+)$/.exec((lines[index] ?? "").trim());
+        if (!itemMatch) {
+          break;
+        }
+        items.push(itemMatch[1]);
+        index += 1;
+      }
+
+      blocks.push(
+        <ul key={`ul-${blockIndex}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`item-${itemIndex}`}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ul>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    const orderedMatch = /^\d+[.)]\s+(.+)$/.exec(trimmedLine);
+    if (orderedMatch) {
+      const items: string[] = [];
+
+      while (index < lines.length) {
+        const itemMatch = /^\d+[.)]\s+(.+)$/.exec((lines[index] ?? "").trim());
+        if (!itemMatch) {
+          break;
+        }
+        items.push(itemMatch[1]);
+        index += 1;
+      }
+
+      blocks.push(
+        <ol key={`ol-${blockIndex}`}>
+          {items.map((item, itemIndex) => (
+            <li key={`item-${itemIndex}`}>{renderInlineMarkdown(item)}</li>
+          ))}
+        </ol>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    if (trimmedLine.startsWith(">")) {
+      const quoteLines: string[] = [];
+
+      while (index < lines.length && (lines[index] ?? "").trim().startsWith(">")) {
+        quoteLines.push((lines[index] ?? "").trim().replace(/^>\s?/, ""));
+        index += 1;
+      }
+
+      blocks.push(
+        <blockquote key={`quote-${blockIndex}`}>
+          {renderInlineMarkdown(quoteLines.join(" "))}
+        </blockquote>
+      );
+      blockIndex += 1;
+      continue;
+    }
+
+    if (/^(-{3,}|_{3,}|\*{3,})$/.test(trimmedLine)) {
+      blocks.push(<hr key={`hr-${blockIndex}`} />);
+      blockIndex += 1;
+      index += 1;
+      continue;
+    }
+
+    const paragraphLines = [trimmedLine];
+    index += 1;
+
+    while (
+      index < lines.length &&
+      !isMarkdownPreviewBlockStart(lines[index] ?? "", lines[index + 1] ?? "")
+    ) {
+      const paragraphLine = (lines[index] ?? "").trim();
+      if (paragraphLine.length === 0) {
+        break;
+      }
+      paragraphLines.push(paragraphLine);
+      index += 1;
+    }
+
+    blocks.push(
+      <p key={`p-${blockIndex}`}>{renderInlineMarkdown(paragraphLines.join(" "))}</p>
+    );
+    blockIndex += 1;
+  }
+
+  return blocks;
+}
+
+function renderMarkdownPreviewHeading(
+  level: number,
+  text: string,
+  key: string
+): ReactNode {
+  if (level === 1) {
+    return <h1 key={key}>{renderInlineMarkdown(text)}</h1>;
+  }
+  if (level === 2) {
+    return <h2 key={key}>{renderInlineMarkdown(text)}</h2>;
+  }
+  if (level === 3) {
+    return <h3 key={key}>{renderInlineMarkdown(text)}</h3>;
+  }
+  if (level === 4) {
+    return <h4 key={key}>{renderInlineMarkdown(text)}</h4>;
+  }
+  if (level === 5) {
+    return <h5 key={key}>{renderInlineMarkdown(text)}</h5>;
+  }
+
+  return <h6 key={key}>{renderInlineMarkdown(text)}</h6>;
+}
+
+function renderMarkdownPreviewTable(tableLines: string[], key: string): ReactNode {
+  const headerCells = parseMarkdownTableRow(tableLines[0] ?? "");
+  const bodyRows = tableLines.slice(2).map(parseMarkdownTableRow);
+
+  return (
+    <div key={key} className="markdown-snippet-table-scroll">
+      <table>
+        <thead>
+          <tr>
+            {headerCells.map((cell, index) => (
+              <th key={`head-${index}`}>{renderInlineMarkdown(cell)}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {bodyRows.map((row, rowIndex) => (
+            <tr key={`row-${rowIndex}`}>
+              {row.map((cell, cellIndex) => (
+                <td key={`cell-${cellIndex}`}>{renderInlineMarkdown(cell)}</td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function renderInlineMarkdown(text: string): ReactNode[] {
+  const nodes: ReactNode[] = [];
+  const tokenPattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*)/g;
+  let lastIndex = 0;
+  let matchIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = tokenPattern.exec(text)) !== null) {
+    if (match.index > lastIndex) {
+      nodes.push(unescapeMarkdownText(text.slice(lastIndex, match.index)));
+    }
+
+    const token = match[0];
+    if (token.startsWith("`")) {
+      nodes.push(<code key={`code-${matchIndex}`}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("**")) {
+      nodes.push(
+        <strong key={`strong-${matchIndex}`}>
+          {renderInlineMarkdown(token.slice(2, -2))}
+        </strong>
+      );
+    } else {
+      nodes.push(
+        <em key={`em-${matchIndex}`}>{renderInlineMarkdown(token.slice(1, -1))}</em>
+      );
+    }
+
+    lastIndex = match.index + token.length;
+    matchIndex += 1;
+  }
+
+  if (lastIndex < text.length) {
+    nodes.push(unescapeMarkdownText(text.slice(lastIndex)));
+  }
+
+  return nodes;
+}
+
+function unescapeMarkdownText(text: string): string {
+  return text.replace(/\\([\\`*_[\]()#|>.-])/g, "$1");
+}
+
+function isMarkdownPreviewBlockStart(line: string, nextLine: string): boolean {
+  const trimmedLine = line.trim();
+
+  return (
+    trimmedLine.length === 0 ||
+    trimmedLine.startsWith("```") ||
+    trimmedLine.startsWith("~~~") ||
+    /^(#{1,6})\s+/.test(trimmedLine) ||
+    /^[-*+]\s+/.test(trimmedLine) ||
+    /^\d+[.)]\s+/.test(trimmedLine) ||
+    trimmedLine.startsWith(">") ||
+    /^(-{3,}|_{3,}|\*{3,})$/.test(trimmedLine) ||
+    (isMarkdownTableRowLine(line) && isMarkdownTableSeparatorRow(nextLine))
+  );
+}
+
+function createPatchVisualPreview(
+  markdown: string,
+  patch: PatchmarkPatch
+): PatchVisualPreview {
+  const tableContext = getPatchTablePreviewContext(
+    markdown,
+    patch.original_text,
+    patch.suggested_text
+  );
+
+  if (tableContext) {
+    return {
+      originalMarkdown: [
+        tableContext.headerRow,
+        tableContext.separatorRow,
+        patch.original_text.trim()
+      ].join("\n"),
+      suggestedMarkdown: [
+        tableContext.headerRow,
+        tableContext.separatorRow,
+        patch.suggested_text.trim()
+      ].join("\n"),
+      usesTableContext: true
+    };
+  }
+
+  return {
+    originalMarkdown: patch.original_text,
+    suggestedMarkdown: patch.suggested_text,
+    usesTableContext: false
+  };
+}
+
+function getPatchTablePreviewContext(
+  markdown: string,
+  originalText: string,
+  suggestedText: string
+): { headerRow: string; separatorRow: string } | null {
+  if (!isMarkdownTableDataSnippet(originalText) && !isMarkdownTableDataSnippet(suggestedText)) {
+    return null;
+  }
+
+  const normalizedMarkdown = markdown.replace(/\r\n/g, "\n");
+  const normalizedOriginalText = originalText.replace(/\r\n/g, "\n");
+  const originalMatch = findExactTextMatches(
+    normalizedMarkdown,
+    normalizedOriginalText
+  )[0];
+  if (!originalMatch) {
+    return null;
+  }
+
+  const lines = normalizedMarkdown.split("\n");
+  const lineStarts = getLineStartOffsets(normalizedMarkdown);
+  const originalLineIndex = getLineIndexForOffset(lineStarts, originalMatch.start);
+
+  for (let index = originalLineIndex - 1; index >= 1; index -= 1) {
+    const candidateLine = lines[index] ?? "";
+
+    if (isMarkdownTableSeparatorRow(candidateLine)) {
+      const headerRow = lines[index - 1] ?? "";
+      if (isMarkdownTableRowLine(headerRow)) {
+        return {
+          headerRow,
+          separatorRow: candidateLine
+        };
+      }
+    }
+
+    if (!isMarkdownTableRowLine(candidateLine) && !isMarkdownTableSeparatorRow(candidateLine)) {
+      break;
+    }
+  }
+
+  return null;
+}
+
+function getLineIndexForOffset(lineStarts: number[], offset: number): number {
+  let lineIndex = 0;
+
+  for (let index = 0; index < lineStarts.length; index += 1) {
+    if ((lineStarts[index] ?? 0) > offset) {
+      break;
+    }
+    lineIndex = index;
+  }
+
+  return lineIndex;
+}
+
+function isMarkdownTableDataSnippet(markdown: string): boolean {
+  const lines = markdown
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return (
+    lines.length === 1 &&
+    isMarkdownTableRowLine(lines[0] ?? "") &&
+    !isMarkdownTableSeparatorRow(lines[0] ?? "")
+  );
+}
+
+function isMarkdownTableRowLine(line: string): boolean {
+  const cells = parseMarkdownTableRow(line);
+
+  return cells.length >= 2 && line.includes("|");
+}
+
+function isMarkdownTableSeparatorRow(line: string): boolean {
+  const cells = parseMarkdownTableRow(line);
+
+  return (
+    cells.length >= 2 &&
+    cells.every((cell) => /^:?-{3,}:?$/.test(cell.replace(/\s/g, "")))
+  );
+}
+
+function parseMarkdownTableRow(line: string): string[] {
+  let trimmedLine = line.trim();
+
+  if (trimmedLine.startsWith("|")) {
+    trimmedLine = trimmedLine.slice(1);
+  }
+
+  if (trimmedLine.endsWith("|")) {
+    trimmedLine = trimmedLine.slice(0, -1);
+  }
+
+  const cells: string[] = [];
+  let currentCell = "";
+
+  for (let index = 0; index < trimmedLine.length; index += 1) {
+    const character = trimmedLine[index] ?? "";
+    const previousCharacter = trimmedLine[index - 1] ?? "";
+
+    if (character === "|" && previousCharacter !== "\\") {
+      cells.push(currentCell.trim());
+      currentCell = "";
+      continue;
+    }
+
+    currentCell += character;
+  }
+
+  cells.push(currentCell.trim());
+
+  return cells.map((cell) => cell.replace(/\\\|/g, "|"));
 }
 
 function PatchSourceList({
