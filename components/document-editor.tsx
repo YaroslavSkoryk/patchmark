@@ -1570,7 +1570,7 @@ export function DocumentEditor() {
       const editorRect = container.getBoundingClientRect();
       const editorTop = Math.max(0, editorRect.top - workspaceRect.top);
 
-      return measureCommentTop({
+      return computeCommentPreferredTop({
         comment: previewComment,
         container,
         editorTop,
@@ -3341,7 +3341,7 @@ function measureCommentPositions({
   const preferredPositions: Record<string, number> = {};
 
   for (const comment of comments) {
-    const top = measureCommentTop({
+    const top = computeCommentPreferredTop({
       comment,
       container,
       editorTop,
@@ -3359,7 +3359,7 @@ function measureCommentPositions({
   return preferredPositions;
 }
 
-function measureCommentTop({
+function computeCommentPreferredTop({
   comment,
   container,
   editorTop,
@@ -3413,9 +3413,11 @@ function measureCommentTop({
 
   if (resolution.status === "active" && resolution.start !== undefined) {
     if (mode === "visual") {
-      const visualTextTop = findVisualSelectedTextTop({
+      const visualTextTop = findVisualSelectedTextTopForResolvedAnchor({
         anchor,
         container,
+        markdown,
+        resolution,
         workspaceRect
       });
 
@@ -3423,9 +3425,11 @@ function measureCommentTop({
         return visualTextTop;
       }
 
-      const visualContextTop = findVisualAnchorContextTop({
+      const visualContextTop = findVisualAnchorContextTopForResolvedAnchor({
         anchor,
         container,
+        markdown,
+        resolution,
         workspaceRect
       });
 
@@ -3455,9 +3459,11 @@ function measureCommentTop({
 
   if (resolution.contextStart !== undefined) {
     if (mode === "visual") {
-      const visualContextTop = findVisualAnchorContextTop({
+      const visualContextTop = findVisualAnchorContextTopForResolvedAnchor({
         anchor,
         container,
+        markdown,
+        resolution,
         workspaceRect
       });
 
@@ -3598,6 +3604,45 @@ function findVisualSelectedTextTop({
   return visualMatch ? Math.max(0, visualMatch.top - workspaceRect.top) : null;
 }
 
+function findVisualSelectedTextTopForResolvedAnchor({
+  anchor,
+  container,
+  markdown,
+  resolution,
+  workspaceRect
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+  workspaceRect: DOMRect;
+}): number | null {
+  const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
+    anchor,
+    container,
+    markdown,
+    resolution
+  });
+
+  if (contextMatch) {
+    const selectedMatch = findVisualSelectedTextMatchInsideResolvedContext({
+      anchor,
+      container,
+      contextMatch,
+      markdown,
+      resolution
+    });
+
+    if (selectedMatch) {
+      return Math.max(0, selectedMatch.top - workspaceRect.top);
+    }
+
+    return Math.max(0, contextMatch.top - workspaceRect.top);
+  }
+
+  return findVisualSelectedTextTop({ anchor, container, workspaceRect });
+}
+
 function findVisualAnchorContextTop({
   anchor,
   container,
@@ -3610,6 +3655,33 @@ function findVisualAnchorContextTop({
   const contextMatch = findUniqueVisualAnchorContextMatch({ anchor, container });
 
   return contextMatch ? Math.max(0, contextMatch.top - workspaceRect.top) : null;
+}
+
+function findVisualAnchorContextTopForResolvedAnchor({
+  anchor,
+  container,
+  markdown,
+  resolution,
+  workspaceRect
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+  workspaceRect: DOMRect;
+}): number | null {
+  const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
+    anchor,
+    container,
+    markdown,
+    resolution
+  });
+
+  if (contextMatch) {
+    return Math.max(0, contextMatch.top - workspaceRect.top);
+  }
+
+  return findVisualAnchorContextTop({ anchor, container, workspaceRect });
 }
 
 function findUniqueVisualSelectedTextMatch({
@@ -3642,6 +3714,179 @@ function findUniqueVisualSelectedTextMatch({
   }
 
   return selectedMatches.length === 1 ? selectedMatches[0] : null;
+}
+
+function findVisualSelectedTextMatchInsideResolvedContext({
+  anchor,
+  container,
+  contextMatch,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  contextMatch: VisualTextMatch;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): VisualTextMatch | null {
+  const selectedMatchesInsideContext = findVisualTextMatches({
+    container,
+    searchText: anchor.selected_text
+  }).filter((match) => isRangeInsideRange(match.range, contextMatch.range));
+
+  if (selectedMatchesInsideContext.length <= 1) {
+    return selectedMatchesInsideContext[0] ?? null;
+  }
+
+  const selectedOrdinal = getSelectedTextOrdinalInsideResolvedContext({
+    anchor,
+    markdown,
+    resolution
+  });
+
+  return typeof selectedOrdinal === "number"
+    ? selectedMatchesInsideContext[selectedOrdinal] ?? null
+    : null;
+}
+
+function findVisualAnchorContextMatchForResolvedAnchor({
+  anchor,
+  container,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): VisualTextMatch | null {
+  const contextMatches = findVisualAnchorContextMatches({ anchor, container });
+
+  if (contextMatches.length <= 1) {
+    return contextMatches[0] ?? null;
+  }
+
+  const contextOrdinal = getAnchorContextOrdinalForResolution({
+    anchor,
+    markdown,
+    resolution
+  });
+
+  return typeof contextOrdinal === "number"
+    ? contextMatches[contextOrdinal] ?? null
+    : null;
+}
+
+function getAnchorContextOrdinalForResolution({
+  anchor,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): number | null {
+  if (!anchor.anchor_context) {
+    return null;
+  }
+
+  const contextMatches = findAnchorContextMatches(markdown, anchor.anchor_context);
+  const resolvedContextStart =
+    resolution.contextStart ??
+    getContextStartContainingSelectedRange({
+      contextMatches,
+      selectedStart: resolution.start
+    }) ??
+    getStoredContextStartIfCurrent(markdown, anchor);
+
+  if (typeof resolvedContextStart !== "number") {
+    return null;
+  }
+
+  const contextOrdinal = contextMatches.findIndex(
+    (match) => match.start === resolvedContextStart
+  );
+
+  return contextOrdinal >= 0 ? contextOrdinal : null;
+}
+
+function getSelectedTextOrdinalInsideResolvedContext({
+  anchor,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): number | null {
+  if (!anchor.anchor_context || typeof resolution.start !== "number") {
+    return null;
+  }
+
+  const contextMatches = findAnchorContextMatches(markdown, anchor.anchor_context);
+  const contextMatch = contextMatches.find(
+    (match) =>
+      resolution.start !== undefined &&
+      resolution.start >= match.start &&
+      resolution.start <= match.end
+  );
+
+  if (!contextMatch) {
+    return null;
+  }
+
+  const selectedMatches = findSelectedTextMatchesInsideContext(
+    markdown,
+    contextMatch,
+    anchor
+  );
+  const selectedOrdinal = selectedMatches.findIndex(
+    (match) => match.start === resolution.start
+  );
+
+  return selectedOrdinal >= 0 ? selectedOrdinal : null;
+}
+
+function getContextStartContainingSelectedRange({
+  contextMatches,
+  selectedStart
+}: {
+  contextMatches: Array<{ end: number; start: number }>;
+  selectedStart?: number;
+}): number | null {
+  if (typeof selectedStart !== "number") {
+    return null;
+  }
+
+  return (
+    contextMatches.find(
+      (contextMatch) =>
+        selectedStart >= contextMatch.start && selectedStart <= contextMatch.end
+    )?.start ?? null
+  );
+}
+
+function getStoredContextStartIfCurrent(
+  markdown: string,
+  anchor: SelectedTextAnchor
+): number | null {
+  const anchorContext = anchor.anchor_context;
+
+  if (
+    !anchorContext ||
+    typeof anchorContext.markdown_start_offset !== "number" ||
+    typeof anchorContext.markdown_end_offset !== "number" ||
+    !anchorContext.markdown_text
+  ) {
+    return null;
+  }
+
+  return markdown.slice(
+    anchorContext.markdown_start_offset,
+    anchorContext.markdown_end_offset
+  ) === anchorContext.markdown_text
+    ? anchorContext.markdown_start_offset
+    : null;
 }
 
 function findUniqueVisualAnchorContextMatch({
