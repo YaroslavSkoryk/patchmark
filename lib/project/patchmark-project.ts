@@ -1205,7 +1205,17 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       ? patch.applied_heading_path.filter(
           (heading): heading is string => typeof heading === "string"
         )
-      : undefined
+      : undefined,
+    previous_original_text:
+      typeof patch.previous_original_text === "string"
+        ? patch.previous_original_text
+        : undefined,
+    reanchored_at:
+      typeof patch.reanchored_at === "string" ? patch.reanchored_at : undefined,
+    reanchor_reason:
+      patch.reanchor_reason === "table_row_normalized_match"
+        ? patch.reanchor_reason
+        : undefined
   };
 }
 

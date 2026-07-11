@@ -1495,6 +1495,12 @@ button {
   color: white;
 }
 
+.patch-review-actions .patch-anchor-update-button {
+  border-color: #d5a33f;
+  background: #fff8e8;
+  color: #76510f;
+}
+
 .patch-review-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.55;
@@ -1667,6 +1673,11 @@ button {
 
 .patch-applicability-multiple_matches {
   background: #fff4d8;
+  color: #76510f;
+}
+
+.patch-applicability-table_row_rebase_available {
+  background: #fff8e8;
   color: #76510f;
 }
 

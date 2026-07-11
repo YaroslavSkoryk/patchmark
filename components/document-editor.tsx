@@ -163,7 +163,8 @@ type ChatGptImportSummary = {
 type PatchApplicability =
   | "exact_match"
   | "multiple_matches"
-  | "not_found";
+  | "not_found"
+  | "table_row_rebase_available";
 type AppliedPatchAnchorStatus =
   | "empty_applied_text"
   | "found_once"
@@ -171,6 +172,14 @@ type AppliedPatchAnchorStatus =
   | "not_found"
   | "present_at_applied_offsets";
 type TextMatch = { end: number; start: number };
+type PatchTableRowRebaseCandidate = {
+  currentRowText: string;
+  end: number;
+  headerRow?: string;
+  searchedWholeDocument: boolean;
+  separatorRow?: string;
+  start: number;
+};
 type PatchReviewAnchorStatus =
   | {
       kind: "accepted";
@@ -182,6 +191,7 @@ type PatchReviewAnchorStatus =
       applicability: PatchApplicability;
       kind: "historical" | "pending";
       matches: TextMatch[];
+      tableRowRebase?: PatchTableRowRebaseCandidate;
       text: string;
     };
 type PatchmarkPatchGroupStatus =
@@ -2143,9 +2153,14 @@ export function DocumentEditor() {
       return;
     }
 
+    const currentPatchAnchorStatus = getPatchReviewAnchorStatus(markdown, currentPatch);
+    const currentPatchApplicability =
+      currentPatchAnchorStatus.kind === "pending"
+        ? currentPatchAnchorStatus.applicability
+        : "not_found";
     const acceptBlocker = getPatchAcceptDisabledMessage(
       currentPatch,
-      getPatchApplicability(markdown, currentPatch.original_text)
+      currentPatchApplicability
     );
 
     if (acceptBlocker) {
@@ -2296,6 +2311,78 @@ export function DocumentEditor() {
             "Patch applied, but Patchmark could not update the linked comment thread."
         });
       }
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleUpdatePatchAnchor(patch: PatchmarkPatch) {
+    if (!projectHandle) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Update patch anchor is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    if (isSaving) {
+      return;
+    }
+
+    const currentPatch = patches.find((candidate) => candidate.id === patch.id) ?? patch;
+
+    if (currentPatch.status !== "pending") {
+      setSaveFeedback({
+        kind: "info",
+        message: `Patch ${currentPatch.id} is already ${currentPatch.status}.`
+      });
+      return;
+    }
+
+    const anchorStatus = getPatchReviewAnchorStatus(markdown, currentPatch);
+
+    if (
+      anchorStatus.kind !== "pending" ||
+      anchorStatus.applicability !== "table_row_rebase_available" ||
+      !anchorStatus.tableRowRebase
+    ) {
+      setSaveFeedback({
+        kind: "info",
+        message: "No table-row anchor update is available for this patch."
+      });
+      return;
+    }
+
+    const tableRowRebase = anchorStatus.tableRowRebase;
+    const reanchoredAt = new Date().toISOString();
+    const nextPatches = patches.map((candidate) =>
+      candidate.id === currentPatch.id
+        ? {
+            ...candidate,
+            original_text: tableRowRebase.currentRowText,
+            previous_original_text: currentPatch.original_text,
+            reanchored_at: reanchoredAt,
+            reanchor_reason: "table_row_normalized_match" as const
+          }
+        : candidate
+    );
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+
+    try {
+      await writeProjectPatches(projectHandle, nextPatches);
+      setPatches(nextPatches);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Patch anchor updated to the current table row. Review, then accept the patch when ready."
+      });
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({
@@ -3404,6 +3491,7 @@ export function DocumentEditor() {
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
           onRejectPatch={() => handleRejectPatch(selectedPatch)}
+          onUpdatePatchAnchor={() => handleUpdatePatchAnchor(selectedPatch)}
           patch={selectedPatch}
           patchGroup={selectedPatchDerivedGroup}
           patchIndex={Math.max(
@@ -3669,6 +3757,7 @@ function PatchReviewDialog({
   onNextPatch,
   onPreviousPatch,
   onRejectPatch,
+  onUpdatePatchAnchor,
   patch,
   patchGroup,
   patchIndex,
@@ -3686,6 +3775,7 @@ function PatchReviewDialog({
   onNextPatch: () => void;
   onPreviousPatch: () => void;
   onRejectPatch: () => void;
+  onUpdatePatchAnchor: () => void;
   patch: PatchmarkPatch;
   patchGroup: DerivedPatchGroup | null;
   patchIndex: number;
@@ -3699,8 +3789,8 @@ function PatchReviewDialog({
   const riskSources = patch.risk_sources ?? [];
   const [reviewMode, setReviewMode] = useState<PatchReviewMode>("visual");
   const visualPreview = useMemo(
-    () => createPatchVisualPreview(markdown, patch),
-    [markdown, patch]
+    () => createPatchVisualPreview(markdown, patch, anchorStatus),
+    [anchorStatus, markdown, patch]
   );
   const acceptDisabledMessage = getPatchAcceptDisabledMessage(
     patch,
@@ -3710,6 +3800,10 @@ function PatchReviewDialog({
   const canAcceptPatch =
     patch.status === "pending" && !acceptDisabledMessage && !isPatchActionBusy;
   const canRejectPatch = patch.status === "pending" && !isPatchActionBusy;
+  const canUpdatePatchAnchor =
+    anchorStatus.kind === "pending" &&
+    anchorStatus.applicability === "table_row_rebase_available" &&
+    !isPatchActionBusy;
 
   useEffect(() => {
     setReviewMode("visual");
@@ -3743,6 +3837,17 @@ function PatchReviewDialog({
           </button>
           {patch.status === "pending" ? (
             <div className="patch-decision-actions">
+              {anchorStatus.kind === "pending" &&
+              anchorStatus.applicability === "table_row_rebase_available" ? (
+                <button
+                  type="button"
+                  className="patch-anchor-update-button"
+                  disabled={!canUpdatePatchAnchor}
+                  onClick={onUpdatePatchAnchor}
+                >
+                  Update patch anchor
+                </button>
+              ) : null}
               <button
                 type="button"
                 className="patch-accept-button"
@@ -3876,6 +3981,18 @@ function PatchReviewDialog({
                   <dd>{patch.pre_apply_snapshot_id}</dd>
                 </div>
               ) : null}
+              {patch.reanchored_at ? (
+                <div>
+                  <dt>Anchor updated at</dt>
+                  <dd>{formatPatchDate(patch.reanchored_at)}</dd>
+                </div>
+              ) : null}
+              {patch.reanchor_reason ? (
+                <div>
+                  <dt>Anchor update reason</dt>
+                  <dd>{formatPatchReanchorReason(patch.reanchor_reason)}</dd>
+                </div>
+              ) : null}
             </dl>
             {patch.source_chat_url ? (
               <a
@@ -3932,7 +4049,18 @@ function PatchReviewDialog({
               <section className="patch-review-card">
                 <h3>{patch.status === "accepted" ? "Applied current text" : "Current"}</h3>
                 <MarkdownSnippetPreview markdown={visualPreview.originalMarkdown} />
-                {visualPreview.usesTableContext ? (
+                {visualPreview.usesCurrentMatchingRow ? (
+                  <p className="patch-review-preview-note">
+                    Preview uses the current matching table row. Markdown Source
+                    shows the imported original_text until you update the patch
+                    anchor.
+                  </p>
+                ) : visualPreview.usesGenericTableContext ? (
+                  <p className="patch-review-preview-note">
+                    Generic table headers are shown for readability only because
+                    Patchmark could not find the current table header.
+                  </p>
+                ) : visualPreview.usesTableContext ? (
                   <p className="patch-review-preview-note">
                     Table header context is shown for readability only. Exact
                     matching still uses the original patch text.
@@ -3943,7 +4071,12 @@ function PatchReviewDialog({
               <section className="patch-review-card">
                 <h3>{patch.status === "accepted" ? "Accepted replacement" : "Proposed"}</h3>
                 <MarkdownSnippetPreview markdown={visualPreview.suggestedMarkdown} />
-                {visualPreview.usesTableContext ? (
+                {visualPreview.usesGenericTableContext ? (
+                  <p className="patch-review-preview-note">
+                    Generic table headers are display-only and will not be stored
+                    with the patch.
+                  </p>
+                ) : visualPreview.usesTableContext ? (
                   <p className="patch-review-preview-note">
                     Table header context is display-only and will not be stored
                     with the patch.
@@ -4003,6 +4136,8 @@ function PatchReviewDialog({
 type PatchVisualPreview = {
   originalMarkdown: string;
   suggestedMarkdown: string;
+  usesCurrentMatchingRow: boolean;
+  usesGenericTableContext: boolean;
   usesTableContext: boolean;
 };
 
@@ -4327,7 +4462,8 @@ function isMarkdownPreviewBlockStart(line: string, nextLine: string): boolean {
 
 function createPatchVisualPreview(
   markdown: string,
-  patch: PatchmarkPatch
+  patch: PatchmarkPatch,
+  anchorStatus?: PatchReviewAnchorStatus
 ): PatchVisualPreview {
   if (patch.status === "accepted") {
     const appliedText = getPatchAppliedText(patch);
@@ -4347,6 +4483,8 @@ function createPatchVisualPreview(
       return {
         originalMarkdown: appliedMarkdown,
         suggestedMarkdown: appliedMarkdown,
+        usesCurrentMatchingRow: false,
+        usesGenericTableContext: false,
         usesTableContext: true
       };
     }
@@ -4354,6 +4492,8 @@ function createPatchVisualPreview(
     return {
       originalMarkdown: appliedText,
       suggestedMarkdown: appliedText,
+      usesCurrentMatchingRow: false,
+      usesGenericTableContext: false,
       usesTableContext: false
     };
   }
@@ -4376,6 +4516,32 @@ function createPatchVisualPreview(
         tableContext.separatorRow,
         patch.suggested_text.trim()
       ].join("\n"),
+      usesCurrentMatchingRow: false,
+      usesGenericTableContext: false,
+      usesTableContext: true
+    };
+  }
+
+  const fallbackTableContext = getPatchTableRowPreviewFallbackContext({
+    anchorStatus,
+    markdown,
+    patch
+  });
+
+  if (fallbackTableContext) {
+    return {
+      originalMarkdown: [
+        fallbackTableContext.headerRow,
+        fallbackTableContext.separatorRow,
+        fallbackTableContext.originalRow
+      ].join("\n"),
+      suggestedMarkdown: [
+        fallbackTableContext.headerRow,
+        fallbackTableContext.separatorRow,
+        fallbackTableContext.suggestedRow
+      ].join("\n"),
+      usesCurrentMatchingRow: fallbackTableContext.usesCurrentMatchingRow,
+      usesGenericTableContext: fallbackTableContext.usesGenericTableContext,
       usesTableContext: true
     };
   }
@@ -4383,6 +4549,8 @@ function createPatchVisualPreview(
   return {
     originalMarkdown: patch.original_text,
     suggestedMarkdown: patch.suggested_text,
+    usesCurrentMatchingRow: false,
+    usesGenericTableContext: false,
     usesTableContext: false
   };
 }
@@ -4429,6 +4597,93 @@ function getPatchTablePreviewContext(
   }
 
   return null;
+}
+
+function getPatchTableRowPreviewFallbackContext({
+  anchorStatus,
+  markdown,
+  patch
+}: {
+  anchorStatus?: PatchReviewAnchorStatus;
+  markdown: string;
+  patch: PatchmarkPatch;
+}): {
+  headerRow: string;
+  originalRow: string;
+  separatorRow: string;
+  suggestedRow: string;
+  usesCurrentMatchingRow: boolean;
+  usesGenericTableContext: boolean;
+} | null {
+  if (
+    !isMarkdownTableDataSnippet(patch.original_text) ||
+    !isMarkdownTableDataSnippet(patch.suggested_text)
+  ) {
+    return null;
+  }
+
+  const tableRowRebase =
+    anchorStatus?.kind === "pending" ? anchorStatus.tableRowRebase : undefined;
+  const rowCellCount = Math.max(
+    parseMarkdownTableRow(tableRowRebase?.currentRowText ?? patch.original_text)
+      .length,
+    parseMarkdownTableRow(patch.suggested_text).length
+  );
+  const compatibleHeader = tableRowRebase
+    ? {
+        headerRow: tableRowRebase.headerRow,
+        separatorRow: tableRowRebase.separatorRow
+      }
+    : getCompatibleTableHeaderForPatch(markdown, patch, rowCellCount);
+  const genericHeader = createGenericTableHeaderContext(rowCellCount);
+  const headerRow = compatibleHeader.headerRow ?? genericHeader.headerRow;
+  const separatorRow =
+    compatibleHeader.separatorRow ?? genericHeader.separatorRow;
+
+  return {
+    headerRow,
+    originalRow: tableRowRebase?.currentRowText ?? patch.original_text.trim(),
+    separatorRow,
+    suggestedRow: patch.suggested_text.trim(),
+    usesCurrentMatchingRow: Boolean(tableRowRebase),
+    usesGenericTableContext: !compatibleHeader.headerRow
+  };
+}
+
+function getCompatibleTableHeaderForPatch(
+  markdown: string,
+  patch: PatchmarkPatch,
+  cellCount: number
+): { headerRow?: string; separatorRow?: string } {
+  const searchRange = getPatchTableRowSearchRange(markdown, patch);
+  const tables = findMarkdownTablesInRange(markdown, searchRange);
+  const compatibleTable = tables.find(
+    (table) => parseMarkdownTableRow(table.headerRow).length === cellCount
+  );
+
+  return compatibleTable
+    ? {
+        headerRow: compatibleTable.headerRow,
+        separatorRow: compatibleTable.separatorRow
+      }
+    : {};
+}
+
+function createGenericTableHeaderContext(cellCount: number): {
+  headerRow: string;
+  separatorRow: string;
+} {
+  const safeCellCount = Math.max(2, cellCount);
+  const headers = Array.from(
+    { length: safeCellCount },
+    (_, index) => `Column ${index + 1}`
+  );
+  const separatorCells = headers.map(() => "---");
+
+  return {
+    headerRow: `| ${headers.join(" | ")} |`,
+    separatorRow: `| ${separatorCells.join(" | ")} |`
+  };
 }
 
 function getLineIndexForOffset(lineStarts: number[], offset: number): number {
@@ -5606,7 +5861,7 @@ function createPatchGroupApplicabilitySummary({
         return summary;
       }
 
-      const applicability = getPatchApplicability(markdown, patch.original_text);
+      const applicability = getPatchApplicabilityForPatch(markdown, patch);
 
       return {
         ...summary,
@@ -5616,7 +5871,8 @@ function createPatchGroupApplicabilitySummary({
     {
       exact_match: 0,
       multiple_matches: 0,
-      not_found: 0
+      not_found: 0,
+      table_row_rebase_available: 0
     }
   );
 }
@@ -5643,7 +5899,7 @@ function createPatchGroupApplicabilityByPatchId({
   return Object.fromEntries(
     patches.map((patch) => [
       patch.id,
-      getPatchApplicability(markdown, patch.original_text)
+      getPatchApplicabilityForPatch(markdown, patch)
     ])
   );
 }
@@ -5700,21 +5956,17 @@ function getPatchGroupSummariesByCommentId(
   );
 }
 
-function getPatchApplicability(
+function getPatchApplicabilityForPatch(
   markdown: string,
-  originalText: string
+  patch: PatchmarkPatch
 ): PatchApplicability {
-  const matches = findExactTextMatches(markdown, originalText);
+  const anchorStatus = getPatchReviewAnchorStatus(markdown, patch);
 
-  if (matches.length === 1) {
+  if (anchorStatus.kind === "accepted") {
     return "exact_match";
   }
 
-  if (matches.length > 1) {
-    return "multiple_matches";
-  }
-
-  return "not_found";
+  return anchorStatus.applicability;
 }
 
 function getPatchReviewAnchorStatus(
@@ -5726,10 +5978,59 @@ function getPatchReviewAnchorStatus(
   }
 
   const matches = findExactTextMatches(markdown, patch.original_text);
-  const applicability = getPatchApplicability(markdown, patch.original_text);
+  if (matches.length === 1) {
+    return {
+      applicability: "exact_match",
+      kind: patch.status === "pending" ? "pending" : "historical",
+      matches,
+      text: patch.original_text
+    };
+  }
+
+  if (matches.length > 1) {
+    return {
+      applicability: "multiple_matches",
+      kind: patch.status === "pending" ? "pending" : "historical",
+      matches,
+      text: patch.original_text
+    };
+  }
+
+  if (patch.status === "pending") {
+    const tableRowRebaseCandidates = findTableRowRebaseCandidates(markdown, patch);
+
+    if (tableRowRebaseCandidates.length === 1) {
+      const tableRowRebase = tableRowRebaseCandidates[0];
+
+      return {
+        applicability: "table_row_rebase_available",
+        kind: "pending",
+        matches: [
+          {
+            end: tableRowRebase.end,
+            start: tableRowRebase.start
+          }
+        ],
+        tableRowRebase,
+        text: tableRowRebase.currentRowText
+      };
+    }
+
+    if (tableRowRebaseCandidates.length > 1) {
+      return {
+        applicability: "multiple_matches",
+        kind: "pending",
+        matches: tableRowRebaseCandidates.map((candidate) => ({
+          end: candidate.end,
+          start: candidate.start
+        })),
+        text: patch.original_text
+      };
+    }
+  }
 
   return {
-    applicability,
+    applicability: "not_found",
     kind: patch.status === "pending" ? "pending" : "historical",
     matches,
     text: patch.original_text
@@ -5823,6 +6124,177 @@ function getAppliedPatchOffsetMatch(
   };
 }
 
+function findTableRowRebaseCandidates(
+  markdown: string,
+  patch: PatchmarkPatch
+): PatchTableRowRebaseCandidate[] {
+  if (
+    !isMarkdownTableDataSnippet(patch.original_text) ||
+    !isMarkdownTableDataSnippet(patch.suggested_text)
+  ) {
+    return [];
+  }
+
+  const normalizedOriginalCells = parseMarkdownTableRow(patch.original_text).map(
+    normalizeTableCellForMatch
+  );
+
+  if (normalizedOriginalCells.length < 2) {
+    return [];
+  }
+
+  const searchRange = getPatchTableRowSearchRange(markdown, patch);
+  const tables = findMarkdownTablesInRange(markdown, searchRange);
+
+  return tables.flatMap((table) =>
+    table.rows.flatMap((row) => {
+      const normalizedCurrentCells = parseMarkdownTableRow(row.text).map(
+        normalizeTableCellForMatch
+      );
+      const cellsMatch =
+        normalizedCurrentCells.length === normalizedOriginalCells.length &&
+        normalizedCurrentCells.every(
+          (cell, index) => cell === normalizedOriginalCells[index]
+        );
+
+      return cellsMatch
+        ? [
+            {
+              currentRowText: row.text,
+              end: row.end,
+              headerRow: table.headerRow,
+              searchedWholeDocument: searchRange.searchedWholeDocument,
+              separatorRow: table.separatorRow,
+              start: row.start
+            }
+          ]
+        : [];
+    })
+  );
+}
+
+function getPatchTableRowSearchRange(
+  markdown: string,
+  patch: PatchmarkPatch
+): { end: number; searchedWholeDocument: boolean; start: number } {
+  const targetSectionRange = getPatchTargetHeadingSectionRange(
+    markdown,
+    patch.target_heading
+  );
+
+  if (targetSectionRange) {
+    return {
+      ...targetSectionRange,
+      searchedWholeDocument: false
+    };
+  }
+
+  return {
+    end: markdown.length,
+    searchedWholeDocument: true,
+    start: 0
+  };
+}
+
+function getPatchTargetHeadingSectionRange(
+  markdown: string,
+  targetHeading?: string
+): { end: number; start: number } | null {
+  if (!targetHeading) {
+    return null;
+  }
+
+  const normalizedTargetHeading = normalizePatchTargetHeading(targetHeading);
+  if (!normalizedTargetHeading) {
+    return null;
+  }
+
+  const headings = parseMarkdownHeadings(markdown);
+  const target = headings.find(
+    (heading) => normalizePatchTargetHeading(heading.text) === normalizedTargetHeading
+  );
+
+  return target ? getSectionRange(markdown, headings, target) : null;
+}
+
+function normalizePatchTargetHeading(heading: string): string {
+  return heading
+    .trim()
+    .replace(/^#{1,6}\s+/, "")
+    .replace(/\s+#+\s*$/, "")
+    .replace(/\s+/g, " ");
+}
+
+function findMarkdownTablesInRange(
+  markdown: string,
+  range: { end: number; searchedWholeDocument: boolean; start: number }
+): Array<{
+  headerRow: string;
+  rows: Array<{ end: number; start: number; text: string }>;
+  searchedWholeDocument: boolean;
+  separatorRow: string;
+}> {
+  const lines = markdown.split("\n");
+  const lineStarts = getLineStartOffsets(markdown);
+  const startLineIndex = getLineIndexForOffset(lineStarts, range.start);
+  const endLineIndex = getLineIndexForOffset(
+    lineStarts,
+    Math.max(range.start, range.end - 1)
+  );
+  const tables: Array<{
+    headerRow: string;
+    rows: Array<{ end: number; start: number; text: string }>;
+    searchedWholeDocument: boolean;
+    separatorRow: string;
+  }> = [];
+  let lineIndex = startLineIndex;
+
+  while (lineIndex < endLineIndex) {
+    const headerRow = lines[lineIndex] ?? "";
+    const separatorRow = lines[lineIndex + 1] ?? "";
+
+    if (
+      isMarkdownTableRowLine(headerRow) &&
+      isMarkdownTableSeparatorRow(separatorRow)
+    ) {
+      const rows: Array<{ end: number; start: number; text: string }> = [];
+      let rowIndex = lineIndex + 2;
+
+      while (
+        rowIndex <= endLineIndex &&
+        isMarkdownTableRowLine(lines[rowIndex] ?? "")
+      ) {
+        const rowText = (lines[rowIndex] ?? "").replace(/\r$/, "");
+        const start = lineStarts[rowIndex] ?? 0;
+
+        rows.push({
+          end: start + rowText.length,
+          start,
+          text: rowText
+        });
+        rowIndex += 1;
+      }
+
+      tables.push({
+        headerRow: headerRow.replace(/\r$/, ""),
+        rows,
+        searchedWholeDocument: range.searchedWholeDocument,
+        separatorRow: separatorRow.replace(/\r$/, "")
+      });
+      lineIndex = rowIndex;
+      continue;
+    }
+
+    lineIndex += 1;
+  }
+
+  return tables;
+}
+
+function normalizeTableCellForMatch(cell: string): string {
+  return cell.trim().replace(/\s+/g, " ");
+}
+
 function getPatchAcceptDisabledMessage(
   patch: PatchmarkPatch,
   applicability: PatchApplicability
@@ -5837,6 +6309,10 @@ function getPatchAcceptDisabledMessage(
 
   if (applicability === "multiple_matches") {
     return "Cannot apply automatically because the original text appears multiple times.";
+  }
+
+  if (applicability === "table_row_rebase_available") {
+    return "Update the patch anchor before accepting this table-row patch.";
   }
 
   if (applicability === "not_found") {
@@ -6986,6 +7462,10 @@ function getPatchApplicabilityLabel(applicability: PatchApplicability): string {
     return "Patch matches multiple locations.";
   }
 
+  if (applicability === "table_row_rebase_available") {
+    return "Patch needs anchor update.";
+  }
+
   return "Original text was not found.";
 }
 
@@ -7018,6 +7498,10 @@ function getPatchApplicabilityShortLabel(
 
   if (applicability === "multiple_matches") {
     return "Multiple matches";
+  }
+
+  if (applicability === "table_row_rebase_available") {
+    return "Update table-row anchor";
   }
 
   return "Original text not found";
@@ -7057,6 +7541,10 @@ function getPatchApplicabilityDetail(
 
   if (applicability === "multiple_matches") {
     return "Review manually before applying in a later phase.";
+  }
+
+  if (applicability === "table_row_rebase_available") {
+    return "Original text no longer matches exactly, but Patchmark found a unique matching table row with the same cells.";
   }
 
   return "The patch may be stale because the current document no longer contains the original text.";
@@ -7140,7 +7628,8 @@ function formatPatchGroupApplicabilitySummary(
   const cleanCount = group.applicability_summary.exact_match;
   const needsReviewCount =
     group.applicability_summary.multiple_matches +
-    group.applicability_summary.not_found;
+    group.applicability_summary.not_found +
+    group.applicability_summary.table_row_rebase_available;
 
   return `${cleanCount} can apply cleanly · ${needsReviewCount} need${
     needsReviewCount === 1 ? "s" : ""
@@ -7168,6 +7657,16 @@ function formatPatchDate(dateValue: string): string {
     dateStyle: "medium",
     timeStyle: "short"
   });
+}
+
+function formatPatchReanchorReason(
+  reason: NonNullable<PatchmarkPatch["reanchor_reason"]>
+): string {
+  if (reason === "table_row_normalized_match") {
+    return "Table row normalized match";
+  }
+
+  return reason;
 }
 
 function createChatGptImportSummaryMessage({

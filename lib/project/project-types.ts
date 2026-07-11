@@ -265,6 +265,9 @@ export type PatchmarkPatch = {
   applied_context_after?: string;
   applied_heading?: string;
   applied_heading_path?: string[];
+  previous_original_text?: string;
+  reanchored_at?: string;
+  reanchor_reason?: "table_row_normalized_match";
 };
 
 export type PatchmarkPatchGroup = {
