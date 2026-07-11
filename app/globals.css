@@ -1820,6 +1820,17 @@ button {
   padding-left: 10px;
 }
 
+.markdown-snippet-preview a {
+  color: var(--accent);
+  font-weight: 800;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.markdown-snippet-preview a:hover {
+  color: var(--accent-strong);
+}
+
 .markdown-snippet-preview code,
 .markdown-snippet-code {
   font-family:

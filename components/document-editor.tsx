@@ -4171,7 +4171,7 @@ function renderMarkdownPreviewTable(tableLines: string[], key: string): ReactNod
 
 function renderInlineMarkdown(text: string): ReactNode[] {
   const nodes: ReactNode[] = [];
-  const tokenPattern = /(`[^`]+`|\*\*[^*]+\*\*|\*[^*\n]+\*)/g;
+  const tokenPattern = /(`[^`]+`|\[[^\]\n]+\]\(https?:\/\/[^\s)]+\)|\*\*[^*]+\*\*|\*[^*\n]+\*)/g;
   let lastIndex = 0;
   let matchIndex = 0;
   let match: RegExpExecArray | null;
@@ -4184,6 +4184,25 @@ function renderInlineMarkdown(text: string): ReactNode[] {
     const token = match[0];
     if (token.startsWith("`")) {
       nodes.push(<code key={`code-${matchIndex}`}>{token.slice(1, -1)}</code>);
+    } else if (token.startsWith("[")) {
+      const linkMatch = /^\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)$/.exec(token);
+      const href = linkMatch?.[2] ?? "";
+      const isSafeUrl = isSafeHttpUrl(href);
+
+      if (linkMatch && isSafeUrl) {
+        nodes.push(
+          <a
+            key={`link-${matchIndex}`}
+            href={href}
+            target="_blank"
+            rel="noreferrer noopener"
+          >
+            {renderInlineMarkdown(linkMatch[1])}
+          </a>
+        );
+      } else {
+        nodes.push(unescapeMarkdownText(token));
+      }
     } else if (token.startsWith("**")) {
       nodes.push(
         <strong key={`strong-${matchIndex}`}>
@@ -4205,6 +4224,16 @@ function renderInlineMarkdown(text: string): ReactNode[] {
   }
 
   return nodes;
+}
+
+function isSafeHttpUrl(value: string): boolean {
+  try {
+    const url = new URL(value);
+
+    return url.protocol === "http:" || url.protocol === "https:";
+  } catch {
+    return false;
+  }
 }
 
 function unescapeMarkdownText(text: string): string {
