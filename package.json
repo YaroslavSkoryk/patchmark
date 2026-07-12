@@ -7,6 +7,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test:anchor-recovery": "node scripts/patch-anchor-recovery.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

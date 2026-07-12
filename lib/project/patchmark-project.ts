@@ -14,6 +14,8 @@ import {
   type PatchmarkCommentType,
   type PatchmarkManifest,
   type PatchmarkPatch,
+  type PatchmarkPatchAnchorRecoveryEntry,
+  type PatchmarkPatchAnchorRecoveryMethod,
   type PatchmarkPatchStatus,
   type PatchmarkSourceReference,
   type PatchmarkVersionEntry
@@ -1232,6 +1234,9 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
           (cell): cell is string => typeof cell === "string"
         )
       : undefined,
+    anchor_recovery_history: normalizePatchAnchorRecoveryHistory(
+      patch.anchor_recovery_history
+    ),
     previous_original_text:
       typeof patch.previous_original_text === "string"
         ? patch.previous_original_text
@@ -1243,6 +1248,67 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
         ? patch.reanchor_reason
         : undefined
   };
+}
+
+function normalizePatchAnchorRecoveryHistory(
+  history: unknown
+): PatchmarkPatchAnchorRecoveryEntry[] | undefined {
+  if (!Array.isArray(history)) {
+    return undefined;
+  }
+
+  const normalizedHistory = history.flatMap((entry) => {
+    if (!entry || typeof entry !== "object") {
+      return [];
+    }
+
+    const recovery = entry as Record<string, unknown>;
+    const method = recovery.method;
+
+    if (
+      typeof recovery.recovered_at !== "string" ||
+      !isPatchAnchorRecoveryMethod(method)
+    ) {
+      return [];
+    }
+
+    const confidence =
+      recovery.confidence === "ambiguous"
+        ? ("ambiguous" as const)
+        : ("high_confidence" as const);
+
+    return [
+      {
+        recovered_at: recovery.recovered_at,
+        confidence,
+        method,
+        previous_original_text:
+          typeof recovery.previous_original_text === "string"
+            ? recovery.previous_original_text
+            : undefined,
+        recovered_text:
+          typeof recovery.recovered_text === "string"
+            ? recovery.recovered_text
+            : undefined,
+        detail: typeof recovery.detail === "string" ? recovery.detail : undefined
+      }
+    ];
+  });
+
+  return normalizedHistory.length > 0 ? normalizedHistory : undefined;
+}
+
+function isPatchAnchorRecoveryMethod(
+  method: unknown
+): method is PatchmarkPatchAnchorRecoveryMethod {
+  return (
+    method === "descendant_patch_chain" ||
+    method === "deterministic_offset_migration" ||
+    method === "exact_match" ||
+    method === "normalized_match" ||
+    method === "unique_section_context_match" ||
+    method === "unique_table_row_match"
+  );
 }
 
 function normalizeSourceReferences(

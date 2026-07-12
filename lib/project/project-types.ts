@@ -213,6 +213,27 @@ export type PatchmarkCommentPatchImpact = {
   note?: string;
 };
 
+export type PatchmarkPatchAnchorRecoveryConfidence =
+  | "ambiguous"
+  | "high_confidence";
+
+export type PatchmarkPatchAnchorRecoveryMethod =
+  | "descendant_patch_chain"
+  | "deterministic_offset_migration"
+  | "exact_match"
+  | "normalized_match"
+  | "unique_section_context_match"
+  | "unique_table_row_match";
+
+export type PatchmarkPatchAnchorRecoveryEntry = {
+  recovered_at: string;
+  confidence: PatchmarkPatchAnchorRecoveryConfidence;
+  method: PatchmarkPatchAnchorRecoveryMethod;
+  previous_original_text?: string;
+  recovered_text?: string;
+  detail?: string;
+};
+
 export type PatchmarkComment = {
   id: string;
   type: PatchmarkCommentType;
@@ -271,6 +292,7 @@ export type PatchmarkPatch = {
   applied_table_row_index?: number;
   applied_table_row_anchor?: string;
   applied_table_row_cells?: string[];
+  anchor_recovery_history?: PatchmarkPatchAnchorRecoveryEntry[];
   previous_original_text?: string;
   reanchored_at?: string;
   reanchor_reason?: "table_row_normalized_match";
