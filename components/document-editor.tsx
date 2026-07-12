@@ -232,6 +232,12 @@ type DerivedPatchGroup = PatchmarkPatchGroup & {
   is_legacy_single_patch_group: boolean;
   status: PatchmarkPatchGroupStatus;
 };
+type PatchDisplayState =
+  | "applied"
+  | "needs_review"
+  | "pending"
+  | "rejected"
+  | "stale";
 type PatchGroupListDialogState = {
   commentId: string | null;
 };
@@ -3707,6 +3713,9 @@ function PatchGroupReviewDialog({
     ? getLatestChatGptThreadEntry(comment)
     : null;
   const pendingPatchCount = group.status_summary.pending;
+  const needsReviewCount = getPatchGroupNeedsReviewCount(group);
+  const nextPendingPatch =
+    group.patches.find((patch) => patch.status === "pending") ?? null;
   const rejectGroupButtonLabel =
     pendingPatchCount > 0 && pendingPatchCount < group.status_summary.total
       ? "Reject remaining pending patches"
@@ -3768,9 +3777,38 @@ function PatchGroupReviewDialog({
 
           <section className="patch-review-card">
             <h3>Status summary</h3>
+            <div className="patch-group-progress" aria-label="Patch group progress">
+              {getPatchGroupProgressItems(group.status_summary).map((item) => (
+                <span
+                  className={`patch-group-progress-item patch-group-progress-${item.key}`}
+                  key={item.key}
+                >
+                  <strong>{item.count}</strong> {item.label}
+                </span>
+              ))}
+            </div>
             <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
             <p>{formatPatchGroupApplicabilitySummary(group)}</p>
+            {needsReviewCount > 0 ? (
+              <p className="patch-group-needs-review">
+                Needs review: {needsReviewCount} pending patch
+                {needsReviewCount === 1 ? "" : "es"} cannot be applied
+                automatically yet.
+              </p>
+            ) : null}
             <div className="patch-group-review-actions">
+              <button
+                type="button"
+                className="patch-group-next-button"
+                disabled={!nextPendingPatch}
+                onClick={() => {
+                  if (nextPendingPatch) {
+                    onReviewPatch(nextPendingPatch);
+                  }
+                }}
+              >
+                Next pending patch
+              </button>
               <button
                 type="button"
                 className="patch-group-reject-button"
@@ -3835,6 +3873,16 @@ function PatchGroupSummaryCard({
           {getPatchGroupStatusLabel(group.status)}
         </span>
         <h3>{group.display_id}</h3>
+        <div className="patch-group-progress patch-group-progress-compact">
+          {getPatchGroupProgressItems(group.status_summary).map((item) => (
+            <span
+              className={`patch-group-progress-item patch-group-progress-${item.key}`}
+              key={item.key}
+            >
+              <strong>{item.count}</strong> {item.label}
+            </span>
+          ))}
+        </div>
         <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
         <p>{formatPatchGroupApplicabilitySummary(group)}</p>
         {group.comment_id ? <small>Linked comment: {group.comment_id}</small> : null}
@@ -3860,21 +3908,32 @@ function PatchGroupPatchCard({
   const anchorStatus =
     group.anchor_status_by_patch_id[patch.id] ??
     getPatchReviewAnchorStatus("", patch);
+  const displayState = getPatchDisplayState(patch, anchorStatus);
+  const lifecycleDetail = getPatchLifecycleDetail(patch);
+  const snapshotDetail = getPatchSnapshotDetail(patch);
 
   return (
-    <article className="patch-group-patch-card">
+    <article
+      className={`patch-group-patch-card patch-group-patch-card-${displayState}`}
+    >
       <div>
-        <strong>
-          Patch {index + 1} of {group.patches.length}
-        </strong>
+        <div className="patch-group-patch-heading">
+          <strong>
+            Patch {index + 1} of {group.patches.length}
+          </strong>
+          <span className={`patch-status-badge patch-status-badge-${displayState}`}>
+            {getPatchStatusBadgeLabel(displayState)}
+          </span>
+        </div>
         <span>{patch.id}</span>
-        <span>Status: {patch.status}</span>
+        {lifecycleDetail ? <span>{lifecycleDetail}</span> : null}
+        {snapshotDetail ? <span>{snapshotDetail}</span> : null}
         <span>Target: {patch.target_heading ?? "Not specified"}</span>
         <span>{getPatchReviewAnchorShortLabel(anchorStatus)}</span>
       </div>
       <p>{patch.reason}</p>
       <button type="button" onClick={() => onReviewPatch(patch)}>
-        Review patch
+        {getPatchReviewButtonLabel(displayState)}
       </button>
     </article>
   );
@@ -3940,6 +3999,7 @@ function PatchReviewDialog({
     anchorStatus.kind === "pending" &&
     anchorStatus.applicability === "table_row_rebase_available" &&
     !isPatchActionBusy;
+  const patchDisplayState = getPatchDisplayState(patch, anchorStatus);
 
   useEffect(() => {
     setReviewMode("visual");
@@ -3951,11 +4011,15 @@ function PatchReviewDialog({
         <header className="snapshot-dialog-header">
           <div>
             <span>Patch proposal</span>
-            <h2>Review Patch Proposal</h2>
-            <p>
-              Inspect this ChatGPT proposal. Accepting applies the exact
-              suggested replacement after a safety snapshot.
-            </p>
+            <div className="patch-review-heading-row">
+              <h2>Review Patch Proposal</h2>
+              <span
+                className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
+              >
+                {getPatchStatusBadgeLabel(patchDisplayState)}
+              </span>
+            </div>
+            <p>{getPatchReviewIntro(patchDisplayState)}</p>
           </div>
           <button type="button" onClick={onClose}>
             Close
@@ -4069,7 +4133,13 @@ function PatchReviewDialog({
               ) : null}
               <div>
                 <dt>Status</dt>
-                <dd>{patch.status}</dd>
+                <dd>
+                  <span
+                    className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
+                  >
+                    {getPatchStatusBadgeLabel(patchDisplayState)}
+                  </span>
+                </dd>
               </div>
               {patch.status === "accepted" ? (
                 <div>
@@ -4115,6 +4185,12 @@ function PatchReviewDialog({
                 <div>
                   <dt>Pre-apply snapshot</dt>
                   <dd>{patch.pre_apply_snapshot_id}</dd>
+                </div>
+              ) : null}
+              {patch.pre_apply_snapshot_file ? (
+                <div>
+                  <dt>Pre-apply snapshot file</dt>
+                  <dd>{patch.pre_apply_snapshot_file}</dd>
                 </div>
               ) : null}
               {patch.reanchored_at ? (
@@ -6499,8 +6575,8 @@ function containsVisibleSourceReference(markdown: string): boolean {
 function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {
   if (patch.status === "accepted") {
     return patch.applied_at
-      ? `Accepted · Applied at ${formatPatchDate(patch.applied_at)}`
-      : "Accepted";
+      ? `Applied · Applied at ${formatPatchDate(patch.applied_at)}`
+      : "Applied";
   }
 
   if (patch.status === "rejected") {
@@ -8159,6 +8235,158 @@ function getPatchReviewAnchorClassName(
   return "not_found";
 }
 
+function getPatchDisplayState(
+  patch: PatchmarkPatch,
+  anchorStatus: PatchReviewAnchorStatus
+): PatchDisplayState {
+  if (patch.status === "accepted") {
+    return "applied";
+  }
+
+  if (patch.status === "rejected") {
+    return "rejected";
+  }
+
+  if (patch.status === "stale") {
+    return "stale";
+  }
+
+  if (
+    anchorStatus.kind === "pending" &&
+    anchorStatus.applicability !== "exact_match"
+  ) {
+    return "needs_review";
+  }
+
+  return "pending";
+}
+
+function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
+  if (displayState === "applied") {
+    return "APPLIED";
+  }
+
+  if (displayState === "needs_review") {
+    return "NEEDS REVIEW";
+  }
+
+  if (displayState === "rejected") {
+    return "REJECTED";
+  }
+
+  if (displayState === "stale") {
+    return "STALE";
+  }
+
+  return "PENDING";
+}
+
+function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
+  if (displayState === "applied") {
+    return "View applied patch";
+  }
+
+  if (displayState === "rejected") {
+    return "View rejected patch";
+  }
+
+  if (displayState === "stale") {
+    return "View stale patch";
+  }
+
+  return "Review patch";
+}
+
+function getPatchReviewIntro(displayState: PatchDisplayState): string {
+  if (displayState === "applied") {
+    return "This patch has already been applied. Review is read-only.";
+  }
+
+  if (displayState === "rejected") {
+    return "This patch was rejected. Review is read-only and the document was not changed.";
+  }
+
+  if (displayState === "stale") {
+    return "This patch is stale. Review is read-only.";
+  }
+
+  if (displayState === "needs_review") {
+    return "Inspect this ChatGPT proposal. Patchmark needs a clean anchor before it can apply automatically.";
+  }
+
+  return "Inspect this ChatGPT proposal. Accepting applies the exact suggested replacement after a safety snapshot.";
+}
+
+function getPatchLifecycleDetail(patch: PatchmarkPatch): string | null {
+  if (patch.status === "accepted") {
+    return patch.applied_at
+      ? `Applied ${formatPatchDate(patch.applied_at)}`
+      : patch.accepted_at
+        ? `Accepted ${formatPatchDate(patch.accepted_at)}`
+        : "Applied";
+  }
+
+  if (patch.status === "rejected") {
+    return patch.rejected_at
+      ? `Rejected ${formatPatchDate(patch.rejected_at)}`
+      : "Rejected";
+  }
+
+  if (patch.status === "stale") {
+    return "Stale patch";
+  }
+
+  return null;
+}
+
+function getPatchSnapshotDetail(patch: PatchmarkPatch): string | null {
+  if (patch.status !== "accepted" || !patch.pre_apply_snapshot_id) {
+    return null;
+  }
+
+  return `Pre-apply snapshot: ${patch.pre_apply_snapshot_id}`;
+}
+
+function getPatchGroupProgressItems(
+  statusSummary: PatchmarkPatchGroup["status_summary"]
+): Array<{ count: number; key: PatchDisplayState | "total"; label: string }> {
+  return [
+    {
+      count: statusSummary.total,
+      key: "total",
+      label: "total"
+    },
+    {
+      count: statusSummary.accepted,
+      key: "applied",
+      label: "applied"
+    },
+    {
+      count: statusSummary.pending,
+      key: "pending",
+      label: "pending"
+    },
+    {
+      count: statusSummary.rejected,
+      key: "rejected",
+      label: "rejected"
+    },
+    {
+      count: statusSummary.stale,
+      key: "stale",
+      label: "stale"
+    }
+  ];
+}
+
+function getPatchGroupNeedsReviewCount(group: DerivedPatchGroup): number {
+  return (
+    group.applicability_summary.multiple_matches +
+    group.applicability_summary.not_found +
+    group.applicability_summary.table_row_rebase_available
+  );
+}
+
 function getPatchGroupStatusLabel(status: PatchmarkPatchGroupStatus): string {
   if (status === "needs_review") {
     return "Needs review";
@@ -8182,17 +8410,14 @@ function formatPatchGroupStatusSummary(
     statusSummary.total === 1 ? "" : "es"
   } total · ${statusSummary.pending} pending · ${
     statusSummary.accepted
-  } accepted · ${statusSummary.rejected} rejected · ${statusSummary.stale} stale`;
+  } applied · ${statusSummary.rejected} rejected · ${statusSummary.stale} stale`;
 }
 
 function formatPatchGroupApplicabilitySummary(
   group: DerivedPatchGroup
 ): string {
   const cleanCount = group.applicability_summary.exact_match;
-  const needsReviewCount =
-    group.applicability_summary.multiple_matches +
-    group.applicability_summary.not_found +
-    group.applicability_summary.table_row_rebase_available;
+  const needsReviewCount = getPatchGroupNeedsReviewCount(group);
 
   return `${cleanCount} can apply cleanly · ${needsReviewCount} need${
     needsReviewCount === 1 ? "s" : ""

@@ -1619,6 +1619,18 @@ button {
   border-color: var(--accent);
 }
 
+.patch-review-heading-row,
+.patch-group-patch-heading {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.patch-review-heading-row h2 {
+  margin: 0;
+}
+
 .patch-group-status {
   width: fit-content;
   border: 1px solid var(--border);
@@ -1655,9 +1667,140 @@ button {
   color: #8d2f18;
 }
 
+.patch-status-badge {
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  color: var(--muted);
+  padding: 2px 7px;
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.patch-status-badge-pending {
+  border-color: #c8d6d0;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.patch-status-badge-needs_review {
+  border-color: #e1c171;
+  background: #fff4d8;
+  color: #76510f;
+}
+
+.patch-status-badge-applied {
+  border-color: #b9d8ca;
+  background: #e7f5ee;
+  color: #1d6a4d;
+}
+
+.patch-status-badge-rejected {
+  border-color: #e4b5a5;
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.patch-status-badge-stale {
+  border-color: #d7d2c8;
+  background: #f4f1eb;
+  color: #786d60;
+}
+
+.patch-group-progress {
+  display: flex !important;
+  flex-wrap: wrap;
+  gap: 7px;
+  align-items: center;
+}
+
+.patch-group-progress-compact {
+  gap: 5px;
+}
+
+.patch-group-progress-item {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+  width: fit-content;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--muted);
+  padding: 3px 7px;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.patch-group-progress-item strong {
+  color: var(--text);
+}
+
+.patch-group-progress-applied {
+  border-color: #b9d8ca;
+  background: #e7f5ee;
+  color: #1d6a4d;
+}
+
+.patch-group-progress-pending {
+  border-color: #c8d6d0;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+}
+
+.patch-group-progress-rejected {
+  border-color: #e4b5a5;
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.patch-group-progress-stale {
+  border-color: #d7d2c8;
+  background: #f4f1eb;
+  color: #786d60;
+}
+
+.patch-group-needs-review {
+  border-left: 3px solid #d5a33f;
+  background: #fff8e8;
+  color: #76510f;
+  padding: 7px 9px;
+  font-weight: 800;
+}
+
 .patch-group-patch-list {
   display: grid;
   gap: 10px;
+}
+
+.patch-group-patch-card {
+  border-left-width: 4px;
+}
+
+.patch-group-patch-card-pending {
+  border-left-color: var(--accent);
+}
+
+.patch-group-patch-card-needs_review {
+  border-left-color: #d5a33f;
+  background: #fffdf7;
+}
+
+.patch-group-patch-card-applied {
+  border-left-color: #2f7b5d;
+  background: #f4fbf7;
+}
+
+.patch-group-patch-card-rejected {
+  border-left-color: #b55b45;
+  background: #fff8f5;
+}
+
+.patch-group-patch-card-stale {
+  border-left-color: #a59a8c;
+  background: #f9f7f3;
 }
 
 .patch-group-review-actions {
