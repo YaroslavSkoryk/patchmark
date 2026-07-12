@@ -13,6 +13,7 @@ import {
   createFloatingCommentLayout,
   getStageRelativePreferredTop
 } from "@/lib/comments/floating-comment-layout";
+import { sortCommentsByLastKnownAnchorPosition } from "@/lib/comments/comment-anchor-position";
 import {
   getVisibleAnchorStatus,
   getPatchImpactForCurrentAnchorDisplay,
@@ -779,13 +780,13 @@ function FloatingCommentList({
         <CommentGroup
           anchorSummaries={anchorSummaries}
           activeCommentState={activeCommentState}
-          comments={sortCommentsByStatus(unpositionedComments)}
+          comments={sortCommentsByLastKnownAnchorPosition(unpositionedComments)}
           editingCommentId={editingCommentId}
           editComment={editComment}
           editType={editType}
-          emptyMessage="No comments need review."
+          emptyMessage="No unpositioned comments."
           isBusy={isBusy}
-          label="Needs review"
+          label="Unpositioned comments"
           onDeleteComment={onDeleteComment}
           onEditComment={onEditComment}
           onFindComment={onFindComment}
@@ -805,7 +806,6 @@ function FloatingCommentList({
           onUnmarkCommentForExport={onUnmarkCommentForExport}
           patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
-          quiet
           replyingCommentId={replyingCommentId}
           replyComment={replyComment}
         />
@@ -1061,7 +1061,7 @@ function CommentGroup({
                     patchGroupSummariesByCommentId[comment.id] ?? null
                   }
                   pendingPatchCount={pendingPatchCountsByCommentId[comment.id] ?? 0}
-                  quiet={quiet}
+                  quiet={quiet || comment.status === "resolved"}
                   replyingCommentId={replyingCommentId}
                   replyComment={replyComment}
                 />
@@ -1930,16 +1930,6 @@ function getSinglePatchStatusLabel(summary: CommentPatchGroupSummary): string {
   }
 
   return "unknown";
-}
-
-function sortCommentsByStatus(comments: PatchmarkComment[]): PatchmarkComment[] {
-  return [...comments].sort((firstComment, secondComment) => {
-    if (firstComment.status === secondComment.status) {
-      return firstComment.updated_at.localeCompare(secondComment.updated_at);
-    }
-
-    return firstComment.status === "open" ? -1 : 1;
-  });
 }
 
 function truncateText(text: string, maxLength: number): string {

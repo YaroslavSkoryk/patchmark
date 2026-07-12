@@ -17,6 +17,7 @@ import {
   type CommentPatchGroupSummary,
   type CommentFormValues
 } from "@/components/comments-panel";
+import { getLastKnownCommentAnchorPositionRange } from "@/lib/comments/comment-anchor-position";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import {
@@ -10604,10 +10605,6 @@ function computeCommentPreferredTop({
 
   const resolution = resolveCommentAnchor(comment, markdown, headings);
 
-  if (resolution.status === "ambiguous") {
-    return null;
-  }
-
   if (resolution.status === "active" && resolution.start !== undefined) {
     if (mode === "visual") {
       const visualTextTop = findVisualSelectedTextTopForResolvedAnchor({
@@ -10652,6 +10649,14 @@ function computeCommentPreferredTop({
     }
 
     return estimateTopForOffset(markdown, resolution.start, editorTop);
+  }
+
+  if (resolution.status === "ambiguous") {
+    const lastKnownRange = getLastKnownCommentAnchorPositionRange(comment);
+
+    return lastKnownRange
+      ? estimateTopForOffset(markdown, lastKnownRange.start, editorTop)
+      : null;
   }
 
   if (resolution.contextStart !== undefined) {
