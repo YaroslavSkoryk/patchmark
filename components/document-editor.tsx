@@ -23,6 +23,10 @@ import {
   getSelectedTextLocationLabel
 } from "@/lib/comments/comment-card-display";
 import {
+  CHATGPT_TERMINOLOGY_CLARIFICATION_PAYLOAD_RULES,
+  CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
+} from "@/lib/comments/chatgpt-prompt-rules";
+import {
   COMMENT_AFFORDANCE_MENU_SIZE,
   chooseSelectionAffordanceRect,
   createCommentAffordanceBounds,
@@ -5621,6 +5625,8 @@ ${dedicatedDocumentReviewNote}
 
 ${CHATGPT_ATOMIC_TABLE_PROMPT_RULES}
 
+${CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES}
+
 ## Required Response Format
 
 Return exactly one fenced JSON code block.
@@ -9667,6 +9673,7 @@ function createFocusedCommentsExportPayload({
         "If more information is needed, ask a clarification question linked to the comment_id.",
         "Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.",
         "For structural table changes, copy the complete table into original_text and return the complete resulting table in suggested_text.",
+        ...CHATGPT_TERMINOLOGY_CLARIFICATION_PAYLOAD_RULES,
         "Preserve Markdown structure.",
         "Drafting support only. Legal review may still be required.",
         ...(dedicatedDocumentReview
