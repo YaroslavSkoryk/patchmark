@@ -715,63 +715,106 @@ function FloatingCommentList({
           ref={floatingStageRef}
           style={{ minHeight: `${floatingLayout.stageHeight}px` }}
         >
-          {floatingLayoutItems.map((item) => (
-            <li
-              className={`comment-floating-item ${
-                item.kind === "draft" ? "comment-floating-item-draft" : ""
-              }`}
-              key={item.id}
-              ref={(element) => {
-                floatingItemRefs.current[item.id] = element;
-              }}
-              style={{ top: floatingLayout.positions[item.id] ?? item.preferredTop }}
-            >
-              {item.kind === "draft" ? (
-                addForm
-              ) : (
-                <CommentCard
-                  anchorSummaries={anchorSummaries}
-                  comment={item.comment}
-                  editingCommentId={editingCommentId}
-                  editComment={editComment}
-                  editType={editType}
-                  isActive={isCommentActive(activeCommentState, item.comment.id)}
-                  isBusy={isBusy}
-                  onDeleteComment={onDeleteComment}
-                  onEditComment={onEditComment}
-                  onFindComment={onFindComment}
-                  onMarkCommentForExport={onMarkCommentForExport}
-                  onReopenComment={onReopenComment}
-                  onReplyComment={onReplyComment}
-                  onReviewCommentPatches={onReviewCommentPatches}
-                  onResolveComment={onResolveComment}
-                  onActivateComment={(commentId) =>
-                    onSetActiveCommentState({ kind: "comment", commentId })
-                  }
-                  onClearActiveComment={() =>
-                    onSetActiveCommentState({ kind: "none" })
-                  }
-                  onSetEditComment={onSetEditComment}
-                  onSetEditType={onSetEditType}
-                  onSetReplyComment={onSetReplyComment}
-                  onStartEditing={onStartEditing}
-                  onStartReplying={onStartReplying}
-                  onStopEditing={onStopEditing}
-                  onStopReplying={onStopReplying}
-                  onUnmarkCommentForExport={onUnmarkCommentForExport}
-                  patchGroupSummary={
-                    patchGroupSummariesByCommentId[item.comment.id] ?? null
-                  }
-                  pendingPatchCount={
-                    pendingPatchCountsByCommentId[item.comment.id] ?? 0
-                  }
-                  quiet={item.comment.status === "resolved"}
-                  replyingCommentId={replyingCommentId}
-                  replyComment={replyComment}
-                />
-              )}
-            </li>
-          ))}
+          {floatingLayoutItems.map((item) => {
+            const anchorRange =
+              item.kind === "comment"
+                ? getCommentAnchorDebugRange(item.comment)
+                : null;
+            const diagnostics = floatingLayout.diagnostics[item.id];
+            const layoutTop =
+              floatingLayout.positions[item.id] ?? item.preferredTop;
+
+            return (
+              <li
+                className={`comment-floating-item ${
+                  item.kind === "draft" ? "comment-floating-item-draft" : ""
+                }`}
+                data-comment-anchor-end={anchorRange?.end ?? undefined}
+                data-comment-anchor-start={anchorRange?.start ?? undefined}
+                data-comment-anchor-status={
+                  item.kind === "comment"
+                    ? anchorSummaries[item.comment.id]?.status
+                    : undefined
+                }
+                data-comment-anchor-kind={
+                  item.kind === "comment" ? item.comment.anchor.kind : undefined
+                }
+                data-comment-id={item.id}
+                data-comment-layout-height={diagnostics?.height ?? undefined}
+                data-comment-layout-top={layoutTop}
+                data-comment-patch-impact-count={
+                  item.kind === "comment"
+                    ? item.comment.patch_impacts?.length ?? 0
+                    : undefined
+                }
+                data-comment-pending-patch-count={
+                  item.kind === "comment"
+                    ? pendingPatchCountsByCommentId[item.comment.id] ?? 0
+                    : undefined
+                }
+                data-comment-preferred-top={item.preferredTop}
+                data-comment-status={
+                  item.kind === "comment" ? item.comment.status : undefined
+                }
+                data-comment-thread-count={
+                  item.kind === "comment" ? item.comment.thread.length : undefined
+                }
+                data-comment-type={
+                  item.kind === "comment" ? item.comment.type : undefined
+                }
+                key={item.id}
+                ref={(element) => {
+                  floatingItemRefs.current[item.id] = element;
+                }}
+                style={{ top: layoutTop }}
+              >
+                {item.kind === "draft" ? (
+                  addForm
+                ) : (
+                  <CommentCard
+                    anchorSummaries={anchorSummaries}
+                    comment={item.comment}
+                    editingCommentId={editingCommentId}
+                    editComment={editComment}
+                    editType={editType}
+                    isActive={isCommentActive(activeCommentState, item.comment.id)}
+                    isBusy={isBusy}
+                    onDeleteComment={onDeleteComment}
+                    onEditComment={onEditComment}
+                    onFindComment={onFindComment}
+                    onMarkCommentForExport={onMarkCommentForExport}
+                    onReopenComment={onReopenComment}
+                    onReplyComment={onReplyComment}
+                    onReviewCommentPatches={onReviewCommentPatches}
+                    onResolveComment={onResolveComment}
+                    onActivateComment={(commentId) =>
+                      onSetActiveCommentState({ kind: "comment", commentId })
+                    }
+                    onClearActiveComment={() =>
+                      onSetActiveCommentState({ kind: "none" })
+                    }
+                    onSetEditComment={onSetEditComment}
+                    onSetEditType={onSetEditType}
+                    onSetReplyComment={onSetReplyComment}
+                    onStartEditing={onStartEditing}
+                    onStartReplying={onStartReplying}
+                    onStopEditing={onStopEditing}
+                    onStopReplying={onStopReplying}
+                    onUnmarkCommentForExport={onUnmarkCommentForExport}
+                    patchGroupSummary={
+                      patchGroupSummariesByCommentId[item.comment.id] ?? null
+                    }
+                    pendingPatchCount={
+                      pendingPatchCountsByCommentId[item.comment.id] ?? 0
+                    }
+                    quiet={item.comment.status === "resolved"}
+                    replyingCommentId={replyingCommentId}
+                    replyComment={replyComment}
+                  />
+                )}
+              </li>
+            );
+          })}
         </ol>
       ) : null}
 
@@ -866,38 +909,55 @@ function logCommentLayoutDiagnostics({
   const stageRect = stage.getBoundingClientRect();
   const rail = stage.closest(".comments-rail");
   const activeCommentId = getActiveCommentDebugId(activeCommentState);
+  const rows = items.map((item) => {
+    const element = floatingItemRefs[item.id];
+    const elementRect = element?.getBoundingClientRect();
+    const anchorRange =
+      item.kind === "comment" ? getCommentAnchorDebugRange(item.comment) : null;
+    const diagnostics = layout.diagnostics[item.id];
 
-  console.table(
-    items.map((item) => {
-      const element = floatingItemRefs[item.id];
-      const elementRect = element?.getBoundingClientRect();
-      const anchorRange =
-        item.kind === "comment" ? getCommentAnchorDebugRange(item.comment) : null;
-      const diagnostics = layout.diagnostics[item.id];
+    return {
+      commentId: item.id,
+      anchorStartOffset: anchorRange?.start ?? null,
+      anchorEndOffset: anchorRange?.end ?? null,
+      anchorElementIdentity:
+        item.kind === "comment"
+          ? getCommentAnchorDebugIdentity(item.comment)
+          : "draft",
+      anchorViewportTop: Math.round(stageRect.top + item.preferredTop),
+      anchorContainerTop: Math.round(item.preferredTop),
+      commentCalculatedTop: diagnostics?.calculatedTop ?? null,
+      commentRenderedTop: elementRect
+        ? Math.round(elementRect.top - stageRect.top)
+        : null,
+      commentCardHeight: elementRect ? Math.round(elementRect.height) : null,
+      railScrollTop: rail?.scrollTop ?? null,
+      documentScrollTop: Math.round(window.scrollY),
+      activeCommentId,
+      floatingStageOffsetTop,
+      layoutPass
+    };
+  });
+  const debugWindow = window as Window & {
+    __patchmarkCommentLayoutDebugEvents?: Array<{
+      activeCommentId: string;
+      floatingStageOffsetTop: number;
+      layoutPass: number;
+      rows: typeof rows;
+      stageHeight: number;
+    }>;
+  };
 
-      return {
-        commentId: item.id,
-        anchorStartOffset: anchorRange?.start ?? null,
-        anchorEndOffset: anchorRange?.end ?? null,
-        anchorElementIdentity:
-          item.kind === "comment"
-            ? getCommentAnchorDebugIdentity(item.comment)
-            : "draft",
-        anchorViewportTop: Math.round(stageRect.top + item.preferredTop),
-        anchorContainerTop: Math.round(item.preferredTop),
-        commentCalculatedTop: diagnostics?.calculatedTop ?? null,
-        commentRenderedTop: elementRect
-          ? Math.round(elementRect.top - stageRect.top)
-          : null,
-        commentCardHeight: elementRect ? Math.round(elementRect.height) : null,
-        railScrollTop: rail?.scrollTop ?? null,
-        documentScrollTop: Math.round(window.scrollY),
-        activeCommentId,
-        floatingStageOffsetTop,
-        layoutPass
-      };
-    })
-  );
+  debugWindow.__patchmarkCommentLayoutDebugEvents ??= [];
+  debugWindow.__patchmarkCommentLayoutDebugEvents.push({
+    activeCommentId,
+    floatingStageOffsetTop,
+    layoutPass,
+    rows,
+    stageHeight: layout.stageHeight
+  });
+
+  console.table(rows);
 }
 
 function getFloatingStageOffsetTop(stage: HTMLOListElement | null): number {
