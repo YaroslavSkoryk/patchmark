@@ -66,6 +66,12 @@ import {
   type PatchmarkProjectHandle
 } from "@/lib/project/patchmark-project";
 import {
+  CHATGPT_IMPORT_REPAIR_PROMPT,
+  CHATGPT_INTERNAL_CITATION_PROMPT_RULES,
+  normalizeSourceChatUrl,
+  parsePatchmarkCommentReplyImport
+} from "@/lib/imports/patchmark-comment-reply-import";
+import {
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
   type PatchmarkCommentActionContext,
@@ -291,34 +297,6 @@ const ANCHOR_CONTEXT_CHARS = 160;
 const SHORT_SELECTION_HELP =
   "Could not create a reliable anchor. Try selecting a larger phrase or add a section comment.";
 const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
-const STRICT_CHATGPT_IMPORT_ERROR =
-  "Invalid Patchmark response. Metadata references must be inside field-local sources arrays. Markdown links are allowed only in original_text and suggested_text.";
-const INVALID_CHATGPT_JSON_ERROR =
-  "Invalid JSON. Ask ChatGPT to return one fenced json code block containing valid Patchmark JSON.";
-const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into exactly one fenced json code block containing valid Patchmark JSON.
-
-Do not change the substance of the reply or patch.
-
-Use one opening \`\`\`json fence.
-Use one closing \`\`\` fence.
-Do not include text before the opening fence.
-Do not include text after the closing fence.
-Do not use footnotes or reference links.
-
-Source rules:
-- Every \`url\` must be a raw URL string starting with \`https://\` or \`http://\`.
-- Do not use Markdown links in metadata or source fields.
-- Do not include \`[\`, \`]\`, \`(\`, or \`)\` around URLs.
-- Do not include quotes, escaped quotes, or backslashes in URLs.
-- Put all URLs only inside field-local source arrays.
-- \`supports\` must be plain text only.
-- Markdown links are allowed only in document Markdown fields: \`original_text\` and \`suggested_text\`.`;
-const PROTOCOL_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
-const PROTOCOL_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\([^)]+\)/;
-const PROTOCOL_BROKEN_MARKDOWN_LINK_PATTERN = /\]\(/;
-const PROTOCOL_REFERENCE_LINK_PATTERN = /\[[^\]]+\]\[[^\]]+\]|\[\d+\]/;
-const PROTOCOL_FOOTNOTE_PATTERN = /\[\^[^\]]+\]/;
-const SOURCE_URL_MARKDOWN_PATTERN = /[\[\]\(\)"\\]/;
 const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/i;
 const DOCUMENT_RAW_URL_PATTERN = /\bhttps?:\/\/\S+/i;
 const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
@@ -5515,6 +5493,8 @@ Do not collect field evidence in a top-level \`sources\` array.
 
 Do not put source links after the JSON.
 
+${CHATGPT_INTERNAL_CITATION_PROMPT_RULES}
+
 If you need to mention a phrase such as Core sourdough breads inside a JSON string, do not wrap it in straight double quotes. Either omit the quotes or use escaped JSON quotes.
 
 Good:
@@ -5639,335 +5619,6 @@ Remember: you may suggest \`resolve_manually\`, but you must not claim the comme
 ${jsonText.trimEnd()}
 \`\`\`
 `;
-}
-
-function parsePatchmarkCommentReplyImport(
-  rawInput: string
-): PatchmarkCommentReplyImport {
-  let parsedResponse: unknown;
-
-  try {
-    parsedResponse = JSON.parse(stripMarkdownJsonFence(rawInput));
-  } catch {
-    throw new Error(INVALID_CHATGPT_JSON_ERROR);
-  }
-
-  if (!isRecord(parsedResponse)) {
-    throw new Error("Invalid Patchmark response. Expected a JSON object.");
-  }
-
-  if (parsedResponse.protocol !== "patchmark.comment_reply_import") {
-    throw new Error(
-      "Invalid Patchmark response. Expected protocol `patchmark.comment_reply_import`."
-    );
-  }
-
-  if (parsedResponse.protocol_version !== 1) {
-    throw new Error(
-      "Invalid Patchmark response. Expected protocol_version 1."
-    );
-  }
-
-  if (
-    !Array.isArray(parsedResponse.replies) ||
-    !Array.isArray(parsedResponse.patch_proposals) ||
-    !Array.isArray(parsedResponse.open_questions)
-  ) {
-    throw new Error(
-      "Invalid Patchmark response. Expected replies, patch_proposals, and open_questions arrays."
-    );
-  }
-
-  return {
-    protocol: "patchmark.comment_reply_import",
-    protocol_version: 1,
-    summary:
-      typeof parsedResponse.summary === "string"
-        ? validateProtocolTextField(parsedResponse.summary, "summary")
-        : undefined,
-    sources: normalizeImportedSources(parsedResponse.sources, "sources"),
-    replies: parsedResponse.replies.map((reply, index) =>
-      normalizeImportedReply(reply, index)
-    ),
-    patch_proposals:
-      parsedResponse.patch_proposals.map((patchProposal, index) =>
-        normalizeImportedPatchProposal(patchProposal, index)
-      ),
-    open_questions:
-      parsedResponse.open_questions.map((openQuestion, index) =>
-        normalizeImportedOpenQuestion(openQuestion, index)
-      )
-  };
-}
-
-function stripMarkdownJsonFence(rawInput: string): string {
-  const trimmedInput = rawInput.trim();
-  const fencedMatch = /^```json\s*([\s\S]*?)\s*```$/i.exec(trimmedInput);
-
-  return fencedMatch ? fencedMatch[1].trim() : trimmedInput;
-}
-
-function normalizeImportedReply(
-  reply: unknown,
-  index: number
-): PatchmarkCommentReplyImport["replies"][number] {
-  if (
-    !isRecord(reply) ||
-    typeof reply.comment_id !== "string" ||
-    typeof reply.reply !== "string"
-  ) {
-    throw new Error(
-      "Invalid Patchmark response. Each reply needs comment_id and reply."
-    );
-  }
-
-  const replyPath = `replies[${index}]`;
-  const replySourcesInput = reply.reply_sources ?? reply.sources;
-  const replySourcesPath =
-    reply.reply_sources === undefined
-      ? `${replyPath}.sources`
-      : `${replyPath}.reply_sources`;
-
-  return {
-    comment_id: reply.comment_id,
-    reply: validateProtocolTextField(reply.reply, `${replyPath}.reply`),
-    reply_sources: normalizeImportedSources(
-      replySourcesInput,
-      replySourcesPath
-    ),
-    suggested_user_action: isSuggestedUserAction(reply.suggested_user_action)
-      ? reply.suggested_user_action
-      : undefined,
-    sources: normalizeImportedSources(reply.sources, `${replyPath}.sources`)
-  };
-}
-
-function normalizeImportedPatchProposal(
-  patchProposal: unknown,
-  index: number
-): PatchmarkCommentReplyImport["patch_proposals"][number] {
-  if (
-    !isRecord(patchProposal) ||
-    typeof patchProposal.comment_id !== "string" ||
-    typeof patchProposal.original_text !== "string" ||
-    typeof patchProposal.suggested_text !== "string" ||
-    typeof patchProposal.reason !== "string"
-  ) {
-    throw new Error(
-      "Invalid Patchmark response. Each patch proposal needs comment_id, original_text, suggested_text, and reason."
-    );
-  }
-
-  const patchProposalPath = `patch_proposals[${index}]`;
-  const reasonSourcesInput =
-    patchProposal.reason_sources ?? patchProposal.sources;
-  const reasonSourcesPath =
-    patchProposal.reason_sources === undefined
-      ? `${patchProposalPath}.sources`
-      : `${patchProposalPath}.reason_sources`;
-
-  return {
-    comment_id: patchProposal.comment_id,
-    target_heading:
-      typeof patchProposal.target_heading === "string"
-        ? patchProposal.target_heading
-        : undefined,
-    original_text: patchProposal.original_text,
-    suggested_text: patchProposal.suggested_text,
-    suggested_text_sources: normalizeImportedSources(
-      patchProposal.suggested_text_sources,
-      `${patchProposalPath}.suggested_text_sources`
-    ),
-    reason: validateProtocolTextField(
-      patchProposal.reason,
-      `${patchProposalPath}.reason`
-    ),
-    reason_sources: normalizeImportedSources(
-      reasonSourcesInput,
-      reasonSourcesPath
-    ),
-    risk:
-      typeof patchProposal.risk === "string"
-        ? validateProtocolTextField(patchProposal.risk, `${patchProposalPath}.risk`)
-        : undefined,
-    risk_sources: normalizeImportedSources(
-      patchProposal.risk_sources,
-      `${patchProposalPath}.risk_sources`
-    ),
-    sources: normalizeImportedSources(
-      patchProposal.sources,
-      `${patchProposalPath}.sources`
-    )
-  };
-}
-
-function validateProtocolTextField(value: string, fieldName: string): string {
-  if (
-    PROTOCOL_URL_PATTERN.test(value) ||
-    PROTOCOL_MARKDOWN_LINK_PATTERN.test(value) ||
-    PROTOCOL_BROKEN_MARKDOWN_LINK_PATTERN.test(value) ||
-    PROTOCOL_REFERENCE_LINK_PATTERN.test(value) ||
-    PROTOCOL_FOOTNOTE_PATTERN.test(value)
-  ) {
-    throw new Error(`${STRICT_CHATGPT_IMPORT_ERROR} Invalid field: ${fieldName}.`);
-  }
-
-  return value;
-}
-
-function normalizeSourceTextField(
-  value: unknown,
-  fieldPath: string
-): string | undefined {
-  if (typeof value !== "string") {
-    throw new Error(
-      `Invalid source field at ${fieldPath}. Source title, note, and supports must be plain text strings.`
-    );
-  }
-
-  const trimmedValue = value.trim();
-
-  return trimmedValue
-    ? validateProtocolTextField(trimmedValue, fieldPath)
-    : undefined;
-}
-
-function normalizeImportedSources(
-  sources: unknown,
-  arrayPath: string
-): PatchmarkSourceReference[] | undefined {
-  if (sources === undefined) {
-    return undefined;
-  }
-
-  if (!Array.isArray(sources)) {
-    throw new Error(
-      `Invalid source array at ${arrayPath}. Sources must be arrays of source objects.`
-    );
-  }
-
-  return sources.map((source, index) =>
-    normalizeImportedSourceReference(source, `${arrayPath}[${index}]`)
-  );
-}
-
-function normalizeImportedSourceReference(
-  source: unknown,
-  sourcePath: string
-): PatchmarkSourceReference {
-  if (!isRecord(source)) {
-    throw new Error(
-      `Invalid source object at ${sourcePath}. Every source must be an object with a raw url string.`
-    );
-  }
-
-  if (typeof source.url !== "string") {
-    throw new Error(
-      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
-    );
-  }
-
-  const rawUrl = source.url;
-
-  if (!rawUrl.trim() || rawUrl.trim() !== rawUrl) {
-    throw new Error(
-      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
-    );
-  }
-
-  if (
-    (!rawUrl.startsWith("https://") && !rawUrl.startsWith("http://")) ||
-    SOURCE_URL_MARKDOWN_PATTERN.test(rawUrl)
-  ) {
-    throw new Error(
-      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
-    );
-  }
-
-  let normalizedUrl: string;
-
-  try {
-    const url = new URL(rawUrl);
-
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new Error("Invalid protocol.");
-    }
-
-    normalizedUrl = url.toString();
-  } catch {
-    throw new Error(
-      `Invalid source URL at ${sourcePath}.url. Source URLs must be raw http(s) URLs, not Markdown links.`
-    );
-  }
-
-  const title =
-    source.title === undefined
-      ? undefined
-      : normalizeSourceTextField(source.title, `${sourcePath}.title`);
-  const note =
-    source.note === undefined
-      ? undefined
-      : normalizeSourceTextField(source.note, `${sourcePath}.note`);
-  const supports =
-    source.supports === undefined
-      ? undefined
-      : normalizeSourceTextField(source.supports, `${sourcePath}.supports`);
-
-  return {
-    title,
-    url: normalizedUrl,
-    note,
-    supports
-  };
-}
-
-function normalizeImportedOpenQuestion(
-  openQuestion: unknown,
-  index: number
-): PatchmarkCommentReplyImport["open_questions"][number] {
-  if (
-    !isRecord(openQuestion) ||
-    typeof openQuestion.comment_id !== "string" ||
-    typeof openQuestion.question !== "string"
-  ) {
-    throw new Error(
-      "Invalid Patchmark response. Each open question needs comment_id and question."
-    );
-  }
-
-  const openQuestionPath = `open_questions[${index}]`;
-
-  return {
-    comment_id: openQuestion.comment_id,
-    question: validateProtocolTextField(
-      openQuestion.question,
-      `${openQuestionPath}.question`
-    ),
-    question_sources: normalizeImportedSources(
-      openQuestion.question_sources,
-      `${openQuestionPath}.question_sources`
-    )
-  };
-}
-
-function normalizeSourceChatUrl(sourceChatUrl: string): string | undefined {
-  const trimmedUrl = sourceChatUrl.trim();
-
-  if (!trimmedUrl) {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(trimmedUrl);
-
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new Error("Invalid protocol.");
-    }
-
-    return url.toString();
-  } catch {
-    throw new Error("Source ChatGPT URL must be a valid http(s) URL.");
-  }
 }
 
 function createCommentImportId(importedAt: string): string {
@@ -9803,25 +9454,6 @@ function createChatGptImportSummaryMessage({
   }
 
   return summary.join(" ");
-}
-
-function isSuggestedUserAction(
-  value: unknown
-): value is PatchmarkSuggestedUserAction {
-  return (
-    typeof value === "string" &&
-    [
-      "review",
-      "clarify",
-      "apply_patch",
-      "keep_open",
-      "resolve_manually"
-    ].includes(value)
-  );
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
 }
 
 function createFocusedCommentsExportPayload({
