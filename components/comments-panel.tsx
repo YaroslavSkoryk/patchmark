@@ -13,6 +13,7 @@ import {
   createFloatingCommentLayout,
   getStageRelativePreferredTop
 } from "@/lib/comments/floating-comment-layout";
+import { getPatchImpactForCurrentAnchorDisplay } from "@/lib/comments/comment-anchor-state";
 import {
   type CommentAnchorStatus,
   type PatchmarkComment,
@@ -1134,6 +1135,12 @@ function CompactCommentBadges({
   pendingPatchCount
 }: CompactCommentBadgesProps) {
   const focusStateLabel = getCommentFocusStateLabel(comment);
+  const displayPatchImpact = getPatchImpactForCurrentAnchorDisplay(
+    {
+      anchorStatus: anchorSummary.status,
+      latestPatchImpact
+    }
+  );
 
   return (
     <div className="comment-compact-badges" aria-label="Comment badges">
@@ -1157,11 +1164,11 @@ function CompactCommentBadges({
           {getAnchorStatusLabel(anchorSummary.status)}
         </span>
       ) : null}
-      {latestPatchImpact ? (
+      {displayPatchImpact ? (
         <span
-          className={`comment-anchor-status comment-patch-impact comment-patch-impact-${latestPatchImpact.result}`}
+          className={`comment-anchor-status comment-patch-impact comment-patch-impact-${displayPatchImpact.result}`}
         >
-          {getPatchImpactStatusLabel(latestPatchImpact)}
+          {getPatchImpactStatusLabel(displayPatchImpact)}
         </span>
       ) : null}
       {patchGroupSummary ? (
@@ -1224,6 +1231,12 @@ function CommentCard({
     comment.export_state.focus_state === "in_focus" ||
     comment.export_state.focus_state === "awaiting_reply";
   const latestPatchImpact = comment.patch_impacts?.at(-1);
+  const displayPatchImpact = getPatchImpactForCurrentAnchorDisplay(
+    {
+      anchorStatus: anchorSummary.status,
+      latestPatchImpact
+    }
+  );
   const isCompact = !isActive && !isEditing && !isReplying;
 
   return (
@@ -1260,7 +1273,7 @@ function CommentCard({
           <CompactCommentBadges
             anchorSummary={anchorSummary}
             comment={comment}
-            latestPatchImpact={latestPatchImpact}
+            latestPatchImpact={displayPatchImpact}
             patchGroupSummary={patchGroupSummary}
             pendingPatchCount={pendingPatchCount}
           />
@@ -1328,16 +1341,16 @@ function CommentCard({
           {anchorSummary.detail ? (
             <span className="comment-anchor-detail">{anchorSummary.detail}</span>
           ) : null}
-          {latestPatchImpact ? (
+          {displayPatchImpact ? (
             <>
               <span
-                className={`comment-anchor-status comment-patch-impact comment-patch-impact-${latestPatchImpact.result}`}
+                className={`comment-anchor-status comment-patch-impact comment-patch-impact-${displayPatchImpact.result}`}
               >
-                {getPatchImpactStatusLabel(latestPatchImpact)}
+                {getPatchImpactStatusLabel(displayPatchImpact)}
               </span>
-              {latestPatchImpact.note ? (
+              {displayPatchImpact.note ? (
                 <span className="comment-anchor-detail">
-                  {latestPatchImpact.note}
+                  {displayPatchImpact.note}
                 </span>
               ) : null}
             </>

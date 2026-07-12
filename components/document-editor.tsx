@@ -595,6 +595,40 @@ export function DocumentEditor() {
   }, [patches, selectedPatchId]);
 
   useEffect(() => {
+    if (!projectHandle || isSaving || comments.length === 0) {
+      return;
+    }
+
+    const recoveredComments = recoverPersistableStaleCommentAnchors({
+      comments,
+      headings,
+      markdown
+    });
+
+    if (recoveredComments === comments) {
+      return;
+    }
+
+    let isCancelled = false;
+
+    void writeProjectComments(projectHandle, recoveredComments)
+      .then(() => {
+        if (!isCancelled) {
+          setComments(recoveredComments);
+        }
+      })
+      .catch((error) => {
+        if (!isCancelled) {
+          setCommentsError(getProjectErrorMessage(error));
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [comments, headings, isSaving, markdown, projectHandle]);
+
+  useEffect(() => {
     if (!projectHandle || isSaving || patches.length === 0) {
       return;
     }
@@ -8364,6 +8398,30 @@ function recoverSelectedTextAnchor({
     if (sectionRecovery.status === "ambiguous") {
       ambiguousRecovery = sectionRecovery;
     }
+
+    const normalizedSectionMatches = findNormalizedTextMatches(
+      markdown.slice(containingSectionRange.start, containingSectionRange.end),
+      anchor.selected_text
+    ).map((match) => ({
+      start: containingSectionRange.start + match.start,
+      end: containingSectionRange.start + match.end
+    }));
+    const normalizedSectionRecovery = createRecoveryResultFromMatches({
+      anchor,
+      comment,
+      markdown,
+      matches: normalizedSectionMatches,
+      preferredHeadingText,
+      reason: "selected_text_unique_in_section"
+    });
+
+    if (normalizedSectionRecovery.status === "recovered") {
+      return normalizedSectionRecovery;
+    }
+
+    if (normalizedSectionRecovery.status === "ambiguous") {
+      ambiguousRecovery = ambiguousRecovery ?? normalizedSectionRecovery;
+    }
   }
 
   const contextResolution = resolveSelectedAnchorViaContext(markdown, anchor);
@@ -8425,6 +8483,23 @@ function recoverSelectedTextAnchor({
 
   if (documentRecovery.status === "ambiguous") {
     ambiguousRecovery = ambiguousRecovery ?? documentRecovery;
+  }
+
+  const normalizedDocumentRecovery = createRecoveryResultFromMatches({
+    anchor,
+    comment,
+    markdown,
+    matches: findNormalizedTextMatches(markdown, anchor.selected_text),
+    preferredHeadingText,
+    reason: "selected_text_unique_in_document"
+  });
+
+  if (normalizedDocumentRecovery.status === "recovered") {
+    return normalizedDocumentRecovery;
+  }
+
+  if (normalizedDocumentRecovery.status === "ambiguous") {
+    ambiguousRecovery = ambiguousRecovery ?? normalizedDocumentRecovery;
   }
 
   if (contextResolution.status === "ambiguous") {
@@ -8553,12 +8628,20 @@ function findTableCellSelectedTextMatches({
   const matches = tables.flatMap((table) =>
     table.rows.flatMap((row) => {
       const exactMatches = findExactTextMatches(row.text, anchor.selected_text);
+      const normalizedMatches = findNormalizedTextMatches(
+        row.text,
+        anchor.selected_text
+      );
       const plainMatches =
         anchor.anchor_context?.kind === "table_cell" || anchor.anchor_source === "visual"
           ? findMarkdownPlainTextMatches(row.text, anchor.selected_text)
           : [];
 
-      return dedupeTextMatches([...exactMatches, ...plainMatches]).map((match) => ({
+      return dedupeTextMatches([
+        ...exactMatches,
+        ...normalizedMatches,
+        ...plainMatches
+      ]).map((match) => ({
         start: row.start + match.start,
         end: row.start + match.end
       }));
@@ -8625,12 +8708,13 @@ function createRecoveredAnchorResult({
   preferredHeadingText?: string;
   reason: RecoveredAnchorReason;
 }): RecoveredAnchorResult {
+  const recoveredSelectedText = markdown.slice(match.start, match.end);
   const context =
     createAnchorContextFromMarkdownRange(markdown, match) ??
     ({
       kind: anchor.anchor_context?.kind ?? "block",
-      plain_text: anchor.selected_text,
-      markdown_text: markdown.slice(match.start, match.end),
+      plain_text: normalizeDomText(recoveredSelectedText),
+      markdown_text: recoveredSelectedText,
       selected_start_in_context: 0,
       selected_end_in_context: match.end - match.start,
       markdown_start_offset: match.start,
@@ -8647,7 +8731,7 @@ function createRecoveredAnchorResult({
       context,
       markdown,
       preferredHeadingText,
-      selectedText: anchor.selected_text,
+      selectedText: recoveredSelectedText,
       start: match.start,
       end: match.end
     }),
@@ -8694,6 +8778,93 @@ function recoverCommentAnchorForFind({
     impactKind: latestNeedsReviewImpact.impact_kind,
     note: "Anchor recovered from selected text during Find.",
     patchId: latestNeedsReviewImpact.patch_id,
+    result: "reanchored"
+  });
+}
+
+function recoverPersistableStaleCommentAnchors({
+  comments,
+  headings,
+  markdown
+}: {
+  comments: PatchmarkComment[];
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): PatchmarkComment[] {
+  let didRecover = false;
+  const recoveredAt = new Date().toISOString();
+  const recoveredComments = comments.map((comment) => {
+    if (comment.anchor.kind !== "selected_text") {
+      return comment;
+    }
+
+    if (getCurrentSelectedTextOffsetMatch(comment.anchor, markdown)) {
+      return comment;
+    }
+
+    const recovery = recoverSelectedTextAnchor({
+      comment,
+      headings,
+      markdown,
+      preferredHeadingText: comment.anchor.containing_heading
+    });
+
+    if (
+      recovery.status !== "recovered" ||
+      areCommentAnchorsEqual(comment.anchor, recovery.newAnchor)
+    ) {
+      return comment;
+    }
+
+    didRecover = true;
+
+    return recoverPersistableStaleCommentAnchor({
+      comment,
+      recoveredAt,
+      recovery
+    });
+  });
+
+  return didRecover ? recoveredComments : comments;
+}
+
+function recoverPersistableStaleCommentAnchor({
+  comment,
+  recoveredAt,
+  recovery
+}: {
+  comment: PatchmarkComment;
+  recoveredAt: string;
+  recovery: Extract<RecoveredAnchorResult, { status: "recovered" }>;
+}): PatchmarkComment {
+  const latestPatchImpact = comment.patch_impacts?.at(-1);
+  const recoveredComment: PatchmarkComment = {
+    ...comment,
+    anchor: recovery.newAnchor,
+    anchor_history: [
+      ...(comment.anchor_history ?? []),
+      {
+        changed_at: recoveredAt,
+        reason: "anchor_recovered_after_patch",
+        source_patch_id: latestPatchImpact?.patch_id,
+        previous_anchor: comment.anchor,
+        new_anchor: recovery.newAnchor,
+        impact_kind: latestPatchImpact?.impact_kind
+      }
+    ],
+    updated_at: recoveredAt
+  };
+
+  if (latestPatchImpact?.result !== "needs_review") {
+    return recoveredComment;
+  }
+
+  return appendPatchImpactToComment({
+    comment: recoveredComment,
+    createdAt: recoveredAt,
+    impactKind: latestPatchImpact.impact_kind,
+    note: "Anchor recovered from current document state.",
+    patchId: latestPatchImpact.patch_id,
     result: "reanchored"
   });
 }
@@ -11415,6 +11586,32 @@ function resolveCommentAnchor(
       detail: anchor.anchor_context
         ? "Could not identify a unique surrounding context."
         : "Multiple matches for selected text.",
+      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      status: "ambiguous"
+    };
+  }
+
+  const recoveredAnchor = recoverSelectedTextAnchor({
+    comment,
+    headings,
+    markdown,
+    preferredHeadingText: anchor.containing_heading
+  });
+
+  if (recoveredAnchor.status === "recovered") {
+    return {
+      end: recoveredAnchor.matchEnd,
+      label: `Selected text in ${getSelectedTextHeadingLabel(
+        recoveredAnchor.newAnchor
+      )}`,
+      start: recoveredAnchor.matchStart,
+      status: "active"
+    };
+  }
+
+  if (recoveredAnchor.status === "ambiguous") {
+    return {
+      detail: recoveredAnchor.reason,
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "ambiguous"
     };
