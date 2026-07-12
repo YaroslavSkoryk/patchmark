@@ -265,7 +265,12 @@ export type PatchmarkPatch = {
   applied_context_before?: string;
   applied_context_after?: string;
   applied_heading?: string;
+  applied_heading_id?: string;
   applied_heading_path?: string[];
+  applied_table_index?: number;
+  applied_table_row_index?: number;
+  applied_table_row_anchor?: string;
+  applied_table_row_cells?: string[];
   previous_original_text?: string;
   reanchored_at?: string;
   reanchor_reason?: "table_row_normalized_match";

@@ -1202,9 +1202,34 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       typeof patch.applied_heading === "string"
         ? patch.applied_heading
         : undefined,
+    applied_heading_id:
+      typeof patch.applied_heading_id === "string"
+        ? patch.applied_heading_id
+        : undefined,
     applied_heading_path: Array.isArray(patch.applied_heading_path)
       ? patch.applied_heading_path.filter(
           (heading): heading is string => typeof heading === "string"
+        )
+      : undefined,
+    applied_table_index:
+      typeof patch.applied_table_index === "number" &&
+      Number.isInteger(patch.applied_table_index) &&
+      patch.applied_table_index >= 0
+        ? patch.applied_table_index
+        : undefined,
+    applied_table_row_index:
+      typeof patch.applied_table_row_index === "number" &&
+      Number.isInteger(patch.applied_table_row_index) &&
+      patch.applied_table_row_index >= 0
+        ? patch.applied_table_row_index
+        : undefined,
+    applied_table_row_anchor:
+      typeof patch.applied_table_row_anchor === "string"
+        ? patch.applied_table_row_anchor
+        : undefined,
+    applied_table_row_cells: Array.isArray(patch.applied_table_row_cells)
+      ? patch.applied_table_row_cells.filter(
+          (cell): cell is string => typeof cell === "string"
         )
       : undefined,
     previous_original_text:

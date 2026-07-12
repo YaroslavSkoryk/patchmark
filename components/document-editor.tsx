@@ -168,10 +168,13 @@ type PatchApplicability =
   | "table_row_rebase_available";
 type AppliedPatchAnchorStatus =
   | "empty_applied_text"
-  | "found_once"
+  | "evolved_after_patch"
+  | "exact_match"
   | "multiple_matches"
+  | "normalized_match"
   | "not_found"
-  | "present_at_applied_offsets";
+  | "row_match"
+  | "section_match";
 type TextMatch = { end: number; start: number };
 type RecoveredAnchorReason =
   | "current_offsets_match"
@@ -234,6 +237,7 @@ type DerivedPatchGroup = PatchmarkPatchGroup & {
 };
 type PatchDisplayState =
   | "applied"
+  | "applied_evolved"
   | "needs_review"
   | "pending"
   | "rejected"
@@ -507,9 +511,9 @@ export function DocumentEditor() {
   const selectedPatchAnchorStatus = useMemo(
     () =>
       selectedPatch
-        ? getPatchReviewAnchorStatus(markdown, selectedPatch)
+        ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches)
         : null,
-    [markdown, selectedPatch]
+    [markdown, patches, selectedPatch]
   );
   const isDirty =
     fileName !== null &&
@@ -2184,18 +2188,19 @@ export function DocumentEditor() {
 
   function handleFindPatchAnchorText(patch: PatchmarkPatch) {
     if (patch.status === "accepted") {
-      const anchorStatus = getAppliedPatchAnchorStatus(markdown, patch);
+      const anchorStatus = getAppliedPatchAnchorStatus(markdown, patch, patches);
       const match = anchorStatus.matches[0];
 
-      if (
-        (anchorStatus.status === "present_at_applied_offsets" ||
-          anchorStatus.status === "found_once") &&
-        match
-      ) {
+      if (isAcceptedPatchTraceable(anchorStatus) && match) {
         jumpToMarkdownSelection(match.start, match.end);
         setSaveFeedback({
           kind: "success",
-          message: "Showing applied patch text in Markdown Mode."
+          message:
+            anchorStatus.status === "evolved_after_patch" ||
+            anchorStatus.status === "row_match" ||
+            anchorStatus.status === "section_match"
+              ? "Showing evolved applied patch target in Markdown Mode."
+              : "Showing applied patch text in Markdown Mode."
         });
         return;
       }
@@ -2209,9 +2214,9 @@ export function DocumentEditor() {
         message:
           anchorStatus.status === "empty_applied_text"
             ? "This accepted patch has no applied text to select."
-            : anchorStatus.status === "multiple_matches"
-              ? "Applied patch text appears multiple times."
-              : "Applied patch text was not found."
+          : anchorStatus.status === "multiple_matches"
+            ? "Applied patch text appears multiple times."
+              : "Applied patch target was not found."
       });
       return;
     }
@@ -4147,6 +4152,12 @@ function PatchReviewDialog({
                   <dd>{getPatchReviewAnchorShortLabel(anchorStatus)}</dd>
                 </div>
               ) : null}
+              {anchorStatus.kind === "accepted" ? (
+                <div>
+                  <dt>Anchor validation result</dt>
+                  <dd>{getAcceptedPatchAnchorDiagnostic(anchorStatus)}</dd>
+                </div>
+              ) : null}
               <div>
                 <dt>Linked comment ID</dt>
                 <dd>{patch.comment_id ?? "None"}</dd>
@@ -4678,7 +4689,10 @@ function createPatchVisualPreview(
   anchorStatus?: PatchReviewAnchorStatus
 ): PatchVisualPreview {
   if (patch.status === "accepted") {
-    const appliedText = getPatchAppliedText(patch);
+    const appliedText =
+      anchorStatus?.kind === "accepted" && anchorStatus.text.trim().length > 0
+        ? anchorStatus.text
+        : getPatchAppliedText(patch);
     const tableContext = getPatchTablePreviewContext(
       markdown,
       appliedText,
@@ -5989,6 +6003,7 @@ function derivePatchGroups(
       );
       const statusSummary = createPatchGroupStatusSummary(patchesInOrder);
       const anchorStatusByPatchId = createPatchGroupAnchorStatusByPatchId({
+        allPatches: patches,
         markdown,
         patches: patchesInOrder
       });
@@ -6073,7 +6088,7 @@ function createPatchGroupApplicabilitySummary({
         return summary;
       }
 
-      const applicability = getPatchApplicabilityForPatch(markdown, patch);
+      const applicability = getPatchApplicabilityForPatch(markdown, patch, patches);
 
       return {
         ...summary,
@@ -6090,14 +6105,19 @@ function createPatchGroupApplicabilitySummary({
 }
 
 function createPatchGroupAnchorStatusByPatchId({
+  allPatches,
   markdown,
   patches
 }: {
+  allPatches: PatchmarkPatch[];
   markdown: string;
   patches: PatchmarkPatch[];
 }): Record<string, PatchReviewAnchorStatus> {
   return Object.fromEntries(
-    patches.map((patch) => [patch.id, getPatchReviewAnchorStatus(markdown, patch)])
+    patches.map((patch) => [
+      patch.id,
+      getPatchReviewAnchorStatus(markdown, patch, allPatches)
+    ])
   );
 }
 
@@ -6111,7 +6131,7 @@ function createPatchGroupApplicabilityByPatchId({
   return Object.fromEntries(
     patches.map((patch) => [
       patch.id,
-      getPatchApplicabilityForPatch(markdown, patch)
+      getPatchApplicabilityForPatch(markdown, patch, patches)
     ])
   );
 }
@@ -6170,9 +6190,10 @@ function getPatchGroupSummariesByCommentId(
 
 function getPatchApplicabilityForPatch(
   markdown: string,
-  patch: PatchmarkPatch
+  patch: PatchmarkPatch,
+  patches: PatchmarkPatch[] = []
 ): PatchApplicability {
-  const anchorStatus = getPatchReviewAnchorStatus(markdown, patch);
+  const anchorStatus = getPatchReviewAnchorStatus(markdown, patch, patches);
 
   if (anchorStatus.kind === "accepted") {
     return "exact_match";
@@ -6183,10 +6204,11 @@ function getPatchApplicabilityForPatch(
 
 function getPatchReviewAnchorStatus(
   markdown: string,
-  patch: PatchmarkPatch
+  patch: PatchmarkPatch,
+  patches: PatchmarkPatch[] = []
 ): PatchReviewAnchorStatus {
   if (patch.status === "accepted") {
-    return getAppliedPatchAnchorStatus(markdown, patch);
+    return getAppliedPatchAnchorStatus(markdown, patch, patches);
   }
 
   const matches = findExactTextMatches(markdown, patch.original_text);
@@ -6251,10 +6273,35 @@ function getPatchReviewAnchorStatus(
 
 function getAppliedPatchAnchorStatus(
   markdown: string,
-  patch: PatchmarkPatch
+  patch: PatchmarkPatch,
+  patches: PatchmarkPatch[] = []
 ): Extract<PatchReviewAnchorStatus, { kind: "accepted" }> {
   const appliedText = getPatchAppliedText(patch);
 
+  return locateAcceptedPatchAnchor({
+    appliedText,
+    markdown,
+    patch,
+    patches,
+    visitedPatchIds: new Set([patch.id])
+  });
+}
+
+function locateAcceptedPatchAnchor({
+  appliedText,
+  includeDescendants = true,
+  markdown,
+  patch,
+  patches,
+  visitedPatchIds
+}: {
+  appliedText: string;
+  includeDescendants?: boolean;
+  markdown: string;
+  patch: PatchmarkPatch;
+  patches: PatchmarkPatch[];
+  visitedPatchIds: Set<string>;
+}): Extract<PatchReviewAnchorStatus, { kind: "accepted" }> {
   if (appliedText.length === 0) {
     return {
       kind: "accepted",
@@ -6269,26 +6316,106 @@ function getAppliedPatchAnchorStatus(
     return {
       kind: "accepted",
       matches: [offsetMatch],
-      status: "present_at_applied_offsets",
+      status: "exact_match",
       text: appliedText
     };
   }
 
-  const matches = findExactTextMatches(markdown, appliedText);
+  const exactMatches = findExactTextMatches(markdown, appliedText);
 
-  if (matches.length === 1) {
+  if (exactMatches.length === 1) {
     return {
       kind: "accepted",
-      matches,
-      status: "found_once",
+      matches: exactMatches,
+      status: "exact_match",
       text: appliedText
     };
   }
 
-  if (matches.length > 1) {
+  if (exactMatches.length > 1) {
     return {
       kind: "accepted",
-      matches,
+      matches: exactMatches,
+      status: "multiple_matches",
+      text: appliedText
+    };
+  }
+
+  const normalizedMatches = getAppliedPatchNormalizedMatches(markdown, appliedText);
+  if (normalizedMatches.length === 1) {
+    return {
+      kind: "accepted",
+      matches: normalizedMatches,
+      status: "normalized_match",
+      text: markdown.slice(normalizedMatches[0].start, normalizedMatches[0].end)
+    };
+  }
+
+  const tableRowMatch = findAcceptedPatchTableRowAnchorMatch({
+    appliedText,
+    markdown,
+    patch
+  });
+  if (tableRowMatch) {
+    return {
+      kind: "accepted",
+      matches: [tableRowMatch],
+      status: "row_match",
+      text: tableRowMatch.text
+    };
+  }
+
+  const sectionMatch = findAcceptedPatchSectionAnchorMatch({
+    appliedText,
+    markdown,
+    normalizedMatches,
+    patch
+  });
+  if (sectionMatch) {
+    return {
+      kind: "accepted",
+      matches: [sectionMatch],
+      status: "section_match",
+      text: sectionMatch.text
+    };
+  }
+
+  const contextMatch = findAcceptedPatchSurroundingContextMatch({
+    markdown,
+    patch
+  });
+  if (contextMatch) {
+    return {
+      kind: "accepted",
+      matches: [contextMatch],
+      status: "evolved_after_patch",
+      text: contextMatch.text
+    };
+  }
+
+  if (includeDescendants) {
+    const descendantMatch = findDescendantAcceptedPatchAnchorMatch({
+      appliedText,
+      markdown,
+      patch,
+      patches,
+      visitedPatchIds
+    });
+
+    if (descendantMatch) {
+      return {
+        kind: "accepted",
+        matches: descendantMatch.matches,
+        status: "evolved_after_patch",
+        text: descendantMatch.text
+      };
+    }
+  }
+
+  if (normalizedMatches.length > 1) {
+    return {
+      kind: "accepted",
+      matches: normalizedMatches,
       status: "multiple_matches",
       text: appliedText
     };
@@ -6296,7 +6423,7 @@ function getAppliedPatchAnchorStatus(
 
   return {
     kind: "accepted",
-    matches,
+    matches: [],
     status: "not_found",
     text: appliedText
   };
@@ -6334,6 +6461,418 @@ function getAppliedPatchOffsetMatch(
     end: patch.applied_end_offset,
     start: patch.applied_start_offset
   };
+}
+
+type AppliedPatchAnchorMatch = TextMatch & { text: string };
+
+function getAppliedPatchNormalizedMatches(
+  markdown: string,
+  appliedText: string
+): TextMatch[] {
+  const plainText = getMarkdownPlainText(appliedText);
+  const plainTextMatches =
+    plainText && plainText !== normalizeDomText(appliedText)
+      ? findMarkdownPlainTextMatches(markdown, plainText)
+      : [];
+
+  return dedupeTextMatches([
+    ...findNormalizedTextMatches(markdown, appliedText),
+    ...plainTextMatches
+  ]);
+}
+
+function findAcceptedPatchTableRowAnchorMatch({
+  appliedText,
+  markdown,
+  patch
+}: {
+  appliedText: string;
+  markdown: string;
+  patch: PatchmarkPatch;
+}): AppliedPatchAnchorMatch | null {
+  const appliedCells = getAcceptedPatchAppliedTableCells(patch, appliedText);
+  const rowAnchor =
+    patch.applied_table_row_anchor ?? createStableTableRowAnchor(appliedCells);
+
+  if (!rowAnchor || appliedCells.length < 2) {
+    return null;
+  }
+
+  const range = getAcceptedPatchSectionRange(markdown, patch) ?? {
+    end: markdown.length,
+    searchedWholeDocument: true,
+    start: 0
+  };
+  const tables = findMarkdownTablesInRange(markdown, {
+    end: range.end,
+    searchedWholeDocument: "searchedWholeDocument" in range
+      ? Boolean(range.searchedWholeDocument)
+      : false,
+    start: range.start
+  });
+  const candidateRows = tables.flatMap((table, tableIndex) => {
+    if (
+      typeof patch.applied_table_index === "number" &&
+      patch.applied_table_index !== tableIndex
+    ) {
+      return [];
+    }
+
+    return table.rows.flatMap((row, rowIndex) => {
+      const currentCells = parseMarkdownTableRow(row.text);
+      const currentRowAnchor = createStableTableRowAnchor(currentCells);
+      const hasCompatibleCellCount = currentCells.length === appliedCells.length;
+
+      if (currentRowAnchor === rowAnchor && hasCompatibleCellCount) {
+        return [
+          {
+            ...row,
+            text: row.text
+          }
+        ];
+      }
+
+      if (
+        typeof patch.applied_table_index === "number" &&
+        typeof patch.applied_table_row_index === "number" &&
+        patch.applied_table_index === tableIndex &&
+        patch.applied_table_row_index === rowIndex &&
+        hasCompatibleCellCount
+      ) {
+        return [
+          {
+            ...row,
+            text: row.text
+          }
+        ];
+      }
+
+      return [];
+    });
+  });
+  const uniqueRows = dedupeAppliedPatchAnchorMatches(candidateRows);
+
+  return uniqueRows.length === 1 ? uniqueRows[0] : null;
+}
+
+function getAcceptedPatchAppliedTableCells(
+  patch: PatchmarkPatch,
+  appliedText: string
+): string[] {
+  if (patch.applied_table_row_cells && patch.applied_table_row_cells.length >= 2) {
+    return patch.applied_table_row_cells;
+  }
+
+  if (!isMarkdownTableDataSnippet(appliedText)) {
+    return [];
+  }
+
+  return parseMarkdownTableRow(appliedText);
+}
+
+function findAcceptedPatchSectionAnchorMatch({
+  appliedText,
+  markdown,
+  normalizedMatches,
+  patch
+}: {
+  appliedText: string;
+  markdown: string;
+  normalizedMatches: TextMatch[];
+  patch: PatchmarkPatch;
+}): AppliedPatchAnchorMatch | null {
+  const sectionRange = getAcceptedPatchSectionRange(markdown, patch);
+
+  if (!sectionRange) {
+    return null;
+  }
+
+  const normalizedMatchesInSection = normalizedMatches.filter((match) =>
+    isTextMatchInsideRange(match, sectionRange)
+  );
+  if (normalizedMatchesInSection.length === 1) {
+    const match = normalizedMatchesInSection[0];
+
+    return {
+      ...match,
+      text: markdown.slice(match.start, match.end)
+    };
+  }
+
+  const sectionMarkdown = markdown.slice(sectionRange.start, sectionRange.end);
+  const sectionMatches = dedupeTextMatches([
+    ...findNormalizedTextMatches(sectionMarkdown, appliedText),
+    ...findMarkdownPlainTextMatches(sectionMarkdown, getMarkdownPlainText(appliedText))
+  ]).map((match) => ({
+    start: sectionRange.start + match.start,
+    end: sectionRange.start + match.end
+  }));
+
+  if (sectionMatches.length === 1) {
+    const match = sectionMatches[0];
+
+    return {
+      ...match,
+      text: markdown.slice(match.start, match.end)
+    };
+  }
+
+  return null;
+}
+
+function findAcceptedPatchSurroundingContextMatch({
+  markdown,
+  patch
+}: {
+  markdown: string;
+  patch: PatchmarkPatch;
+}): AppliedPatchAnchorMatch | null {
+  const before = patch.applied_context_before ?? "";
+  const after = patch.applied_context_after ?? "";
+
+  if (before.trim().length < 8 || after.trim().length < 8) {
+    return null;
+  }
+
+  const contextMatches: AppliedPatchAnchorMatch[] = [];
+  let beforeIndex = markdown.indexOf(before);
+
+  while (beforeIndex !== -1) {
+    const evolvedStart = beforeIndex + before.length;
+    const afterIndex = markdown.indexOf(after, evolvedStart);
+
+    if (afterIndex !== -1 && afterIndex >= evolvedStart) {
+      contextMatches.push({
+        start: evolvedStart,
+        end: afterIndex,
+        text: markdown.slice(evolvedStart, afterIndex)
+      });
+    }
+
+    beforeIndex = markdown.indexOf(before, beforeIndex + before.length);
+  }
+
+  const sectionRange = getAcceptedPatchSectionRange(markdown, patch);
+  const sectionFilteredMatches = sectionRange
+    ? contextMatches.filter((match) => isTextMatchInsideRange(match, sectionRange))
+    : contextMatches;
+  const uniqueMatches = dedupeAppliedPatchAnchorMatches(
+    sectionFilteredMatches.length > 0 ? sectionFilteredMatches : contextMatches
+  );
+
+  return uniqueMatches.length === 1 ? uniqueMatches[0] : null;
+}
+
+function findDescendantAcceptedPatchAnchorMatch({
+  appliedText,
+  markdown,
+  patch,
+  patches,
+  visitedPatchIds
+}: {
+  appliedText: string;
+  markdown: string;
+  patch: PatchmarkPatch;
+  patches: PatchmarkPatch[];
+  visitedPatchIds: Set<string>;
+}): { matches: TextMatch[]; text: string } | null {
+  const descendants = patches.filter(
+    (candidate) =>
+      candidate.id !== patch.id &&
+      candidate.status === "accepted" &&
+      !visitedPatchIds.has(candidate.id) &&
+      isLaterAcceptedPatch(candidate, patch) &&
+      isLikelyDescendantAcceptedPatch(candidate, patch, appliedText)
+  );
+
+  for (const descendant of descendants) {
+    visitedPatchIds.add(descendant.id);
+
+    const descendantStatus = locateAcceptedPatchAnchor({
+      appliedText: getPatchAppliedText(descendant),
+      includeDescendants: false,
+      markdown,
+      patch: descendant,
+      patches,
+      visitedPatchIds
+    });
+
+    if (
+      descendantStatus.status !== "not_found" &&
+      descendantStatus.status !== "empty_applied_text" &&
+      descendantStatus.matches.length > 0
+    ) {
+      return {
+        matches: descendantStatus.matches,
+        text: descendantStatus.text
+      };
+    }
+  }
+
+  return null;
+}
+
+function isLaterAcceptedPatch(
+  candidate: PatchmarkPatch,
+  patch: PatchmarkPatch
+): boolean {
+  const candidateTimestamp =
+    candidate.applied_at ?? candidate.accepted_at ?? candidate.created_at;
+  const patchTimestamp = patch.applied_at ?? patch.accepted_at ?? patch.created_at;
+
+  return candidateTimestamp > patchTimestamp;
+}
+
+function isLikelyDescendantAcceptedPatch(
+  candidate: PatchmarkPatch,
+  patch: PatchmarkPatch,
+  appliedText: string
+): boolean {
+  const normalizedAppliedText = normalizeAcceptedPatchComparisonText(appliedText);
+  const normalizedCandidateOriginal = normalizeAcceptedPatchComparisonText(
+    candidate.original_text
+  );
+  const normalizedPreviousOriginal = normalizeAcceptedPatchComparisonText(
+    candidate.previous_original_text ?? ""
+  );
+
+  if (
+    normalizedAppliedText &&
+    ((normalizedCandidateOriginal &&
+      normalizedCandidateOriginal === normalizedAppliedText) ||
+      normalizedPreviousOriginal === normalizedAppliedText ||
+      (normalizedAppliedText.length >= 24 &&
+        normalizedCandidateOriginal.length >= 24 &&
+        normalizedCandidateOriginal.includes(normalizedAppliedText)) ||
+      (normalizedAppliedText.length >= 24 &&
+        normalizedCandidateOriginal.length >= 24 &&
+        normalizedAppliedText.includes(normalizedCandidateOriginal)))
+  ) {
+    return true;
+  }
+
+  if (acceptedPatchRangesOverlap(candidate, patch)) {
+    return true;
+  }
+
+  const patchRowAnchor =
+    patch.applied_table_row_anchor ??
+    createStableTableRowAnchor(getAcceptedPatchAppliedTableCells(patch, appliedText));
+  const candidateRowAnchor =
+    candidate.applied_table_row_anchor ??
+    createStableTableRowAnchor(parseMarkdownTableRow(candidate.original_text));
+
+  return Boolean(patchRowAnchor && candidateRowAnchor && patchRowAnchor === candidateRowAnchor);
+}
+
+function acceptedPatchRangesOverlap(
+  candidate: PatchmarkPatch,
+  patch: PatchmarkPatch
+): boolean {
+  if (
+    typeof candidate.applied_start_offset !== "number" ||
+    typeof candidate.applied_end_offset !== "number" ||
+    typeof patch.applied_start_offset !== "number" ||
+    typeof patch.applied_end_offset !== "number"
+  ) {
+    return false;
+  }
+
+  return (
+    candidate.applied_start_offset <= patch.applied_end_offset &&
+    candidate.applied_end_offset >= patch.applied_start_offset
+  );
+}
+
+function getAcceptedPatchSectionRange(
+  markdown: string,
+  patch: PatchmarkPatch
+): (TextMatch & { searchedWholeDocument?: boolean }) | null {
+  const headings = parseMarkdownHeadings(markdown);
+  const appliedHeading = findAcceptedPatchHeading(headings, patch);
+
+  if (appliedHeading) {
+    return getSectionRange(markdown, headings, appliedHeading);
+  }
+
+  return getPatchTargetHeadingSectionRange(
+    markdown,
+    patch.applied_heading ?? patch.target_heading
+  );
+}
+
+function findAcceptedPatchHeading(
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  patch: PatchmarkPatch
+) {
+  const headingText = patch.applied_heading ?? patch.target_heading;
+  const headingId = patch.applied_heading_id;
+
+  if (!headingText && !headingId) {
+    return null;
+  }
+
+  const candidates = headings.filter((heading) => {
+    const textMatches =
+      headingText &&
+      normalizePatchTargetHeading(heading.text) ===
+        normalizePatchTargetHeading(headingText);
+    const idMatches = headingId && createMarkdownHeadingId(heading.text) === headingId;
+
+    return textMatches || idMatches;
+  });
+
+  if (candidates.length <= 1 || !patch.applied_heading_path) {
+    return candidates[0] ?? null;
+  }
+
+  return (
+    candidates.find((heading) =>
+      areHeadingPathsEqual(getHeadingPath(headings, heading), patch.applied_heading_path ?? [])
+    ) ??
+    candidates[0] ??
+    null
+  );
+}
+
+function isTextMatchInsideRange(match: TextMatch, range: TextMatch): boolean {
+  return match.start >= range.start && match.end <= range.end;
+}
+
+function dedupeAppliedPatchAnchorMatches(
+  matches: AppliedPatchAnchorMatch[]
+): AppliedPatchAnchorMatch[] {
+  const seen = new Set<string>();
+
+  return matches.filter((match) => {
+    const key = `${match.start}:${match.end}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function normalizeAcceptedPatchComparisonText(text: string): string {
+  return normalizeDomText(getMarkdownPlainText(text) || text).toLowerCase();
+}
+
+function getMarkdownPlainText(markdown: string): string {
+  return buildMarkdownPlainTextIndex(markdown).text;
+}
+
+function createStableTableRowAnchor(cells: string[]): string | undefined {
+  const normalizedCells = cells.map(normalizeTableCellForMatch);
+  const stableCellIndex = normalizedCells.findIndex((cell) => cell.length > 0);
+
+  if (stableCellIndex === -1) {
+    return undefined;
+  }
+
+  return `${stableCellIndex}:${normalizedCells[stableCellIndex].toLowerCase()}`;
 }
 
 function findTableRowRebaseCandidates(
@@ -6435,6 +6974,14 @@ function normalizePatchTargetHeading(heading: string): string {
     .replace(/^#{1,6}\s+/, "")
     .replace(/\s+#+\s*$/, "")
     .replace(/\s+/g, " ");
+}
+
+function createMarkdownHeadingId(heading: string): string {
+  return normalizePatchTargetHeading(heading)
+    .toLowerCase()
+    .replace(/[^a-z0-9\s-]/g, "")
+    .trim()
+    .replace(/\s+/g, "-");
 }
 
 function findMarkdownTablesInRange(
@@ -6648,6 +7195,14 @@ function createAppliedPatchAnchorMetadata({
     headings,
     safeStart
   );
+  const tableRowAnchorMetadata = createAppliedTableRowAnchorMetadata({
+    containingHeading,
+    headings,
+    markdown,
+    rowEnd: safeEnd,
+    rowStart: safeStart,
+    text
+  });
 
   return {
     applied_text: text,
@@ -6662,9 +7217,71 @@ function createAppliedPatchAnchorMetadata({
       Math.min(markdown.length, safeEnd + contextRadius)
     ),
     applied_heading: containingHeading?.text,
+    applied_heading_id: containingHeading
+      ? createMarkdownHeadingId(containingHeading.text)
+      : undefined,
     applied_heading_path: containingHeading
       ? getHeadingPath(headings, containingHeading)
-      : undefined
+      : undefined,
+    ...tableRowAnchorMetadata
+  };
+}
+
+function createAppliedTableRowAnchorMetadata({
+  containingHeading,
+  headings,
+  markdown,
+  rowEnd,
+  rowStart,
+  text
+}: {
+  containingHeading?: ReturnType<typeof parseMarkdownHeadings>[number];
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  rowEnd: number;
+  rowStart: number;
+  text: string;
+}): Partial<PatchmarkPatch> {
+  if (!isMarkdownTableDataSnippet(text)) {
+    return {};
+  }
+
+  const appliedCells = parseMarkdownTableRow(text);
+  const rowAnchor = createStableTableRowAnchor(appliedCells);
+
+  if (!rowAnchor) {
+    return {};
+  }
+
+  const searchRange = containingHeading
+    ? getSectionRange(markdown, headings, containingHeading)
+    : {
+        start: 0,
+        end: markdown.length
+      };
+  const tables = findMarkdownTablesInRange(markdown, {
+    ...searchRange,
+    searchedWholeDocument: !containingHeading
+  });
+
+  for (const [tableIndex, table] of tables.entries()) {
+    const rowIndex = table.rows.findIndex(
+      (row) => row.start === rowStart && row.end === rowEnd
+    );
+
+    if (rowIndex !== -1) {
+      return {
+        applied_table_index: tableIndex,
+        applied_table_row_index: rowIndex,
+        applied_table_row_anchor: rowAnchor,
+        applied_table_row_cells: appliedCells.map(normalizeTableCellForMatch)
+      };
+    }
+  }
+
+  return {
+    applied_table_row_anchor: rowAnchor,
+    applied_table_row_cells: appliedCells.map(normalizeTableCellForMatch)
   };
 }
 
@@ -8113,16 +8730,20 @@ function getPatchReviewAnchorLabel(anchorStatus: PatchReviewAnchorStatus): strin
     return getPatchApplicabilityLabel(anchorStatus.applicability);
   }
 
-  if (
-    anchorStatus.status === "present_at_applied_offsets" ||
-    anchorStatus.status === "found_once" ||
-    anchorStatus.status === "empty_applied_text"
-  ) {
+  if (anchorStatus.status === "empty_applied_text") {
     return "Patch was applied.";
+  }
+
+  if (isAcceptedPatchEvolved(anchorStatus)) {
+    return "Patch content evolved after application.";
   }
 
   if (anchorStatus.status === "multiple_matches") {
     return "Patch was applied, but the applied text now appears multiple times.";
+  }
+
+  if (anchorStatus.status !== "not_found") {
+    return "Patch was applied.";
   }
 
   return "Patch was applied, but the applied text is no longer found.";
@@ -8153,11 +8774,16 @@ function getPatchReviewAnchorShortLabel(
     return getPatchApplicabilityShortLabel(anchorStatus.applicability);
   }
 
-  if (
-    anchorStatus.status === "present_at_applied_offsets" ||
-    anchorStatus.status === "found_once"
-  ) {
+  if (anchorStatus.status === "exact_match") {
     return "Applied text present";
+  }
+
+  if (anchorStatus.status === "normalized_match") {
+    return "Applied text present after normalization";
+  }
+
+  if (isAcceptedPatchEvolved(anchorStatus)) {
+    return "Applied content evolved";
   }
 
   if (anchorStatus.status === "empty_applied_text") {
@@ -8194,12 +8820,24 @@ function getPatchReviewAnchorDetail(anchorStatus: PatchReviewAnchorStatus): stri
     return getPatchApplicabilityDetail(anchorStatus.applicability);
   }
 
-  if (anchorStatus.status === "present_at_applied_offsets") {
-    return "Applied text is present at the recorded location in the current document.";
+  if (anchorStatus.status === "exact_match") {
+    return "Applied text is present in the current document.";
   }
 
-  if (anchorStatus.status === "found_once") {
-    return "Applied text was found exactly once in the current document.";
+  if (anchorStatus.status === "normalized_match") {
+    return "Applied text was recovered with normalized Markdown/plain-text matching.";
+  }
+
+  if (anchorStatus.status === "row_match") {
+    return "Applied table-row content was recovered by structural row anchor.";
+  }
+
+  if (anchorStatus.status === "section_match") {
+    return "Applied content was recovered inside the recorded section anchor.";
+  }
+
+  if (anchorStatus.status === "evolved_after_patch") {
+    return "A later patch or surrounding context indicates this patch target evolved after application.";
   }
 
   if (anchorStatus.status === "multiple_matches") {
@@ -8221,9 +8859,12 @@ function getPatchReviewAnchorClassName(
   }
 
   if (
-    anchorStatus.status === "present_at_applied_offsets" ||
-    anchorStatus.status === "found_once" ||
-    anchorStatus.status === "empty_applied_text"
+    anchorStatus.status === "empty_applied_text" ||
+    anchorStatus.status === "evolved_after_patch" ||
+    anchorStatus.status === "exact_match" ||
+    anchorStatus.status === "normalized_match" ||
+    anchorStatus.status === "row_match" ||
+    anchorStatus.status === "section_match"
   ) {
     return "exact_match";
   }
@@ -8235,12 +8876,55 @@ function getPatchReviewAnchorClassName(
   return "not_found";
 }
 
+function isAcceptedPatchTraceable(
+  anchorStatus: Extract<PatchReviewAnchorStatus, { kind: "accepted" }>
+): boolean {
+  return (
+    anchorStatus.status === "evolved_after_patch" ||
+    anchorStatus.status === "exact_match" ||
+    anchorStatus.status === "normalized_match" ||
+    anchorStatus.status === "row_match" ||
+    anchorStatus.status === "section_match"
+  );
+}
+
+function isAcceptedPatchEvolved(
+  anchorStatus: Extract<PatchReviewAnchorStatus, { kind: "accepted" }>
+): boolean {
+  return (
+    anchorStatus.status === "evolved_after_patch" ||
+    anchorStatus.status === "row_match" ||
+    anchorStatus.status === "section_match"
+  );
+}
+
+function getAcceptedPatchAnchorDiagnostic(
+  anchorStatus: Extract<PatchReviewAnchorStatus, { kind: "accepted" }>
+):
+  | "exact_match"
+  | "evolved_after_patch"
+  | "normalized_match"
+  | "not_found"
+  | "row_match"
+  | "section_match" {
+  if (
+    anchorStatus.status === "empty_applied_text" ||
+    anchorStatus.status === "multiple_matches"
+  ) {
+    return anchorStatus.matches.length > 0 ? "exact_match" : "not_found";
+  }
+
+  return anchorStatus.status;
+}
+
 function getPatchDisplayState(
   patch: PatchmarkPatch,
   anchorStatus: PatchReviewAnchorStatus
 ): PatchDisplayState {
   if (patch.status === "accepted") {
-    return "applied";
+    return anchorStatus.kind === "accepted" && isAcceptedPatchEvolved(anchorStatus)
+      ? "applied_evolved"
+      : "applied";
   }
 
   if (patch.status === "rejected") {
@@ -8266,6 +8950,10 @@ function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
     return "APPLIED";
   }
 
+  if (displayState === "applied_evolved") {
+    return "APPLIED AND EVOLVED";
+  }
+
   if (displayState === "needs_review") {
     return "NEEDS REVIEW";
   }
@@ -8275,14 +8963,14 @@ function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "STALE";
+    return "STALE BEFORE APPLY";
   }
 
   return "PENDING";
 }
 
 function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
-  if (displayState === "applied") {
+  if (displayState === "applied" || displayState === "applied_evolved") {
     return "View applied patch";
   }
 
@@ -8302,12 +8990,16 @@ function getPatchReviewIntro(displayState: PatchDisplayState): string {
     return "This patch has already been applied. Review is read-only.";
   }
 
+  if (displayState === "applied_evolved") {
+    return "This patch was applied and its target content evolved later. Review is read-only.";
+  }
+
   if (displayState === "rejected") {
     return "This patch was rejected. Review is read-only and the document was not changed.";
   }
 
   if (displayState === "stale") {
-    return "This patch is stale. Review is read-only.";
+    return "This patch went stale before apply. Review is read-only.";
   }
 
   if (displayState === "needs_review") {
