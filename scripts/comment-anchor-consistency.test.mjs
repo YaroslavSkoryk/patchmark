@@ -228,12 +228,13 @@ function recoverPersistedAnchorFromCurrentMarkdown(comment, markdown) {
     suggestedText
   );
   assert.equal(validateAnchor(patchedMarkdown, reloadedComment.anchor), "active");
+  assert.equal(reloadedComment.patch_impacts.at(-1)?.result, "reanchored");
   assert.equal(
     getPatchImpactForCurrentAnchorDisplay({
       anchorStatus: "active",
       latestPatchImpact: reloadedComment.patch_impacts.at(-1)
-    })?.result,
-    "reanchored"
+    }),
+    undefined
   );
   assert.equal(
     getPatchImpactForCurrentAnchorDisplay({

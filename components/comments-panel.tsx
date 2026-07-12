@@ -13,7 +13,11 @@ import {
   createFloatingCommentLayout,
   getStageRelativePreferredTop
 } from "@/lib/comments/floating-comment-layout";
-import { getPatchImpactForCurrentAnchorDisplay } from "@/lib/comments/comment-anchor-state";
+import {
+  getVisibleAnchorStatus,
+  getPatchImpactForCurrentAnchorDisplay,
+  getVisibleCommentThreadEntries,
+} from "@/lib/comments/comment-anchor-state";
 import {
   type CommentAnchorStatus,
   type PatchmarkComment,
@@ -1224,12 +1228,13 @@ function CommentCard({
     label: getCommentAnchorLabel(comment),
     status: "document" as const
   };
-  const threadEntries = comment.thread;
+  const threadEntries = getVisibleCommentThreadEntries(comment.thread);
   const isReplying = replyingCommentId === comment.id;
   const isEditing = editingCommentId === comment.id;
   const isQueuedForExport =
     comment.export_state.focus_state === "in_focus" ||
     comment.export_state.focus_state === "awaiting_reply";
+  const focusStateLabel = getCommentFocusStateLabel(comment);
   const latestPatchImpact = comment.patch_impacts?.at(-1);
   const displayPatchImpact = getPatchImpactForCurrentAnchorDisplay(
     {
@@ -1325,20 +1330,26 @@ function CommentCard({
             </span>
           </div>
           <strong className="comment-target">{anchorSummary.label}</strong>
-          <span
-            className={`comment-focus-state comment-focus-state-${comment.status === "resolved"
-              ? "resolved"
-              : comment.export_state.focus_state
-            }`}
-          >
-            {getCommentFocusStateLabel(comment)}
-          </span>
-          <span
-            className={`comment-anchor-status comment-anchor-status-${anchorSummary.status}`}
-          >
-            {getAnchorStatusLabel(anchorSummary.status)}
-          </span>
-          {anchorSummary.detail ? (
+          {focusStateLabel !== "Idle" ? (
+            <span
+              className={`comment-focus-state comment-focus-state-${
+                comment.status === "resolved"
+                  ? "resolved"
+                  : comment.export_state.focus_state
+              }`}
+            >
+              {focusStateLabel}
+            </span>
+          ) : null}
+          {shouldShowAnchorStatusBadge(anchorSummary.status) ? (
+            <span
+              className={`comment-anchor-status comment-anchor-status-${anchorSummary.status}`}
+            >
+              {getAnchorStatusLabel(anchorSummary.status)}
+            </span>
+          ) : null}
+          {shouldShowAnchorStatusBadge(anchorSummary.status) &&
+          anchorSummary.detail ? (
             <span className="comment-anchor-detail">{anchorSummary.detail}</span>
           ) : null}
           {displayPatchImpact ? (
@@ -1416,8 +1427,8 @@ function CommentCard({
           {threadEntries.length > 0 ? (
             <div className="comment-thread-preview">
               <span>
-                Thread · {comment.thread.length} entr
-                {comment.thread.length === 1 ? "y" : "ies"}
+                Thread · {threadEntries.length} entr
+                {threadEntries.length === 1 ? "y" : "ies"}
               </span>
               {threadEntries.map((entry) => (
                 <div className="comment-thread-entry" key={entry.id}>
@@ -1696,10 +1707,14 @@ function getAnchorStatusLabel(status: CommentAnchorStatus): string {
   }
 
   if (status === "ambiguous") {
-    return "Multiple matches";
+    return "Anchor needs review";
   }
 
   return "Anchor not found";
+}
+
+function shouldShowAnchorStatusBadge(status: CommentAnchorStatus): boolean {
+  return getVisibleAnchorStatus(status) !== undefined;
 }
 
 function getPatchImpactStatusLabel({

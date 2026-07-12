@@ -8794,6 +8794,31 @@ function recoverPersistableStaleCommentAnchors({
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
+    const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
+
+    if (
+      latestNeedsReviewImpact &&
+      isStoredCommentAnchorCurrentlyValid({
+        comment,
+        headings,
+        markdown
+      })
+    ) {
+      didRecover = true;
+
+      return appendPatchImpactToComment({
+        comment: {
+          ...comment,
+          updated_at: recoveredAt
+        },
+        createdAt: recoveredAt,
+        impactKind: latestNeedsReviewImpact.impact_kind,
+        note: "Anchor currently resolves.",
+        patchId: latestNeedsReviewImpact.patch_id,
+        result: "reanchored"
+      });
+    }
+
     if (comment.anchor.kind !== "selected_text") {
       return comment;
     }
@@ -8867,6 +8892,33 @@ function recoverPersistableStaleCommentAnchor({
     patchId: latestPatchImpact.patch_id,
     result: "reanchored"
   });
+}
+
+function isStoredCommentAnchorCurrentlyValid({
+  comment,
+  headings,
+  markdown
+}: {
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): boolean {
+  const { anchor } = comment;
+
+  if (anchor.kind === "document") {
+    return true;
+  }
+
+  if (anchor.kind === "section") {
+    return Boolean(
+      findMatchingHeading(headings, {
+        level: anchor.heading_level,
+        text: anchor.heading
+      })
+    );
+  }
+
+  return Boolean(getCurrentSelectedTextOffsetMatch(anchor, markdown));
 }
 
 function updateCommentAnchorAfterPatch({
@@ -11479,6 +11531,22 @@ function getLatestNeedsReviewPatchImpact(
   return latestImpact?.result === "needs_review" ? latestImpact : null;
 }
 
+function getAnchorNeedsReviewDetail(
+  latestNeedsReviewImpact: PatchmarkCommentPatchImpact | null
+): string {
+  return latestNeedsReviewImpact
+    ? `Patchmark found multiple possible matches after ${latestNeedsReviewImpact.patch_id}.`
+    : "Patchmark found multiple possible matches.";
+}
+
+function getAnchorNotFoundDetail(
+  latestNeedsReviewImpact: PatchmarkCommentPatchImpact | null
+): string {
+  return latestNeedsReviewImpact
+    ? `The anchor stopped resolving after ${latestNeedsReviewImpact.patch_id} changed this section.`
+    : "The anchor text no longer resolves in the current document.";
+}
+
 function resolveCommentAnchor(
   comment: PatchmarkComment,
   markdown: string,
@@ -11550,7 +11618,7 @@ function resolveCommentAnchor(
 
   if (contextResolution.status === "ambiguous") {
     return {
-      detail: "Could not identify a unique surrounding context.",
+      detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "ambiguous"
     };
@@ -11560,7 +11628,7 @@ function resolveCommentAnchor(
     return {
       contextEnd: contextResolution.contextEnd,
       contextStart: contextResolution.contextStart,
-      detail: "Exact selected text not found, surrounding context still exists.",
+      detail: getAnchorNotFoundDetail(latestNeedsReviewImpact),
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "not_found"
     };
@@ -11583,9 +11651,7 @@ function resolveCommentAnchor(
 
   if (matches.length > 1) {
     return {
-      detail: anchor.anchor_context
-        ? "Could not identify a unique surrounding context."
-        : "Multiple matches for selected text.",
+      detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "ambiguous"
     };
@@ -11611,7 +11677,7 @@ function resolveCommentAnchor(
 
   if (recoveredAnchor.status === "ambiguous") {
     return {
-      detail: recoveredAnchor.reason,
+      detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "ambiguous"
     };
@@ -11619,7 +11685,7 @@ function resolveCommentAnchor(
 
   if (latestNeedsReviewImpact) {
     return {
-      detail: `Affected by ${latestNeedsReviewImpact.patch_id}. Please review this anchor.`,
+      detail: getAnchorNotFoundDetail(latestNeedsReviewImpact),
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
       status: "not_found"
     };
@@ -11636,7 +11702,7 @@ function resolveCommentAnchor(
     const lineRange = getHeadingLineRange(markdown, fallbackHeading);
 
     return {
-      detail: "Text not found, section still exists.",
+      detail: getAnchorNotFoundDetail(latestNeedsReviewImpact),
       fallbackEnd: lineRange.end,
       fallbackStart: lineRange.start,
       label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
