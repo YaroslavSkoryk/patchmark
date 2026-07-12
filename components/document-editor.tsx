@@ -42,6 +42,12 @@ import {
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import {
+  createAppliedPatchReviewContent,
+  createPatchReviewSnippetPreview,
+  type AppliedPatchReviewContent,
+  type AppliedPatchOriginalSource
+} from "@/lib/patches/patch-review-content";
+import {
   canOpenProjectFolder,
   createProjectFromMarkdown,
   createProjectSnapshot,
@@ -3737,6 +3743,7 @@ export function DocumentEditor() {
             0,
             reviewablePatches.findIndex((patch) => patch.id === selectedPatch.id)
           )}
+          project={projectHandle}
           reviewablePatchCount={reviewablePatches.length}
         />
       ) : null}
@@ -4053,6 +4060,7 @@ function PatchReviewDialog({
   patch,
   patchGroup,
   patchIndex,
+  project,
   reviewablePatchCount
 }: {
   anchorStatus: PatchReviewAnchorStatus;
@@ -4071,6 +4079,7 @@ function PatchReviewDialog({
   patch: PatchmarkPatch;
   patchGroup: DerivedPatchGroup | null;
   patchIndex: number;
+  project: PatchmarkProjectHandle | null;
   reviewablePatchCount: number;
 }) {
   const latestChatGptReply = comment
@@ -4080,9 +4089,30 @@ function PatchReviewDialog({
   const reasonSources = patch.reason_sources ?? patch.sources ?? [];
   const riskSources = patch.risk_sources ?? [];
   const [reviewMode, setReviewMode] = useState<PatchReviewMode>("visual");
+  const [preApplySnapshotMarkdown, setPreApplySnapshotMarkdown] = useState<
+    string | null
+  >(null);
+  const appliedReviewContent = useMemo(
+    () =>
+      patch.status === "accepted" && anchorStatus.kind === "accepted"
+        ? createAppliedPatchReviewContent({
+            anchorStatus,
+            patch,
+            preApplySnapshotMarkdown
+          })
+        : null,
+    [anchorStatus, patch, preApplySnapshotMarkdown]
+  );
   const visualPreview = useMemo(
-    () => createPatchVisualPreview(markdown, patch, anchorStatus),
-    [anchorStatus, markdown, patch]
+    () =>
+      createPatchVisualPreview({
+        acceptedReviewContent: appliedReviewContent,
+        anchorStatus,
+        markdown,
+        patch,
+        preApplySnapshotMarkdown
+      }),
+    [anchorStatus, appliedReviewContent, markdown, patch, preApplySnapshotMarkdown]
   );
   const acceptDisabledMessage = getPatchAcceptDisabledMessage(
     patch,
@@ -4101,6 +4131,45 @@ function PatchReviewDialog({
   useEffect(() => {
     setReviewMode("visual");
   }, [patch.id]);
+
+  useEffect(() => {
+    let isCancelled = false;
+
+    setPreApplySnapshotMarkdown(null);
+
+    if (
+      patch.status !== "accepted" ||
+      !project ||
+      !patch.pre_apply_snapshot_file
+    ) {
+      return () => {
+        isCancelled = true;
+      };
+    }
+
+    const snapshotVersion: PatchmarkVersionEntry = {
+      id: patch.pre_apply_snapshot_id ?? patch.pre_apply_snapshot_file,
+      file: patch.pre_apply_snapshot_file,
+      created_at: patch.applied_at ?? patch.accepted_at ?? patch.created_at,
+      reason: `before accepting patch ${patch.id}`
+    };
+
+    void readProjectVersionMarkdown(project, snapshotVersion)
+      .then((snapshotMarkdown) => {
+        if (!isCancelled) {
+          setPreApplySnapshotMarkdown(snapshotMarkdown);
+        }
+      })
+      .catch(() => {
+        if (!isCancelled) {
+          setPreApplySnapshotMarkdown(null);
+        }
+      });
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [patch, project]);
 
   return (
     <div className="snapshot-dialog-backdrop patch-review-backdrop">
@@ -4360,72 +4429,153 @@ function PatchReviewDialog({
           </section>
 
           {reviewMode === "visual" ? (
-            <div className="patch-review-preview-grid">
-              <section className="patch-review-card">
-                <h3>{patch.status === "accepted" ? "Applied current text" : "Current"}</h3>
-                <MarkdownSnippetPreview markdown={visualPreview.originalMarkdown} />
-                {visualPreview.usesCurrentMatchingRow ? (
-                  <p className="patch-review-preview-note">
-                    Preview uses the current matching table row. Markdown Source
-                    shows the imported original_text until you update the patch
-                    anchor.
-                  </p>
-                ) : visualPreview.usesGenericTableContext ? (
-                  <p className="patch-review-preview-note">
-                    Generic table headers are shown for readability only because
-                    Patchmark could not find the current table header.
-                  </p>
-                ) : visualPreview.usesTableContext ? (
-                  <p className="patch-review-preview-note">
-                    Table header context is shown for readability only. Exact
-                    matching still uses the original patch text.
-                  </p>
-                ) : null}
-              </section>
+            <>
+              <div className="patch-review-preview-grid">
+                <section className="patch-review-card">
+                  <h3>
+                    {patch.status === "accepted"
+                      ? "Original before patch"
+                      : "Current"}
+                  </h3>
+                  <MarkdownSnippetPreview markdown={visualPreview.originalMarkdown} />
+                  {appliedReviewContent?.originalSource === "pre_apply_snapshot" ? (
+                    <p className="patch-review-preview-note">
+                      Original text was recovered from the pre-apply snapshot for
+                      display only. Patch history was not changed.
+                    </p>
+                  ) : appliedReviewContent?.originalSource === "unavailable" ? (
+                    <p className="patch-review-preview-note">
+                      Patchmark could not safely recover the original text for
+                      this legacy patch.
+                    </p>
+                  ) : visualPreview.usesCurrentMatchingRow ? (
+                    <p className="patch-review-preview-note">
+                      Preview uses the current matching table row. Markdown
+                      Source shows the imported original_text until you update
+                      the patch anchor.
+                    </p>
+                  ) : visualPreview.usesGenericTableContext ? (
+                    <p className="patch-review-preview-note">
+                      Generic table headers are shown for readability only
+                      because Patchmark could not find the current table header.
+                    </p>
+                  ) : visualPreview.usesTableContext ? (
+                    <p className="patch-review-preview-note">
+                      Table header context is shown for readability only. Exact
+                      matching still uses the original patch text.
+                    </p>
+                  ) : null}
+                </section>
 
-              <section className="patch-review-card">
-                <h3>{patch.status === "accepted" ? "Accepted replacement" : "Proposed"}</h3>
-                <MarkdownSnippetPreview markdown={visualPreview.suggestedMarkdown} />
-                {visualPreview.usesGenericTableContext ? (
-                  <p className="patch-review-preview-note">
-                    Generic table headers are display-only and will not be stored
-                    with the patch.
-                  </p>
-                ) : visualPreview.usesTableContext ? (
-                  <p className="patch-review-preview-note">
-                    Table header context is display-only and will not be stored
-                    with the patch.
-                  </p>
-                ) : null}
-                <PatchSourceList
-                  label="Suggested text sources"
-                  sources={suggestedTextSources}
-                />
-              </section>
-            </div>
+                <section className="patch-review-card">
+                  <h3>
+                    {patch.status === "accepted"
+                      ? "Applied replacement"
+                      : "Proposed"}
+                  </h3>
+                  <MarkdownSnippetPreview markdown={visualPreview.suggestedMarkdown} />
+                  {visualPreview.usesGenericTableContext ? (
+                    <p className="patch-review-preview-note">
+                      Generic table headers are display-only and will not be
+                      stored with the patch.
+                    </p>
+                  ) : visualPreview.usesTableContext ? (
+                    <p className="patch-review-preview-note">
+                      Table header context is display-only and will not be
+                      stored with the patch.
+                    </p>
+                  ) : null}
+                  <PatchSourceList
+                    label="Suggested text sources"
+                    sources={suggestedTextSources}
+                  />
+                </section>
+              </div>
+
+              {visualPreview.currentMarkdown ? (
+                <section className="patch-review-card">
+                  <h3>Current text after later changes</h3>
+                  <MarkdownSnippetPreview markdown={visualPreview.currentMarkdown} />
+                  {visualPreview.currentUsesGenericTableContext ? (
+                    <p className="patch-review-preview-note">
+                      Generic table headers are display-only because Patchmark
+                      could not find the current table header.
+                    </p>
+                  ) : visualPreview.currentUsesTableContext ? (
+                    <p className="patch-review-preview-note">
+                      Table header context is display-only for current-state
+                      readability.
+                    </p>
+                  ) : null}
+                </section>
+              ) : null}
+            </>
           ) : (
             <>
-              <section className="patch-review-card">
-                <h3>Original text</h3>
-                <p className="patch-review-source-note">
-                  Exact Markdown Patchmark will use for matching/replacement in
-                  Phase 3B.
-                </p>
-                <pre>{patch.original_text}</pre>
-              </section>
+              {patch.status === "accepted" && appliedReviewContent ? (
+                <>
+                  <section className="patch-review-card">
+                    <h3>Original before patch</h3>
+                    <p className="patch-review-source-note">
+                      {getAcceptedOriginalSourceNote(
+                        appliedReviewContent.originalSource
+                      )}
+                    </p>
+                    {appliedReviewContent.originalSource === "unavailable" ? (
+                      <p>{appliedReviewContent.originalMarkdown}</p>
+                    ) : (
+                      <pre>{appliedReviewContent.originalMarkdown}</pre>
+                    )}
+                  </section>
 
-              <section className="patch-review-card">
-                <h3>Suggested replacement</h3>
-                <p className="patch-review-source-note">
-                  Exact Markdown Patchmark will use for matching/replacement in
-                  Phase 3B.
-                </p>
-                <pre>{patch.suggested_text}</pre>
-                <PatchSourceList
-                  label="Suggested text sources"
-                  sources={suggestedTextSources}
-                />
-              </section>
+                  <section className="patch-review-card">
+                    <h3>Applied replacement</h3>
+                    <p className="patch-review-source-note">
+                      Exact Markdown replacement accepted at application time.
+                    </p>
+                    <pre>{appliedReviewContent.appliedMarkdown}</pre>
+                    <PatchSourceList
+                      label="Suggested text sources"
+                      sources={suggestedTextSources}
+                    />
+                  </section>
+
+                  {appliedReviewContent.currentMarkdown ? (
+                    <section className="patch-review-card">
+                      <h3>Current text after later changes</h3>
+                      <p className="patch-review-source-note">
+                        Exact current Markdown found through applied-anchor and
+                        lineage validation.
+                      </p>
+                      <pre>{appliedReviewContent.currentMarkdown}</pre>
+                    </section>
+                  ) : null}
+                </>
+              ) : (
+                <>
+                  <section className="patch-review-card">
+                    <h3>Original text</h3>
+                    <p className="patch-review-source-note">
+                      Exact Markdown Patchmark will use for
+                      matching/replacement in Phase 3B.
+                    </p>
+                    <pre>{patch.original_text}</pre>
+                  </section>
+
+                  <section className="patch-review-card">
+                    <h3>Suggested replacement</h3>
+                    <p className="patch-review-source-note">
+                      Exact Markdown Patchmark will use for
+                      matching/replacement in Phase 3B.
+                    </p>
+                    <pre>{patch.suggested_text}</pre>
+                    <PatchSourceList
+                      label="Suggested text sources"
+                      sources={suggestedTextSources}
+                    />
+                  </section>
+                </>
+              )}
             </>
           )}
 
@@ -4449,6 +4599,9 @@ function PatchReviewDialog({
 }
 
 type PatchVisualPreview = {
+  currentMarkdown?: string;
+  currentUsesGenericTableContext: boolean;
+  currentUsesTableContext: boolean;
   originalMarkdown: string;
   suggestedMarkdown: string;
   usesCurrentMatchingRow: boolean;
@@ -4775,44 +4928,76 @@ function isMarkdownPreviewBlockStart(line: string, nextLine: string): boolean {
   );
 }
 
-function createPatchVisualPreview(
-  markdown: string,
-  patch: PatchmarkPatch,
-  anchorStatus?: PatchReviewAnchorStatus
-): PatchVisualPreview {
+function createPatchVisualPreview({
+  acceptedReviewContent,
+  anchorStatus,
+  markdown,
+  patch,
+  preApplySnapshotMarkdown
+}: {
+  acceptedReviewContent: AppliedPatchReviewContent | null;
+  anchorStatus?: PatchReviewAnchorStatus;
+  markdown: string;
+  patch: PatchmarkPatch;
+  preApplySnapshotMarkdown?: string | null;
+}): PatchVisualPreview {
   if (patch.status === "accepted") {
-    const appliedText =
-      anchorStatus?.kind === "accepted" && anchorStatus.text.trim().length > 0
-        ? anchorStatus.text
-        : getPatchAppliedText(patch);
-    const tableContext = getPatchTablePreviewContext(
-      markdown,
-      appliedText,
-      appliedText
-    );
-
-    if (tableContext) {
-      const appliedMarkdown = [
-        tableContext.headerRow,
-        tableContext.separatorRow,
-        appliedText.trim()
-      ].join("\n");
-
-      return {
-        originalMarkdown: appliedMarkdown,
-        suggestedMarkdown: appliedMarkdown,
-        usesCurrentMatchingRow: false,
-        usesGenericTableContext: false,
-        usesTableContext: true
-      };
-    }
+    const reviewContent =
+      acceptedReviewContent ??
+      (anchorStatus?.kind === "accepted"
+        ? createAppliedPatchReviewContent({
+            anchorStatus,
+            patch,
+            preApplySnapshotMarkdown
+          })
+        : null);
+    const appliedMarkdown = reviewContent?.appliedMarkdown ?? getPatchAppliedText(patch);
+    const originalMarkdown =
+      reviewContent?.originalMarkdown ??
+      (patch.original_text.length > 0
+        ? patch.original_text
+        : "Original text unavailable for this historical patch.");
+    const originalPreview =
+      reviewContent?.originalSource === "unavailable"
+        ? {
+            markdown: originalMarkdown,
+            usesGenericTableContext: false,
+            usesTableContext: false
+          }
+        : createPatchReviewSnippetPreview({
+            contextMarkdown: preApplySnapshotMarkdown ?? markdown,
+            pairedMarkdown: appliedMarkdown,
+            patch,
+            snippetMarkdown: originalMarkdown
+          });
+    const appliedPreview = createPatchReviewSnippetPreview({
+      contextMarkdown: markdown,
+      pairedMarkdown: originalMarkdown,
+      patch,
+      snippetMarkdown: appliedMarkdown
+    });
+    const currentPreview = reviewContent?.currentMarkdown
+      ? createPatchReviewSnippetPreview({
+          contextMarkdown: markdown,
+          pairedMarkdown: appliedMarkdown,
+          patch,
+          snippetMarkdown: reviewContent.currentMarkdown
+        })
+      : null;
 
     return {
-      originalMarkdown: appliedText,
-      suggestedMarkdown: appliedText,
+      currentMarkdown: currentPreview?.markdown,
+      currentUsesGenericTableContext:
+        currentPreview?.usesGenericTableContext ?? false,
+      currentUsesTableContext: currentPreview?.usesTableContext ?? false,
+      originalMarkdown: originalPreview.markdown,
+      suggestedMarkdown: appliedPreview.markdown,
       usesCurrentMatchingRow: false,
-      usesGenericTableContext: false,
-      usesTableContext: false
+      usesGenericTableContext:
+        originalPreview.usesGenericTableContext ||
+        appliedPreview.usesGenericTableContext,
+      usesTableContext:
+        originalPreview.usesTableContext || appliedPreview.usesTableContext
     };
   }
 
@@ -4834,6 +5019,8 @@ function createPatchVisualPreview(
         tableContext.separatorRow,
         patch.suggested_text.trim()
       ].join("\n"),
+      currentUsesGenericTableContext: false,
+      currentUsesTableContext: false,
       usesCurrentMatchingRow: false,
       usesGenericTableContext: false,
       usesTableContext: true
@@ -4858,6 +5045,8 @@ function createPatchVisualPreview(
         fallbackTableContext.separatorRow,
         fallbackTableContext.suggestedRow
       ].join("\n"),
+      currentUsesGenericTableContext: false,
+      currentUsesTableContext: false,
       usesCurrentMatchingRow: fallbackTableContext.usesCurrentMatchingRow,
       usesGenericTableContext: fallbackTableContext.usesGenericTableContext,
       usesTableContext: true
@@ -4865,6 +5054,8 @@ function createPatchVisualPreview(
   }
 
   return {
+    currentUsesGenericTableContext: false,
+    currentUsesTableContext: false,
     originalMarkdown: patch.original_text,
     suggestedMarkdown: patch.suggested_text,
     usesCurrentMatchingRow: false,
@@ -5105,6 +5296,20 @@ function PatchSourceList({
       </ul>
     </div>
   );
+}
+
+function getAcceptedOriginalSourceNote(
+  source: AppliedPatchOriginalSource
+): string {
+  if (source === "pre_apply_snapshot") {
+    return "Recovered from the pre-apply snapshot for historical review. Patch history was not changed.";
+  }
+
+  if (source === "unavailable") {
+    return "Original text unavailable for this historical patch.";
+  }
+
+  return "Exact persisted Markdown that existed before this patch was applied.";
 }
 
 function getDocumentStatus({
@@ -9170,7 +9375,7 @@ function getPatchReviewAnchorLabel(anchorStatus: PatchReviewAnchorStatus): strin
     return "Patch was applied.";
   }
 
-  return "Patch was applied, but the applied text is no longer found.";
+  return "Patch was applied, but Patchmark cannot currently locate the applied text.";
 }
 
 function getPatchApplicabilityShortLabel(
@@ -9245,34 +9450,34 @@ function getPatchReviewAnchorDetail(anchorStatus: PatchReviewAnchorStatus): stri
   }
 
   if (anchorStatus.status === "exact_match") {
-    return "Applied text is present in the current document.";
+    return "Patch was applied. The applied replacement is still present in the current document.";
   }
 
   if (anchorStatus.status === "normalized_match") {
-    return "Applied text was recovered with normalized Markdown/plain-text matching.";
+    return "Patch was applied. The applied replacement is still present after Markdown/plain-text normalization.";
   }
 
   if (anchorStatus.status === "row_match") {
-    return "Applied table-row content was recovered by structural row anchor.";
+    return "Patch was applied. This table row was changed again later.";
   }
 
   if (anchorStatus.status === "section_match") {
-    return "Applied content was recovered inside the recorded section anchor.";
+    return "Patch was applied. This region was changed again later.";
   }
 
   if (anchorStatus.status === "evolved_after_patch") {
-    return "A later patch or surrounding context indicates this patch target evolved after application.";
+    return "Patch was applied. This region was changed again later.";
   }
 
   if (anchorStatus.status === "multiple_matches") {
-    return "The accepted replacement exists, but Patchmark cannot identify one unique applied location.";
+    return "Patch was applied, but Patchmark cannot identify one unique current location for the applied text.";
   }
 
   if (anchorStatus.status === "empty_applied_text") {
     return "This accepted patch applied an empty replacement, so there is no applied text to locate.";
   }
 
-  return "The document may have changed after this patch was applied.";
+  return "Patch was applied, but Patchmark cannot currently locate the applied text.";
 }
 
 function getPatchReviewAnchorClassName(
