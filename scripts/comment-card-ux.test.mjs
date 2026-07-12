@@ -4,6 +4,42 @@ import {
   getVisibleAnchorStatus,
   getVisibleCommentThreadEntries
 } from "../lib/comments/comment-anchor-state.ts";
+import {
+  cleanCommentAnchorLabel,
+  getCollapsedCommentTarget,
+  getCleanCommentAnchorLabel,
+  normalizeCollapsedCommentText
+} from "../lib/comments/comment-card-display.ts";
+import { readFileSync } from "node:fs";
+
+function makeSelectedTextComment(overrides = {}) {
+  return {
+    id: overrides.id ?? "PM-COMMENT-0001",
+    type: overrides.type ?? "question",
+    status: overrides.status ?? "open",
+    anchor: {
+      kind: "selected_text",
+      selected_text:
+        overrides.selectedText ?? "with manageable founder effort",
+      containing_heading: overrides.heading ?? "## 3. Market View",
+      containing_heading_level: overrides.headingLevel ?? 2,
+      ...overrides.anchor
+    },
+    comment: overrides.comment ?? "Please clarify this claim.",
+    thread: [],
+    export_state: { focus_state: "idle" },
+    created_at: "2026-07-12T00:00:00.000Z",
+    updated_at: "2026-07-12T00:00:00.000Z"
+  };
+}
+
+function collapsedTarget(comment, options = {}) {
+  return getCollapsedCommentTarget({
+    comment,
+    fallbackLabel: options.fallbackLabel ?? getCleanCommentAnchorLabel(comment),
+    locationLabel: options.locationLabel
+  });
+}
 
 const recoveryImpact = {
   impact_kind: "linked_comment",
@@ -133,6 +169,148 @@ const needsReviewImpact = {
       latestPatchImpact: recoveryImpact
     }),
     undefined
+  );
+}
+
+{
+  const target = collapsedTarget(makeSelectedTextComment());
+
+  assert.equal(target.primary, "“with manageable founder effort”");
+  assert.equal(target.secondary, "3. Market View");
+  assert.equal(target.title, "with manageable founder effort");
+  assert.equal(target.variant, "selected_text");
+  assert.equal(target.primary.includes("Selected text in"), false);
+  assert.equal(target.primary.includes("##"), false);
+}
+
+{
+  const openTarget = collapsedTarget(makeSelectedTextComment({ status: "open" }));
+  const resolvedTarget = collapsedTarget(
+    makeSelectedTextComment({ id: "PM-COMMENT-0002", status: "resolved" })
+  );
+
+  assert.equal(openTarget.primary, resolvedTarget.primary);
+  assert.equal(openTarget.secondary, resolvedTarget.secondary);
+}
+
+{
+  const longSelectedText =
+    "This is a deliberately long selected passage that should remain available in full for the card title while CSS clamps the visible collapsed preview to two lines.";
+  const comment = makeSelectedTextComment({ selectedText: longSelectedText });
+  const target = collapsedTarget(comment);
+
+  assert.equal(target.title, longSelectedText);
+  assert.equal(target.primary, `“${longSelectedText}”`);
+  assert.equal(comment.anchor.selected_text, longSelectedText);
+}
+
+{
+  const multilineTarget = collapsedTarget(
+    makeSelectedTextComment({
+      selectedText: "  first line\n\nsecond\tline  "
+    })
+  );
+
+  assert.equal(multilineTarget.primary, "“first line second line”");
+  assert.equal(multilineTarget.title, "first line second line");
+}
+
+{
+  const markdownLikeTarget = collapsedTarget(
+    makeSelectedTextComment({
+      selectedText:
+        'Quotes, Unicode ✓, [link text](https://example.com), and `code` stay literal.'
+    })
+  );
+
+  assert.equal(
+    markdownLikeTarget.primary,
+    "“Quotes, Unicode ✓, [link text](https://example.com), and `code` stay literal.”"
+  );
+}
+
+{
+  const emptyTarget = collapsedTarget(
+    makeSelectedTextComment({ selectedText: " \n\t " }),
+    {
+      fallbackLabel: "Selected text in ## ## 3. Market View",
+      locationLabel: "## ## 3. Market View"
+    }
+  );
+
+  assert.equal(emptyTarget.primary, "3. Market View");
+  assert.equal(emptyTarget.variant, "location");
+}
+
+{
+  const sectionComment = {
+    ...makeSelectedTextComment(),
+    anchor: {
+      kind: "section",
+      heading: "## 3. Market View",
+      heading_level: 2
+    }
+  };
+
+  assert.equal(
+    getCleanCommentAnchorLabel(sectionComment),
+    "Whole section: 3. Market View"
+  );
+  assert.equal(
+    cleanCommentAnchorLabel("Selected text in ## ## 3. Market View"),
+    "Selected text in 3. Market View"
+  );
+}
+
+{
+  assert.equal(
+    normalizeCollapsedCommentText("ordinary citation and content reference prose"),
+    "ordinary citation and content reference prose"
+  );
+}
+
+{
+  const commentsPanelSource = readFileSync(
+    new URL("../components/comments-panel.tsx", import.meta.url),
+    "utf8"
+  );
+  const documentEditorSource = readFileSync(
+    new URL("../components/document-editor.tsx", import.meta.url),
+    "utf8"
+  );
+  const globalCssSource = readFileSync(
+    new URL("../app/globals.css", import.meta.url),
+    "utf8"
+  );
+
+  assert.equal(commentsPanelSource.includes("comment-active-label"), false);
+  assert.equal(commentsPanelSource.includes("aria-current"), true);
+  assert.equal(globalCssSource.includes("-webkit-line-clamp: 2"), true);
+  assert.equal(
+    globalCssSource.includes("patchmark-comment-open-selected-anchor"),
+    true
+  );
+  assert.equal(
+    globalCssSource.includes("patchmark-comment-resolved-selected-anchor"),
+    true
+  );
+  assert.equal(
+    globalCssSource.includes("--comment-anchor-resolved-selected-background"),
+    true
+  );
+  assert.equal(
+    documentEditorSource.includes("COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME"),
+    true
+  );
+  assert.equal(
+    documentEditorSource.includes("COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME"),
+    true
+  );
+  assert.equal(
+    documentEditorSource.includes(
+      "activeCommentState, comments, documentVersion, headings, markdown, mode"
+    ),
+    true
   );
 }
 

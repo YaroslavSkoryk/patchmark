@@ -20,6 +20,10 @@ import {
   getVisibleCommentThreadEntries,
 } from "@/lib/comments/comment-anchor-state";
 import {
+  getCleanCommentAnchorLabel,
+  getCollapsedCommentTarget
+} from "@/lib/comments/comment-card-display";
+import {
   type CommentAnchorStatus,
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
@@ -46,6 +50,7 @@ export type CommentFormValues = {
 export type CommentAnchorSummary = {
   detail?: string;
   label: string;
+  locationLabel?: string;
   status: CommentAnchorStatus;
 };
 
@@ -731,10 +736,6 @@ function FloatingCommentList({
                   editComment={editComment}
                   editType={editType}
                   isActive={isCommentActive(activeCommentState, item.comment.id)}
-                  isAnchorGroupActive={
-                    activeCommentState.kind === "anchor_group" &&
-                    activeCommentState.commentIds.includes(item.comment.id)
-                  }
                   isBusy={isBusy}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
@@ -1030,10 +1031,6 @@ function CommentGroup({
                   editComment={editComment}
                   editType={editType}
                   isActive={isCommentActive(activeCommentState, comment.id)}
-                  isAnchorGroupActive={
-                    activeCommentState.kind === "anchor_group" &&
-                    activeCommentState.commentIds.includes(comment.id)
-                  }
                   isBusy={isBusy}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
@@ -1096,7 +1093,6 @@ type CommentCardProps = {
   editComment: string;
   editType: PatchmarkCommentType;
   isActive: boolean;
-  isAnchorGroupActive: boolean;
   isBusy: boolean;
   onActivateComment: (commentId: string) => void;
   onClearActiveComment: () => void;
@@ -1198,7 +1194,6 @@ function CommentCard({
   editComment,
   editType,
   isActive,
-  isAnchorGroupActive,
   isBusy,
   onActivateComment,
   onClearActiveComment,
@@ -1243,13 +1238,20 @@ function CommentCard({
     }
   );
   const isCompact = !isActive && !isEditing && !isReplying;
+  const collapsedTarget = getCollapsedCommentTarget({
+    comment,
+    fallbackLabel: anchorSummary.label,
+    locationLabel: anchorSummary.locationLabel
+  });
 
   return (
     <article
       aria-label={`${isActive ? "Active comment" : "Comment"} ${comment.id}`}
+      aria-current={isActive ? "true" : undefined}
       className={`comment-card ${quiet ? "comment-card-quiet" : ""} ${
         isCompact ? "comment-card-compact" : "comment-card-active"
       }`}
+      data-active={isActive ? "true" : undefined}
       tabIndex={isCompact ? 0 : undefined}
       onClick={(event) => {
         if (isCompact && !isInteractiveCommentTarget(event.target)) {
@@ -1271,7 +1273,20 @@ function CommentCard({
             <span className="comment-type">[{comment.type}]</span>
             <span>{comment.status}</span>
           </div>
-          <strong className="comment-target">{anchorSummary.label}</strong>
+          <div
+            aria-label={collapsedTarget.title}
+            className={`comment-target comment-target-${collapsedTarget.variant}`}
+            title={collapsedTarget.title}
+          >
+            <strong className="comment-target-primary">
+              {collapsedTarget.primary}
+            </strong>
+            {collapsedTarget.secondary ? (
+              <span className="comment-target-secondary">
+                {collapsedTarget.secondary}
+              </span>
+            ) : null}
+          </div>
           <p className="comment-collapsed-preview">
             {truncateText(comment.comment, 130)}
           </p>
@@ -1285,9 +1300,6 @@ function CommentCard({
         </>
       ) : isEditing ? (
         <form className="comment-form" onSubmit={onEditComment}>
-          <div className="comment-active-label">
-            {isAnchorGroupActive ? "Active anchor group" : "Active comment"}
-          </div>
           <CommentAnchorPreview
             anchorContextKind={
               comment.anchor.kind === "selected_text"
@@ -1325,9 +1337,6 @@ function CommentCard({
           <div className="comment-card-meta">
             <span className="comment-type">[{comment.type}]</span>
             <span>{comment.status}</span>
-            <span className="comment-active-label">
-              {isAnchorGroupActive ? "Active anchor group" : "Active comment"}
-            </span>
           </div>
           <strong className="comment-target">{anchorSummary.label}</strong>
           {focusStateLabel !== "Idle" ? (
@@ -1672,29 +1681,7 @@ function CommentTypeSelect({ onChange, value }: CommentTypeSelectProps) {
 }
 
 function getCommentAnchorLabel(comment: PatchmarkComment): string {
-  if (comment.anchor.kind === "document") {
-    return "Whole document";
-  }
-
-  if (comment.anchor.kind === "section") {
-    return `Whole section: ${"#".repeat(comment.anchor.heading_level ?? 1)} ${
-      comment.anchor.heading
-    }`;
-  }
-
-  return `Selected text in ${getContainingHeadingLabel(comment.anchor)}`;
-}
-
-function getContainingHeadingLabel(
-  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
-): string {
-  if (!anchor.containing_heading) {
-    return "document";
-  }
-
-  return `${"#".repeat(anchor.containing_heading_level ?? 1)} ${
-    anchor.containing_heading
-  }`;
+  return getCleanCommentAnchorLabel(comment);
 }
 
 function getAnchorStatusLabel(status: CommentAnchorStatus): string {

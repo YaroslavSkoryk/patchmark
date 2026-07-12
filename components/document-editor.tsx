@@ -18,6 +18,10 @@ import {
   type CommentFormValues
 } from "@/components/comments-panel";
 import { getLastKnownCommentAnchorPositionRange } from "@/lib/comments/comment-anchor-position";
+import {
+  cleanMarkdownHeadingText,
+  getSelectedTextLocationLabel
+} from "@/lib/comments/comment-card-display";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import {
@@ -313,7 +317,10 @@ type CssHighlightConstructor = new (...ranges: Range[]) => unknown;
 const ANCHOR_CONTEXT_CHARS = 160;
 const SHORT_SELECTION_HELP =
   "Could not create a reliable anchor. Try selecting a larger phrase or add a section comment.";
-const COMMENT_HIGHLIGHT_NAME = "patchmark-comment-anchors";
+const COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME =
+  "patchmark-comment-open-selected-anchor";
+const COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME =
+  "patchmark-comment-resolved-selected-anchor";
 const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/i;
 const DOCUMENT_RAW_URL_PATTERN = /\bhttps?:\/\/\S+/i;
 const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
@@ -785,6 +792,7 @@ export function DocumentEditor() {
       );
 
       updateVisualCommentHighlights({
+        activeCommentState,
         comments,
         container: editorDocumentRef.current,
         headings,
@@ -856,7 +864,7 @@ export function DocumentEditor() {
       window.removeEventListener("resize", scheduleCommentAnchorSync);
       clearVisualCommentHighlights();
     };
-  }, [comments, documentVersion, headings, markdown, mode]);
+  }, [activeCommentState, comments, documentVersion, headings, markdown, mode]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving) {
@@ -11289,12 +11297,14 @@ function isPointInsideRangeClientRects(
 }
 
 function updateVisualCommentHighlights({
+  activeCommentState,
   comments,
   container,
   headings,
   markdown,
   mode
 }: {
+  activeCommentState: ActiveCommentState;
   comments: PatchmarkComment[];
   container: HTMLElement | null;
   headings: ReturnType<typeof parseMarkdownHeadings>;
@@ -11308,67 +11318,95 @@ function updateVisualCommentHighlights({
   }
 
   if (!container || mode !== "visual") {
-    highlightApi.registry.delete(COMMENT_HIGHLIGHT_NAME);
+    deleteVisualCommentHighlightRegistries(highlightApi.registry);
     return;
   }
 
-  const ranges: Range[] = [];
+  const activeCommentIds = getActiveCommentIds(activeCommentState);
+  const openSelectedRanges: Range[] = [];
+  const resolvedSelectedRanges: Range[] = [];
 
   for (const comment of comments) {
-    const resolution = resolveCommentAnchor(comment, markdown, headings);
-
-    if (resolution.status !== "active") {
+    if (!activeCommentIds.includes(comment.id)) {
       continue;
     }
 
-    if (comment.anchor.kind === "document") {
-      continue;
-    }
-
-    if (comment.anchor.kind === "section") {
-      const currentHeading = findMatchingHeading(headings, {
-        level: comment.anchor.heading_level,
-        text: comment.anchor.heading
-      });
-      const range = currentHeading
-        ? findVisualHeadingRange({
-            container,
-            heading: currentHeading
-          })
-        : null;
-
-      if (range) {
-        ranges.push(range);
-      }
-
-      continue;
-    }
-
-    const match = findUniqueVisualSelectedTextMatch({
-      anchor: comment.anchor,
-      container
+    const range = findVisualCommentAnchorRange({
+      comment,
+      container,
+      headings,
+      markdown
     });
 
-    if (match) {
-      ranges.push(match.range);
+    if (!range) {
+      continue;
+    }
+
+    if (comment.status === "resolved") {
+      resolvedSelectedRanges.push(range);
+    } else {
+      openSelectedRanges.push(range);
     }
   }
 
-  if (ranges.length === 0) {
-    highlightApi.registry.delete(COMMENT_HIGHLIGHT_NAME);
-    return;
-  }
-
-  highlightApi.registry.set(
-    COMMENT_HIGHLIGHT_NAME,
-    new highlightApi.Highlight(...ranges)
-  );
+  setVisualCommentHighlightRegistry({
+    Highlight: highlightApi.Highlight,
+    name: COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME,
+    ranges: openSelectedRanges,
+    registry: highlightApi.registry
+  });
+  setVisualCommentHighlightRegistry({
+    Highlight: highlightApi.Highlight,
+    name: COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME,
+    ranges: resolvedSelectedRanges,
+    registry: highlightApi.registry
+  });
 }
 
 function clearVisualCommentHighlights(): void {
   const highlightApi = getCssHighlightApi();
 
-  highlightApi?.registry.delete(COMMENT_HIGHLIGHT_NAME);
+  if (highlightApi) {
+    deleteVisualCommentHighlightRegistries(highlightApi.registry);
+  }
+}
+
+function getActiveCommentIds(activeCommentState: ActiveCommentState): string[] {
+  if (activeCommentState.kind === "comment") {
+    return [activeCommentState.commentId];
+  }
+
+  if (activeCommentState.kind === "anchor_group") {
+    return activeCommentState.commentIds;
+  }
+
+  return [];
+}
+
+function setVisualCommentHighlightRegistry({
+  Highlight,
+  name,
+  ranges,
+  registry
+}: {
+  Highlight: CssHighlightConstructor;
+  name: string;
+  ranges: Range[];
+  registry: CssHighlightRegistry;
+}): void {
+  if (ranges.length === 0) {
+    registry.delete(name);
+    return;
+  }
+
+  registry.set(name, new Highlight(...ranges));
+}
+
+function deleteVisualCommentHighlightRegistries(
+  registry: CssHighlightRegistry
+): void {
+  registry.delete(COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME);
+  registry.delete(COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME);
 }
 
 function getCssHighlightApi():
@@ -11624,6 +11662,7 @@ function getCommentAnchorSummary(
   return {
     detail: resolution.detail,
     label: resolution.label,
+    locationLabel: resolution.locationLabel,
     status: resolution.status
   };
 }
@@ -11684,14 +11723,14 @@ function resolveCommentAnchor(
 
     return {
       end: lineRange.end,
-      label: `Whole section: ${"#".repeat(currentHeading.level)} ${
-        currentHeading.text
-      }`,
+      label: `Whole section: ${cleanMarkdownHeadingText(currentHeading.text)}`,
       start: lineRange.start,
       status: "active"
     };
   }
 
+  const selectedTextLocationLabel = getSelectedTextHeadingLabel(anchor);
+  const selectedTextLabel = `Selected text in ${selectedTextLocationLabel}`;
   const offsetStart = anchor.markdown_start_offset;
   const offsetEnd = anchor.markdown_end_offset;
 
@@ -11702,7 +11741,8 @@ function resolveCommentAnchor(
   ) {
     return {
       end: offsetEnd,
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       start: offsetStart,
       status: "active"
     };
@@ -11715,7 +11755,8 @@ function resolveCommentAnchor(
       contextEnd: contextResolution.contextEnd,
       contextStart: contextResolution.contextStart,
       end: contextResolution.end,
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       start: contextResolution.start,
       status: "active"
     };
@@ -11724,7 +11765,8 @@ function resolveCommentAnchor(
   if (contextResolution.status === "ambiguous") {
     return {
       detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       status: "ambiguous"
     };
   }
@@ -11734,7 +11776,8 @@ function resolveCommentAnchor(
       contextEnd: contextResolution.contextEnd,
       contextStart: contextResolution.contextStart,
       detail: getAnchorNotFoundDetail(latestNeedsReviewImpact),
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       status: "not_found"
     };
   }
@@ -11748,7 +11791,8 @@ function resolveCommentAnchor(
   if (matches.length === 1) {
     return {
       end: matches[0].end,
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       start: matches[0].start,
       status: "active"
     };
@@ -11757,7 +11801,8 @@ function resolveCommentAnchor(
   if (matches.length > 1) {
     return {
       detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       status: "ambiguous"
     };
   }
@@ -11770,11 +11815,14 @@ function resolveCommentAnchor(
   });
 
   if (recoveredAnchor.status === "recovered") {
+    const recoveredLocationLabel = getSelectedTextHeadingLabel(
+      recoveredAnchor.newAnchor
+    );
+
     return {
       end: recoveredAnchor.matchEnd,
-      label: `Selected text in ${getSelectedTextHeadingLabel(
-        recoveredAnchor.newAnchor
-      )}`,
+      label: `Selected text in ${recoveredLocationLabel}`,
+      locationLabel: recoveredLocationLabel,
       start: recoveredAnchor.matchStart,
       status: "active"
     };
@@ -11783,7 +11831,8 @@ function resolveCommentAnchor(
   if (recoveredAnchor.status === "ambiguous") {
     return {
       detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       status: "ambiguous"
     };
   }
@@ -11791,7 +11840,8 @@ function resolveCommentAnchor(
   if (latestNeedsReviewImpact) {
     return {
       detail: getAnchorNotFoundDetail(latestNeedsReviewImpact),
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       status: "not_found"
     };
   }
@@ -11810,14 +11860,16 @@ function resolveCommentAnchor(
       detail: getAnchorNotFoundDetail(latestNeedsReviewImpact),
       fallbackEnd: lineRange.end,
       fallbackStart: lineRange.start,
-      label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+      label: selectedTextLabel,
+      locationLabel: selectedTextLocationLabel,
       status: "not_found"
     };
   }
 
   return {
     detail: "Anchor not found. The text may have changed.",
-    label: `Selected text in ${getSelectedTextHeadingLabel(anchor)}`,
+    label: selectedTextLabel,
+    locationLabel: selectedTextLocationLabel,
     status: "not_found"
   };
 }
@@ -11986,13 +12038,7 @@ function filterMatchesByStoredContext(
 function getSelectedTextHeadingLabel(
   anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
 ): string {
-  if (!anchor.containing_heading) {
-    return "document";
-  }
-
-  return `${"#".repeat(anchor.containing_heading_level ?? 1)} ${
-    anchor.containing_heading
-  }`;
+  return getSelectedTextLocationLabel(anchor);
 }
 
 function findExactTextMatches(
