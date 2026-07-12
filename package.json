@@ -13,6 +13,7 @@
     "test:comment-selection-affordance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-selection-affordance.test.mjs",
     "test:comment-anchor-consistency": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-consistency.test.mjs",
     "test:comment-layout": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-floating-layout.test.mjs",
+    "test:comment-rail-browser": "node scripts/comment-rail-browser-regression.test.mjs",
     "test:comment-reply-import-sanitization": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-reply-import-sanitization.test.mjs",
     "test:comment-rail-ordering": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-rail-ordering.test.mjs",
     "test:atomic-table-patches": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/atomic-table-patches.test.mjs",
