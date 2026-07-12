@@ -3,6 +3,7 @@ import type {
   PatchmarkSourceReference,
   PatchmarkSuggestedUserAction
 } from "../project/project-types.ts";
+import { containsReservedPatchmarkTableMarker } from "../patches/atomic-table-patches.ts";
 
 export const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into exactly one fenced json code block containing valid Patchmark JSON.
 
@@ -41,6 +42,8 @@ const STRICT_CHATGPT_IMPORT_ERROR =
   "Invalid Patchmark response. Metadata references must be inside field-local sources arrays. Markdown links are allowed only in original_text and suggested_text.";
 const INVALID_CHATGPT_JSON_ERROR =
   "Invalid JSON. Ask ChatGPT to return one fenced json code block containing valid Patchmark JSON.";
+const RESERVED_PATCHMARK_TABLE_MARKER_ERROR =
+  "Invalid Patchmark response. Patch text must not include Patchmark table context markers.";
 const PROTOCOL_URL_PATTERN = /\b(?:https?:\/\/|www\.)\S+/i;
 const PROTOCOL_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\([^)]+\)/;
 const PROTOCOL_BROKEN_MARKDOWN_LINK_PATTERN = /\]\(/;
@@ -349,6 +352,23 @@ function normalizeImportedPatchProposal(
     patchProposal.reason_sources === undefined
       ? `${patchProposalPath}.sources`
       : `${patchProposalPath}.reason_sources`;
+  const originalText = normalizeRequiredProtocolField({
+    changedStringPaths,
+    fieldName: `${patchProposalPath}.original_text`,
+    value: patchProposal.original_text
+  });
+  const suggestedText = normalizeRequiredProtocolField({
+    changedStringPaths,
+    fieldName: `${patchProposalPath}.suggested_text`,
+    value: patchProposal.suggested_text
+  });
+
+  if (
+    containsReservedPatchmarkTableMarker(originalText) ||
+    containsReservedPatchmarkTableMarker(suggestedText)
+  ) {
+    throw new Error(RESERVED_PATCHMARK_TABLE_MARKER_ERROR);
+  }
 
   return {
     comment_id: normalizeRequiredProtocolField({
@@ -360,16 +380,8 @@ function normalizeImportedPatchProposal(
       typeof patchProposal.target_heading === "string"
         ? patchProposal.target_heading
         : undefined,
-    original_text: normalizeRequiredProtocolField({
-      changedStringPaths,
-      fieldName: `${patchProposalPath}.original_text`,
-      value: patchProposal.original_text
-    }),
-    suggested_text: normalizeRequiredProtocolField({
-      changedStringPaths,
-      fieldName: `${patchProposalPath}.suggested_text`,
-      value: patchProposal.suggested_text
-    }),
+    original_text: originalText,
+    suggested_text: suggestedText,
     suggested_text_sources: normalizeImportedSources(
       patchProposal.suggested_text_sources,
       `${patchProposalPath}.suggested_text_sources`

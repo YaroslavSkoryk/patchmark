@@ -3,13 +3,18 @@ import { readFileSync } from "node:fs";
 import {
   ATOMIC_TABLE_IMPORT_ERROR,
   CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
+  createCanonicalTableContextsFromOccurrences,
+  createPatchmarkTableMarker,
+  getCompleteTableOccurrencesForExport,
   getCompleteTableMarkdownsForExport,
+  replaceCompleteTableOccurrencesWithMarkers,
   validateAtomicTablePatchImport
 } from "../lib/patches/atomic-table-patches.ts";
 import {
   findMarkdownTables,
   parseMarkdownTableRow
 } from "../lib/markdown/markdown-tables.ts";
+import { parsePatchmarkCommentReplyImport } from "../lib/imports/patchmark-comment-reply-import.ts";
 
 const table = [
   "| Product | Price | Notes |",
@@ -42,6 +47,23 @@ function proposal(overrides = {}) {
   };
 }
 
+function importPayload(patchProposalOverrides = {}) {
+  return {
+    protocol: "patchmark.comment_reply_import",
+    protocol_version: 1,
+    summary: "Imported response.",
+    replies: [],
+    patch_proposals: [proposal(patchProposalOverrides)],
+    open_questions: []
+  };
+}
+
+function parseImportPayload(input) {
+  return parsePatchmarkCommentReplyImport(
+    `\`\`\`json\n${JSON.stringify(input, null, 2)}\n\`\`\``
+  );
+}
+
 function assertAccepted(patchProposals, markdown = documentMarkdown) {
   assert.doesNotThrow(() =>
     validateAtomicTablePatchImport({
@@ -70,6 +92,8 @@ function assertRejected(patchProposals, markdown = documentMarkdown) {
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /Return exactly one `patch_proposal`/);
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /Patch 1 adds a header cell/);
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /complete four-column table/);
+  assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /\[\[PATCHMARK_TABLE:PM-TABLE-0001\]\]/);
+  assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /Never copy a Patchmark table marker/);
   assert.match(
     readFileSync("components/document-editor.tsx", "utf8"),
     /CHATGPT_ATOMIC_TABLE_PROMPT_RULES/
@@ -164,6 +188,136 @@ function assertRejected(patchProposals, markdown = documentMarkdown) {
 }
 
 {
+  const tableStart = documentMarkdown.indexOf(table);
+  const occurrences = getCompleteTableOccurrencesForExport({
+    anchor: {
+      kind: "selected_text",
+      selected_text: "Sourdough",
+      markdown_start_offset: documentMarkdown.indexOf("Sourdough"),
+      markdown_end_offset: documentMarkdown.indexOf("Sourdough") + "Sourdough".length
+    },
+    markdown: documentMarkdown,
+    sectionRange: {
+      start: 0,
+      end: documentMarkdown.length
+    }
+  });
+  const tableContexts = createCanonicalTableContextsFromOccurrences({
+    getMetadata: () => ({
+      containing_heading: "Plan",
+      containing_heading_path: ["Plan"]
+    }),
+    occurrences: [occurrences[0], occurrences[0]]
+  });
+  const marker = createPatchmarkTableMarker(tableContexts[0].table_id);
+  const containingSection = replaceCompleteTableOccurrencesWithMarkers({
+    markdown: documentMarkdown,
+    tableContexts
+  });
+  const promptLikePayload = JSON.stringify({
+    table_contexts: tableContexts.map((tableContext) => ({
+      table_id: tableContext.table_id,
+      markdown: tableContext.markdown
+    })),
+    comments: [
+      {
+        context: {
+          complete_table_ids: [tableContexts[0].table_id],
+          containing_section_markdown: containingSection
+        }
+      }
+    ]
+  });
+  const escapedTable = JSON.stringify(table).slice(1, -1);
+
+  assert.equal(tableContexts.length, 1);
+  assert.equal(tableContexts[0].start, tableStart);
+  assert.equal(tableContexts[0].markdown, table);
+  assert.match(containingSection, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.equal(containingSection.includes(table), false);
+  assert.ok(containingSection.indexOf("Intro paragraph.") < containingSection.indexOf(marker));
+  assert.ok(containingSection.indexOf(marker) < containingSection.indexOf("Source note"));
+  assert.equal(promptLikePayload.split(escapedTable).length - 1, 1);
+}
+
+{
+  const duplicateMarkdown = `${table}\n\nBetween.\n\n${table}`;
+  const firstStart = duplicateMarkdown.indexOf(table);
+  const secondStart = duplicateMarkdown.lastIndexOf(table);
+  const contexts = createCanonicalTableContextsFromOccurrences({
+    occurrences: [
+      {
+        start: firstStart,
+        end: firstStart + table.length,
+        markdown: table
+      },
+      {
+        start: secondStart,
+        end: secondStart + table.length,
+        markdown: table
+      }
+    ]
+  });
+  const markedMarkdown = replaceCompleteTableOccurrencesWithMarkers({
+    markdown: duplicateMarkdown,
+    tableContexts: contexts
+  });
+
+  assert.equal(contexts.length, 2);
+  assert.equal(contexts[0].table_id, "PM-TABLE-0001");
+  assert.equal(contexts[1].table_id, "PM-TABLE-0002");
+  assert.match(markedMarkdown, /\[\[PATCHMARK_TABLE:PM-TABLE-0001\]\]/);
+  assert.match(markedMarkdown, /\[\[PATCHMARK_TABLE:PM-TABLE-0002\]\]/);
+  assert.equal(markedMarkdown.includes(table), false);
+}
+
+{
+  const adjacentMarkdown = [
+    "| A | B |",
+    "| --- | --- |",
+    "| 1 | 2 |",
+    "",
+    "| C | D |",
+    "| --- | --- |",
+    "| 3 | 4 |"
+  ].join("\n");
+  const tables = findMarkdownTables(adjacentMarkdown);
+  const contexts = createCanonicalTableContextsFromOccurrences({
+    occurrences: tables.map((foundTable) => ({
+      start: foundTable.start,
+      end: foundTable.end,
+      markdown: foundTable.markdown
+    }))
+  });
+  const markedMarkdown = replaceCompleteTableOccurrencesWithMarkers({
+    markdown: adjacentMarkdown,
+    tableContexts: contexts
+  });
+
+  assert.equal(contexts.length, 2);
+  assert.match(markedMarkdown, /\[\[PATCHMARK_TABLE:PM-TABLE-0001\]\]/);
+  assert.match(markedMarkdown, /\[\[PATCHMARK_TABLE:PM-TABLE-0002\]\]/);
+}
+
+{
+  const blockquoteTable = [
+    "> | A | B |",
+    "> | --- | --- |",
+    "> | 1 \\| 2 | `3 | 4` |"
+  ].join("\n");
+  const contexts = createCanonicalTableContextsFromOccurrences({
+    occurrences: findMarkdownTables(blockquoteTable).map((foundTable) => ({
+      start: foundTable.start,
+      end: foundTable.end,
+      markdown: foundTable.markdown
+    }))
+  });
+
+  assert.equal(contexts.length, 1);
+  assert.equal(contexts[0].markdown, blockquoteTable);
+}
+
+{
   const splitColumnAddition = [
     proposal({
       original_text: "| Product | Price | Notes |",
@@ -177,6 +331,29 @@ function assertRejected(patchProposals, markdown = documentMarkdown) {
   ];
 
   assertRejected(splitColumnAddition);
+}
+
+{
+  assert.throws(
+    () =>
+      parseImportPayload(
+        importPayload({
+          original_text: "[[PATCHMARK_TABLE:PM-TABLE-0001]]",
+          suggested_text: table
+        })
+      ),
+    /table context markers/
+  );
+  assert.throws(
+    () =>
+      parseImportPayload(
+        importPayload({
+          original_text: table,
+          suggested_text: "[[PATCHMARK_COMPLETE_TABLE:0]]"
+        })
+      ),
+    /table context markers/
+  );
 }
 
 {

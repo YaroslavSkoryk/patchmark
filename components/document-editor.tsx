@@ -57,8 +57,11 @@ import {
 } from "@/lib/patches/patch-review-content";
 import {
   CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
-  getCompleteTableMarkdownsForExport,
-  validateAtomicTablePatchImport
+  createCanonicalTableContextsFromOccurrences,
+  getCompleteTableOccurrencesForExport,
+  replaceCompleteTableOccurrencesWithMarkers,
+  validateAtomicTablePatchImport,
+  type CanonicalTableContext
 } from "@/lib/patches/atomic-table-patches";
 import {
   canOpenProjectFolder,
@@ -9577,6 +9580,12 @@ function createFocusedCommentsExportPayload({
   markdown: string;
   project: PatchmarkProjectHandle;
 }) {
+  const tableContexts = createCanonicalTableContextsForExport({
+    comments,
+    headings,
+    markdown
+  });
+
   return {
     protocol: "patchmark.comment_export",
     protocol_version: 1,
@@ -9612,11 +9621,22 @@ function createFocusedCommentsExportPayload({
       ],
       expected_response_format: "patchmark.comment_reply_import"
     },
+    ...(tableContexts.length > 0
+      ? {
+          table_contexts: tableContexts.map((tableContext) => ({
+            table_id: tableContext.table_id,
+            markdown: tableContext.markdown,
+            containing_heading: tableContext.containing_heading,
+            containing_heading_path: tableContext.containing_heading_path
+          }))
+        }
+      : {}),
     comments: comments.map((comment) =>
       createFocusedCommentExportEntry({
         comment,
         headings,
-        markdown
+        markdown,
+        tableContexts
       })
     )
   };
@@ -9625,11 +9645,13 @@ function createFocusedCommentsExportPayload({
 function createFocusedCommentExportEntry({
   comment,
   headings,
-  markdown
+  markdown,
+  tableContexts
 }: {
   comment: PatchmarkComment;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  tableContexts: CanonicalTableContext[];
 }) {
   const actionContext =
     comment.anchor.kind === "document"
@@ -9653,8 +9675,10 @@ function createFocusedCommentExportEntry({
     context: createExportContext({
       actionContext,
       anchor: comment.anchor,
+      comment,
       headings,
-      markdown
+      markdown,
+      tableContexts
     })
   };
 }
@@ -9697,41 +9721,175 @@ function createExportAnchor(anchor: PatchmarkCommentAnchor) {
   };
 }
 
-function createExportContext({
-  actionContext,
-  anchor,
+function createCanonicalTableContextsForExport({
+  comments,
   headings,
   markdown
 }: {
-  actionContext: PatchmarkCommentActionContext;
-  anchor: PatchmarkCommentAnchor;
+  comments: PatchmarkComment[];
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+}): CanonicalTableContext[] {
+  const occurrences = comments.flatMap((comment) => {
+    const sectionRange = getContainingSectionRange(
+      comment.anchor,
+      markdown,
+      headings
+    );
+
+    return getCompleteTableOccurrencesForExport({
+      anchor: comment.anchor,
+      includeSectionTables: shouldIncludeSectionTablesForComment(comment),
+      markdown,
+      sectionRange
+    });
+  });
+
+  return createCanonicalTableContextsFromOccurrences({
+    getMetadata: (occurrence) => {
+      const heading =
+        getHeadingContainingOffset(markdown, headings, occurrence.start) ?? null;
+
+      return {
+        containing_heading: heading?.text,
+        containing_heading_path: heading
+          ? getHeadingPath(headings, heading)
+          : undefined
+      };
+    },
+    occurrences
+  });
+}
+
+function shouldIncludeSectionTablesForComment(comment: PatchmarkComment): boolean {
+  return isLikelyTableWideComment(comment.comment);
+}
+
+function isLikelyTableWideComment(commentText: string): boolean {
+  return /\b(table|column|columns|header|delimiter|alignment|align|reorder|split|merge|sort|normalize|normalise|convert|tabular)\b/i.test(
+    commentText
+  );
+}
+
+function createExportContext({
+  actionContext,
+  anchor,
+  comment,
+  headings,
+  markdown,
+  tableContexts
+}: {
+  actionContext: PatchmarkCommentActionContext;
+  anchor: PatchmarkCommentAnchor;
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  tableContexts: CanonicalTableContext[];
 }) {
   const containingSectionRange = getContainingSectionRange(anchor, markdown, headings);
   const containingSectionMarkdown = containingSectionRange
     ? markdown.slice(containingSectionRange.start, containingSectionRange.end)
     : null;
-  const completeTableMarkdowns = getCompleteTableMarkdownsForExport({
+  const commentTableContexts = getCanonicalTableContextsForComment({
     anchor,
+    comment,
     markdown,
-    sectionRange: containingSectionRange
+    sectionRange: containingSectionRange,
+    tableContexts
   });
 
   return {
     document_brief: null,
     display_target: getCommentDisplayTarget(anchor),
     anchor_context:
-      anchor.kind === "selected_text" ? anchor.anchor_context ?? null : null,
-    complete_table_markdowns: completeTableMarkdowns,
+      anchor.kind === "selected_text"
+        ? createExportAnchorContextWithTableMarkers({
+            anchorContext: anchor.anchor_context ?? null,
+            tableContexts
+          })
+        : null,
+    ...(commentTableContexts.length > 0
+      ? {
+          complete_table_ids: commentTableContexts.map(
+            (tableContext) => tableContext.table_id
+          )
+        }
+      : {}),
     containing_section_markdown:
       actionContext.default_scope === "containing_section"
-        ? containingSectionMarkdown
+        ? containingSectionMarkdown && containingSectionRange
+          ? replaceCompleteTableOccurrencesWithMarkers({
+              markdown: containingSectionMarkdown,
+              rangeStart: containingSectionRange.start,
+              tableContexts
+            })
+          : containingSectionMarkdown
         : null,
     full_document_markdown:
-      actionContext.default_scope === "full_document" ? markdown : null,
+      actionContext.default_scope === "full_document"
+        ? replaceCompleteTableOccurrencesWithMarkers({
+            markdown,
+            tableContexts
+          })
+        : null,
     related_open_comments: []
   };
+}
+
+function getCanonicalTableContextsForComment({
+  anchor,
+  comment,
+  markdown,
+  sectionRange,
+  tableContexts
+}: {
+  anchor: PatchmarkCommentAnchor;
+  comment: PatchmarkComment;
+  markdown: string;
+  sectionRange: { end: number; start: number } | null;
+  tableContexts: CanonicalTableContext[];
+}): CanonicalTableContext[] {
+  const occurrences = getCompleteTableOccurrencesForExport({
+    anchor,
+    includeSectionTables: shouldIncludeSectionTablesForComment(comment),
+    markdown,
+    sectionRange
+  });
+  const occurrenceKeys = new Set(
+    occurrences.map((occurrence) => `${occurrence.start}:${occurrence.end}`)
+  );
+
+  return tableContexts.filter((tableContext) =>
+    occurrenceKeys.has(`${tableContext.start}:${tableContext.end}`)
+  );
+}
+
+function createExportAnchorContextWithTableMarkers({
+  anchorContext,
+  tableContexts
+}: {
+  anchorContext: PatchmarkSelectedTextAnchorContext | null;
+  tableContexts: CanonicalTableContext[];
+}): PatchmarkSelectedTextAnchorContext | null {
+  if (
+    !anchorContext?.markdown_text ||
+    typeof anchorContext.markdown_start_offset !== "number"
+  ) {
+    return anchorContext;
+  }
+
+  const markdownText = replaceCompleteTableOccurrencesWithMarkers({
+    markdown: anchorContext.markdown_text,
+    rangeStart: anchorContext.markdown_start_offset,
+    tableContexts
+  });
+
+  return markdownText === anchorContext.markdown_text
+    ? anchorContext
+    : {
+        ...anchorContext,
+        markdown_text: markdownText
+      };
 }
 
 function getCommentDisplayTarget(anchor: PatchmarkCommentAnchor): string {

@@ -55,7 +55,17 @@ Bad:
 
 Good:
 
-- One patch replaces the complete original table with the complete four-column table.`;
+- One patch replaces the complete original table with the complete four-column table.
+
+Canonical table context markers:
+
+- A marker such as \`[[PATCHMARK_TABLE:PM-TABLE-0001]]\` is a context reference, not document Markdown.
+- The exact document Markdown represented by the marker is stored in the matching canonical \`table_contexts\` object.
+- Never copy a Patchmark table marker into \`original_text\` or \`suggested_text\`.
+- For a structural change, use the canonical table's exact \`markdown\` as \`original_text\`.
+- Return the complete resulting table as \`suggested_text\`.
+- Preserve surrounding section content independently.
+- A marker does not mean the table was removed from the document.`;
 
 type PatchProposalInput = PatchmarkCommentReplyImport["patch_proposals"][number];
 
@@ -65,17 +75,41 @@ type PatchProposalAnalysis = {
   structural: boolean;
 };
 
-export function getCompleteTableMarkdownsForExport({
+export type CompleteTableOccurrence = {
+  end: number;
+  markdown: string;
+  start: number;
+};
+
+export type CanonicalTableContext = CompleteTableOccurrence & {
+  containing_heading?: string;
+  containing_heading_path?: string[];
+  table_id: string;
+};
+
+export const PATCHMARK_TABLE_MARKER_PREFIX = "[[PATCHMARK_TABLE:";
+export const PATCHMARK_COMPLETE_TABLE_MARKER_PREFIX =
+  "[[PATCHMARK_COMPLETE_TABLE:";
+
+export function createPatchmarkTableMarker(tableId: string): string {
+  return `${PATCHMARK_TABLE_MARKER_PREFIX}${tableId}]]`;
+}
+
+export function getCompleteTableOccurrencesForExport({
   anchor,
+  includeSectionTables = false,
   markdown,
   sectionRange
 }: {
   anchor: PatchmarkCommentAnchor;
+  includeSectionTables?: boolean;
   markdown: string;
   sectionRange?: TextRange | null;
-}): string[] {
+}): CompleteTableOccurrence[] {
   if (anchor.kind === "document") {
-    return [];
+    return includeSectionTables
+      ? findMarkdownTables(markdown).map(toCompleteTableOccurrence)
+      : [];
   }
 
   const tables: MarkdownTable[] = [];
@@ -88,11 +122,101 @@ export function getCompleteTableMarkdownsForExport({
     }
   }
 
-  if (sectionRange) {
+  if (includeSectionTables && sectionRange) {
     tables.push(...findMarkdownTables(markdown, sectionRange));
   }
 
-  return dedupeTables(tables).map((table) => table.markdown);
+  return dedupeTables(tables)
+    .sort((first, second) => first.start - second.start)
+    .map(toCompleteTableOccurrence);
+}
+
+export function getCompleteTableMarkdownsForExport({
+  anchor,
+  includeSectionTables = false,
+  markdown,
+  sectionRange
+}: {
+  anchor: PatchmarkCommentAnchor;
+  includeSectionTables?: boolean;
+  markdown: string;
+  sectionRange?: TextRange | null;
+}): string[] {
+  return getCompleteTableOccurrencesForExport({
+    anchor,
+    includeSectionTables,
+    markdown,
+    sectionRange
+  }).map((table) => table.markdown);
+}
+
+export function createCanonicalTableContextsFromOccurrences({
+  getMetadata,
+  occurrences
+}: {
+  getMetadata?: (
+    occurrence: CompleteTableOccurrence
+  ) => Pick<CanonicalTableContext, "containing_heading" | "containing_heading_path">;
+  occurrences: CompleteTableOccurrence[];
+}): CanonicalTableContext[] {
+  const contextsByRange = new Map<string, CompleteTableOccurrence>();
+
+  occurrences.forEach((occurrence) => {
+    const key = `${occurrence.start}:${occurrence.end}`;
+
+    if (!contextsByRange.has(key)) {
+      contextsByRange.set(key, occurrence);
+    }
+  });
+
+  return Array.from(contextsByRange.values())
+    .sort((first, second) => first.start - second.start)
+    .map((occurrence, index) => ({
+      ...occurrence,
+      ...(getMetadata?.(occurrence) ?? {}),
+      table_id: `PM-TABLE-${String(index + 1).padStart(4, "0")}`
+    }));
+}
+
+export function replaceCompleteTableOccurrencesWithMarkers({
+  markdown,
+  rangeStart = 0,
+  tableContexts
+}: {
+  markdown: string;
+  rangeStart?: number;
+  tableContexts: CanonicalTableContext[];
+}): string {
+  const relevantTables = tableContexts
+    .filter(
+      (tableContext) =>
+        tableContext.start >= rangeStart &&
+        tableContext.end <= rangeStart + markdown.length
+    )
+    .sort((first, second) => second.start - first.start);
+  let nextMarkdown = markdown;
+
+  for (const tableContext of relevantTables) {
+    const localStart = tableContext.start - rangeStart;
+    const localEnd = tableContext.end - rangeStart;
+
+    if (nextMarkdown.slice(localStart, localEnd) !== tableContext.markdown) {
+      continue;
+    }
+
+    nextMarkdown = `${nextMarkdown.slice(0, localStart)}${createPatchmarkTableMarker(
+      tableContext.table_id
+    )}${nextMarkdown.slice(localEnd)}`;
+  }
+
+  return nextMarkdown;
+}
+
+export function containsReservedPatchmarkTableMarker(text: string): boolean {
+  return (
+    text.includes(PATCHMARK_TABLE_MARKER_PREFIX) ||
+    text.includes(PATCHMARK_COMPLETE_TABLE_MARKER_PREFIX)
+  );
 }
 
 export function validateAtomicTablePatchImport({
@@ -375,6 +499,14 @@ function getAnchorSelectedTableSearchRanges(anchor: PatchmarkCommentAnchor): Tex
   }
 
   return ranges;
+}
+
+function toCompleteTableOccurrence(table: MarkdownTable): CompleteTableOccurrence {
+  return {
+    end: table.end,
+    markdown: table.markdown,
+    start: table.start
+  };
 }
 
 function dedupeTables(tables: MarkdownTable[]): MarkdownTable[] {
