@@ -45,7 +45,14 @@ import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import {
   createAppliedPatchReviewContent,
   createPatchReviewSnippetPreview,
+  dedupePatchReviewTextMatches,
+  getPatchReviewMatchCardinality,
+  getPatchReviewMatchingLocationsLabel,
+  getPatchReviewMatchMethodLabel,
   type AppliedPatchReviewContent,
+  type AppliedPatchReviewMatchCardinality,
+  type AppliedPatchReviewMatchMethod,
+  type PatchReviewTextMatch,
   type AppliedPatchOriginalSource
 } from "@/lib/patches/patch-review-content";
 import {
@@ -189,7 +196,7 @@ type AppliedPatchAnchorStatus =
   | "not_found"
   | "row_match"
   | "section_match";
-type TextMatch = { end: number; start: number };
+type TextMatch = PatchReviewTextMatch;
 type RecoveredAnchorReason =
   | "current_offsets_match"
   | "selected_text_unique_in_section"
@@ -224,6 +231,8 @@ type PatchTableRowRebaseCandidate = {
 type PatchReviewAnchorStatus =
   | {
       kind: "accepted";
+      matchCardinality: AppliedPatchReviewMatchCardinality;
+      matchMethod: AppliedPatchReviewMatchMethod;
       matches: TextMatch[];
       status: AppliedPatchAnchorStatus;
       text: string;
@@ -4293,10 +4302,21 @@ function PatchReviewDialog({
                 </div>
               ) : null}
               {anchorStatus.kind === "accepted" ? (
-                <div>
-                  <dt>Anchor validation result</dt>
-                  <dd>{getAcceptedPatchAnchorDiagnostic(anchorStatus)}</dd>
-                </div>
+                <>
+                  <div>
+                    <dt>Match method</dt>
+                    <dd>{getPatchReviewMatchMethodLabel(anchorStatus.matchMethod)}</dd>
+                  </div>
+                  <div>
+                    <dt>Matching locations</dt>
+                    <dd>
+                      {getPatchReviewMatchingLocationsLabel({
+                        cardinality: anchorStatus.matchCardinality,
+                        count: anchorStatus.matches.length
+                      })}
+                    </dd>
+                  </div>
+                </>
               ) : null}
               <div>
                 <dt>Linked comment ID</dt>
@@ -4417,7 +4437,13 @@ function PatchReviewDialog({
                       : "Current"}
                   </h3>
                   <MarkdownSnippetPreview markdown={visualPreview.originalMarkdown} />
-                  {appliedReviewContent?.originalSource === "pre_apply_snapshot" ? (
+                  {visualPreview.originalIsMalformedTableFragment ? (
+                    <p className="patch-review-preview-note">
+                      This snippet looks like table Markdown but has adjacent row
+                      delimiters or missing row newlines, so Visual mode does not
+                      invent table structure.
+                    </p>
+                  ) : appliedReviewContent?.originalSource === "pre_apply_snapshot" ? (
                     <p className="patch-review-preview-note">
                       Original text was recovered from the pre-apply snapshot for
                       display only. Patch history was not changed.
@@ -4453,7 +4479,13 @@ function PatchReviewDialog({
                       : "Proposed"}
                   </h3>
                   <MarkdownSnippetPreview markdown={visualPreview.suggestedMarkdown} />
-                  {visualPreview.usesGenericTableContext ? (
+                  {visualPreview.suggestedIsMalformedTableFragment ? (
+                    <p className="patch-review-preview-note">
+                      This replacement looks like table Markdown but has adjacent
+                      row delimiters or missing row newlines. Markdown Source
+                      shows the exact stored replacement.
+                    </p>
+                  ) : visualPreview.usesGenericTableContext ? (
                     <p className="patch-review-preview-note">
                       Generic table headers are display-only and will not be
                       stored with the patch.
@@ -4475,7 +4507,13 @@ function PatchReviewDialog({
                 <section className="patch-review-card">
                   <h3>Current text after later changes</h3>
                   <MarkdownSnippetPreview markdown={visualPreview.currentMarkdown} />
-                  {visualPreview.currentUsesGenericTableContext ? (
+                  {visualPreview.currentIsMalformedTableFragment ? (
+                    <p className="patch-review-preview-note">
+                      This current text looks like table Markdown but has adjacent
+                      row delimiters or missing row newlines, so Visual mode does
+                      not invent table structure.
+                    </p>
+                  ) : visualPreview.currentUsesGenericTableContext ? (
                     <p className="patch-review-preview-note">
                       Generic table headers are display-only because Patchmark
                       could not find the current table header.
@@ -4579,9 +4617,12 @@ function PatchReviewDialog({
 
 type PatchVisualPreview = {
   currentMarkdown?: string;
+  currentIsMalformedTableFragment: boolean;
   currentUsesGenericTableContext: boolean;
   currentUsesTableContext: boolean;
+  originalIsMalformedTableFragment: boolean;
   originalMarkdown: string;
+  suggestedIsMalformedTableFragment: boolean;
   suggestedMarkdown: string;
   usesCurrentMatchingRow: boolean;
   usesGenericTableContext: boolean;
@@ -4939,6 +4980,7 @@ function createPatchVisualPreview({
     const originalPreview =
       reviewContent?.originalSource === "unavailable"
         ? {
+            isMalformedTableFragment: false,
             markdown: originalMarkdown,
             usesGenericTableContext: false,
             usesTableContext: false
@@ -4965,11 +5007,15 @@ function createPatchVisualPreview({
       : null;
 
     return {
+      currentIsMalformedTableFragment:
+        currentPreview?.isMalformedTableFragment ?? false,
       currentMarkdown: currentPreview?.markdown,
       currentUsesGenericTableContext:
         currentPreview?.usesGenericTableContext ?? false,
       currentUsesTableContext: currentPreview?.usesTableContext ?? false,
+      originalIsMalformedTableFragment: originalPreview.isMalformedTableFragment,
       originalMarkdown: originalPreview.markdown,
+      suggestedIsMalformedTableFragment: appliedPreview.isMalformedTableFragment,
       suggestedMarkdown: appliedPreview.markdown,
       usesCurrentMatchingRow: false,
       usesGenericTableContext:
@@ -4988,11 +5034,14 @@ function createPatchVisualPreview({
 
   if (tableContext) {
     return {
+      currentIsMalformedTableFragment: false,
       originalMarkdown: [
         tableContext.headerRow,
         tableContext.separatorRow,
         patch.original_text.trim()
       ].join("\n"),
+      originalIsMalformedTableFragment: false,
+      suggestedIsMalformedTableFragment: false,
       suggestedMarkdown: [
         tableContext.headerRow,
         tableContext.separatorRow,
@@ -5014,11 +5063,14 @@ function createPatchVisualPreview({
 
   if (fallbackTableContext) {
     return {
+      currentIsMalformedTableFragment: false,
       originalMarkdown: [
         fallbackTableContext.headerRow,
         fallbackTableContext.separatorRow,
         fallbackTableContext.originalRow
       ].join("\n"),
+      originalIsMalformedTableFragment: false,
+      suggestedIsMalformedTableFragment: false,
       suggestedMarkdown: [
         fallbackTableContext.headerRow,
         fallbackTableContext.separatorRow,
@@ -5033,9 +5085,12 @@ function createPatchVisualPreview({
   }
 
   return {
+    currentIsMalformedTableFragment: false,
     currentUsesGenericTableContext: false,
     currentUsesTableContext: false,
+    originalIsMalformedTableFragment: false,
     originalMarkdown: patch.original_text,
+    suggestedIsMalformedTableFragment: false,
     suggestedMarkdown: patch.suggested_text,
     usesCurrentMatchingRow: false,
     usesGenericTableContext: false,
@@ -5104,8 +5159,8 @@ function getPatchTableRowPreviewFallbackContext({
   usesGenericTableContext: boolean;
 } | null {
   if (
-    !isMarkdownTableDataSnippet(patch.original_text) ||
-    !isMarkdownTableDataSnippet(patch.suggested_text)
+    !isSingleMarkdownTableDataRowSnippet(patch.original_text) ||
+    !isSingleMarkdownTableDataRowSnippet(patch.suggested_text)
   ) {
     return null;
   }
@@ -5115,7 +5170,7 @@ function getPatchTableRowPreviewFallbackContext({
   const rowCellCount = Math.max(
     parseMarkdownTableRow(tableRowRebase?.currentRowText ?? patch.original_text)
       .length,
-    parseMarkdownTableRow(patch.suggested_text).length
+    getMarkdownTableDataSnippetCellCount(patch.suggested_text)
   );
   const compatibleHeader = tableRowRebase
     ? {
@@ -5188,17 +5243,57 @@ function getLineIndexForOffset(lineStarts: number[], offset: number): number {
 }
 
 function isMarkdownTableDataSnippet(markdown: string): boolean {
+  return getMarkdownTableDataRows(markdown).length > 0;
+}
+
+function isSingleMarkdownTableDataRowSnippet(markdown: string): boolean {
+  return getMarkdownTableDataRows(markdown).length === 1;
+}
+
+function getMarkdownTableDataRows(markdown: string): string[] {
   const lines = markdown
     .trim()
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const cellCounts = lines.map((line) => parseMarkdownTableRow(line).length);
+  const expectedCellCount = cellCounts[0] ?? 0;
 
-  return (
-    lines.length === 1 &&
-    isMarkdownTableRowLine(lines[0] ?? "") &&
-    !isMarkdownTableSeparatorRow(lines[0] ?? "")
+  if (
+    lines.length === 0 ||
+    expectedCellCount < 2 ||
+    lines.some(hasAdjacentTableRowDelimiter)
+  ) {
+    return [];
+  }
+
+  return lines.every(
+    (line, index) =>
+      isMarkdownTableRowLine(line) &&
+      !isMarkdownTableSeparatorRow(line) &&
+      cellCounts[index] === expectedCellCount
+  )
+    ? lines
+    : [];
+}
+
+function getMarkdownTableDataSnippetCellCount(markdown: string): number {
+  const rows = getMarkdownTableDataRows(markdown);
+
+  return rows.reduce(
+    (largestCellCount, row) =>
+      Math.max(largestCellCount, parseMarkdownTableRow(row).length),
+    0
   );
+}
+
+function hasAdjacentTableRowDelimiter(line: string): boolean {
+  const withoutOuterDelimiters = line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "");
+
+  return /\|\s*\|/.test(withoutOuterDelimiters);
 }
 
 function isMarkdownTableRowLine(line: string): boolean {
@@ -6231,7 +6326,7 @@ function getHighConfidencePendingPatchAnchorRecovery(
   }
 
   const normalizedMatches = findNormalizedTextMatches(markdown, patch.original_text);
-  if (isMarkdownTableDataSnippet(patch.original_text)) {
+  if (isSingleMarkdownTableDataRowSnippet(patch.original_text)) {
     const tableRowRebaseCandidates = findTableRowRebaseCandidates(markdown, patch);
     if (tableRowRebaseCandidates.length === 1) {
       const tableRowRebase = tableRowRebaseCandidates[0];
@@ -6383,6 +6478,29 @@ function getAppliedPatchAnchorStatus(
   });
 }
 
+function createAcceptedPatchAnchorStatus({
+  matchMethod,
+  matches,
+  status,
+  text
+}: {
+  matchMethod: AppliedPatchReviewMatchMethod;
+  matches: TextMatch[];
+  status: AppliedPatchAnchorStatus;
+  text: string;
+}): Extract<PatchReviewAnchorStatus, { kind: "accepted" }> {
+  const distinctMatches = dedupePatchReviewTextMatches(matches);
+
+  return {
+    kind: "accepted",
+    matchCardinality: getPatchReviewMatchCardinality(distinctMatches),
+    matchMethod,
+    matches: distinctMatches,
+    status,
+    text
+  };
+}
+
 function locateAcceptedPatchAnchor({
   appliedText,
   includeDescendants = true,
@@ -6399,52 +6517,46 @@ function locateAcceptedPatchAnchor({
   visitedPatchIds: Set<string>;
 }): Extract<PatchReviewAnchorStatus, { kind: "accepted" }> {
   if (appliedText.length === 0) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "none",
       matches: [],
       status: "empty_applied_text",
       text: appliedText
-    };
+    });
   }
 
   const offsetMatch = getAppliedPatchOffsetMatch(markdown, patch, appliedText);
-  if (offsetMatch) {
-    return {
-      kind: "accepted",
-      matches: [offsetMatch],
-      status: "exact_match",
-      text: appliedText
-    };
-  }
-
-  const exactMatches = findExactTextMatches(markdown, appliedText);
+  const exactMatches = dedupePatchReviewTextMatches([
+    ...(offsetMatch ? [offsetMatch] : []),
+    ...findExactTextMatches(markdown, appliedText)
+  ]);
 
   if (exactMatches.length === 1) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "exact",
       matches: exactMatches,
       status: "exact_match",
       text: appliedText
-    };
+    });
   }
 
   if (exactMatches.length > 1) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "exact",
       matches: exactMatches,
       status: "multiple_matches",
       text: appliedText
-    };
+    });
   }
 
   const normalizedMatches = getAppliedPatchNormalizedMatches(markdown, appliedText);
   if (normalizedMatches.length === 1) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "normalized",
       matches: normalizedMatches,
       status: "normalized_match",
       text: markdown.slice(normalizedMatches[0].start, normalizedMatches[0].end)
-    };
+    });
   }
 
   const tableRowMatch = findAcceptedPatchTableRowAnchorMatch({
@@ -6453,12 +6565,12 @@ function locateAcceptedPatchAnchor({
     patch
   });
   if (tableRowMatch) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "table_structural",
       matches: [tableRowMatch],
       status: "row_match",
       text: tableRowMatch.text
-    };
+    });
   }
 
   const sectionMatch = findAcceptedPatchSectionAnchorMatch({
@@ -6468,12 +6580,12 @@ function locateAcceptedPatchAnchor({
     patch
   });
   if (sectionMatch) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "section_context",
       matches: [sectionMatch],
       status: "section_match",
       text: sectionMatch.text
-    };
+    });
   }
 
   const contextMatch = findAcceptedPatchSurroundingContextMatch({
@@ -6481,12 +6593,12 @@ function locateAcceptedPatchAnchor({
     patch
   });
   if (contextMatch) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "section_context",
       matches: [contextMatch],
       status: "evolved_after_patch",
       text: contextMatch.text
-    };
+    });
   }
 
   if (includeDescendants) {
@@ -6499,30 +6611,30 @@ function locateAcceptedPatchAnchor({
     });
 
     if (descendantMatch) {
-      return {
-        kind: "accepted",
+      return createAcceptedPatchAnchorStatus({
+        matchMethod: "descendant",
         matches: descendantMatch.matches,
         status: "evolved_after_patch",
         text: descendantMatch.text
-      };
+      });
     }
   }
 
   if (normalizedMatches.length > 1) {
-    return {
-      kind: "accepted",
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "normalized",
       matches: normalizedMatches,
       status: "multiple_matches",
       text: appliedText
-    };
+    });
   }
 
-  return {
-    kind: "accepted",
+  return createAcceptedPatchAnchorStatus({
+    matchMethod: "none",
     matches: [],
     status: "not_found",
     text: appliedText
-  };
+  });
 }
 
 function getPatchAppliedText(patch: PatchmarkPatch): string {
@@ -6659,7 +6771,7 @@ function getAcceptedPatchAppliedTableCells(
     return patch.applied_table_row_cells;
   }
 
-  if (!isMarkdownTableDataSnippet(appliedText)) {
+  if (!isSingleMarkdownTableDataRowSnippet(appliedText)) {
     return [];
   }
 
@@ -6976,8 +7088,8 @@ function findTableRowRebaseCandidates(
   patch: PatchmarkPatch
 ): PatchTableRowRebaseCandidate[] {
   if (
-    !isMarkdownTableDataSnippet(patch.original_text) ||
-    !isMarkdownTableDataSnippet(patch.suggested_text)
+    !isSingleMarkdownTableDataRowSnippet(patch.original_text) ||
+    !isSingleMarkdownTableDataRowSnippet(patch.suggested_text)
   ) {
     return [];
   }
@@ -7334,7 +7446,7 @@ function createAppliedTableRowAnchorMetadata({
   rowStart: number;
   text: string;
 }): Partial<PatchmarkPatch> {
-  if (!isMarkdownTableDataSnippet(text)) {
+  if (!isSingleMarkdownTableDataRowSnippet(text)) {
     return {};
   }
 
@@ -9020,7 +9132,7 @@ function getPatchReviewAnchorLabel(anchorStatus: PatchReviewAnchorStatus): strin
   }
 
   if (anchorStatus.status === "multiple_matches") {
-    return "Patch was applied, but the applied text now appears multiple times.";
+    return "Patch was applied, but the applied text appears in multiple locations.";
   }
 
   if (anchorStatus.status !== "not_found") {
@@ -9056,11 +9168,11 @@ function getPatchReviewAnchorShortLabel(
   }
 
   if (anchorStatus.status === "exact_match") {
-    return "Applied text present";
+    return "Applied text found";
   }
 
   if (anchorStatus.status === "normalized_match") {
-    return "Applied text present after normalization";
+    return "Applied text found after normalization";
   }
 
   if (isAcceptedPatchEvolved(anchorStatus)) {
@@ -9072,7 +9184,7 @@ function getPatchReviewAnchorShortLabel(
   }
 
   if (anchorStatus.status === "multiple_matches") {
-    return "Applied text appears multiple times";
+    return "Applied text appears in multiple locations";
   }
 
   return "Applied text not found";
@@ -9102,11 +9214,11 @@ function getPatchReviewAnchorDetail(anchorStatus: PatchReviewAnchorStatus): stri
   }
 
   if (anchorStatus.status === "exact_match") {
-    return "Patch was applied. The applied replacement is still present in the current document.";
+    return "Patch was applied. The applied replacement has one exact current match.";
   }
 
   if (anchorStatus.status === "normalized_match") {
-    return "Patch was applied. The applied replacement is still present after Markdown/plain-text normalization.";
+    return "Patch was applied. The applied replacement has one normalized current match.";
   }
 
   if (anchorStatus.status === "row_match") {
@@ -9122,7 +9234,7 @@ function getPatchReviewAnchorDetail(anchorStatus: PatchReviewAnchorStatus): stri
   }
 
   if (anchorStatus.status === "multiple_matches") {
-    return "Patch was applied, but Patchmark cannot identify one unique current location for the applied text.";
+    return `Patch was applied, but Patchmark found ${anchorStatus.matches.length} ${getPatchReviewMatchMethodLabel(anchorStatus.matchMethod).toLowerCase()} matches and cannot choose one.`;
   }
 
   if (anchorStatus.status === "empty_applied_text") {
@@ -9177,25 +9289,6 @@ function isAcceptedPatchEvolved(
     anchorStatus.status === "row_match" ||
     anchorStatus.status === "section_match"
   );
-}
-
-function getAcceptedPatchAnchorDiagnostic(
-  anchorStatus: Extract<PatchReviewAnchorStatus, { kind: "accepted" }>
-):
-  | "exact_match"
-  | "evolved_after_patch"
-  | "normalized_match"
-  | "not_found"
-  | "row_match"
-  | "section_match" {
-  if (
-    anchorStatus.status === "empty_applied_text" ||
-    anchorStatus.status === "multiple_matches"
-  ) {
-    return anchorStatus.matches.length > 0 ? "exact_match" : "not_found";
-  }
-
-  return anchorStatus.status;
 }
 
 function getPatchDisplayState(

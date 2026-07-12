@@ -15,6 +15,21 @@ export type AppliedPatchReviewAnchorInput = {
   text: string;
 };
 
+export type AppliedPatchReviewMatchCardinality = "multiple" | "none" | "unique";
+
+export type AppliedPatchReviewMatchMethod =
+  | "descendant"
+  | "exact"
+  | "none"
+  | "normalized"
+  | "section_context"
+  | "table_structural";
+
+export type PatchReviewTextMatch = {
+  end: number;
+  start: number;
+};
+
 export type AppliedPatchOriginalSource =
   | "persisted_original_text"
   | "pre_apply_snapshot"
@@ -37,6 +52,7 @@ export type AppliedPatchReviewContent = {
 };
 
 export type PatchReviewSnippetPreview = {
+  isMalformedTableFragment: boolean;
   markdown: string;
   usesGenericTableContext: boolean;
   usesTableContext: boolean;
@@ -88,8 +104,18 @@ export function createPatchReviewSnippetPreview({
   patch: Pick<PatchmarkPatch, "target_heading">;
   snippetMarkdown: string;
 }): PatchReviewSnippetPreview {
+  if (isMalformedMarkdownTableFragment(snippetMarkdown)) {
+    return {
+      isMalformedTableFragment: true,
+      markdown: snippetMarkdown,
+      usesGenericTableContext: false,
+      usesTableContext: false
+    };
+  }
+
   if (!isMarkdownTableDataSnippet(snippetMarkdown)) {
     return {
+      isMalformedTableFragment: false,
       markdown: snippetMarkdown,
       usesGenericTableContext: false,
       usesTableContext: false
@@ -98,9 +124,9 @@ export function createPatchReviewSnippetPreview({
 
   const exactContext = getTableContextForSnippet(contextMarkdown, snippetMarkdown);
   const cellCount = Math.max(
-    parseMarkdownTableRow(snippetMarkdown).length,
+    getMarkdownTableDataSnippetCellCount(snippetMarkdown),
     pairedMarkdown && isMarkdownTableDataSnippet(pairedMarkdown)
-      ? parseMarkdownTableRow(pairedMarkdown).length
+      ? getMarkdownTableDataSnippetCellCount(pairedMarkdown)
       : 0
   );
   const compatibleContext =
@@ -111,10 +137,98 @@ export function createPatchReviewSnippetPreview({
     compatibleContext?.separatorRow ?? genericContext.separatorRow;
 
   return {
+    isMalformedTableFragment: false,
     markdown: [headerRow, separatorRow, snippetMarkdown.trim()].join("\n"),
     usesGenericTableContext: !compatibleContext,
     usesTableContext: true
   };
+}
+
+export function dedupePatchReviewTextMatches(
+  matches: PatchReviewTextMatch[]
+): PatchReviewTextMatch[] {
+  const seen = new Set<string>();
+
+  return matches.filter((match) => {
+    const key = `${match.start}:${match.end}`;
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+export function getPatchReviewMatchCardinality(
+  matches: PatchReviewTextMatch[]
+): AppliedPatchReviewMatchCardinality {
+  const distinctMatches = dedupePatchReviewTextMatches(matches);
+
+  if (distinctMatches.length === 0) {
+    return "none";
+  }
+
+  return distinctMatches.length === 1 ? "unique" : "multiple";
+}
+
+export function getPatchReviewMatchMethodLabel(
+  method: AppliedPatchReviewMatchMethod
+): string {
+  if (method === "exact") {
+    return "Exact";
+  }
+
+  if (method === "normalized") {
+    return "Normalized";
+  }
+
+  if (method === "table_structural") {
+    return "Table structural";
+  }
+
+  if (method === "section_context") {
+    return "Section context";
+  }
+
+  if (method === "descendant") {
+    return "Descendant";
+  }
+
+  return "None";
+}
+
+export function getPatchReviewMatchingLocationsLabel({
+  cardinality,
+  count
+}: {
+  cardinality: AppliedPatchReviewMatchCardinality;
+  count: number;
+}): string {
+  if (cardinality === "none") {
+    return "0";
+  }
+
+  if (cardinality === "unique") {
+    return "1";
+  }
+
+  return String(Math.max(2, count));
+}
+
+export function isMalformedMarkdownTableFragment(markdown: string): boolean {
+  const lines = markdown
+    .trim()
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0 || !lines.some((line) => line.includes("|"))) {
+    return false;
+  }
+
+  return lines.some(hasAdjacentTableRowDelimiter);
 }
 
 export function recoverOriginalTextFromPreApplySnapshot({
@@ -406,17 +520,53 @@ function getLineIndexForOffset(lineStarts: number[], offset: number): number {
 }
 
 function isMarkdownTableDataSnippet(markdown: string): boolean {
+  return getMarkdownTableDataRows(markdown).length > 0;
+}
+
+function getMarkdownTableDataRows(markdown: string): string[] {
   const lines = markdown
     .trim()
     .split(/\r?\n/)
     .map((line) => line.trim())
     .filter(Boolean);
+  const cellCounts = lines.map((line) => parseMarkdownTableRow(line).length);
+  const expectedCellCount = cellCounts[0] ?? 0;
 
-  return (
-    lines.length === 1 &&
-    isMarkdownTableRowLine(lines[0] ?? "") &&
-    !isMarkdownTableSeparatorRow(lines[0] ?? "")
+  if (
+    lines.length === 0 ||
+    expectedCellCount < 2 ||
+    lines.some(hasAdjacentTableRowDelimiter)
+  ) {
+    return [];
+  }
+
+  return lines.every(
+    (line, index) =>
+      isMarkdownTableRowLine(line) &&
+      !isMarkdownTableSeparatorRow(line) &&
+      cellCounts[index] === expectedCellCount
+  )
+    ? lines
+    : [];
+}
+
+function getMarkdownTableDataSnippetCellCount(markdown: string): number {
+  const rows = getMarkdownTableDataRows(markdown);
+
+  return rows.reduce(
+    (largestCellCount, row) =>
+      Math.max(largestCellCount, parseMarkdownTableRow(row).length),
+    0
   );
+}
+
+function hasAdjacentTableRowDelimiter(line: string): boolean {
+  const withoutOuterDelimiters = line
+    .trim()
+    .replace(/^\|/, "")
+    .replace(/\|$/, "");
+
+  return /\|\s*\|/.test(withoutOuterDelimiters);
 }
 
 function isMarkdownTableRowLine(line: string): boolean {

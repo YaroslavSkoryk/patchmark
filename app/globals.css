@@ -1979,6 +1979,11 @@ button {
   gap: 14px;
 }
 
+.patch-review-preview-grid > .patch-review-card,
+.markdown-snippet-preview {
+  align-content: start;
+}
+
 .patch-review-preview-note,
 .patch-review-source-note {
   color: var(--muted);
