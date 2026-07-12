@@ -56,6 +56,11 @@ import {
   type AppliedPatchOriginalSource
 } from "@/lib/patches/patch-review-content";
 import {
+  CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
+  getCompleteTableMarkdownsForExport,
+  validateAtomicTablePatchImport
+} from "@/lib/patches/atomic-table-patches";
+import {
   canOpenProjectFolder,
   createProjectFromMarkdown,
   createProjectSnapshot,
@@ -1570,6 +1575,10 @@ export function DocumentEditor() {
       parsedResponse = parsePatchmarkCommentReplyImport(
         chatGptImportDialog.responseJson
       );
+      validateAtomicTablePatchImport({
+        markdown,
+        patchProposals: parsedResponse.patch_proposals
+      });
       sourceChatUrl = normalizeSourceChatUrl(
         chatGptImportDialog.sourceChatUrl
       );
@@ -5517,7 +5526,7 @@ Document-level comments may produce multiple patch proposals. Keep each patch na
 
 For reference-cleanup tasks, preserve necessary references in the actual Markdown document. Prefer concise inline Markdown links near the claims they support. Do not rely only on Patchmark source arrays, because those are review metadata and may not appear in the final Markdown export.
 
-Prefer small exact patches over rewriting the whole document.
+Prefer small exact patches over rewriting the whole document, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 `
     : "";
 
@@ -5537,7 +5546,7 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 - If a comment needs clarification, ask a question linked to that \`comment_id\`.
 - If you suggest a document change, return a patch proposal linked to the \`comment_id\`.
 - If one comment requires multiple document changes, return multiple \`patch_proposals\` with the same \`comment_id\`.
-- Prefer several small exact patch proposals over one large rewrite.
+- Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 - Each \`patch_proposal\` must have its own exact \`original_text\` and \`suggested_text\`.
 - Patch proposals must use exact Markdown from the supplied context as \`original_text\`.
 - Do not create a patch proposal unless \`original_text\` is copied exactly from the supplied Markdown context.
@@ -5547,6 +5556,8 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 - Be clear about reason and risk/tradeoff.
 - Drafting support only. Legal review may still be required.
 ${dedicatedDocumentReviewNote}
+
+${CHATGPT_ATOMIC_TABLE_PROMPT_RULES}
 
 ## Required Response Format
 
@@ -9586,6 +9597,8 @@ function createFocusedCommentsExportPayload({
         "Do not resolve comments. Only the human resolves comments.",
         "If you suggest a document change, return a patch proposal linked to the comment_id.",
         "If more information is needed, ask a clarification question linked to the comment_id.",
+        "Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.",
+        "For structural table changes, copy the complete table into original_text and return the complete resulting table in suggested_text.",
         "Preserve Markdown structure.",
         "Drafting support only. Legal review may still be required.",
         ...(dedicatedDocumentReview
@@ -9593,7 +9606,7 @@ function createFocusedCommentsExportPayload({
               "This is a dedicated whole-document review task.",
               "Focus only on the exported document-level comment.",
               "Do not address unrelated document issues unless they are necessary to resolve this comment.",
-              "Prefer small exact patches over rewriting the whole document."
+              "Prefer small exact patches over rewriting the whole document, except for atomic structural table changes."
             ]
           : [])
       ],
@@ -9695,17 +9708,22 @@ function createExportContext({
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
 }) {
-  const containingSectionMarkdown = getContainingSectionMarkdown(
+  const containingSectionRange = getContainingSectionRange(anchor, markdown, headings);
+  const containingSectionMarkdown = containingSectionRange
+    ? markdown.slice(containingSectionRange.start, containingSectionRange.end)
+    : null;
+  const completeTableMarkdowns = getCompleteTableMarkdownsForExport({
     anchor,
     markdown,
-    headings
-  );
+    sectionRange: containingSectionRange
+  });
 
   return {
     document_brief: null,
     display_target: getCommentDisplayTarget(anchor),
     anchor_context:
       anchor.kind === "selected_text" ? anchor.anchor_context ?? null : null,
+    complete_table_markdowns: completeTableMarkdowns,
     containing_section_markdown:
       actionContext.default_scope === "containing_section"
         ? containingSectionMarkdown
@@ -9728,11 +9746,11 @@ function getCommentDisplayTarget(anchor: PatchmarkCommentAnchor): string {
   return anchor.selected_text;
 }
 
-function getContainingSectionMarkdown(
+function getContainingSectionRange(
   anchor: PatchmarkCommentAnchor,
   markdown: string,
   headings: ReturnType<typeof parseMarkdownHeadings>
-): string | null {
+): { end: number; start: number } | null {
   if (anchor.kind === "document") {
     return null;
   }
@@ -9747,9 +9765,7 @@ function getContainingSectionMarkdown(
       return null;
     }
 
-    const sectionRange = getSectionRange(markdown, headings, heading);
-
-    return markdown.slice(sectionRange.start, sectionRange.end);
+    return getSectionRange(markdown, headings, heading);
   }
 
   const containingHeading = anchor.containing_heading
@@ -9760,19 +9776,17 @@ function getContainingSectionMarkdown(
     : null;
 
   if (containingHeading) {
-    const sectionRange = getSectionRange(markdown, headings, containingHeading);
-
-    return markdown.slice(sectionRange.start, sectionRange.end);
+    return getSectionRange(markdown, headings, containingHeading);
   }
 
   if (
     typeof anchor.fallback_section_start_offset === "number" &&
     typeof anchor.fallback_section_end_offset === "number"
   ) {
-    return markdown.slice(
-      anchor.fallback_section_start_offset,
-      anchor.fallback_section_end_offset
-    );
+    return {
+      end: anchor.fallback_section_end_offset,
+      start: anchor.fallback_section_start_offset
+    };
   }
 
   if (typeof anchor.markdown_start_offset === "number") {
@@ -9783,9 +9797,7 @@ function getContainingSectionMarkdown(
     );
 
     if (heading) {
-      const sectionRange = getSectionRange(markdown, headings, heading);
-
-      return markdown.slice(sectionRange.start, sectionRange.end);
+      return getSectionRange(markdown, headings, heading);
     }
   }
 
