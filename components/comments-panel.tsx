@@ -10,6 +10,10 @@ import {
 } from "react";
 import { type MarkdownHeading } from "@/lib/markdown/parse-headings";
 import {
+  createFloatingCommentLayout,
+  getStageRelativePreferredTop
+} from "@/lib/comments/floating-comment-layout";
+import {
   type CommentAnchorStatus,
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
@@ -99,6 +103,8 @@ const COMMENT_CARD_COMPACT_FALLBACK_HEIGHT = 110;
 const COMMENT_CARD_ACTIVE_FALLBACK_HEIGHT = 320;
 const COMMENT_ADD_FORM_FALLBACK_HEIGHT = 260;
 const COMMENT_FLOATING_DRAFT_ID = "PM-COMMENT-DRAFT-FORM";
+const COMMENT_FLOATING_STAGE_MIN_HEIGHT = 220;
+const COMMENT_LAYOUT_DEBUG_STORAGE_KEY = "patchmark:debug-comment-layout";
 
 type FloatingLayoutItem =
   | {
@@ -526,9 +532,12 @@ function FloatingCommentList({
   replyComment
 }: FloatingCommentListProps) {
   const floatingItemRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const floatingStageRef = useRef<HTMLOListElement | null>(null);
+  const layoutPassRef = useRef(0);
   const [measuredItemHeights, setMeasuredItemHeights] = useState<
     Record<string, number>
   >({});
+  const [floatingStageOffsetTop, setFloatingStageOffsetTop] = useState(0);
   const positionedComments = comments
     .filter((comment) => commentPositions[comment.id] !== undefined)
     .sort((firstComment, secondComment) => {
@@ -554,7 +563,10 @@ function FloatingCommentList({
                 fallbackHeight: COMMENT_ADD_FORM_FALLBACK_HEIGHT,
                 id: COMMENT_FLOATING_DRAFT_ID,
                 kind: "draft" as const,
-                preferredTop: Math.max(0, addPositionTop)
+                preferredTop: getStageRelativePreferredTop(
+                  addPositionTop,
+                  floatingStageOffsetTop
+                )
               }
             ]
           : []),
@@ -566,13 +578,27 @@ function FloatingCommentList({
             : COMMENT_CARD_COMPACT_FALLBACK_HEIGHT,
           id: comment.id,
           kind: "comment" as const,
-          preferredTop: Math.max(0, commentPositions[comment.id] ?? 0)
+          preferredTop: getStageRelativePreferredTop(
+            commentPositions[comment.id] ?? 0,
+            floatingStageOffsetTop
+          )
         }))
       ].sort(sortFloatingLayoutItems),
-    [activeCommentState, addForm, addPositionTop, commentPositions, positionedComments]
+    [
+      activeCommentState,
+      addForm,
+      addPositionTop,
+      commentPositions,
+      floatingStageOffsetTop,
+      positionedComments
+    ]
   );
   const floatingLayout = useMemo(
-    () => createFloatingLayout(floatingLayoutItems, measuredItemHeights),
+    () =>
+      createFloatingCommentLayout(floatingLayoutItems, measuredItemHeights, {
+        gap: COMMENT_CARD_GAP,
+        minStageHeight: COMMENT_FLOATING_STAGE_MIN_HEIGHT
+      }),
     [floatingLayoutItems, measuredItemHeights]
   );
 
@@ -587,6 +613,9 @@ function FloatingCommentList({
 
     function measureFloatingItems() {
       const nextMeasuredItemHeights: Record<string, number> = {};
+      const nextFloatingStageOffsetTop = getFloatingStageOffsetTop(
+        floatingStageRef.current
+      );
 
       for (const itemId of itemIds) {
         const element = floatingItemRefs.current[itemId];
@@ -597,6 +626,23 @@ function FloatingCommentList({
           );
         }
       }
+
+      logCommentLayoutDiagnostics({
+        activeCommentState,
+        floatingStageOffsetTop: nextFloatingStageOffsetTop,
+        floatingItemRefs: floatingItemRefs.current,
+        items: floatingLayoutItems,
+        layout: floatingLayout,
+        layoutPass: layoutPassRef.current + 1,
+        stage: floatingStageRef.current
+      });
+      layoutPassRef.current += 1;
+
+      setFloatingStageOffsetTop((currentFloatingStageOffsetTop) =>
+        currentFloatingStageOffsetTop === nextFloatingStageOffsetTop
+          ? currentFloatingStageOffsetTop
+          : nextFloatingStageOffsetTop
+      );
 
       setMeasuredItemHeights((currentMeasuredItemHeights) =>
         areMeasuredHeightsEqual(
@@ -636,6 +682,7 @@ function FloatingCommentList({
     activeCommentState,
     editComment,
     editingCommentId,
+    floatingLayout,
     floatingLayoutItems,
     replyComment,
     replyingCommentId
@@ -654,6 +701,7 @@ function FloatingCommentList({
       {floatingLayoutItems.length > 0 ? (
         <ol
           className="comment-floating-stage"
+          ref={floatingStageRef}
           style={{ minHeight: `${floatingLayout.stageHeight}px` }}
         >
           {floatingLayoutItems.map((item) => (
@@ -772,38 +820,6 @@ function sortFloatingLayoutItems(
   );
 }
 
-function createFloatingLayout(
-  items: FloatingLayoutItem[],
-  measuredItemHeights: Record<string, number>
-): {
-  positions: Record<string, number>;
-  stageHeight: number;
-} {
-  const positions: Record<string, number> = {};
-  let previousBottom = -Infinity;
-
-  for (const item of items) {
-    const itemHeight = measuredItemHeights[item.id] ?? item.fallbackHeight;
-    const nextTop = Math.max(
-      item.preferredTop,
-      Number.isFinite(previousBottom)
-        ? previousBottom + COMMENT_CARD_GAP
-        : item.preferredTop
-    );
-
-    positions[item.id] = nextTop;
-    previousBottom = nextTop + itemHeight;
-  }
-
-  return {
-    positions,
-    stageHeight:
-      items.length === 0
-        ? 0
-        : Math.max(220, previousBottom + COMMENT_CARD_GAP)
-  };
-}
-
 function areMeasuredHeightsEqual(
   firstHeights: Record<string, number>,
   secondHeights: Record<string, number>
@@ -818,6 +834,145 @@ function areMeasuredHeightsEqual(
   return firstIds.every(
     (itemId) => firstHeights[itemId] === secondHeights[itemId]
   );
+}
+
+function logCommentLayoutDiagnostics({
+  activeCommentState,
+  floatingStageOffsetTop,
+  floatingItemRefs,
+  items,
+  layout,
+  layoutPass,
+  stage
+}: {
+  activeCommentState: ActiveCommentState;
+  floatingStageOffsetTop: number;
+  floatingItemRefs: Record<string, HTMLLIElement | null>;
+  items: FloatingLayoutItem[];
+  layout: ReturnType<typeof createFloatingCommentLayout>;
+  layoutPass: number;
+  stage: HTMLOListElement | null;
+}) {
+  if (!isCommentLayoutDebugEnabled() || !stage) {
+    return;
+  }
+
+  const stageRect = stage.getBoundingClientRect();
+  const rail = stage.closest(".comments-rail");
+  const activeCommentId = getActiveCommentDebugId(activeCommentState);
+
+  console.table(
+    items.map((item) => {
+      const element = floatingItemRefs[item.id];
+      const elementRect = element?.getBoundingClientRect();
+      const anchorRange =
+        item.kind === "comment" ? getCommentAnchorDebugRange(item.comment) : null;
+      const diagnostics = layout.diagnostics[item.id];
+
+      return {
+        commentId: item.id,
+        anchorStartOffset: anchorRange?.start ?? null,
+        anchorEndOffset: anchorRange?.end ?? null,
+        anchorElementIdentity:
+          item.kind === "comment"
+            ? getCommentAnchorDebugIdentity(item.comment)
+            : "draft",
+        anchorViewportTop: Math.round(stageRect.top + item.preferredTop),
+        anchorContainerTop: Math.round(item.preferredTop),
+        commentCalculatedTop: diagnostics?.calculatedTop ?? null,
+        commentRenderedTop: elementRect
+          ? Math.round(elementRect.top - stageRect.top)
+          : null,
+        commentCardHeight: elementRect ? Math.round(elementRect.height) : null,
+        railScrollTop: rail?.scrollTop ?? null,
+        documentScrollTop: Math.round(window.scrollY),
+        activeCommentId,
+        floatingStageOffsetTop,
+        layoutPass
+      };
+    })
+  );
+}
+
+function getFloatingStageOffsetTop(stage: HTMLOListElement | null): number {
+  if (!stage) {
+    return 0;
+  }
+
+  const rail = stage.closest(".comments-rail");
+
+  if (!rail) {
+    return 0;
+  }
+
+  return Math.max(
+    0,
+    Math.round(stage.getBoundingClientRect().top - rail.getBoundingClientRect().top)
+  );
+}
+
+function isCommentLayoutDebugEnabled(): boolean {
+  try {
+    return window.localStorage.getItem(COMMENT_LAYOUT_DEBUG_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function getActiveCommentDebugId(activeCommentState: ActiveCommentState): string {
+  if (activeCommentState.kind === "comment") {
+    return activeCommentState.commentId;
+  }
+
+  if (activeCommentState.kind === "anchor_group") {
+    return activeCommentState.commentIds.join(",");
+  }
+
+  return "";
+}
+
+function getCommentAnchorDebugRange(
+  comment: PatchmarkComment
+): { end?: number; start?: number } | null {
+  const { anchor } = comment;
+
+  if (anchor.kind === "section") {
+    return {
+      end: anchor.section_end_offset,
+      start: anchor.section_start_offset
+    };
+  }
+
+  if (anchor.kind === "selected_text") {
+    return {
+      end:
+        anchor.markdown_end_offset ??
+        anchor.anchor_context?.markdown_end_offset ??
+        anchor.fallback_section_end_offset,
+      start:
+        anchor.markdown_start_offset ??
+        anchor.anchor_context?.markdown_start_offset ??
+        anchor.fallback_section_start_offset
+    };
+  }
+
+  return null;
+}
+
+function getCommentAnchorDebugIdentity(comment: PatchmarkComment): string {
+  const { anchor } = comment;
+
+  if (anchor.kind === "section") {
+    return `section:${anchor.heading_level ?? 1}:${anchor.heading}`;
+  }
+
+  if (anchor.kind === "selected_text") {
+    return `selected_text:${anchor.containing_heading ?? "document"}:${
+      anchor.selected_text_hash ?? anchor.anchor_text_hash ?? ""
+    }`;
+  }
+
+  return "document";
 }
 
 function CommentGroup({
