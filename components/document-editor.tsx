@@ -22,6 +22,16 @@ import {
   cleanMarkdownHeadingText,
   getSelectedTextLocationLabel
 } from "@/lib/comments/comment-card-display";
+import {
+  COMMENT_AFFORDANCE_MENU_SIZE,
+  chooseSelectionAffordanceRect,
+  createCommentAffordanceBounds,
+  createPointAffordanceRect,
+  placeCommentAffordance,
+  toCommentAffordanceRect,
+  type CommentAffordanceDirection,
+  type CommentAffordanceRect
+} from "@/lib/comments/comment-selection-affordance";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import {
@@ -135,6 +145,7 @@ type SelectedCommentAnchorDraft = {
   selectedText: string;
 };
 type SelectedCommentAnchorDraftResult = {
+  affordanceRect?: CommentAffordanceRect | null;
   draft: SelectedCommentAnchorDraft | null;
   help: string | null;
 };
@@ -289,8 +300,10 @@ type CommentPositionMeasurementInput = {
   workspace: HTMLElement | null;
 };
 type VisualSelectionSnapshot = {
+  affordanceRect: CommentAffordanceRect | null;
   blockText: string;
   blockKind: PatchmarkSelectedTextAnchorContextKind;
+  direction: CommentAffordanceDirection;
   selectedEndInBlock?: number;
   selectedStartInBlock?: number;
   selectedText: string;
@@ -2911,12 +2924,18 @@ export function DocumentEditor() {
       setVisualSelectionDraft(selectedDraft);
     }
 
+    const menuPosition = getCommentContextMenuPosition({
+      container: editorDocumentRef.current,
+      event,
+      selectionRect: selectionResult.affordanceRect ?? null
+    });
+
     setCommentContextMenu({
       defaultHeadingLine: headingForSelection?.line ?? null,
       selectionHelp: selectionResult.help,
       selectedDraft,
-      x: event.clientX,
-      y: event.clientY
+      x: menuPosition.x,
+      y: menuPosition.y
     });
   }
 
@@ -2945,6 +2964,38 @@ export function DocumentEditor() {
       targetHeadingLine: commentContextMenu.defaultHeadingLine
     });
     setCommentContextMenu(null);
+  }
+
+  function getCommentContextMenuPosition({
+    container,
+    event,
+    selectionRect
+  }: {
+    container: HTMLElement | null;
+    event: React.MouseEvent<HTMLDivElement>;
+    selectionRect: CommentAffordanceRect | null;
+  }): { x: number; y: number } {
+    const containerRect = container
+      ? toCommentAffordanceRect(container.getBoundingClientRect())
+      : null;
+    const bounds = createCommentAffordanceBounds({
+      containerRect,
+      menuSize: COMMENT_AFFORDANCE_MENU_SIZE,
+      viewportHeight: window.innerHeight,
+      viewportWidth: window.innerWidth
+    });
+    const anchorRect =
+      selectionRect ?? createPointAffordanceRect(event.clientX, event.clientY);
+    const position = placeCommentAffordance({
+      anchorRect,
+      bounds,
+      menuSize: COMMENT_AFFORDANCE_MENU_SIZE
+    });
+
+    return {
+      x: Math.round(position.x),
+      y: Math.round(position.y)
+    };
   }
 
   function measurePendingCommentTop({
@@ -10056,6 +10107,7 @@ function createVisualSelectionDraftResult({
     selectedTextMatches.length === 1 ? selectedTextMatches[0] : null;
 
   return {
+    affordanceRect: snapshot.affordanceRect,
     draft: {
       anchorSource: "visual",
       anchorContext,
@@ -10098,6 +10150,11 @@ function getBrowserSelectionSnapshotWithin(
   }
 
   const range = selection.getRangeAt(0);
+  const direction = getBrowserSelectionDirection(selection);
+  const affordanceRect = getBrowserSelectionAffordanceRect({
+    direction,
+    range
+  });
   const commonAncestor =
     range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
       ? (range.commonAncestorContainer as Element)
@@ -10112,12 +10169,60 @@ function getBrowserSelectionSnapshotWithin(
     : null;
 
   return {
+    affordanceRect,
     blockText,
     blockKind: getVisualAnchorContextKind(blockElement),
+    direction,
     selectedEndInBlock: selectedRangeInBlock?.end,
     selectedStartInBlock: selectedRangeInBlock?.start,
     selectedText
   };
+}
+
+function getBrowserSelectionAffordanceRect({
+  direction,
+  range
+}: {
+  direction: CommentAffordanceDirection;
+  range: Range;
+}): CommentAffordanceRect | null {
+  const clientRects = Array.from(range.getClientRects()).map(
+    toCommentAffordanceRect
+  );
+  const selectedRect = chooseSelectionAffordanceRect({
+    direction,
+    rects: clientRects
+  });
+
+  if (selectedRect) {
+    return selectedRect;
+  }
+
+  const boundingRect = toCommentAffordanceRect(range.getBoundingClientRect());
+
+  return boundingRect.width > 0 || boundingRect.height > 0 ? boundingRect : null;
+}
+
+function getBrowserSelectionDirection(
+  selection: Selection
+): CommentAffordanceDirection {
+  const { anchorNode, anchorOffset, focusNode, focusOffset } = selection;
+
+  if (!anchorNode || !focusNode || anchorNode === focusNode) {
+    return focusOffset < anchorOffset ? "backward" : "forward";
+  }
+
+  const position = anchorNode.compareDocumentPosition(focusNode);
+
+  if (position & Node.DOCUMENT_POSITION_PRECEDING) {
+    return "backward";
+  }
+
+  if (position & Node.DOCUMENT_POSITION_FOLLOWING) {
+    return "forward";
+  }
+
+  return "forward";
 }
 
 function createAnchorContextFromMarkdownRange(

@@ -9,6 +9,7 @@
     "lint": "eslint .",
     "test:anchor-recovery": "node scripts/patch-anchor-recovery.test.mjs",
     "test:comment-card-ux": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-card-ux.test.mjs",
+    "test:comment-selection-affordance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-selection-affordance.test.mjs",
     "test:comment-anchor-consistency": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-consistency.test.mjs",
     "test:comment-layout": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-floating-layout.test.mjs",
     "test:comment-reply-import-sanitization": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-reply-import-sanitization.test.mjs",

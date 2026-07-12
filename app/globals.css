@@ -431,7 +431,9 @@ button {
   z-index: 70;
   display: grid;
   min-width: 220px;
-  overflow: hidden;
+  max-width: min(280px, calc(100vw - 16px));
+  max-height: calc(100vh - 16px);
+  overflow: auto;
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 18px 48px rgba(22, 35, 29, 0.18);
