@@ -11186,7 +11186,7 @@ function findVisualTextMatches({
         matches.push({
           range,
           searchText: trimmedSearchText,
-          top: Math.max(0, rect.top)
+          top: rect.top
         });
       }
     }

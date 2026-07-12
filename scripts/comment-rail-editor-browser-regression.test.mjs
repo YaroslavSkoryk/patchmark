@@ -15,9 +15,13 @@ import { setTimeout as delay } from "node:timers/promises";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
 const projectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
-const viewportHeight = Number(process.env.PATCHMARK_BROWSER_HEIGHT ?? 10000);
+const viewportHeight = Number(process.env.PATCHMARK_BROWSER_HEIGHT ?? 1000);
 const viewportWidth = Number(process.env.PATCHMARK_BROWSER_WIDTH ?? 1440);
 const movementTolerance = 1;
+const scrollMovementTolerance = 2;
+const nearTopScrollTolerance = 100;
+const topCommentId = "PM-COMMENT-0008";
+const lowerCommentId = "PM-COMMENT-0029";
 
 async function runActualEditorRegression() {
   if (!projectDir) {
@@ -96,55 +100,87 @@ async function runActualEditorRegression() {
     await clickButtonByText(pageClient, "Open Project Folder");
     await waitForProjectComments(pageClient);
 
+    await scrollToTop(pageClient);
+
     const measurements = [];
     const initialMeasurement = await waitForStableState(
       pageClient,
-      "initial",
+      "before top activation",
       "none"
     );
-    const targets = chooseActivationTargets(initialMeasurement.rows);
+    const targets = chooseScrollActivationTargets(initialMeasurement.rows);
 
     measurements.push(initialMeasurement);
-    await activateComment(pageClient, targets.c.id);
+    await activateComment(pageClient, targets.top.id);
     measurements.push(
       await waitForStableState(
         pageClient,
-        `activate ${targets.c.id}`,
-        targets.c.id
+        "after top activation",
+        targets.top.id
       )
     );
-    await activateComment(pageClient, targets.e.id);
+    await scrollCommentIntoView(pageClient, targets.lower.id);
     measurements.push(
       await waitForStableState(
         pageClient,
-        `activate ${targets.e.id}`,
-        targets.e.id
+        "after scroll before lower activation",
+        targets.top.id
       )
     );
-    await activateComment(pageClient, targets.b.id);
+    await activateComment(pageClient, targets.lower.id);
     measurements.push(
       await waitForStableState(
         pageClient,
-        `activate ${targets.b.id}`,
-        targets.b.id
+        "after lower activation",
+        targets.lower.id
       )
     );
-    await activateComment(pageClient, targets.c.id);
+    await scrollCommentIntoView(pageClient, targets.top.id);
     measurements.push(
       await waitForStableState(
         pageClient,
-        `activate ${targets.c.id} again`,
-        targets.c.id
+        "after scroll up before top reactivation",
+        targets.lower.id
       )
     );
-    await closeActiveComment(pageClient);
-    measurements.push(await waitForStableState(pageClient, "collapse", "none"));
-    await activateComment(pageClient, targets.c.id);
+    await activateComment(pageClient, targets.top.id);
     measurements.push(
       await waitForStableState(
         pageClient,
-        `reactivate ${targets.c.id}`,
-        targets.c.id
+        "after top reactivation",
+        targets.top.id
+      )
+    );
+    await scrollCommentIntoView(pageClient, targets.lower.id);
+    measurements.push(
+      await waitForStableState(
+        pageClient,
+        "second scroll before lower activation",
+        targets.top.id
+      )
+    );
+    await activateComment(pageClient, targets.lower.id);
+    measurements.push(
+      await waitForStableState(
+        pageClient,
+        "second lower activation",
+        targets.lower.id
+      )
+    );
+    await scrollCommentIntoView(pageClient, targets.top.id);
+    measurements.push(
+      await waitForStableState(
+        pageClient,
+        "second scroll up before top activation",
+        targets.lower.id
+      )
+    );
+    await activateComment(pageClient, targets.top.id);
+    measurements.push(
+      await waitForStableState(
+        pageClient,
+        "second top reactivation",
+        targets.top.id
       )
     );
 
@@ -653,6 +689,76 @@ function haveStableRows(firstRows, secondRows) {
   });
 }
 
+async function scrollToTop(client) {
+  await evaluate(client, {
+    expression: `window.scrollTo({ top: 0, left: 0, behavior: "instant" }); true`
+  });
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const scrollY = await evaluate(client, {
+      expression: `Math.round(window.scrollY)`
+    });
+
+    if (scrollY === 0) {
+      return;
+    }
+
+    await delay(50);
+  }
+
+  throw new Error("Timed out waiting for the editor page to scroll to top.");
+}
+
+async function scrollCommentIntoView(client, commentId) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const state = await evaluate(client, {
+      expression: `(() => {
+        const item = document.querySelector(${JSON.stringify(`[data-comment-id="${commentId}"]`)});
+
+        if (!item) {
+          throw new Error("Comment item not found: ${commentId}");
+        }
+
+        const rect = item.getBoundingClientRect();
+        const desiredTop = 220;
+
+        if (rect.top < desiredTop || rect.top > window.innerHeight - 260) {
+          window.scrollTo({
+            top: Math.max(0, Math.round(window.scrollY + rect.top - desiredTop)),
+            left: 0,
+            behavior: "instant"
+          });
+        }
+
+        return {
+          cardTop: Math.round(rect.top),
+          cardBottom: Math.round(rect.bottom),
+          scrollY: Math.round(window.scrollY),
+          visible: rect.top >= 80 && rect.top <= window.innerHeight - 160
+        };
+      })()`
+    });
+
+    latestState = state;
+
+    if (state.visible) {
+      return state;
+    }
+
+    await delay(75);
+  }
+
+  throw new Error(
+    `Timed out scrolling ${commentId} into view.\n${JSON.stringify(
+      latestState,
+      null,
+      2
+    )}`
+  );
+}
+
 async function clickButtonByText(client, text) {
   await evaluate(client, {
     expression: `(() => {
@@ -685,32 +791,6 @@ async function activateComment(client, commentId) {
       return {
         x: Math.round(rect.left + rect.width / 2),
         y: Math.round(rect.top + Math.min(rect.height / 2, 80))
-      };
-    })()`
-  });
-}
-
-async function closeActiveComment(client) {
-  await clickElementCenter(client, {
-    expression: `(() => {
-      const activeArticle = document.querySelector("article[aria-current='true']");
-
-      if (!activeArticle) {
-        throw new Error("No active comment card found.");
-      }
-
-      const closeButton = Array.from(activeArticle.querySelectorAll("button"))
-        .find((button) => button.textContent?.trim() === "Close details");
-
-      if (!closeButton) {
-        throw new Error("Close details button not found.");
-      }
-
-      const rect = closeButton.getBoundingClientRect();
-
-      return {
-        x: Math.round(rect.left + rect.width / 2),
-        y: Math.round(rect.top + rect.height / 2)
       };
     })()`
   });
@@ -752,6 +832,7 @@ async function measureEditorRail(client, label) {
       const editor = document.querySelector(".editor-panel");
       const stageRect = stage?.getBoundingClientRect();
       const railRect = rail?.getBoundingClientRect();
+      const documentScrollTop = Math.round(window.scrollY);
       const layoutEvents = window.__patchmarkCommentLayoutDebugEvents ?? [];
       const latestEvent = layoutEvents.at(-1) ?? null;
       const latestRowsById = Object.fromEntries(
@@ -764,6 +845,14 @@ async function measureEditorRail(client, label) {
         const articleRect = article?.getBoundingClientRect();
         const style = getComputedStyle(item);
         const debugRow = latestRowsById[id] ?? null;
+        const preferredTop = numberOrNull(item.getAttribute("data-comment-preferred-top"));
+        const anchorTargetY = debugRow?.anchorContainerTop ?? preferredTop;
+        const anchorViewportTop = preferredTop !== null && stageRect
+          ? Math.round(stageRect.top + preferredTop)
+          : debugRow?.anchorViewportTop ?? null;
+        const anchorDocumentY = anchorViewportTop !== null
+          ? anchorViewportTop + documentScrollTop
+          : null;
 
         return {
           id,
@@ -778,11 +867,12 @@ async function measureEditorRail(client, label) {
           pendingPatchCount: Number(item.getAttribute("data-comment-pending-patch-count") ?? 0),
           anchorStartOffset: numberOrNull(item.getAttribute("data-comment-anchor-start")),
           anchorEndOffset: numberOrNull(item.getAttribute("data-comment-anchor-end")),
-          anchorViewportTop: debugRow?.anchorViewportTop ?? null,
-          anchorTargetY: debugRow?.anchorContainerTop ?? numberOrNull(item.getAttribute("data-comment-preferred-top")),
+          anchorDocumentY,
+          anchorViewportTop,
+          anchorTargetY,
           measuredHeight: Math.round(itemRect.height),
           articleHeight: articleRect ? Math.round(articleRect.height) : null,
-          preferredTop: numberOrNull(item.getAttribute("data-comment-preferred-top")),
+          preferredTop,
           layoutTop: numberOrNull(item.getAttribute("data-comment-layout-top")),
           inlineTop: item.style.top || null,
           transform: style.transform === "none" ? null : style.transform,
@@ -809,7 +899,7 @@ async function measureEditorRail(client, label) {
           ?.replace(/^Active comment /, "") ?? "none",
         fixtureActiveId: root?.getAttribute("data-regression-active-id") ?? null,
         railScrollTop: rail?.scrollTop ?? null,
-        documentScrollTop: Math.round(window.scrollY),
+        documentScrollTop,
         editorScrollTop: editor?.scrollTop ?? null,
         stageOffsetTop: stageRect && railRect ? Math.round(stageRect.top - railRect.top) : null,
         stageHeight: stageRect ? Math.round(stageRect.height) : null,
@@ -845,37 +935,27 @@ async function evaluate(client, { expression, userGesture = false }) {
   return result.result.value;
 }
 
-function chooseActivationTargets(rows) {
-  const candidates = rows.filter(
-    (row) =>
-      row.id &&
-      row.anchorKind !== "document" &&
-      row.viewportTop > 0 &&
-      row.viewportTop < viewportHeight - 120
-  );
+function chooseScrollActivationTargets(rows) {
+  const top = rows.find((row) => row.id === topCommentId);
+  const lower = rows.find((row) => row.id === lowerCommentId);
 
+  assert.ok(top, `Expected top whole-document comment ${topCommentId}.`);
+  assert.ok(lower, `Expected lower Public reference comment ${lowerCommentId}.`);
+  assert.equal(top.anchorKind, "document");
+  assert.equal(top.commentStatus, "resolved");
+  assert.equal(top.commentType, "research_needed");
+  assert.ok(top.threadCount >= 10, "Top comment should contain a long thread.");
+  assert.equal(lower.anchorKind, "selected_text");
+  assert.equal(lower.commentStatus, "open");
+  assert.equal(lower.commentType, "research_needed");
   assert.ok(
-    candidates.length >= 5,
-    `Expected at least 5 visible positioned real comments, found ${candidates.length}.`
+    lower.anchorTargetY - top.anchorTargetY > viewportHeight,
+    "Lower comment should require substantial scrolling from the top comment."
   );
-
-  const preferredC =
-    candidates.find((row) => row.id === "PM-COMMENT-0024") ??
-    candidates.find((row) => row.patchImpactCount > 0 && row.threadCount >= 5) ??
-    candidates[Math.floor(candidates.length / 2)];
-  const cIndex = candidates.findIndex((row) => row.id === preferredC.id);
-  const b = candidates[Math.max(0, cIndex - 2)];
-  const e =
-    candidates[Math.min(candidates.length - 1, cIndex + 2)] ??
-    candidates[candidates.length - 1];
-
-  assert.notEqual(b.id, preferredC.id, "B target should differ from C target.");
-  assert.notEqual(e.id, preferredC.id, "E target should differ from C target.");
 
   return {
-    b,
-    c: preferredC,
-    e
+    lower,
+    top
   };
 }
 
@@ -883,18 +963,30 @@ function assertActualEditorMeasurements(measurements, targets) {
   const initial = measurements[0];
   const initialRows = Object.fromEntries(initial.rows.map((row) => [row.id, row]));
   const initialOrder = initial.rows.map((row) => row.id);
-  const activeC = measurements.find(
-    (measurement) => measurement.label === `activate ${targets.c.id}`
+  const afterTop = findMeasurement(measurements, "after top activation");
+  const firstScrollDown = findMeasurement(
+    measurements,
+    "after scroll before lower activation"
   );
-  const activeCAgain = measurements.find(
-    (measurement) => measurement.label === `activate ${targets.c.id} again`
+  const afterLower = findMeasurement(measurements, "after lower activation");
+  const firstScrollUp = findMeasurement(
+    measurements,
+    "after scroll up before top reactivation"
   );
-  const activeCReactivated = measurements.find(
-    (measurement) => measurement.label === `reactivate ${targets.c.id}`
+  const afterTopAgain = findMeasurement(
+    measurements,
+    "after top reactivation"
   );
-  const collapsed = measurements.find(
-    (measurement) => measurement.label === "collapse"
+  const secondScrollDown = findMeasurement(
+    measurements,
+    "second scroll before lower activation"
   );
+  const secondLower = findMeasurement(measurements, "second lower activation");
+  const secondScrollUp = findMeasurement(
+    measurements,
+    "second scroll up before top activation"
+  );
+  const secondTop = findMeasurement(measurements, "second top reactivation");
 
   for (const measurement of measurements) {
     assert.deepEqual(
@@ -908,11 +1000,6 @@ function assertActualEditorMeasurements(measurements, targets) {
       `${measurement.label} should not scroll the rail`
     );
     assert.equal(
-      measurement.documentScrollTop,
-      initial.documentScrollTop,
-      `${measurement.label} should not scroll the document`
-    );
-    assert.equal(
       measurement.editorScrollTop,
       initial.editorScrollTop,
       `${measurement.label} should not scroll the editor`
@@ -920,6 +1007,11 @@ function assertActualEditorMeasurements(measurements, targets) {
 
     for (const row of measurement.rows) {
       const initialRow = initialRows[row.id];
+      const expectedAnchorViewportTop =
+        initialRow.anchorViewportTop === null
+          ? null
+          : initialRow.anchorViewportTop -
+            (measurement.documentScrollTop - initial.documentScrollTop);
 
       assert.equal(
         row.anchorStatus,
@@ -936,10 +1028,23 @@ function assertActualEditorMeasurements(measurements, targets) {
         initialRow.anchorEndOffset,
         `${measurement.label} should keep ${row.id} anchor end stable`
       );
-      assert.equal(
+      assertNear(
         row.anchorTargetY,
         initialRow.anchorTargetY,
+        scrollMovementTolerance,
         `${measurement.label} should keep ${row.id} anchor target stable`
+      );
+      assertNear(
+        row.anchorDocumentY,
+        initialRow.anchorDocumentY,
+        scrollMovementTolerance,
+        `${measurement.label} should keep ${row.id} document-relative anchor stable`
+      );
+      assertNear(
+        row.anchorViewportTop,
+        expectedAnchorViewportTop,
+        scrollMovementTolerance,
+        `${measurement.label} should move ${row.id} viewport anchor only by document scroll`
       );
       assert.equal(
         row.parentIdentity,
@@ -951,67 +1056,163 @@ function assertActualEditorMeasurements(measurements, targets) {
         null,
         `${measurement.label} should not move ${row.id} through transform`
       );
-      assert.ok(
-        Math.abs(row.layoutTop - row.renderedDomTop) <= movementTolerance,
+      assertNear(
+        row.layoutTop,
+        row.renderedDomTop,
+        movementTolerance,
         `${measurement.label} should render ${row.id} at layout top`
       );
     }
   }
 
-  for (const target of [targets.c, targets.e, targets.b]) {
-    assertActivationInvariant(measurements, initial, target.id);
-  }
+  assertNearTopScroll(initial);
+  assertNearTopScroll(afterTop);
+  assertSubstantialDocumentScroll(firstScrollDown, targets.lower.id);
+  assertNear(
+    afterLower.documentScrollTop,
+    firstScrollDown.documentScrollTop,
+    scrollMovementTolerance,
+    "Lower activation should not unexpectedly scroll the document"
+  );
+  assertSubstantialDocumentScroll(afterLower, targets.lower.id);
+  assertNearTopScroll(firstScrollUp);
+  assertNearTopScroll(afterTopAgain);
+  assertSubstantialDocumentScroll(secondScrollDown, targets.lower.id);
+  assertNear(
+    secondLower.documentScrollTop,
+    secondScrollDown.documentScrollTop,
+    scrollMovementTolerance,
+    "Second lower activation should not unexpectedly scroll the document"
+  );
+  assertSubstantialDocumentScroll(secondLower, targets.lower.id);
+  assertNearTopScroll(secondScrollUp);
+  assertNearTopScroll(secondTop);
 
-  assert.deepEqual(
-    pickRenderedTops(collapsed),
-    pickRenderedTops(initial),
-    "Collapsing the actual editor comment should restore compact positions"
+  assertCardVisible(firstScrollDown, targets.lower.id);
+  assertCardVisible(afterLower, targets.lower.id);
+  assertCardVisible(firstScrollUp, targets.top.id);
+  assertCardVisible(afterTopAgain, targets.top.id);
+  assertCardVisible(secondScrollDown, targets.lower.id);
+  assertCardVisible(secondLower, targets.lower.id);
+  assertCardVisible(secondScrollUp, targets.top.id);
+  assertCardVisible(secondTop, targets.top.id);
+
+  assertNoEarlierCommentGathering(initial, afterLower, targets);
+  assertNoEarlierCommentGathering(initial, secondLower, targets);
+
+  assertRenderedTopsNear(
+    afterTopAgain,
+    afterTop,
+    "Reactivating the top actual editor comment should be deterministic"
   );
-  assert.deepEqual(
-    pickRenderedTops(activeCAgain),
-    pickRenderedTops(activeC),
-    "Reactivating the same actual editor comment should be deterministic"
+  assertRenderedTopsNear(
+    secondTop,
+    afterTop,
+    "Second top activation should not accumulate rail drift"
   );
-  assert.deepEqual(
-    pickRenderedTops(activeCReactivated),
-    pickRenderedTops(activeC),
-    "Reactivating after collapse should reproduce the same actual editor positions"
+  assertRenderedTopsNear(
+    secondScrollDown,
+    firstScrollDown,
+    "Repeating top-scroll-lower setup should be deterministic"
+  );
+  assertRenderedTopsNear(
+    secondLower,
+    afterLower,
+    "Repeating lower activation should not accumulate rail drift"
   );
 }
 
-function assertActivationInvariant(measurements, initial, targetId) {
+function assertNearTopScroll(measurement) {
+  assert.ok(
+    measurement.documentScrollTop <= nearTopScrollTolerance,
+    `${measurement.label} should be measured near the top of the document, got scrollY ${measurement.documentScrollTop}`
+  );
+}
+
+function assertSubstantialDocumentScroll(measurement, visibleCommentId) {
+  const minimumScroll = Math.max(500, Math.floor(viewportHeight * 0.6));
+
+  assert.ok(
+    measurement.documentScrollTop >= minimumScroll,
+    `${measurement.label} should keep nonzero substantial document scroll before ${visibleCommentId}; got ${measurement.documentScrollTop}`
+  );
+}
+
+function assertCardVisible(measurement, commentId) {
+  const row = getRow(measurement, commentId);
+
+  assert.ok(
+    row.viewportTop >= 0 && row.viewportTop <= viewportHeight - 120,
+    `${measurement.label} should keep ${commentId} visibly reachable in the viewport; top ${row.viewportTop}`
+  );
+}
+
+function assertNoEarlierCommentGathering(initial, measurement, targets) {
   const initialRows = Object.fromEntries(initial.rows.map((row) => [row.id, row]));
-  const initialIndex = initial.rows.findIndex((row) => row.id === targetId);
-  const measurement = measurements.find((candidate) =>
-    candidate.label.startsWith(`activate ${targetId}`)
+  const initialLower = getRow(initial, targets.lower.id);
+  const lowerRow = getRow(measurement, targets.lower.id);
+  const topRow = getRow(measurement, targets.top.id);
+
+  assert.ok(
+    lowerRow.renderedDomTop - topRow.renderedDomTop > viewportHeight,
+    `${measurement.label} should not gather ${targets.top.id} near ${targets.lower.id}`
   );
 
-  assert.ok(measurement, `Missing activation measurement for ${targetId}.`);
-
   for (const row of measurement.rows) {
-    const rowInitial = initialRows[row.id];
-    const rowInitialIndex = initial.rows.findIndex(
-      (candidate) => candidate.id === row.id
-    );
+    const initialRow = initialRows[row.id];
 
-    if (rowInitialIndex <= initialIndex) {
+    if (
+      initialRow.order < initialLower.order &&
+      initialLower.anchorTargetY - initialRow.anchorTargetY > viewportHeight
+    ) {
       assert.ok(
-        Math.abs(row.renderedDomTop - rowInitial.renderedDomTop) <=
-          movementTolerance,
-        `${targetId} activation should not pull ${row.id} away from its compact top`
-      );
-    } else {
-      assert.ok(
-        row.renderedDomTop >= rowInitial.renderedDomTop - movementTolerance,
-        `${targetId} activation should not move downstream ${row.id} upward`
+        lowerRow.renderedDomTop - row.renderedDomTop > viewportHeight / 2,
+        `${measurement.label} should not pull earlier ${row.id} into the lower active card cluster`
       );
     }
   }
 }
 
-function pickRenderedTops(measurement) {
-  return Object.fromEntries(
-    measurement.rows.map((row) => [row.id, row.renderedDomTop])
+function assertRenderedTopsNear(actualMeasurement, expectedMeasurement, message) {
+  const expectedRows = Object.fromEntries(
+    expectedMeasurement.rows.map((row) => [row.id, row])
+  );
+
+  for (const actualRow of actualMeasurement.rows) {
+    assertNear(
+      actualRow.renderedDomTop,
+      expectedRows[actualRow.id].renderedDomTop,
+      scrollMovementTolerance,
+      `${message}: ${actualRow.id}`
+    );
+  }
+}
+
+function findMeasurement(measurements, label) {
+  const measurement = measurements.find((candidate) => candidate.label === label);
+
+  assert.ok(measurement, `Missing measurement: ${label}.`);
+
+  return measurement;
+}
+
+function getRow(measurement, commentId) {
+  const row = measurement.rows.find((candidate) => candidate.id === commentId);
+
+  assert.ok(row, `${measurement.label} should include ${commentId}.`);
+
+  return row;
+}
+
+function assertNear(actual, expected, tolerance, message) {
+  if (actual === null || expected === null) {
+    assert.equal(actual, expected, message);
+    return;
+  }
+
+  assert.ok(
+    Math.abs(actual - expected) <= tolerance,
+    `${message}; expected ${expected}, got ${actual}, tolerance ${tolerance}`
   );
 }
 
@@ -1023,14 +1224,14 @@ function printEditorSummary({
   url
 }) {
   const compactRows = measurements[0].rows;
+  const lowerIndex = compactRows.findIndex((row) => row.id === targets.lower.id);
   const interestingIds = new Set([
-    targets.b.id,
-    targets.c.id,
-    targets.e.id,
+    targets.top.id,
+    targets.lower.id,
     ...compactRows
       .slice(
-        Math.max(0, compactRows.findIndex((row) => row.id === targets.c.id) - 2),
-        compactRows.findIndex((row) => row.id === targets.c.id) + 3
+        Math.max(0, lowerIndex - 3),
+        lowerIndex + 4
       )
       .map((row) => row.id)
   ]);
@@ -1052,18 +1253,23 @@ function printEditorSummary({
         .map((row) => ({
           id: row.id,
           order: row.order,
+          active: row.active,
           anchorStatus: row.anchorStatus,
           anchorKind: row.anchorKind,
           commentStatus: row.commentStatus,
+          commentType: row.commentType,
           threadCount: row.threadCount,
           patchImpactCount: row.patchImpactCount,
           pendingPatchCount: row.pendingPatchCount,
           anchorStartOffset: row.anchorStartOffset,
           anchorEndOffset: row.anchorEndOffset,
+          anchorDocumentY: row.anchorDocumentY,
+          anchorViewportTop: row.anchorViewportTop,
           anchorTargetY: row.anchorTargetY,
           measuredHeight: row.measuredHeight,
           layoutTop: row.layoutTop,
           renderedDomTop: row.renderedDomTop,
+          viewportTop: row.viewportTop,
           parentIdentity: row.parentIdentity
         }))
     })),
