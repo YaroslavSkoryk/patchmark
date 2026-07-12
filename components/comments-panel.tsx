@@ -48,8 +48,14 @@ export type CommentPatchGroupSummary = {
   stale: number;
 };
 
+export type ActiveCommentState =
+  | { kind: "none" }
+  | { kind: "comment"; commentId: string }
+  | { kind: "anchor_group"; commentIds: string[] };
+
 type CommentsPanelProps = {
   addRequest: CommentAddRequest | null;
+  activeCommentState: ActiveCommentState;
   anchorSummaries: Record<string, CommentAnchorSummary>;
   commentPositions: Record<string, number>;
   comments: PatchmarkComment[];
@@ -71,6 +77,7 @@ type CommentsPanelProps = {
   onReviewCommentPatches: (commentId: string) => void;
   onReviewFirstPendingPatch: () => void;
   onResolveComment: (commentId: string) => Promise<void>;
+  onSetActiveCommentState: (state: ActiveCommentState) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   patchGroupSummariesByCommentId: Record<string, CommentPatchGroupSummary>;
   pendingPatchGroupTotal: number;
@@ -88,7 +95,8 @@ const commentTypeOptions: PatchmarkCommentType[] = [
   "decision_needed"
 ];
 const COMMENT_CARD_GAP = 12;
-const COMMENT_CARD_FALLBACK_HEIGHT = 180;
+const COMMENT_CARD_COMPACT_FALLBACK_HEIGHT = 110;
+const COMMENT_CARD_ACTIVE_FALLBACK_HEIGHT = 320;
 const COMMENT_ADD_FORM_FALLBACK_HEIGHT = 260;
 const COMMENT_FLOATING_DRAFT_ID = "PM-COMMENT-DRAFT-FORM";
 
@@ -111,6 +119,7 @@ type FloatingLayoutItem =
 
 export function CommentsPanel({
   addRequest,
+  activeCommentState,
   anchorSummaries,
   commentPositions,
   comments,
@@ -129,6 +138,7 @@ export function CommentsPanel({
   onReviewCommentPatches,
   onReviewFirstPendingPatch,
   onResolveComment,
+  onSetActiveCommentState,
   onUnmarkCommentForExport,
   patchGroupSummariesByCommentId,
   pendingPatchGroupTotal,
@@ -150,49 +160,8 @@ export function CommentsPanel({
   const [replyingCommentId, setReplyingCommentId] = useState<string | null>(null);
   const [replyComment, setReplyComment] = useState("");
   const [formError, setFormError] = useState("");
-  const [expandedResolvedCommentIds, setExpandedResolvedCommentIds] = useState<
-    Set<string>
-  >(new Set());
-  const openComments = useMemo(
-    () => comments.filter((comment) => comment.status === "open"),
-    [comments]
-  );
-  const resolvedComments = useMemo(
-    () => comments.filter((comment) => comment.status === "resolved"),
-    [comments]
-  );
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
-
-  useEffect(() => {
-    const resolvedCommentIds = new Set(
-      comments
-        .filter((comment) => comment.status === "resolved")
-        .map((comment) => comment.id)
-    );
-
-    setExpandedResolvedCommentIds((currentIds) => {
-      const nextIds = new Set(
-        [...currentIds].filter((commentId) => resolvedCommentIds.has(commentId))
-      );
-
-      return nextIds.size === currentIds.size ? currentIds : nextIds;
-    });
-  }, [comments]);
-
-  function toggleResolvedComment(commentId: string) {
-    setExpandedResolvedCommentIds((currentIds) => {
-      const nextIds = new Set(currentIds);
-
-      if (nextIds.has(commentId)) {
-        nextIds.delete(commentId);
-      } else {
-        nextIds.add(commentId);
-      }
-
-      return nextIds;
-    });
-  }
 
   const openAddForm = useCallback((
     preferredScope?: CommentAnchorScope,
@@ -280,6 +249,7 @@ export function CommentsPanel({
   }
 
   function startEditing(comment: PatchmarkComment) {
+    onSetActiveCommentState({ kind: "comment", commentId: comment.id });
     setEditingCommentId(comment.id);
     setIsAdding(false);
     setAddPositionTop(null);
@@ -291,6 +261,7 @@ export function CommentsPanel({
   }
 
   function startReplying(comment: PatchmarkComment) {
+    onSetActiveCommentState({ kind: "comment", commentId: comment.id });
     setReplyingCommentId(comment.id);
     setReplyComment("");
     setEditingCommentId(null);
@@ -439,13 +410,13 @@ export function CommentsPanel({
           <FloatingCommentList
             addForm={addForm}
             addPositionTop={addPositionTop}
+            activeCommentState={activeCommentState}
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
-            comments={openComments}
+            comments={comments}
             editingCommentId={editingCommentId}
             editComment={editComment}
             editType={editType}
-            expandedResolvedCommentIds={expandedResolvedCommentIds}
             isBusy={isBusy}
             onDeleteComment={handleDeleteComment}
             onEditComment={handleEditComment}
@@ -455,6 +426,7 @@ export function CommentsPanel({
             onReplyComment={handleReplyComment}
             onReviewCommentPatches={onReviewCommentPatches}
             onResolveComment={onResolveComment}
+            onSetActiveCommentState={onSetActiveCommentState}
             onSetEditComment={setEditComment}
             onSetEditType={setEditType}
             onSetReplyComment={setReplyComment}
@@ -465,51 +437,12 @@ export function CommentsPanel({
               setReplyingCommentId(null);
               setReplyComment("");
             }}
-            onToggleResolvedComment={toggleResolvedComment}
             onUnmarkCommentForExport={onUnmarkCommentForExport}
             patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
             pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
             replyingCommentId={replyingCommentId}
             replyComment={replyComment}
           />
-          {resolvedComments.length > 0 ? (
-            <CommentGroup
-              anchorSummaries={anchorSummaries}
-              comments={resolvedComments}
-              editingCommentId={editingCommentId}
-              editComment={editComment}
-              editType={editType}
-              emptyMessage="No resolved comments."
-              expandedResolvedCommentIds={expandedResolvedCommentIds}
-              isBusy={isBusy}
-              label={`Resolved comments (${resolvedComments.length})`}
-              onDeleteComment={handleDeleteComment}
-              onEditComment={handleEditComment}
-              onFindComment={onFindComment}
-              onMarkCommentForExport={onMarkCommentForExport}
-              onReopenComment={onReopenComment}
-              onReplyComment={handleReplyComment}
-              onReviewCommentPatches={onReviewCommentPatches}
-              onResolveComment={onResolveComment}
-              onSetEditComment={setEditComment}
-              onSetEditType={setEditType}
-              onSetReplyComment={setReplyComment}
-              onStartEditing={startEditing}
-              onStartReplying={startReplying}
-              onStopEditing={() => setEditingCommentId(null)}
-              onStopReplying={() => {
-                setReplyingCommentId(null);
-                setReplyComment("");
-              }}
-              onToggleResolvedComment={toggleResolvedComment}
-              onUnmarkCommentForExport={onUnmarkCommentForExport}
-              patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
-              pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
-              quiet
-              replyingCommentId={replyingCommentId}
-              replyComment={replyComment}
-            />
-          ) : null}
         </>
       )}
     </section>
@@ -517,13 +450,13 @@ export function CommentsPanel({
 }
 
 type CommentGroupProps = {
+  activeCommentState: ActiveCommentState;
   anchorSummaries: Record<string, CommentAnchorSummary>;
   comments: PatchmarkComment[];
   editingCommentId: string | null;
   editComment: string;
   editType: PatchmarkCommentType;
   emptyMessage: string;
-  expandedResolvedCommentIds: Set<string>;
   isBusy: boolean;
   label: string;
   onDeleteComment: (commentId: string) => Promise<void>;
@@ -534,6 +467,7 @@ type CommentGroupProps = {
   onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onReviewCommentPatches: (commentId: string) => void;
   onResolveComment?: (commentId: string) => Promise<void>;
+  onSetActiveCommentState: (state: ActiveCommentState) => void;
   onSetEditComment: (comment: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
   onSetReplyComment: (comment: string) => void;
@@ -541,7 +475,6 @@ type CommentGroupProps = {
   onStartReplying: (comment: PatchmarkComment) => void;
   onStopEditing: () => void;
   onStopReplying: () => void;
-  onToggleResolvedComment: (commentId: string) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   patchGroupSummariesByCommentId: Record<string, CommentPatchGroupSummary>;
   pendingPatchCountsByCommentId: Record<string, number>;
@@ -562,13 +495,13 @@ type FloatingCommentListProps = Omit<
 function FloatingCommentList({
   addForm,
   addPositionTop,
+  activeCommentState,
   anchorSummaries,
   commentPositions,
   comments,
   editingCommentId,
   editComment,
   editType,
-  expandedResolvedCommentIds,
   isBusy,
   onDeleteComment,
   onEditComment,
@@ -578,6 +511,7 @@ function FloatingCommentList({
   onReplyComment,
   onReviewCommentPatches,
   onResolveComment,
+  onSetActiveCommentState,
   onSetEditComment,
   onSetEditType,
   onSetReplyComment,
@@ -585,7 +519,6 @@ function FloatingCommentList({
   onStartReplying,
   onStopEditing,
   onStopReplying,
-  onToggleResolvedComment,
   onUnmarkCommentForExport,
   patchGroupSummariesByCommentId,
   pendingPatchCountsByCommentId,
@@ -628,13 +561,15 @@ function FloatingCommentList({
         ...positionedComments.map((comment) => ({
           comment,
           createdAt: comment.created_at,
-          fallbackHeight: COMMENT_CARD_FALLBACK_HEIGHT,
+          fallbackHeight: isCommentActive(activeCommentState, comment.id)
+            ? COMMENT_CARD_ACTIVE_FALLBACK_HEIGHT
+            : COMMENT_CARD_COMPACT_FALLBACK_HEIGHT,
           id: comment.id,
           kind: "comment" as const,
           preferredTop: Math.max(0, commentPositions[comment.id] ?? 0)
         }))
       ].sort(sortFloatingLayoutItems),
-    [addForm, addPositionTop, commentPositions, positionedComments]
+    [activeCommentState, addForm, addPositionTop, commentPositions, positionedComments]
   );
   const floatingLayout = useMemo(
     () => createFloatingLayout(floatingLayoutItems, measuredItemHeights),
@@ -698,6 +633,7 @@ function FloatingCommentList({
     };
   }, [
     addForm,
+    activeCommentState,
     editComment,
     editingCommentId,
     floatingLayoutItems,
@@ -740,7 +676,11 @@ function FloatingCommentList({
                   editingCommentId={editingCommentId}
                   editComment={editComment}
                   editType={editType}
-                  expandedResolvedCommentIds={expandedResolvedCommentIds}
+                  isActive={isCommentActive(activeCommentState, item.comment.id)}
+                  isAnchorGroupActive={
+                    activeCommentState.kind === "anchor_group" &&
+                    activeCommentState.commentIds.includes(item.comment.id)
+                  }
                   isBusy={isBusy}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
@@ -750,6 +690,12 @@ function FloatingCommentList({
                   onReplyComment={onReplyComment}
                   onReviewCommentPatches={onReviewCommentPatches}
                   onResolveComment={onResolveComment}
+                  onActivateComment={(commentId) =>
+                    onSetActiveCommentState({ kind: "comment", commentId })
+                  }
+                  onClearActiveComment={() =>
+                    onSetActiveCommentState({ kind: "none" })
+                  }
                   onSetEditComment={onSetEditComment}
                   onSetEditType={onSetEditType}
                   onSetReplyComment={onSetReplyComment}
@@ -757,7 +703,6 @@ function FloatingCommentList({
                   onStartReplying={onStartReplying}
                   onStopEditing={onStopEditing}
                   onStopReplying={onStopReplying}
-                  onToggleResolvedComment={onToggleResolvedComment}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
                   patchGroupSummary={
                     patchGroupSummariesByCommentId[item.comment.id] ?? null
@@ -780,12 +725,12 @@ function FloatingCommentList({
       {unpositionedComments.length > 0 ? (
         <CommentGroup
           anchorSummaries={anchorSummaries}
+          activeCommentState={activeCommentState}
           comments={sortCommentsByStatus(unpositionedComments)}
           editingCommentId={editingCommentId}
           editComment={editComment}
           editType={editType}
           emptyMessage="No comments need review."
-          expandedResolvedCommentIds={expandedResolvedCommentIds}
           isBusy={isBusy}
           label="Needs review"
           onDeleteComment={onDeleteComment}
@@ -796,6 +741,7 @@ function FloatingCommentList({
           onReplyComment={onReplyComment}
           onReviewCommentPatches={onReviewCommentPatches}
           onResolveComment={onResolveComment}
+          onSetActiveCommentState={onSetActiveCommentState}
           onSetEditComment={onSetEditComment}
           onSetEditType={onSetEditType}
           onSetReplyComment={onSetReplyComment}
@@ -803,7 +749,6 @@ function FloatingCommentList({
           onStartReplying={onStartReplying}
           onStopEditing={onStopEditing}
           onStopReplying={onStopReplying}
-          onToggleResolvedComment={onToggleResolvedComment}
           onUnmarkCommentForExport={onUnmarkCommentForExport}
           patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
@@ -876,13 +821,13 @@ function areMeasuredHeightsEqual(
 }
 
 function CommentGroup({
+  activeCommentState,
   anchorSummaries,
   comments,
   editingCommentId,
   editComment,
   editType,
   emptyMessage,
-  expandedResolvedCommentIds,
   isBusy,
   label,
   onDeleteComment,
@@ -893,6 +838,7 @@ function CommentGroup({
   onReplyComment,
   onReviewCommentPatches,
   onResolveComment,
+  onSetActiveCommentState,
   onSetEditComment,
   onSetEditType,
   onSetReplyComment,
@@ -900,7 +846,6 @@ function CommentGroup({
   onStartReplying,
   onStopEditing,
   onStopReplying,
-  onToggleResolvedComment,
   onUnmarkCommentForExport,
   patchGroupSummariesByCommentId,
   pendingPatchCountsByCommentId,
@@ -924,7 +869,11 @@ function CommentGroup({
                   editingCommentId={editingCommentId}
                   editComment={editComment}
                   editType={editType}
-                  expandedResolvedCommentIds={expandedResolvedCommentIds}
+                  isActive={isCommentActive(activeCommentState, comment.id)}
+                  isAnchorGroupActive={
+                    activeCommentState.kind === "anchor_group" &&
+                    activeCommentState.commentIds.includes(comment.id)
+                  }
                   isBusy={isBusy}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
@@ -934,6 +883,12 @@ function CommentGroup({
                   onReplyComment={onReplyComment}
                   onReviewCommentPatches={onReviewCommentPatches}
                   onResolveComment={onResolveComment}
+                  onActivateComment={(commentId) =>
+                    onSetActiveCommentState({ kind: "comment", commentId })
+                  }
+                  onClearActiveComment={() =>
+                    onSetActiveCommentState({ kind: "none" })
+                  }
                   onSetEditComment={onSetEditComment}
                   onSetEditType={onSetEditType}
                   onSetReplyComment={onSetReplyComment}
@@ -941,7 +896,6 @@ function CommentGroup({
                   onStartReplying={onStartReplying}
                   onStopEditing={onStopEditing}
                   onStopReplying={onStopReplying}
-                  onToggleResolvedComment={onToggleResolvedComment}
                   onUnmarkCommentForExport={onUnmarkCommentForExport}
                   patchGroupSummary={
                     patchGroupSummariesByCommentId[comment.id] ?? null
@@ -960,14 +914,32 @@ function CommentGroup({
   );
 }
 
+function isCommentActive(
+  activeCommentState: ActiveCommentState,
+  commentId: string
+): boolean {
+  if (activeCommentState.kind === "comment") {
+    return activeCommentState.commentId === commentId;
+  }
+
+  if (activeCommentState.kind === "anchor_group") {
+    return activeCommentState.commentIds.includes(commentId);
+  }
+
+  return false;
+}
+
 type CommentCardProps = {
   anchorSummaries: Record<string, CommentAnchorSummary>;
   comment: PatchmarkComment;
   editingCommentId: string | null;
   editComment: string;
   editType: PatchmarkCommentType;
-  expandedResolvedCommentIds: Set<string>;
+  isActive: boolean;
+  isAnchorGroupActive: boolean;
   isBusy: boolean;
+  onActivateComment: (commentId: string) => void;
+  onClearActiveComment: () => void;
   onDeleteComment: (commentId: string) => Promise<void>;
   onEditComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
@@ -983,7 +955,6 @@ type CommentCardProps = {
   onStartReplying: (comment: PatchmarkComment) => void;
   onStopEditing: () => void;
   onStopReplying: () => void;
-  onToggleResolvedComment: (commentId: string) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
   patchGroupSummary: CommentPatchGroupSummary | null;
   pendingPatchCount: number;
@@ -992,14 +963,79 @@ type CommentCardProps = {
   replyComment: string;
 };
 
+type CompactCommentBadgesProps = {
+  anchorSummary: CommentAnchorSummary;
+  comment: PatchmarkComment;
+  latestPatchImpact?: NonNullable<PatchmarkComment["patch_impacts"]>[number];
+  patchGroupSummary: CommentPatchGroupSummary | null;
+  pendingPatchCount: number;
+};
+
+function CompactCommentBadges({
+  anchorSummary,
+  comment,
+  latestPatchImpact,
+  patchGroupSummary,
+  pendingPatchCount
+}: CompactCommentBadgesProps) {
+  const focusStateLabel = getCommentFocusStateLabel(comment);
+
+  return (
+    <div className="comment-compact-badges" aria-label="Comment badges">
+      {comment.status === "resolved" ? (
+        <span className="comment-focus-state comment-focus-state-resolved">
+          Resolved
+        </span>
+      ) : null}
+      {comment.status === "open" && focusStateLabel !== "Idle" ? (
+        <span
+          className={`comment-focus-state comment-focus-state-${comment.export_state.focus_state}`}
+        >
+          {focusStateLabel}
+        </span>
+      ) : null}
+      {anchorSummary.status === "ambiguous" ||
+      anchorSummary.status === "not_found" ? (
+        <span
+          className={`comment-anchor-status comment-anchor-status-${anchorSummary.status}`}
+        >
+          {getAnchorStatusLabel(anchorSummary.status)}
+        </span>
+      ) : null}
+      {latestPatchImpact ? (
+        <span
+          className={`comment-anchor-status comment-patch-impact comment-patch-impact-${latestPatchImpact.result}`}
+        >
+          {getPatchImpactStatusLabel(latestPatchImpact)}
+        </span>
+      ) : null}
+      {patchGroupSummary ? (
+        <span className="comment-compact-patch-badge">
+          {getCommentPatchGroupSummaryLabel(patchGroupSummary)}
+          {patchGroupSummary.pending > 0
+            ? ` · ${patchGroupSummary.pending} pending`
+            : ""}
+        </span>
+      ) : pendingPatchCount > 0 ? (
+        <span className="comment-compact-patch-badge">
+          Pending patch{pendingPatchCount === 1 ? "" : "es"}: {pendingPatchCount}
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
 function CommentCard({
   anchorSummaries,
   comment,
   editingCommentId,
   editComment,
   editType,
-  expandedResolvedCommentIds,
+  isActive,
+  isAnchorGroupActive,
   isBusy,
+  onActivateComment,
+  onClearActiveComment,
   onDeleteComment,
   onEditComment,
   onFindComment,
@@ -1015,7 +1051,6 @@ function CommentCard({
   onStartReplying,
   onStopEditing,
   onStopReplying,
-  onToggleResolvedComment,
   onUnmarkCommentForExport,
   patchGroupSummary,
   pendingPatchCount,
@@ -1027,64 +1062,59 @@ function CommentCard({
     label: getCommentAnchorLabel(comment),
     status: "document" as const
   };
-  const threadPreviewEntries = comment.thread.slice(-3);
+  const threadEntries = comment.thread;
   const isReplying = replyingCommentId === comment.id;
+  const isEditing = editingCommentId === comment.id;
   const isQueuedForExport =
     comment.export_state.focus_state === "in_focus" ||
     comment.export_state.focus_state === "awaiting_reply";
   const latestPatchImpact = comment.patch_impacts?.at(-1);
-  const isResolvedCollapsed =
-    comment.status === "resolved" &&
-    editingCommentId !== comment.id &&
-    !expandedResolvedCommentIds.has(comment.id);
-  const hasQuietAnchorWarning =
-    anchorSummary.status === "not_found" || anchorSummary.status === "ambiguous";
+  const isCompact = !isActive && !isEditing && !isReplying;
 
   return (
     <article
+      aria-label={`${isActive ? "Active comment" : "Comment"} ${comment.id}`}
       className={`comment-card ${quiet ? "comment-card-quiet" : ""} ${
-        isResolvedCollapsed ? "comment-card-collapsed" : ""
+        isCompact ? "comment-card-compact" : "comment-card-active"
       }`}
+      tabIndex={isCompact ? 0 : undefined}
+      onClick={(event) => {
+        if (isCompact && !isInteractiveCommentTarget(event.target)) {
+          onActivateComment(comment.id);
+        }
+      }}
+      onKeyDown={(event) => {
+        if (!isCompact || (event.key !== "Enter" && event.key !== " ")) {
+          return;
+        }
+
+        event.preventDefault();
+        onActivateComment(comment.id);
+      }}
     >
-      {isResolvedCollapsed ? (
+      {isCompact ? (
         <>
           <div className="comment-card-meta">
             <span className="comment-type">[{comment.type}]</span>
-            <span>Resolved</span>
+            <span>{comment.status}</span>
           </div>
           <strong className="comment-target">{anchorSummary.label}</strong>
-          {hasQuietAnchorWarning ? (
-            <span className="comment-anchor-detail">Anchor needs review</span>
-          ) : null}
           <p className="comment-collapsed-preview">
-            {truncateText(comment.comment, 120)}
+            {truncateText(comment.comment, 130)}
           </p>
-          <span className="comment-timestamp">
-            Updated {formatCommentDate(comment.updated_at)}
-          </span>
-          <div className="comment-card-actions comment-card-actions-compact">
-            <button
-              type="button"
-              disabled={isBusy}
-              onClick={() => onToggleResolvedComment(comment.id)}
-            >
-              Expand
-            </button>
-            {onReopenComment ? (
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => {
-                  void onReopenComment(comment.id).catch(() => undefined);
-                }}
-              >
-                Reopen
-              </button>
-            ) : null}
-          </div>
+          <CompactCommentBadges
+            anchorSummary={anchorSummary}
+            comment={comment}
+            latestPatchImpact={latestPatchImpact}
+            patchGroupSummary={patchGroupSummary}
+            pendingPatchCount={pendingPatchCount}
+          />
         </>
-      ) : editingCommentId === comment.id ? (
+      ) : isEditing ? (
         <form className="comment-form" onSubmit={onEditComment}>
+          <div className="comment-active-label">
+            {isAnchorGroupActive ? "Active anchor group" : "Active comment"}
+          </div>
           <CommentAnchorPreview
             anchorContextKind={
               comment.anchor.kind === "selected_text"
@@ -1122,6 +1152,9 @@ function CommentCard({
           <div className="comment-card-meta">
             <span className="comment-type">[{comment.type}]</span>
             <span>{comment.status}</span>
+            <span className="comment-active-label">
+              {isAnchorGroupActive ? "Active anchor group" : "Active comment"}
+            </span>
           </div>
           <strong className="comment-target">{anchorSummary.label}</strong>
           <span
@@ -1212,19 +1245,13 @@ function CommentCard({
               </button>
             </div>
           ) : null}
-          {threadPreviewEntries.length > 0 ? (
+          {threadEntries.length > 0 ? (
             <div className="comment-thread-preview">
               <span>
-                Thread preview
-                {comment.thread.length > threadPreviewEntries.length
-                  ? ` · latest ${threadPreviewEntries.length} of ${
-                      comment.thread.length
-                    }`
-                  : ` · ${comment.thread.length} entr${
-                      comment.thread.length === 1 ? "y" : "ies"
-                    }`}
+                Thread · {comment.thread.length} entr
+                {comment.thread.length === 1 ? "y" : "ies"}
               </span>
-              {threadPreviewEntries.map((entry) => (
+              {threadEntries.map((entry) => (
                 <div className="comment-thread-entry" key={entry.id}>
                   <strong>{getThreadRoleLabel(entry.role)}:</strong>
                   <p>{entry.content}</p>
@@ -1347,9 +1374,9 @@ function CommentCard({
                 <button
                   type="button"
                   disabled={isBusy}
-                  onClick={() => onToggleResolvedComment(comment.id)}
+                  onClick={onClearActiveComment}
                 >
-                  Collapse
+                  Close details
                 </button>
                 <button
                   type="button"
@@ -1361,6 +1388,11 @@ function CommentCard({
                   Reopen
                 </button>
               </>
+            ) : null}
+            {comment.status === "open" ? (
+              <button type="button" disabled={isBusy} onClick={onClearActiveComment}>
+                Close details
+              </button>
             ) : null}
             <button
               type="button"
@@ -1380,6 +1412,17 @@ function CommentCard({
         </>
       )}
     </article>
+  );
+}
+
+function isInteractiveCommentTarget(target: EventTarget): boolean {
+  return (
+    target instanceof Element &&
+    Boolean(
+      target.closest(
+        "button, a, input, textarea, select, label, summary, [role='button']"
+      )
+    )
   );
 }
 

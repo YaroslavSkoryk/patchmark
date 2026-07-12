@@ -10,6 +10,7 @@ import {
 } from "react";
 import {
   CommentsPanel,
+  type ActiveCommentState,
   type CommentAddRequest,
   type CommentAnchorSummary,
   type CommentAnchorScope,
@@ -328,6 +329,8 @@ export function DocumentEditor() {
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
+  const [activeCommentState, setActiveCommentState] =
+    useState<ActiveCommentState>({ kind: "none" });
   const [markdownSelection, setMarkdownSelection] =
     useState<MarkdownSelection>({
       end: 0,
@@ -589,6 +592,38 @@ export function DocumentEditor() {
       setPatchReviewGroupScopeId(null);
     }
   }, [patchGroups, selectedPatchGroupId]);
+
+  useEffect(() => {
+    const commentIds = new Set(comments.map((comment) => comment.id));
+
+    setActiveCommentState((currentState) => {
+      if (currentState.kind === "comment") {
+        return commentIds.has(currentState.commentId)
+          ? currentState
+          : { kind: "none" };
+      }
+
+      if (currentState.kind === "anchor_group") {
+        const nextCommentIds = currentState.commentIds.filter((commentId) =>
+          commentIds.has(commentId)
+        );
+
+        if (nextCommentIds.length === currentState.commentIds.length) {
+          return currentState;
+        }
+
+        if (nextCommentIds.length === 1) {
+          return { kind: "comment", commentId: nextCommentIds[0] };
+        }
+
+        return nextCommentIds.length > 1
+          ? { kind: "anchor_group", commentIds: nextCommentIds }
+          : { kind: "none" };
+      }
+
+      return currentState;
+    });
+  }, [comments]);
 
   useEffect(() => {
     if (!fileName) {
@@ -1668,6 +1703,7 @@ export function DocumentEditor() {
     const nextComments = [...comments, nextComment];
 
     await persistComments(nextComments, "Added comment.");
+    setActiveCommentState({ kind: "comment", commentId: nextComment.id });
   }
 
   async function handleEditComment(
@@ -1949,6 +1985,7 @@ export function DocumentEditor() {
   }
 
   async function handleFindComment(comment: PatchmarkComment) {
+    setActiveCommentState({ kind: "comment", commentId: comment.id });
     const resolution = resolveCommentAnchor(comment, markdown, headings);
 
     if (comment.anchor.kind === "document") {
@@ -2693,6 +2730,36 @@ export function DocumentEditor() {
     );
   }
 
+  function handleEditorClick(event: React.MouseEvent<HTMLDivElement>) {
+    if (mode !== "visual" || isToolbarContextMenuTarget(event.target)) {
+      return;
+    }
+
+    const matchingCommentIds = findVisualCommentIdsAtPoint({
+      clientX: event.clientX,
+      clientY: event.clientY,
+      comments,
+      container: editorDocumentRef.current,
+      headings,
+      markdown
+    });
+
+    if (matchingCommentIds.length === 1) {
+      setActiveCommentState({
+        kind: "comment",
+        commentId: matchingCommentIds[0]
+      });
+      return;
+    }
+
+    if (matchingCommentIds.length > 1) {
+      setActiveCommentState({
+        kind: "anchor_group",
+        commentIds: matchingCommentIds
+      });
+    }
+  }
+
   function handleEditorContextMenu(event: React.MouseEvent<HTMLDivElement>) {
     if (!fileName || isToolbarContextMenuTarget(event.target)) {
       return;
@@ -3013,6 +3080,7 @@ export function DocumentEditor() {
         <div
           ref={editorDocumentRef}
           className="editor-body"
+          onClick={handleEditorClick}
           onContextMenu={handleEditorContextMenu}
           onMouseUp={handleEditorMouseUp}
         >
@@ -3048,6 +3116,7 @@ export function DocumentEditor() {
       <aside className="comments-rail" aria-label="Document comments">
         <CommentsPanel
           addRequest={commentAddRequest}
+          activeCommentState={activeCommentState}
           anchorSummaries={commentAnchorSummaries}
           commentPositions={commentPositions}
           comments={comments}
@@ -3066,6 +3135,7 @@ export function DocumentEditor() {
           onReviewCommentPatches={handleReviewCommentPatches}
           onReviewFirstPendingPatch={handleReviewFirstPendingPatch}
           onResolveComment={handleResolveComment}
+          onSetActiveCommentState={setActiveCommentState}
           onUnmarkCommentForExport={handleUnmarkCommentForExport}
           patchGroupSummariesByCommentId={patchGroupSummariesByCommentId}
           pendingPatchGroupTotal={pendingPatchGroups.length}
@@ -9665,6 +9735,110 @@ function getVisualSearchRoot(container: HTMLElement): HTMLElement {
     container.querySelector<HTMLElement>(".patchmark-prose") ??
     container.querySelector<HTMLElement>(".visual-editor-fallback") ??
     container
+  );
+}
+
+function findVisualCommentIdsAtPoint({
+  clientX,
+  clientY,
+  comments,
+  container,
+  headings,
+  markdown
+}: {
+  clientX: number;
+  clientY: number;
+  comments: PatchmarkComment[];
+  container: HTMLElement | null;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): string[] {
+  if (!container) {
+    return [];
+  }
+
+  return comments
+    .filter((comment) => {
+      const range = findVisualCommentAnchorRange({
+        comment,
+        container,
+        headings,
+        markdown
+      });
+
+      return range ? isPointInsideRangeClientRects(range, clientX, clientY) : false;
+    })
+    .map((comment) => comment.id);
+}
+
+function findVisualCommentAnchorRange({
+  comment,
+  container,
+  headings,
+  markdown
+}: {
+  comment: PatchmarkComment;
+  container: HTMLElement;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): Range | null {
+  const resolution = resolveCommentAnchor(comment, markdown, headings);
+
+  if (resolution.status !== "active") {
+    return null;
+  }
+
+  if (comment.anchor.kind === "document") {
+    return null;
+  }
+
+  if (comment.anchor.kind === "section") {
+    const currentHeading = findMatchingHeading(headings, {
+      level: comment.anchor.heading_level,
+      text: comment.anchor.heading
+    });
+
+    return currentHeading
+      ? findVisualHeadingRange({ container, heading: currentHeading })
+      : null;
+  }
+
+  const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
+    anchor: comment.anchor,
+    container,
+    markdown,
+    resolution
+  });
+
+  if (contextMatch) {
+    return (
+      findVisualSelectedTextMatchInsideResolvedContext({
+        anchor: comment.anchor,
+        container,
+        contextMatch,
+        markdown,
+        resolution
+      })?.range ?? contextMatch.range
+    );
+  }
+
+  return findUniqueVisualSelectedTextMatch({
+    anchor: comment.anchor,
+    container
+  })?.range ?? null;
+}
+
+function isPointInsideRangeClientRects(
+  range: Range,
+  clientX: number,
+  clientY: number
+): boolean {
+  return Array.from(range.getClientRects()).some(
+    (rect) =>
+      clientX >= rect.left &&
+      clientX <= rect.right &&
+      clientY >= rect.top &&
+      clientY <= rect.bottom
   );
 }
 
