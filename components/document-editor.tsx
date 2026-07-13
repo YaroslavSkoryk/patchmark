@@ -15,6 +15,7 @@ import {
   type CommentAnchorSummary,
   type CommentAnchorScope,
   type CommentPatchGroupSummary,
+  type CommentReplyRequest,
   type CommentFormValues
 } from "@/components/comments-panel";
 import { getLastKnownCommentAnchorPositionRange } from "@/lib/comments/comment-anchor-position";
@@ -87,6 +88,10 @@ import {
   getPatchGroupDisplayTitle,
   normalizePatchDisplayTitleCandidate
 } from "@/lib/patches/patch-display-title";
+import {
+  createRelatedAcceptedPatchHistory,
+  getContinuableLinkedComment
+} from "@/lib/patches/comment-patch-history";
 import {
   canOpenProjectFolder,
   createProjectFromMarkdown,
@@ -386,6 +391,8 @@ export function DocumentEditor() {
     useState<SelectedCommentAnchorDraft | null>(null);
   const [commentAddRequest, setCommentAddRequest] =
     useState<CommentAddRequest | null>(null);
+  const [commentReplyRequest, setCommentReplyRequest] =
+    useState<CommentReplyRequest | null>(null);
   const [commentContextMenu, setCommentContextMenu] =
     useState<CommentContextMenuState | null>(null);
   const [commentPositions, setCommentPositions] = useState<Record<string, number>>(
@@ -411,6 +418,9 @@ export function DocumentEditor() {
     useState<string | null>(null);
   const [patchReviewGroupScopeId, setPatchReviewGroupScopeId] =
     useState<string | null>(null);
+  const [recentlyAppliedPatchId, setRecentlyAppliedPatchId] = useState<
+    string | null
+  >(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
   const markdownSelectionDraft = useMemo(
@@ -995,6 +1005,7 @@ export function DocumentEditor() {
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
+    setCommentReplyRequest(null);
     setCommentContextMenu(null);
     setComments([]);
     setPatches([]);
@@ -1003,6 +1014,7 @@ export function DocumentEditor() {
     setPatchGroupListDialog(null);
     setPatchReviewCommentScopeId(null);
     setPatchReviewGroupScopeId(null);
+    setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setDocumentLevelExportGuardDialog(null);
@@ -1031,6 +1043,7 @@ export function DocumentEditor() {
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
+    setCommentReplyRequest(null);
     setCommentContextMenu(null);
     setComments([]);
     setPatches([]);
@@ -1039,6 +1052,7 @@ export function DocumentEditor() {
     setPatchGroupListDialog(null);
     setPatchReviewCommentScopeId(null);
     setPatchReviewGroupScopeId(null);
+    setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setDocumentLevelExportGuardDialog(null);
@@ -1356,6 +1370,7 @@ export function DocumentEditor() {
       exportId,
       headings,
       markdown,
+      patches,
       project: projectHandle
     });
     const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
@@ -2366,6 +2381,38 @@ export function DocumentEditor() {
     });
   }
 
+  function handleContinuePatchDiscussion(patch: PatchmarkPatch) {
+    const linkedComment = getContinuableLinkedComment({ comments, patch });
+
+    if (!linkedComment) {
+      const existingLinkedComment = patch.comment_id
+        ? comments.find((comment) => comment.id === patch.comment_id) ?? null
+        : null;
+      setSaveFeedback({
+        kind: "info",
+        message: existingLinkedComment
+          ? "The linked comment is resolved and was not reopened."
+          : "The linked comment is unavailable."
+      });
+      return;
+    }
+
+    setSelectedPatchId(null);
+    setSelectedPatchGroupId(null);
+    setPatchReviewCommentScopeId(null);
+    setPatchReviewGroupScopeId(null);
+    setRecentlyAppliedPatchId(null);
+    window.requestAnimationFrame(() => {
+      void handleFindComment(linkedComment);
+      window.requestAnimationFrame(() => {
+        setCommentReplyRequest((currentRequest) => ({
+          commentId: linkedComment.id,
+          nonce: (currentRequest?.nonce ?? 0) + 1
+        }));
+      });
+    });
+  }
+
   async function handleAcceptPatch(patch: PatchmarkPatch) {
     if (!projectHandle) {
       setSaveFeedback({
@@ -2538,6 +2585,7 @@ export function DocumentEditor() {
       }
 
       setPatches(nextPatches);
+      setRecentlyAppliedPatchId(currentPatch.id);
       const linkedCommentMissing =
         Boolean(currentPatch.comment_id) && !affectedCommentUpdate.linkedCommentFound;
 
@@ -3125,6 +3173,7 @@ export function DocumentEditor() {
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
+    setCommentReplyRequest(null);
     setCommentContextMenu(null);
     setPatches([]);
     setSelectedPatchId(null);
@@ -3132,6 +3181,7 @@ export function DocumentEditor() {
     setPatchGroupListDialog(null);
     setPatchReviewCommentScopeId(null);
     setPatchReviewGroupScopeId(null);
+    setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setDocumentLevelExportGuardDialog(null);
@@ -3333,6 +3383,7 @@ export function DocumentEditor() {
           pendingPatchGroupTotal={pendingPatchGroups.length}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           pendingPatchTotal={pendingPatches.length}
+          replyRequest={commentReplyRequest}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
         />
@@ -3815,8 +3866,12 @@ export function DocumentEditor() {
             setSelectedPatchId(null);
             setPatchReviewCommentScopeId(null);
             setPatchReviewGroupScopeId(null);
+            setRecentlyAppliedPatchId(null);
           }}
           onFindPatchAnchorText={() => handleFindPatchAnchorText(selectedPatch)}
+          onContinueDiscussion={() =>
+            handleContinuePatchDiscussion(selectedPatch)
+          }
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
           onRejectPatch={() => handleRejectPatch(selectedPatch)}
@@ -3828,6 +3883,7 @@ export function DocumentEditor() {
             reviewablePatches.findIndex((patch) => patch.id === selectedPatch.id)
           )}
           project={projectHandle}
+          showApplyCompletion={recentlyAppliedPatchId === selectedPatch.id}
           reviewablePatchCount={reviewablePatches.length}
         />
       ) : null}
@@ -4154,6 +4210,7 @@ function PatchReviewDialog({
   onAcceptPatch,
   onBackToGroup,
   onClose,
+  onContinueDiscussion,
   onFindPatchAnchorText,
   onNextPatch,
   onPreviousPatch,
@@ -4163,7 +4220,8 @@ function PatchReviewDialog({
   patchGroup,
   patchIndex,
   project,
-  reviewablePatchCount
+  reviewablePatchCount,
+  showApplyCompletion
 }: {
   anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
@@ -4173,6 +4231,7 @@ function PatchReviewDialog({
   onAcceptPatch: () => void;
   onBackToGroup?: () => void;
   onClose: () => void;
+  onContinueDiscussion: () => void;
   onFindPatchAnchorText: () => void;
   onNextPatch: () => void;
   onPreviousPatch: () => void;
@@ -4183,6 +4242,7 @@ function PatchReviewDialog({
   patchIndex: number;
   project: PatchmarkProjectHandle | null;
   reviewablePatchCount: number;
+  showApplyCompletion: boolean;
 }) {
   const latestChatGptReply = comment
     ? getLatestChatGptThreadEntry(comment)
@@ -4228,6 +4288,8 @@ function PatchReviewDialog({
     anchorStatus.kind === "pending" &&
     anchorStatus.applicability === "table_row_rebase_available" &&
     !isPatchActionBusy;
+  const canContinueDiscussion =
+    patch.status === "accepted" && comment?.status === "open";
   const patchDisplayState = getPatchDisplayState(patch, anchorStatus);
   const patchTitleInfo = getPatchDisplayTitleInfo(patch, {
     comment,
@@ -4368,6 +4430,29 @@ function PatchReviewDialog({
           <strong>{getPatchReviewAnchorLabel(anchorStatus)}</strong>
           <span>{getPatchReviewAnchorDetail(anchorStatus)}</span>
         </div>
+
+        {canContinueDiscussion ? (
+          <div className="patch-apply-completion" role="status">
+            <div>
+              <strong>
+                {showApplyCompletion
+                  ? "Patch applied"
+                  : "Continue linked discussion"}
+              </strong>
+              <span>
+                The linked comment remains open. Continue the discussion if you
+                want another refinement.
+              </span>
+            </div>
+            <button
+              type="button"
+              disabled={isPatchActionBusy}
+              onClick={onContinueDiscussion}
+            >
+              Continue discussion
+            </button>
+          </div>
+        ) : null}
 
         {sourceReferenceWarnings.length > 0 ? (
           <div className="patch-review-warnings" role="note">
@@ -5656,6 +5741,12 @@ You are helping review and improve a Markdown document through Patchmark.
 Patchmark is the source of truth for the document. You are not editing the document directly. You are replying to focused comments and, when useful, proposing reviewable patches.
 
 Patchmark is the document control layer. ChatGPT is the reasoning/review layer. The human user is the bridge.
+
+One or more earlier patches linked to a comment may already have been applied. Treat the supplied current Markdown as the source of truth.
+
+Answer the latest user follow-up in the existing comment discussion. If a further document change is useful, propose a new patch using exact \`original_text\` from the current Markdown context.
+
+Do not describe a new proposal as a revision of an already accepted patch. Earlier accepted patches are immutable history. Only the human can apply or reject a new patch, and only the human can resolve the comment.
 
 ## Collaboration Rules
 
@@ -9782,6 +9873,7 @@ function createFocusedCommentsExportPayload({
   exportId,
   headings,
   markdown,
+  patches,
   project
 }: {
   comments: PatchmarkComment[];
@@ -9790,6 +9882,7 @@ function createFocusedCommentsExportPayload({
   exportId: string;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
 }) {
   const tableContexts = createCanonicalTableContextsForExport({
@@ -9816,6 +9909,10 @@ function createFocusedCommentsExportPayload({
       rules: [
         "Reply to each exported comment by comment_id.",
         "Do not resolve comments. Only the human resolves comments.",
+        "Earlier accepted patches linked to a comment may be included as related_patch_history. Treat them as immutable history.",
+        "Treat the supplied current Markdown and current anchor context as the source of truth.",
+        "Answer the latest user follow-up in the existing comment discussion.",
+        "Any further document change must be a new patch using exact original_text from the current supplied Markdown, not a revision of an accepted patch.",
         "If you suggest a document change, return a patch proposal linked to the comment_id.",
         "If more information is needed, ask a clarification question linked to the comment_id.",
         "Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.",
@@ -9849,6 +9946,7 @@ function createFocusedCommentsExportPayload({
         comment,
         headings,
         markdown,
+        patches,
         tableContexts
       })
     )
@@ -9859,11 +9957,13 @@ function createFocusedCommentExportEntry({
   comment,
   headings,
   markdown,
+  patches,
   tableContexts
 }: {
   comment: PatchmarkComment;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches: PatchmarkPatch[];
   tableContexts: CanonicalTableContext[];
 }) {
   const actionContext =
@@ -9877,6 +9977,11 @@ function createFocusedCommentExportEntry({
       : comment.anchor.action_context ??
         getDefaultCommentActionContext(comment.type, comment.anchor.kind);
 
+  const relatedPatchHistory = createRelatedAcceptedPatchHistory({
+    comment,
+    patches
+  });
+
   return {
     comment_id: comment.id,
     type: comment.type,
@@ -9885,6 +9990,17 @@ function createFocusedCommentExportEntry({
     action_context: actionContext,
     comment: comment.comment,
     thread: comment.thread.map(createExportThreadEntry),
+    ...(relatedPatchHistory.patches.length > 0
+      ? {
+          related_patch_history: relatedPatchHistory.patches,
+          ...(relatedPatchHistory.earlier_applied_patch_count > 0
+            ? {
+                earlier_related_applied_patch_count:
+                  relatedPatchHistory.earlier_applied_patch_count
+              }
+            : {})
+        }
+      : {}),
     context: createExportContext({
       actionContext,
       anchor: comment.anchor,

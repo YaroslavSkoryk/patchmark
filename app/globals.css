@@ -2044,6 +2044,40 @@ button {
   color: #8d2f18;
 }
 
+.patch-apply-completion {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid #b9d8ca;
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 14px 18px;
+}
+
+.patch-apply-completion div {
+  display: grid;
+  gap: 3px;
+}
+
+.patch-apply-completion span {
+  line-height: 1.45;
+}
+
+.patch-apply-completion button {
+  flex: 0 0 auto;
+  border: 1px solid var(--accent);
+  background: var(--accent);
+  color: white;
+  padding: 8px 12px;
+  font-weight: 800;
+}
+
+.patch-apply-completion button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .patch-review-warnings {
   display: grid;
   gap: 6px;

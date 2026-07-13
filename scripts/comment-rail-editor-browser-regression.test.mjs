@@ -3,14 +3,17 @@ import { spawn } from "node:child_process";
 import { createServer } from "node:http";
 import {
   existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   readdirSync,
   rmSync,
-  statSync
+  statSync,
+  writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join, relative, sep } from "node:path";
+import { basename, dirname, join, relative, sep } from "node:path";
+import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
@@ -258,6 +261,30 @@ async function startFixtureFileServer(rootDir, inventory) {
 
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
 
+    if (requestUrl.pathname === "/write" && request.method === "POST") {
+      const relativePath = normalizeFixturePath(
+        requestUrl.searchParams.get("path") ?? ""
+      );
+
+      if (!relativePath || relativePath.split("/").includes("..")) {
+        response.writeHead(400);
+        response.end("invalid path");
+        return;
+      }
+
+      const chunks = [];
+      request.on("data", (chunk) => chunks.push(chunk));
+      request.on("end", () => {
+        const fullPath = join(rootDir, relativePath);
+        mkdirSync(dirname(fullPath), { recursive: true });
+        writeFileSync(fullPath, Buffer.concat(chunks));
+        fileSet.add(relativePath);
+        response.writeHead(204);
+        response.end();
+      });
+      return;
+    }
+
     if (requestUrl.pathname !== "/file") {
       response.writeHead(404);
       response.end("not found");
@@ -321,7 +348,14 @@ function createProjectPickerShim({
   return `(() => {
     const filePaths = new Set(${JSON.stringify(files)});
     const directoryPaths = new Set(${JSON.stringify(directories)});
-    const overrides = new Map();
+    const overrideStorageKey = "patchmark:fixture-overrides:" + ${JSON.stringify(projectName)};
+    let persistedOverrides = {};
+
+    try {
+      persistedOverrides = JSON.parse(window.localStorage.getItem(overrideStorageKey) ?? "{}");
+    } catch {}
+
+    const overrides = new Map(Object.entries(persistedOverrides));
 
     function normalizePath(path) {
       return String(path).split("/").filter(Boolean).join("/");
@@ -372,6 +406,20 @@ function createProjectPickerShim({
             const nextContent = chunks.join("");
 
             overrides.set(path, nextContent);
+            try {
+              window.localStorage.setItem(
+                overrideStorageKey,
+                JSON.stringify(Object.fromEntries(overrides))
+              );
+            } catch {}
+            await fetch(
+              ${JSON.stringify(baseUrl)} + "/write?path=" + encodeURIComponent(path),
+              { method: "POST", body: nextContent }
+            ).then((response) => {
+              if (!response.ok) {
+                throw new Error("Could not persist fixture write: " + path);
+              }
+            });
             filePaths.add(path);
             const parent = path.split("/").slice(0, -1).join("/");
 
@@ -565,7 +613,12 @@ class CdpClient {
   }
 }
 
-await runActualEditorRegression();
+if (
+  process.argv[1] &&
+  import.meta.url === pathToFileURL(process.argv[1]).href
+) {
+  await runActualEditorRegression();
+}
 
 async function waitForEditorShell(client) {
   let latestState = null;
@@ -1284,3 +1337,19 @@ function printEditorSummary({
 
   console.log(JSON.stringify(summary, null, 2));
 }
+
+export {
+  CdpClient,
+  assertEditorIsReachable,
+  clickButtonByText,
+  createPage,
+  createProjectPickerShim,
+  evaluate,
+  findChromeExecutable,
+  inventoryProject,
+  startFixtureFileServer,
+  waitForDevToolsUrl,
+  waitForEditorShell,
+  waitForProcessExit,
+  waitForProjectComments
+};

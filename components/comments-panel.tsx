@@ -40,6 +40,11 @@ export type CommentAddRequest = {
   targetHeadingLine?: number | null;
 };
 
+export type CommentReplyRequest = {
+  commentId: string;
+  nonce: number;
+};
+
 export type CommentFormValues = {
   anchorScope: CommentAnchorScope;
   comment: string;
@@ -98,6 +103,7 @@ type CommentsPanelProps = {
   pendingPatchGroupTotal: number;
   pendingPatchCountsByCommentId: Record<string, number>;
   pendingPatchTotal: number;
+  replyRequest: CommentReplyRequest | null;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
 };
@@ -161,10 +167,12 @@ export function CommentsPanel({
   pendingPatchGroupTotal,
   pendingPatchCountsByCommentId,
   pendingPatchTotal,
+  replyRequest,
   selectedAnchorContextKind,
   selectedTextPreview
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
+  const handledReplyRequestNonceRef = useRef<number | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addScope, setAddScope] = useState<CommentAnchorScope>("document");
   const [addType, setAddType] = useState<PatchmarkCommentType>("note");
@@ -286,6 +294,53 @@ export function CommentsPanel({
     setAddPositionTop(null);
     setFormError("");
   }
+
+  useEffect(() => {
+    if (
+      !replyRequest ||
+      handledReplyRequestNonceRef.current === replyRequest.nonce
+    ) {
+      return;
+    }
+
+    handledReplyRequestNonceRef.current = replyRequest.nonce;
+    const comment = comments.find(
+      (candidate) => candidate.id === replyRequest.commentId
+    );
+
+    if (!comment || comment.status !== "open") {
+      return;
+    }
+
+    onSetActiveCommentState({ kind: "comment", commentId: comment.id });
+    setReplyingCommentId(comment.id);
+    setReplyComment("");
+    setEditingCommentId(null);
+    setIsAdding(false);
+    setAddPositionTop(null);
+    setFormError("");
+  }, [comments, onSetActiveCommentState, replyRequest]);
+
+  useEffect(() => {
+    if (
+      !replyingCommentId ||
+      replyRequest?.commentId !== replyingCommentId
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const card = document.getElementById(
+        `patchmark-comment-card-${replyingCommentId}`
+      );
+      card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      card
+        ?.querySelector<HTMLTextAreaElement>("[data-comment-reply-input]")
+        ?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [replyingCommentId, replyRequest]);
 
   async function handleEditComment(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1306,6 +1361,7 @@ function CommentCard({
 
   return (
     <article
+      id={`patchmark-comment-card-${comment.id}`}
       aria-label={`${isActive ? "Active comment" : "Comment"} ${comment.id}`}
       aria-current={isActive ? "true" : undefined}
       className={`comment-card ${quiet ? "comment-card-quiet" : ""} ${
@@ -1548,6 +1604,7 @@ function CommentCard({
               <label>
                 <span>User reply</span>
                 <textarea
+                  data-comment-reply-input
                   required
                   value={replyComment}
                   onChange={(event) => onSetReplyComment(event.target.value)}

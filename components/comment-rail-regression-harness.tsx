@@ -162,6 +162,7 @@ export function CommentRailRegressionHarness() {
             pendingPatchCountsByCommentId={{}}
             pendingPatchGroupTotal={0}
             pendingPatchTotal={0}
+            replyRequest={null}
             selectedAnchorContextKind={null}
             selectedTextPreview={null}
           />
