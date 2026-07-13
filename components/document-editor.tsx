@@ -43,6 +43,10 @@ import {
   type CommentAffordanceDirection,
   type CommentAffordanceRect
 } from "@/lib/comments/comment-selection-affordance";
+import {
+  createVisualTableAnchorProjection,
+  type VisualTableAnchorProjection
+} from "@/lib/comments/comment-anchor-visual-projection";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import {
@@ -11431,6 +11435,16 @@ function findVisualSelectedTextTopForResolvedAnchor({
   resolution: CommentAnchorResolution;
   workspaceRect: DOMRect;
 }): number | null {
+  const tableProjectionMatch = findVisualTableAnchorMatchForResolvedAnchor({
+    container,
+    markdown,
+    resolution
+  });
+
+  if (tableProjectionMatch) {
+    return Math.max(0, tableProjectionMatch.top - workspaceRect.top);
+  }
+
   const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
     anchor,
     container,
@@ -11797,6 +11811,156 @@ function findVisualTextMatches({
   return matches;
 }
 
+function findVisualTableAnchorMatchForResolvedAnchor({
+  container,
+  markdown,
+  resolution
+}: {
+  container: HTMLElement;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): VisualTextMatch | null {
+  if (
+    resolution.status !== "active" ||
+    typeof resolution.start !== "number" ||
+    typeof resolution.end !== "number"
+  ) {
+    return null;
+  }
+
+  const projection = createVisualTableAnchorProjection({
+    markdown,
+    range: {
+      end: resolution.end,
+      start: resolution.start
+    }
+  });
+
+  return projection
+    ? findVisualTableProjectionMatch({ container, projection })
+    : null;
+}
+
+function findVisualTableProjectionMatch({
+  container,
+  projection
+}: {
+  container: HTMLElement;
+  projection: VisualTableAnchorProjection;
+}): VisualTextMatch | null {
+  const root = getVisualSearchRoot(container);
+  const tableElement = Array.from(root.querySelectorAll("table"))[
+    projection.tableIndex
+  ];
+
+  if (!tableElement) {
+    return null;
+  }
+
+  const visualRows = Array.from(tableElement.querySelectorAll("tr"));
+  const rowRanges = projection.rows
+    .map((rowProjection) => {
+      const visualRowIndex = getVisualTableRowIndex(
+        rowProjection.markdownRowIndex
+      );
+      const rowElement =
+        typeof visualRowIndex === "number" ? visualRows[visualRowIndex] : null;
+
+      if (!rowElement) {
+        return null;
+      }
+
+      const cellElements = Array.from(
+        rowElement.querySelectorAll<HTMLElement>("th, td")
+      );
+      const cellRanges = rowProjection.cells
+        .map((cellProjection) => {
+          const cellElement = cellElements[cellProjection.cellIndex];
+
+          return cellElement
+            ? findVisualTextRangeInsideElement(
+                cellElement,
+                cellProjection.visibleText
+              )
+            : null;
+        })
+        .filter((range): range is Range => range !== null);
+
+      return cellRanges.length === rowProjection.cells.length
+        ? createRangeFromOrderedRanges(cellRanges)
+        : null;
+    })
+    .filter((range): range is Range => range !== null);
+
+  const range = createRangeFromOrderedRanges(rowRanges);
+
+  if (!range) {
+    return null;
+  }
+
+  const rect = range.getBoundingClientRect();
+
+  if (rect.height <= 0 && rect.width <= 0) {
+    return null;
+  }
+
+  return {
+    range,
+    searchText: "table anchor projection",
+    top: rect.top
+  };
+}
+
+function getVisualTableRowIndex(markdownRowIndex: number): number | null {
+  if (markdownRowIndex === 0) {
+    return 0;
+  }
+
+  if (markdownRowIndex < 2) {
+    return null;
+  }
+
+  return markdownRowIndex - 1;
+}
+
+function findVisualTextRangeInsideElement(
+  element: HTMLElement,
+  searchText: string
+): Range | null {
+  const matches = findVisualTextMatches({
+    container: element,
+    searchText
+  });
+
+  if (matches[0]) {
+    return matches[0].range;
+  }
+
+  if (normalizeDomText(element.textContent ?? "") !== normalizeDomText(searchText)) {
+    return null;
+  }
+
+  const range = document.createRange();
+  range.selectNodeContents(element);
+
+  return range;
+}
+
+function createRangeFromOrderedRanges(ranges: Range[]): Range | null {
+  const firstRange = ranges[0];
+  const lastRange = ranges[ranges.length - 1];
+
+  if (!firstRange || !lastRange) {
+    return null;
+  }
+
+  const range = document.createRange();
+  range.setStart(firstRange.startContainer, firstRange.startOffset);
+  range.setEnd(lastRange.endContainer, lastRange.endOffset);
+
+  return range;
+}
+
 function buildVisualTextIndex(container: HTMLElement): VisualTextIndex {
   const root = getVisualSearchRoot(container);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
@@ -11964,6 +12128,16 @@ function findVisualCommentAnchorRange({
     return currentHeading
       ? findVisualHeadingRange({ container, heading: currentHeading })
       : null;
+  }
+
+  const tableProjectionMatch = findVisualTableAnchorMatchForResolvedAnchor({
+    container,
+    markdown,
+    resolution
+  });
+
+  if (tableProjectionMatch) {
+    return tableProjectionMatch.range;
   }
 
   const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
