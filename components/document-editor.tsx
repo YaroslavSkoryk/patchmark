@@ -88,6 +88,11 @@ import {
   type AppliedPatchOriginalSource
 } from "@/lib/patches/patch-review-content";
 import {
+  resolvePendingPatchTarget,
+  type PendingPatchApplicability,
+  type PendingPatchTargetMatchMethod
+} from "@/lib/patches/linked-patch-target-resolution";
+import {
   CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
   createCanonicalTableContextsFromOccurrences,
   getCompleteTableOccurrencesForExport,
@@ -237,11 +242,7 @@ type ChatGptImportSummary = {
   repliesAttached: number;
   warnings: string[];
 };
-type PatchApplicability =
-  | "exact_match"
-  | "multiple_matches"
-  | "not_found"
-  | "table_row_rebase_available";
+type PatchApplicability = PendingPatchApplicability;
 type AppliedPatchAnchorStatus =
   | "empty_applied_text"
   | "evolved_after_patch"
@@ -295,6 +296,7 @@ type PatchReviewAnchorStatus =
   | {
       applicability: PatchApplicability;
       kind: "historical" | "pending";
+      matchMethod?: PendingPatchTargetMatchMethod;
       matches: TextMatch[];
       tableRowRebase?: PatchTableRowRebaseCandidate;
       text: string;
@@ -492,8 +494,8 @@ export function DocumentEditor() {
     [patches]
   );
   const patchGroups = useMemo(
-    () => derivePatchGroups(patches, markdown),
-    [markdown, patches]
+    () => derivePatchGroups(patches, markdown, comments),
+    [comments, markdown, patches]
   );
   const pendingPatchGroups = useMemo(
     () =>
@@ -574,9 +576,9 @@ export function DocumentEditor() {
   const selectedPatchAnchorStatus = useMemo(
     () =>
       selectedPatch
-        ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches)
+        ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches, comments)
         : null,
-    [markdown, patches, selectedPatch]
+    [comments, markdown, patches, selectedPatch]
   );
   const selectedPatchFollowUpRelationship = useMemo(
     () =>
@@ -2456,12 +2458,19 @@ export function DocumentEditor() {
       return;
     }
 
-    const pendingAnchorStatus = getPatchReviewAnchorStatus(markdown, patch);
+    const pendingAnchorStatus = getPatchReviewAnchorStatus(
+      markdown,
+      patch,
+      patches,
+      comments
+    );
     const matches =
       pendingAnchorStatus.kind !== "accepted" &&
       pendingAnchorStatus.applicability === "exact_match"
         ? pendingAnchorStatus.matches
-        : findExactTextMatches(markdown, patch.original_text);
+        : pendingAnchorStatus.kind !== "accepted"
+          ? pendingAnchorStatus.matches
+          : findExactTextMatches(markdown, patch.original_text);
 
     if (matches.length === 1) {
       jumpToMarkdownSelection(
@@ -2553,7 +2562,12 @@ export function DocumentEditor() {
           recovery: automaticRecovery
         })
       : storedPatch;
-    const currentPatchAnchorStatus = getPatchReviewAnchorStatus(markdown, currentPatch);
+    const currentPatchAnchorStatus = getPatchReviewAnchorStatus(
+      markdown,
+      currentPatch,
+      patches,
+      comments
+    );
     const currentPatchApplicability =
       currentPatchAnchorStatus.kind === "pending"
         ? currentPatchAnchorStatus.applicability
@@ -2579,19 +2593,24 @@ export function DocumentEditor() {
       return;
     }
 
-    const occurrenceCount = countOccurrences(markdown, currentPatch.original_text);
-    const originalStart = markdown.indexOf(currentPatch.original_text);
-    const originalEnd = originalStart + currentPatch.original_text.length;
+    const resolvedPatchTarget =
+      currentPatchAnchorStatus.kind === "pending" &&
+      currentPatchAnchorStatus.applicability === "exact_match"
+        ? currentPatchAnchorStatus.matches[0] ?? null
+        : null;
+    const originalStart = resolvedPatchTarget?.start ?? -1;
+    const originalEnd = resolvedPatchTarget?.end ?? -1;
     const lengthDelta =
       currentPatch.suggested_text.length - currentPatch.original_text.length;
 
-    if (occurrenceCount !== 1 || originalStart === -1) {
+    if (
+      !resolvedPatchTarget ||
+      markdown.slice(originalStart, originalEnd) !== currentPatch.original_text
+    ) {
       setSaveFeedback({
         kind: "error",
         message:
-          occurrenceCount > 1
-            ? "Cannot apply automatically because the original text appears multiple times."
-            : "Cannot apply because the original text was not found in the current document."
+          "Cannot apply because the resolved patch target no longer matches the original text."
       });
       return;
     }
@@ -2749,7 +2768,12 @@ export function DocumentEditor() {
       return;
     }
 
-    const anchorStatus = getPatchReviewAnchorStatus(markdown, currentPatch);
+    const anchorStatus = getPatchReviewAnchorStatus(
+      markdown,
+      currentPatch,
+      patches,
+      comments
+    );
 
     if (
       anchorStatus.kind !== "pending" ||
@@ -6472,7 +6496,8 @@ function getPendingPatchCountsByCommentId(
 
 function derivePatchGroups(
   patches: PatchmarkPatch[],
-  markdown: string
+  markdown: string,
+  comments: PatchmarkComment[] = []
 ): DerivedPatchGroup[] {
   const groupedPatches = new Map<string, PatchmarkPatch[]>();
   const groupOrder = new Map<string, number>();
@@ -6497,14 +6522,17 @@ function derivePatchGroups(
       const statusSummary = createPatchGroupStatusSummary(patchesInOrder);
       const anchorStatusByPatchId = createPatchGroupAnchorStatusByPatchId({
         allPatches: patches,
+        comments,
         markdown,
         patches: patchesInOrder
       });
       const applicabilitySummary = createPatchGroupApplicabilitySummary({
+        comments,
         markdown,
         patches: patchesInOrder
       });
       const applicabilityByPatchId = createPatchGroupApplicabilityByPatchId({
+        comments,
         markdown,
         patches: patchesInOrder
       });
@@ -6580,9 +6608,11 @@ function createPatchGroupStatusSummary(
 }
 
 function createPatchGroupApplicabilitySummary({
+  comments = [],
   markdown,
   patches
 }: {
+  comments?: PatchmarkComment[];
   markdown: string;
   patches: PatchmarkPatch[];
 }): PatchGroupApplicabilitySummary {
@@ -6592,7 +6622,12 @@ function createPatchGroupApplicabilitySummary({
         return summary;
       }
 
-      const applicability = getPatchApplicabilityForPatch(markdown, patch, patches);
+      const applicability = getPatchApplicabilityForPatch(
+        markdown,
+        patch,
+        patches,
+        comments
+      );
 
       return {
         ...summary,
@@ -6610,32 +6645,36 @@ function createPatchGroupApplicabilitySummary({
 
 function createPatchGroupAnchorStatusByPatchId({
   allPatches,
+  comments = [],
   markdown,
   patches
 }: {
   allPatches: PatchmarkPatch[];
+  comments?: PatchmarkComment[];
   markdown: string;
   patches: PatchmarkPatch[];
 }): Record<string, PatchReviewAnchorStatus> {
   return Object.fromEntries(
     patches.map((patch) => [
       patch.id,
-      getPatchReviewAnchorStatus(markdown, patch, allPatches)
+      getPatchReviewAnchorStatus(markdown, patch, allPatches, comments)
     ])
   );
 }
 
 function createPatchGroupApplicabilityByPatchId({
+  comments = [],
   markdown,
   patches
 }: {
+  comments?: PatchmarkComment[];
   markdown: string;
   patches: PatchmarkPatch[];
 }): Record<string, PatchApplicability> {
   return Object.fromEntries(
     patches.map((patch) => [
       patch.id,
-      getPatchApplicabilityForPatch(markdown, patch, patches)
+      getPatchApplicabilityForPatch(markdown, patch, patches, comments)
     ])
   );
 }
@@ -6698,9 +6737,15 @@ function getPatchGroupSummariesByCommentId(
 function getPatchApplicabilityForPatch(
   markdown: string,
   patch: PatchmarkPatch,
-  patches: PatchmarkPatch[] = []
+  patches: PatchmarkPatch[] = [],
+  comments: PatchmarkComment[] = []
 ): PatchApplicability {
-  const anchorStatus = getPatchReviewAnchorStatus(markdown, patch, patches);
+  const anchorStatus = getPatchReviewAnchorStatus(
+    markdown,
+    patch,
+    patches,
+    comments
+  );
 
   if (anchorStatus.kind === "accepted") {
     return "exact_match";
@@ -6845,27 +6890,41 @@ function getHighConfidencePendingPatchAnchorRecovery(
 function getPatchReviewAnchorStatus(
   markdown: string,
   patch: PatchmarkPatch,
-  patches: PatchmarkPatch[] = []
+  patches: PatchmarkPatch[] = [],
+  comments: PatchmarkComment[] = []
 ): PatchReviewAnchorStatus {
   if (patch.status === "accepted") {
     return getAppliedPatchAnchorStatus(markdown, patch, patches);
   }
 
-  const matches = findExactTextMatches(markdown, patch.original_text);
-  if (matches.length === 1) {
+  const pendingResolution = resolvePendingPatchTarget({
+    comments,
+    markdown,
+    patch
+  });
+
+  if (pendingResolution.applicability === "exact_match") {
     return {
       applicability: "exact_match",
       kind: patch.status === "pending" ? "pending" : "historical",
-      matches,
+      matchMethod:
+        pendingResolution.method === "none"
+          ? undefined
+          : pendingResolution.method,
+      matches: pendingResolution.matches,
       text: patch.original_text
     };
   }
 
-  if (matches.length > 1) {
+  if (pendingResolution.applicability === "multiple_matches") {
     return {
       applicability: "multiple_matches",
       kind: patch.status === "pending" ? "pending" : "historical",
-      matches,
+      matchMethod:
+        pendingResolution.method === "none"
+          ? undefined
+          : pendingResolution.method,
+      matches: pendingResolution.matches,
       text: patch.original_text
     };
   }
@@ -6880,6 +6939,7 @@ function getPatchReviewAnchorStatus(
       return {
         applicability: "exact_match",
         kind: "pending",
+        matchMethod: "document_exact",
         matches: [highConfidenceRecovery.match],
         text: highConfidenceRecovery.recoveredText
       };
@@ -6893,6 +6953,7 @@ function getPatchReviewAnchorStatus(
       return {
         applicability: "table_row_rebase_available",
         kind: "pending",
+        matchMethod: "document_exact",
         matches: [
           {
             end: tableRowRebase.end,
@@ -6908,6 +6969,7 @@ function getPatchReviewAnchorStatus(
       return {
         applicability: "multiple_matches",
         kind: "pending",
+        matchMethod: "document_exact",
         matches: tableRowRebaseCandidates.map((candidate) => ({
           end: candidate.end,
           start: candidate.start
@@ -6920,7 +6982,7 @@ function getPatchReviewAnchorStatus(
   return {
     applicability: "not_found",
     kind: patch.status === "pending" ? "pending" : "historical",
-    matches,
+    matches: pendingResolution.matches,
     text: patch.original_text
   };
 }
@@ -7825,28 +7887,6 @@ function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {
   }
 
   return "Pending";
-}
-
-function countOccurrences(text: string, search: string): number {
-  if (search.length === 0) {
-    return 0;
-  }
-
-  let count = 0;
-  let searchIndex = 0;
-
-  while (searchIndex <= text.length) {
-    const matchIndex = text.indexOf(search, searchIndex);
-
-    if (matchIndex === -1) {
-      break;
-    }
-
-    count += 1;
-    searchIndex = matchIndex + search.length;
-  }
-
-  return count;
 }
 
 function replaceSingleOccurrenceAt({
@@ -10114,6 +10154,22 @@ function getPatchApplicabilityDetail(
 
 function getPatchReviewAnchorDetail(anchorStatus: PatchReviewAnchorStatus): string {
   if (anchorStatus.kind !== "accepted") {
+    if (
+      anchorStatus.applicability === "exact_match" &&
+      (anchorStatus.matchMethod === "linked_comment_anchor" ||
+        anchorStatus.matchMethod === "linked_comment_context" ||
+        anchorStatus.matchMethod === "linked_comment_structure")
+    ) {
+      return "Target resolved from linked comment. Matching locations: 1.";
+    }
+
+    if (
+      anchorStatus.applicability === "exact_match" &&
+      anchorStatus.matchMethod === "target_heading"
+    ) {
+      return "Target resolved within the patch target heading. Matching locations: 1.";
+    }
+
     return getPatchApplicabilityDetail(anchorStatus.applicability);
   }
 
