@@ -8,7 +8,9 @@ import {
 import { parsePatchmarkCommentReplyImport } from "../lib/imports/patchmark-comment-reply-import.ts";
 import {
   createVersionHistoryEntries,
-  getSidebarVersionHistoryEntries
+  formatVersionTargetHeading,
+  getSidebarVersionHistoryEntries,
+  isWeakVersionTitle
 } from "../lib/project/version-history-display.ts";
 
 function version(index, overrides = {}) {
@@ -207,7 +209,124 @@ function comment(id, text) {
 
   assert.equal(manualEntry.title, "Manual snapshot");
   assert.equal(manualEntry.relatedPatchId, undefined);
-  assert.equal(orphanEntry.title, "Before applying: Patch PM-PATCH-9999");
+  assert.equal(orphanEntry.title, "Pre-apply safety snapshot");
+}
+
+{
+  const storedHeading = "### 5.1 Early Pricing Reference Points";
+
+  assert.equal(
+    formatVersionTargetHeading(storedHeading),
+    "5.1 Early Pricing Reference Points"
+  );
+  assert.equal(formatVersionTargetHeading("Price # reference"), "Price # reference");
+  assert.equal(storedHeading, "### 5.1 Early Pricing Reference Points");
+}
+
+{
+  assert.equal(isWeakVersionTitle("What does it mean?"), true);
+  assert.equal(isWeakVersionTitle("What is the reasoning behind this thesis"), true);
+  assert.equal(isWeakVersionTitle("Can we find more information"), true);
+  assert.equal(isWeakVersionTitle("Please review"), true);
+  assert.equal(isWeakVersionTitle("Add artisan bakery price references"), false);
+  assert.equal(isWeakVersionTitle("What Customers Need"), false);
+}
+
+{
+  const weakPatch = patch(24, {
+    display_title: "What does it mean?",
+    original_text: "Current text",
+    pre_apply_snapshot_id: "snapshot-20260712-0024",
+    reason: "What is this?",
+    suggested_text: "Updated text",
+    target_heading: "## 4. Target Customer Segments"
+  });
+  const weakEntry = createVersionHistoryEntries({
+    comments: [comment("PM-COMMENT-0024", "What does it mean?")],
+    patches: [weakPatch],
+    versions: [
+      version(24, {
+        id: "snapshot-20260712-0024",
+        reason: "before accepting patch PM-PATCH-0024"
+      })
+    ]
+  })[0];
+
+  assert.equal(
+    weakEntry.title,
+    "Before applying: Update 4. Target Customer Segments"
+  );
+  assert.equal(weakEntry.targetHeading, "4. Target Customer Segments");
+  assert.equal(weakEntry.relatedPatchId, "PM-PATCH-0024");
+  assert.equal(weakPatch.display_title, "What does it mean?");
+  assert.equal(weakPatch.target_heading, "## 4. Target Customer Segments");
+}
+
+{
+  const strongPatch = patch(25, {
+    display_title: "Add artisan bakery price references",
+    original_text: "",
+    pre_apply_snapshot_id: "snapshot-20260712-0025",
+    reason: "What does it mean?",
+    suggested_text: "New pricing references",
+    target_heading: "### 5.1 Early Pricing Reference Points"
+  });
+  const strongEntry = createVersionHistoryEntries({
+    comments: [],
+    patches: [strongPatch],
+    versions: [
+      version(25, {
+        id: "snapshot-20260712-0025",
+        reason: "before applying patch PM-PATCH-0025"
+      })
+    ]
+  })[0];
+
+  assert.equal(
+    strongEntry.title,
+    "Before applying: Add artisan bakery price references"
+  );
+}
+
+{
+  const addPatch = patch(26, {
+    display_title: "Change this",
+    original_text: "",
+    pre_apply_snapshot_id: "snapshot-20260712-0026",
+    reason: "Please review",
+    suggested_text: "New content",
+    target_heading: "## Source Notes"
+  });
+  const removePatch = patch(27, {
+    display_title: "Update",
+    original_text: "Old content",
+    pre_apply_snapshot_id: "snapshot-20260712-0027",
+    reason: "Please review",
+    suggested_text: "",
+    target_heading: "## Source Notes"
+  });
+  const entries = createVersionHistoryEntries({
+    comments: [],
+    patches: [addPatch, removePatch],
+    versions: [
+      version(26, {
+        id: "snapshot-20260712-0026",
+        reason: "before accepting patch PM-PATCH-0026"
+      }),
+      version(27, {
+        id: "snapshot-20260712-0027",
+        reason: "before accepting patch PM-PATCH-0027"
+      })
+    ]
+  });
+
+  assert.deepEqual(
+    entries.map((entry) => entry.title),
+    [
+      "Before applying: Remove content from Source Notes",
+      "Before applying: Add content to Source Notes"
+    ]
+  );
 }
 
 {
@@ -253,15 +372,27 @@ function comment(id, text) {
     "components/snapshot-dialog.tsx",
     "utf8"
   );
+  const globalStyles = readFileSync("app/globals.css", "utf8");
 
   assert.match(componentSource, /View all versions/);
   assert.match(componentSource, /role="dialog"/);
   assert.match(componentSource, /aria-modal="true"/);
   assert.match(componentSource, /version-history-dialog-body/);
   assert.match(componentSource, /openArchiveButtonRef\.current\?\.focus/);
+  assert.match(componentSource, /createPortal/);
+  assert.match(componentSource, /document\.body/);
+  assert.match(componentSource, /element\.inert = true/);
+  assert.match(componentSource, /body\.style\.overflow = "hidden"/);
+  assert.match(componentSource, /event\.key !== "Tab"/);
   assert.match(componentSource, /onViewVersion\(entry\.version, entry\.title\)/);
   assert.match(componentSource, /onCompareVersion\(entry\.version, entry\.title\)/);
+  assert.match(componentSource, /data-version-id=\{entry\.version\.id\}/);
+  assert.doesNotMatch(componentSource, /Related patch:/);
   assert.match(helperSource, /Snapshot file/);
+  assert.match(globalStyles, /-webkit-line-clamp: 2/);
+  assert.match(globalStyles, /\.version-entry-full \.version-entry-heading strong/);
+  assert.match(globalStyles, /--layer-modal: 100/);
+  assert.match(globalStyles, /z-index: var\(--layer-modal\)/);
   assert.match(snapshotDialogSource, /dialog\.displayTitle \?\? dialog\.version\.id/);
 }
 

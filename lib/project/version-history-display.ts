@@ -1,7 +1,4 @@
-import {
-  getPatchDisplayTitleInfo,
-  normalizePatchDisplayTitleCandidate
-} from "../patches/patch-display-title.ts";
+import { normalizePatchDisplayTitleCandidate } from "../patches/patch-display-title.ts";
 import type {
   PatchmarkComment,
   PatchmarkPatch,
@@ -14,7 +11,6 @@ export type VersionHistoryEntryViewModel = {
   dateLabel: string;
   detailItems: Array<{ label: string; value: string }>;
   relatedPatchId?: string;
-  relatedPatchTitle?: string;
   sourceImportId?: string;
   targetHeading?: string;
   title: string;
@@ -34,13 +30,12 @@ export function createVersionHistoryEntries({
   patches: PatchmarkPatch[];
   versions: PatchmarkVersionEntry[];
 }): VersionHistoryEntryViewModel[] {
-  const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
+  void comments;
 
   return [...versions]
     .sort(compareVersionsNewestFirst)
     .map((version) =>
       createVersionHistoryEntry({
-        commentsById,
         patches,
         version
       })
@@ -70,12 +65,40 @@ export function formatVersionHistoryDate(createdAt: string): string {
   });
 }
 
+export function formatVersionTargetHeading(heading: string): string {
+  return heading.replace(/^#{1,6}\s+/, "").trim();
+}
+
+export function isWeakVersionTitle(title: string): boolean {
+  const normalized = title.trim();
+
+  if (!normalized) {
+    return true;
+  }
+
+  if (normalized.endsWith("?")) {
+    return true;
+  }
+
+  if (
+    /^(?:what|why|how)\s+(?:is|are|was|were|do|does|did|can|could|should|would|will)\b/i.test(
+      normalized
+    ) ||
+    /^(?:can|could|should)\s+we\b/i.test(normalized) ||
+    /^(?:is|does)\s+this\b/i.test(normalized)
+  ) {
+    return true;
+  }
+
+  return /^(?:please review|review|update|change this|what is this|what does it mean)$/i.test(
+    normalized
+  );
+}
+
 function createVersionHistoryEntry({
-  commentsById,
   patches,
   version
 }: {
-  commentsById: Map<string, PatchmarkComment>;
   patches: PatchmarkPatch[];
   version: PatchmarkVersionEntry;
 }): VersionHistoryEntryViewModel {
@@ -83,13 +106,7 @@ function createVersionHistoryEntry({
   const detailItems = createBaseDetails(version);
 
   if (relatedPatch) {
-    const comment = relatedPatch.comment_id
-      ? commentsById.get(relatedPatch.comment_id) ?? null
-      : null;
-    const patchTitle = getPatchDisplayTitleInfo(relatedPatch, {
-      comment,
-      includeGroupPosition: true
-    }).title;
+    const patchTitle = getVersionPatchTitle(relatedPatch, version);
 
     return {
       dateLabel: formatVersionHistoryDate(version.created_at),
@@ -104,12 +121,16 @@ function createVersionHistoryEntry({
           : []),
         ...(relatedPatch.comment_id
           ? [{ label: "Linked comment ID", value: relatedPatch.comment_id }]
+          : []),
+        ...(relatedPatch.target_heading
+          ? [{ label: "Original target heading", value: relatedPatch.target_heading }]
           : [])
       ],
       relatedPatchId: relatedPatch.id,
-      relatedPatchTitle: patchTitle,
       sourceImportId: relatedPatch.source_import_id,
-      targetHeading: relatedPatch.target_heading,
+      targetHeading: relatedPatch.target_heading
+        ? formatVersionTargetHeading(relatedPatch.target_heading)
+        : undefined,
       title: `Before applying: ${patchTitle}`,
       typeLabel: "Pre-apply safety snapshot",
       version
@@ -123,6 +144,66 @@ function createVersionHistoryEntry({
     typeLabel: getGenericSnapshotType(version.reason),
     version
   };
+}
+
+function getVersionPatchTitle(
+  patch: PatchmarkPatch,
+  version: PatchmarkVersionEntry
+): string {
+  const explicitTitle = normalizePatchDisplayTitleCandidate(patch.display_title);
+
+  if (explicitTitle && !isWeakVersionTitle(explicitTitle)) {
+    return explicitTitle;
+  }
+
+  const snapshotTitle = getDescriptiveSnapshotReasonTitle(version.reason);
+
+  if (snapshotTitle) {
+    return snapshotTitle;
+  }
+
+  const reasonTitle = normalizePatchDisplayTitleCandidate(patch.reason);
+
+  if (reasonTitle && !isWeakVersionTitle(reasonTitle)) {
+    return reasonTitle;
+  }
+
+  return createPatchOperationTitle(patch);
+}
+
+function getDescriptiveSnapshotReasonTitle(reason: string): string | null {
+  const trimmedReason = reason.trim();
+
+  if (
+    !trimmedReason ||
+    PATCH_REASON_PATTERN.test(trimmedReason) ||
+    /^(?:manual snapshot|pre-apply safety snapshot)$/i.test(trimmedReason) ||
+    /restor|import/i.test(trimmedReason)
+  ) {
+    return null;
+  }
+
+  const title = normalizePatchDisplayTitleCandidate(trimmedReason);
+
+  return title && !isWeakVersionTitle(title) ? title : null;
+}
+
+function createPatchOperationTitle(patch: PatchmarkPatch): string {
+  const target = patch.target_heading
+    ? formatVersionTargetHeading(patch.target_heading)
+    : "document content";
+  const originalText = patch.original_text.trim();
+  const suggestedText = patch.suggested_text.trim();
+
+  if (!originalText && suggestedText) {
+    return `Add content to ${target}`;
+  }
+
+  if (originalText && !suggestedText) {
+    return `Remove content from ${target}`;
+  }
+
+  return target === "document content" ? "Update document content" : `Update ${target}`;
 }
 
 function createBaseDetails(
@@ -164,7 +245,7 @@ function getGenericSnapshotTitle(version: PatchmarkVersionEntry): string {
   const reasonPatchId = getPatchIdFromSnapshotReason(reason);
 
   if (reasonPatchId) {
-    return `Before applying: Patch ${reasonPatchId}`;
+    return "Pre-apply safety snapshot";
   }
 
   if (/^manual snapshot$/i.test(reason)) {

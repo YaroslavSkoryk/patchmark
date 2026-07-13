@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type {
   PatchmarkComment,
   PatchmarkPatch,
@@ -37,20 +38,26 @@ export function VersionHistoryPanel({
   );
   const sidebarEntries = getSidebarVersionHistoryEntries(entries);
 
-  function closeArchive() {
+  const closeArchive = useCallback(() => {
     setIsArchiveOpen(false);
     window.requestAnimationFrame(() => openArchiveButtonRef.current?.focus());
-  }
+  }, []);
 
-  function viewVersion(version: PatchmarkVersionEntry, displayTitle?: string) {
+  const viewVersion = useCallback((
+    version: PatchmarkVersionEntry,
+    displayTitle?: string
+  ) => {
     setIsArchiveOpen(false);
     onViewVersion(version, displayTitle);
-  }
+  }, [onViewVersion]);
 
-  function compareVersion(version: PatchmarkVersionEntry, displayTitle?: string) {
+  const compareVersion = useCallback((
+    version: PatchmarkVersionEntry,
+    displayTitle?: string
+  ) => {
     setIsArchiveOpen(false);
     onCompareVersion(version, displayTitle);
-  }
+  }, [onCompareVersion]);
 
   return (
     <section className="version-history-panel" aria-label="Version History">
@@ -116,24 +123,90 @@ function VersionHistoryArchiveDialog({
   onViewVersion: (version: PatchmarkVersionEntry, displayTitle?: string) => void;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const dialogRef = useRef<HTMLElement | null>(null);
 
   useEffect(() => {
+    const dialog = dialogRef.current;
+    const modalRoot = dialog?.closest(".version-history-modal-root");
+    const body = document.body;
+    const previousOverflow = body.style.overflow;
+    const previousPaddingRight = body.style.paddingRight;
+    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
+    const backgroundElements = Array.from(body.children).filter(
+      (element): element is HTMLElement =>
+        element instanceof HTMLElement && element !== modalRoot
+    );
+    const previousInertStates = backgroundElements.map((element) => ({
+      element,
+      inert: element.inert
+    }));
+
+    body.style.overflow = "hidden";
+    if (scrollbarWidth > 0) {
+      const currentPaddingRight = Number.parseFloat(
+        window.getComputedStyle(body).paddingRight
+      );
+      body.style.paddingRight = `${currentPaddingRight + scrollbarWidth}px`;
+    }
+    backgroundElements.forEach((element) => {
+      element.inert = true;
+    });
     closeButtonRef.current?.focus();
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
+        event.preventDefault();
         onClose();
+        return;
+      }
+
+      if (event.key !== "Tab" || !dialog) {
+        return;
+      }
+
+      const focusableElements = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), a[href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((element) => element.getClientRects().length > 0);
+      const firstFocusableElement = focusableElements[0];
+      const lastFocusableElement = focusableElements.at(-1);
+
+      if (!firstFocusableElement || !lastFocusableElement) {
+        return;
+      }
+
+      if (event.shiftKey && document.activeElement === firstFocusableElement) {
+        event.preventDefault();
+        lastFocusableElement.focus();
+      } else if (
+        !event.shiftKey &&
+        document.activeElement === lastFocusableElement
+      ) {
+        event.preventDefault();
+        firstFocusableElement.focus();
       }
     }
 
     window.addEventListener("keydown", handleKeyDown);
 
-    return () => window.removeEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      previousInertStates.forEach(({ element, inert }) => {
+        element.inert = inert;
+      });
+      body.style.overflow = previousOverflow;
+      body.style.paddingRight = previousPaddingRight;
+    };
   }, [onClose]);
 
-  return (
-    <div className="snapshot-dialog-backdrop" role="presentation">
+  return createPortal(
+    <div
+      className="snapshot-dialog-backdrop version-history-modal-root"
+      role="presentation"
+    >
       <section
+        ref={dialogRef}
         aria-labelledby="version-history-dialog-title"
         aria-modal="true"
         className="version-history-dialog"
@@ -167,7 +240,8 @@ function VersionHistoryArchiveDialog({
           </ol>
         </div>
       </section>
-    </div>
+    </div>,
+    document.body
   );
 }
 
@@ -183,7 +257,11 @@ function VersionHistoryEntryCard({
   variant: "compact" | "full";
 }) {
   return (
-    <li className={`version-entry version-entry-${variant}`}>
+    <li
+      className={`version-entry version-entry-${variant}`}
+      data-version-file={entry.version.file}
+      data-version-id={entry.version.id}
+    >
       <div className="version-entry-heading">
         <strong title={entry.title}>{entry.title}</strong>
         <span>{entry.dateLabel}</span>
@@ -192,11 +270,6 @@ function VersionHistoryEntryCard({
         {entry.targetHeading ? <span>{entry.targetHeading}</span> : null}
         <span>{entry.typeLabel}</span>
       </div>
-      {variant === "full" && entry.relatedPatchTitle ? (
-        <p className="version-related-patch">
-          Related patch: {entry.relatedPatchTitle}
-        </p>
-      ) : null}
       <div className="version-entry-actions">
         <button
           type="button"
