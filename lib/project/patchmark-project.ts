@@ -17,6 +17,7 @@ import {
   type PatchmarkPatchAnchorRecoveryEntry,
   type PatchmarkPatchAnchorRecoveryMethod,
   type PatchmarkPatchStatus,
+  type PatchmarkSuggestedUserAction,
   type PatchmarkSourceReference,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
@@ -1047,25 +1048,112 @@ function normalizeCommentThread(thread: unknown): PatchmarkCommentThreadEntry[] 
     return [];
   }
 
-  return thread
-    .filter(isPatchmarkCommentThreadEntry)
-    .map(normalizeCommentThreadEntry);
+  const usedIds = new Set<string>();
+
+  return thread.flatMap((entry, index) => {
+    const normalizedEntry = normalizeCommentThreadEntry(entry, index, usedIds);
+
+    return normalizedEntry ? [normalizedEntry] : [];
+  });
 }
 
 function normalizeCommentThreadEntry(
-  entry: PatchmarkCommentThreadEntry
-): PatchmarkCommentThreadEntry {
+  entry: unknown,
+  index: number,
+  usedIds: Set<string>
+): PatchmarkCommentThreadEntry | null {
+  if (
+    !isRecord(entry) ||
+    !isCommentThreadRole(entry.role) ||
+    typeof entry.content !== "string" ||
+    typeof entry.created_at !== "string"
+  ) {
+    return null;
+  }
+
+  const id =
+    typeof entry.id === "string" && entry.id.trim()
+      ? createUniqueThreadEntryId(entry.id, usedIds)
+      : createLegacyThreadEntryId(index, usedIds);
+  const suggestedUserAction = isSuggestedUserAction(entry.suggested_user_action)
+    ? entry.suggested_user_action
+    : undefined;
+
   return {
-    id: entry.id,
+    id,
     role: entry.role,
     content: entry.content,
     created_at: entry.created_at,
-    source_import_id: entry.source_import_id,
-    source_chat_url: entry.source_chat_url,
-    source_patch_id: entry.source_patch_id,
-    suggested_user_action: entry.suggested_user_action,
-    sources: normalizeSourceReferences(entry.sources)
+    edit_history: normalizeThreadEntryEditHistory(entry.edit_history),
+    source_chat_url:
+      typeof entry.source_chat_url === "string"
+        ? entry.source_chat_url
+        : undefined,
+    source_import_id:
+      typeof entry.source_import_id === "string"
+        ? entry.source_import_id
+        : undefined,
+    source_patch_id:
+      typeof entry.source_patch_id === "string"
+        ? entry.source_patch_id
+        : undefined,
+    sources: normalizeSourceReferences(entry.sources),
+    suggested_user_action: suggestedUserAction,
+    updated_at:
+      typeof entry.updated_at === "string" ? entry.updated_at : undefined
   };
+}
+
+function isCommentThreadRole(
+  role: unknown
+): role is PatchmarkCommentThreadEntry["role"] {
+  return role === "user" || role === "chatgpt" || role === "system";
+}
+
+function createUniqueThreadEntryId(
+  candidateId: string,
+  usedIds: Set<string>
+): string {
+  if (!usedIds.has(candidateId)) {
+    usedIds.add(candidateId);
+    return candidateId;
+  }
+
+  let suffix = 2;
+  let nextId = `${candidateId}-${suffix}`;
+
+  while (usedIds.has(nextId)) {
+    suffix += 1;
+    nextId = `${candidateId}-${suffix}`;
+  }
+
+  usedIds.add(nextId);
+  return nextId;
+}
+
+function createLegacyThreadEntryId(index: number, usedIds: Set<string>): string {
+  const baseId = `PM-THREAD-LEGACY-${String(index + 1).padStart(4, "0")}`;
+
+  return createUniqueThreadEntryId(baseId, usedIds);
+}
+
+function normalizeThreadEntryEditHistory(
+  editHistory: unknown
+): PatchmarkCommentThreadEntry["edit_history"] {
+  if (!Array.isArray(editHistory)) {
+    return undefined;
+  }
+
+  const normalizedHistory = editHistory.filter(
+    (
+      edit
+    ): edit is NonNullable<PatchmarkCommentThreadEntry["edit_history"]>[number] =>
+      isRecord(edit) &&
+      typeof edit.edited_at === "string" &&
+      typeof edit.previous_content === "string"
+  );
+
+  return normalizedHistory.length > 0 ? normalizedHistory : undefined;
 }
 
 function normalizeCommentExportState(
@@ -1502,31 +1590,6 @@ function isCommentActionIntent(
   );
 }
 
-function isPatchmarkCommentThreadEntry(
-  value: unknown
-): value is PatchmarkCommentThreadEntry {
-  return (
-    isRecord(value) &&
-    typeof value.id === "string" &&
-    (value.role === "user" ||
-      value.role === "chatgpt" ||
-      value.role === "system") &&
-    typeof value.content === "string" &&
-    typeof value.created_at === "string" &&
-    (value.source_import_id === undefined ||
-      typeof value.source_import_id === "string") &&
-    (value.source_chat_url === undefined ||
-      typeof value.source_chat_url === "string") &&
-    (value.source_patch_id === undefined ||
-      typeof value.source_patch_id === "string") &&
-    (value.suggested_user_action === undefined ||
-      isSuggestedUserAction(value.suggested_user_action)) &&
-    (value.sources === undefined ||
-      (Array.isArray(value.sources) &&
-        value.sources.every(isPatchmarkSourceReference)))
-  );
-}
-
 function isCommentFocusState(value: unknown): value is PatchmarkCommentFocusState {
   return (
     typeof value === "string" &&
@@ -1574,7 +1637,9 @@ function isPatchmarkPatchStatus(value: unknown): value is PatchmarkPatchStatus {
   );
 }
 
-function isSuggestedUserAction(value: unknown): boolean {
+function isSuggestedUserAction(
+  value: unknown
+): value is PatchmarkSuggestedUserAction {
   return (
     typeof value === "string" &&
     [

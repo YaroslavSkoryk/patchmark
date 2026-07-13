@@ -1592,9 +1592,26 @@ button {
   gap: 3px;
 }
 
+.comment-thread-entry-header {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: baseline;
+}
+
 .comment-thread-entry strong {
   color: var(--text);
   font-size: 0.78rem;
+}
+
+.comment-thread-entry p {
+  white-space: pre-wrap;
+}
+
+.comment-thread-entry-action {
+  width: fit-content;
+  padding: 4px 7px;
+  font-size: 0.74rem;
 }
 
 .comment-thread-entry a {
@@ -1633,6 +1650,13 @@ button {
   border: 1px solid #eccd8f;
   background: #fffaf0;
   padding: 10px;
+}
+
+.comment-reply-edit-form {
+  margin-top: 0;
+  border: 1px solid #eccd8f;
+  background: #fffdf6;
+  padding: 8px;
 }
 
 .comment-timestamp {

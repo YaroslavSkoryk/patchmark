@@ -48,6 +48,11 @@ export type PatchmarkCommentThreadEntry = {
   role: "user" | "chatgpt" | "system";
   content: string;
   created_at: string;
+  updated_at?: string;
+  edit_history?: Array<{
+    edited_at: string;
+    previous_content: string;
+  }>;
   source_import_id?: string;
   source_chat_url?: string;
   source_patch_id?: string;

@@ -47,6 +47,7 @@ import {
   createVisualTableAnchorProjection,
   type VisualTableAnchorProjection
 } from "@/lib/comments/comment-anchor-visual-projection";
+import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import {
@@ -1939,6 +1940,29 @@ export function DocumentEditor() {
     await persistComments(nextComments, "Added reply and marked comment for ChatGPT.");
   }
 
+  async function handleEditCommentReply(
+    commentId: string,
+    entryId: string,
+    content: string
+  ) {
+    const now = new Date().toISOString();
+    const nextComments = comments.map((comment) =>
+      comment.id === commentId
+        ? editLatestUserReply({
+            comment,
+            editedAt: now,
+            entryId,
+            nextContent: content
+          })
+        : comment
+    );
+
+    await persistComments(
+      nextComments,
+      "Updated reply. Current thread is ready to re-export."
+    );
+  }
+
   async function handleMarkCommentForExport(commentId: string) {
     const targetComment = comments.find(
       (comment) => comment.id === commentId && comment.status === "open"
@@ -3333,6 +3357,7 @@ export function DocumentEditor() {
           onAddComment={handleAddComment}
           onDeleteComment={handleDeleteComment}
           onEditComment={handleEditComment}
+          onEditReply={handleEditCommentReply}
           onFindComment={handleFindComment}
           onMarkCommentForExport={handleMarkCommentForExport}
           onReopenComment={handleReopenComment}

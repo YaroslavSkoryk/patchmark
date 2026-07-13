@@ -149,6 +149,7 @@ export function CommentRailRegressionHarness() {
             onAddComment={noopAsyncCommentForm}
             onDeleteComment={noopAsyncId}
             onEditComment={noopAsyncEditComment}
+            onEditReply={noopAsyncEditReply}
             onFindComment={noopAsyncComment}
             onMarkCommentForExport={noopAsyncId}
             onReopenComment={noopAsyncId}
@@ -242,6 +243,16 @@ async function noopAsyncEditComment(
 ): Promise<void> {
   void commentId;
   void values;
+}
+
+async function noopAsyncEditReply(
+  commentId: string,
+  entryId: string,
+  content: string
+): Promise<void> {
+  void commentId;
+  void entryId;
+  void content;
 }
 
 async function noopAsyncComment(comment: PatchmarkComment): Promise<void> {

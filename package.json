@@ -19,6 +19,7 @@
     "test:comment-reply-import-sanitization": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-reply-import-sanitization.test.mjs",
     "test:source-date-protocol": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/source-date-protocol.test.mjs",
     "test:comment-rail-ordering": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-rail-ordering.test.mjs",
+    "test:comment-thread-reply-edit": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-thread-reply-edit.test.mjs",
     "test:version-history-display": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/version-history-display.test.mjs",
     "test:atomic-table-patches": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/atomic-table-patches.test.mjs",
     "test:table-anchor-patch-mapping": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/table-anchor-patch-mapping.test.mjs",
