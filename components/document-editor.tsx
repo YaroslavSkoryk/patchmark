@@ -45,6 +45,7 @@ import {
   type CommentAffordanceRect
 } from "@/lib/comments/comment-selection-affordance";
 import {
+  createVisualAnchorSearchTextCandidates,
   createVisualTableAnchorProjection,
   type VisualTableAnchorProjection
 } from "@/lib/comments/comment-anchor-visual-projection";
@@ -395,6 +396,7 @@ export function DocumentEditor() {
   const [isCommentBusy, setIsCommentBusy] = useState(false);
   const [activeCommentState, setActiveCommentState] =
     useState<ActiveCommentState>({ kind: "none" });
+  const lastScrolledActiveCommentKeyRef = useRef<string | null>(null);
   const [markdownSelection, setMarkdownSelection] =
     useState<MarkdownSelection>({
       end: 0,
@@ -928,6 +930,56 @@ export function DocumentEditor() {
       clearVisualCommentHighlights();
     };
   }, [activeCommentState, comments, documentVersion, headings, markdown, mode]);
+
+  useEffect(() => {
+    const activeCommentIds = getActiveCommentIds(activeCommentState);
+    const activeCommentKey = activeCommentIds.join(",");
+
+    if (!activeCommentKey) {
+      lastScrolledActiveCommentKeyRef.current = null;
+      return;
+    }
+
+    if (
+      mode !== "visual" ||
+      activeCommentIds.length === 0 ||
+      lastScrolledActiveCommentKeyRef.current === activeCommentKey
+    ) {
+      return;
+    }
+
+    const animationFrameId = window.requestAnimationFrame(() => {
+      const container = editorDocumentRef.current;
+
+      if (!container) {
+        return;
+      }
+
+      const activeComment = comments.find(
+        (comment) => comment.id === activeCommentIds[0]
+      );
+
+      if (!activeComment) {
+        return;
+      }
+
+      const range = findVisualCommentAnchorRange({
+        comment: activeComment,
+        container,
+        headings,
+        markdown
+      });
+
+      if (!range) {
+        return;
+      }
+
+      lastScrolledActiveCommentKeyRef.current = activeCommentKey;
+      scrollRangeIntoViewportIfNeeded(range);
+    });
+
+    return () => window.cancelAnimationFrame(animationFrameId);
+  }, [activeCommentState, comments, headings, markdown, mode]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving) {
@@ -11445,6 +11497,7 @@ function computeCommentPreferredTop({
       const visualTextTop = findVisualSelectedTextTopForResolvedAnchor({
         anchor,
         container,
+        headings,
         markdown,
         resolution,
         workspaceRect
@@ -11606,6 +11659,35 @@ function findVisualHeadingTop({
   return Math.max(0, headingElement.getBoundingClientRect().top - workspaceRect.top);
 }
 
+function getVisualHeadingLevel(element: HTMLElement): number {
+  const parsedLevel = Number(element.tagName.replace(/^H/i, ""));
+
+  return Number.isFinite(parsedLevel) ? parsedLevel : 1;
+}
+
+function findVisualHeadingElement({
+  container,
+  heading
+}: {
+  container: HTMLElement;
+  heading: ReturnType<typeof parseMarkdownHeadings>[number];
+}): HTMLElement | null {
+  const headingElements = getVisualHeadingElements(container);
+  const exactMatch = headingElements.find(
+    (element) =>
+      getVisualHeadingLevel(element) === heading.level &&
+      normalizeDomText(element.textContent ?? "") === heading.text
+  );
+
+  return (
+    exactMatch ??
+    headingElements.find(
+      (element) => normalizeDomText(element.textContent ?? "") === heading.text
+    ) ??
+    null
+  );
+}
+
 function findVisualHeadingRange({
   container,
   heading
@@ -11613,9 +11695,7 @@ function findVisualHeadingRange({
   container: HTMLElement;
   heading: ReturnType<typeof parseMarkdownHeadings>[number];
 }): Range | null {
-  const headingElement = getVisualHeadingElements(container).find(
-    (element) => normalizeDomText(element.textContent ?? "") === heading.text
-  );
+  const headingElement = findVisualHeadingElement({ container, heading });
 
   if (!headingElement) {
     return null;
@@ -11644,12 +11724,14 @@ function findVisualSelectedTextTop({
 function findVisualSelectedTextTopForResolvedAnchor({
   anchor,
   container,
+  headings,
   markdown,
   resolution,
   workspaceRect
 }: {
   anchor: SelectedTextAnchor;
   container: HTMLElement;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
   resolution: CommentAnchorResolution;
   workspaceRect: DOMRect;
@@ -11662,6 +11744,18 @@ function findVisualSelectedTextTopForResolvedAnchor({
 
   if (tableProjectionMatch) {
     return Math.max(0, tableProjectionMatch.top - workspaceRect.top);
+  }
+
+  const sourceRangeMatch = findVisualSelectedTextMatchForResolvedSourceRange({
+    anchor,
+    container,
+    headings,
+    markdown,
+    resolution
+  });
+
+  if (sourceRangeMatch) {
+    return Math.max(0, sourceRangeMatch.top - workspaceRect.top);
   }
 
   const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
@@ -11794,6 +11888,217 @@ function findVisualSelectedTextMatchInsideResolvedContext({
   return typeof selectedOrdinal === "number"
     ? selectedMatchesInsideContext[selectedOrdinal] ?? null
     : null;
+}
+
+function findVisualSelectedTextMatchForResolvedSourceRange({
+  anchor,
+  container,
+  headings,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): VisualTextMatch | null {
+  if (
+    resolution.status !== "active" ||
+    typeof resolution.start !== "number" ||
+    typeof resolution.end !== "number" ||
+    resolution.end < resolution.start
+  ) {
+    return null;
+  }
+
+  const sourceRange = {
+    end: resolution.end,
+    start: resolution.start
+  };
+  const visualSectionRange = findVisualSectionRangeForResolvedAnchor({
+    anchor,
+    container,
+    headings,
+    markdown,
+    resolution
+  });
+  const sourceSectionRange = findSourceSectionRangeForResolvedAnchor({
+    anchor,
+    headings,
+    markdown,
+    resolution
+  });
+
+  const sourceMarkdown = markdown.slice(sourceRange.start, sourceRange.end);
+
+  for (const searchText of createVisualAnchorSearchTextCandidates({
+    selectedMarkdown: anchor.selected_text,
+    sourceMarkdown
+  })) {
+    const matches = findVisualTextMatches({ container, searchText }).filter(
+      (match) =>
+        !visualSectionRange || isRangeInsideRange(match.range, visualSectionRange)
+    );
+
+    if (matches.length === 1) {
+      return matches[0];
+    }
+
+    if (matches.length > 1) {
+      const sourceOrdinal = getSourceMatchOrdinalInsideScope({
+        markdown,
+        searchText,
+        sourceRange,
+        sourceScope: sourceSectionRange
+      });
+
+      if (
+        typeof sourceOrdinal === "number" &&
+        sourceOrdinal >= 0 &&
+        sourceOrdinal < matches.length
+      ) {
+        return matches[sourceOrdinal];
+      }
+    }
+  }
+
+  return null;
+}
+
+function findVisualSectionRangeForResolvedAnchor({
+  anchor,
+  container,
+  headings,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): Range | null {
+  const heading = findSourceHeadingForResolvedAnchor({
+    anchor,
+    headings,
+    markdown,
+    resolution
+  });
+
+  if (!heading) {
+    return null;
+  }
+
+  return findVisualSectionRange({ container, heading });
+}
+
+function findVisualSectionRange({
+  container,
+  heading
+}: {
+  container: HTMLElement;
+  heading: ReturnType<typeof parseMarkdownHeadings>[number];
+}): Range | null {
+  const root = getVisualSearchRoot(container);
+  const headingElements = getVisualHeadingElements(container);
+  const headingElement = findVisualHeadingElement({ container, heading });
+
+  if (!headingElement) {
+    return null;
+  }
+
+  const headingIndex = headingElements.findIndex(
+    (element) => element === headingElement
+  );
+  const nextPeerHeading =
+    headingIndex === -1
+      ? null
+      : headingElements
+          .slice(headingIndex + 1)
+          .find((element) => getVisualHeadingLevel(element) <= heading.level) ??
+        null;
+  const range = document.createRange();
+
+  range.setStartAfter(headingElement);
+
+  if (nextPeerHeading) {
+    range.setEndBefore(nextPeerHeading);
+  } else {
+    range.setEnd(root, root.childNodes.length);
+  }
+
+  return range;
+}
+
+function findSourceSectionRangeForResolvedAnchor({
+  anchor,
+  headings,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): { end: number; start: number } | null {
+  const heading = findSourceHeadingForResolvedAnchor({
+    anchor,
+    headings,
+    markdown,
+    resolution
+  });
+
+  return heading ? getSectionRange(markdown, headings, heading) : null;
+}
+
+function findSourceHeadingForResolvedAnchor({
+  anchor,
+  headings,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): ReturnType<typeof parseMarkdownHeadings>[number] | undefined {
+  const storedHeading = anchor.containing_heading
+    ? findMatchingHeading(headings, {
+        level: anchor.containing_heading_level,
+        text: anchor.containing_heading
+      })
+    : undefined;
+
+  return (
+    storedHeading ??
+    (typeof resolution.start === "number"
+      ? getHeadingContainingOffset(markdown, headings, resolution.start)
+      : undefined)
+  );
+}
+
+function getSourceMatchOrdinalInsideScope({
+  markdown,
+  searchText,
+  sourceRange,
+  sourceScope
+}: {
+  markdown: string;
+  searchText: string;
+  sourceRange: { end: number; start: number };
+  sourceScope: { end: number; start: number } | null;
+}): number | null {
+  const scopedMatches = findMarkdownPlainTextMatches(markdown, searchText).filter(
+    (match) =>
+      !sourceScope ||
+      rangesOverlap(match.start, match.end, sourceScope.start, sourceScope.end)
+  );
+  const sourceMatchIndex = scopedMatches.findIndex((match) =>
+    rangesOverlap(match.start, match.end, sourceRange.start, sourceRange.end)
+  );
+
+  return sourceMatchIndex >= 0 ? sourceMatchIndex : null;
 }
 
 function findVisualAnchorContextMatchForResolvedAnchor({
@@ -12076,7 +12381,9 @@ function findVisualTableProjectionMatch({
     return null;
   }
 
-  const visualRows = Array.from(tableElement.querySelectorAll("tr"));
+  const visualRows = Array.from(tableElement.querySelectorAll("tr")).filter(
+    (rowElement) => getVisualTableContentCells(rowElement).length > 0
+  );
   const rowRanges = projection.rows
     .map((rowProjection) => {
       const visualRowIndex = getVisualTableRowIndex(
@@ -12089,9 +12396,7 @@ function findVisualTableProjectionMatch({
         return null;
       }
 
-      const cellElements = Array.from(
-        rowElement.querySelectorAll<HTMLElement>("th, td")
-      );
+      const cellElements = getVisualTableContentCells(rowElement);
       const cellRanges = rowProjection.cells
         .map((cellProjection) => {
           const cellElement = cellElements[cellProjection.cellIndex];
@@ -12128,6 +12433,31 @@ function findVisualTableProjectionMatch({
     searchText: "table anchor projection",
     top: rect.top
   };
+}
+
+function getVisualTableContentCells(rowElement: Element): HTMLElement[] {
+  return Array.from(rowElement.querySelectorAll<HTMLElement>("th, td")).filter(
+    (cellElement) =>
+      !isVisualTableChromeCell(cellElement) &&
+      (Boolean(cellElement.querySelector("[data-lexical-editor]")) ||
+        normalizeDomText(cellElement.textContent ?? "").length > 0)
+  );
+}
+
+function isVisualTableChromeCell(cellElement: HTMLElement): boolean {
+  return (
+    !cellElement.querySelector("[data-lexical-editor]") &&
+    Boolean(
+      cellElement.querySelector(
+        [
+          "button[title='Column menu']",
+          "button[title='Row menu']",
+          "[class*='tableColumnEditorTrigger']",
+          "[class*='tableRowEditorTrigger']"
+        ].join(",")
+      )
+    )
+  );
 }
 
 function getVisualTableRowIndex(markdownRowIndex: number): number | null {
@@ -12359,6 +12689,18 @@ function findVisualCommentAnchorRange({
     return tableProjectionMatch.range;
   }
 
+  const sourceRangeMatch = findVisualSelectedTextMatchForResolvedSourceRange({
+    anchor: comment.anchor,
+    container,
+    headings,
+    markdown,
+    resolution
+  });
+
+  if (sourceRangeMatch) {
+    return sourceRangeMatch.range;
+  }
+
   const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
     anchor: comment.anchor,
     container,
@@ -12382,6 +12724,42 @@ function findVisualCommentAnchorRange({
     anchor: comment.anchor,
     container
   })?.range ?? null;
+}
+
+function scrollRangeIntoViewportIfNeeded(range: Range): void {
+  const primaryRect = getPrimaryRangeClientRect(range);
+
+  if (!primaryRect) {
+    return;
+  }
+
+  const viewportTopPadding = 160;
+  const viewportBottomPadding = 180;
+  const safeTop = viewportTopPadding;
+  const safeBottom = window.innerHeight - viewportBottomPadding;
+
+  if (primaryRect.top >= safeTop && primaryRect.bottom <= safeBottom) {
+    return;
+  }
+
+  window.scrollBy({
+    behavior: "auto",
+    top: Math.round(primaryRect.top - viewportTopPadding)
+  });
+}
+
+function getPrimaryRangeClientRect(range: Range): DOMRect | null {
+  const rect = Array.from(range.getClientRects()).find(
+    (clientRect) => clientRect.width > 0 && clientRect.height > 0
+  );
+
+  if (rect) {
+    return rect;
+  }
+
+  const boundingRect = range.getBoundingClientRect();
+
+  return boundingRect.width > 0 || boundingRect.height > 0 ? boundingRect : null;
 }
 
 function isPointInsideRangeClientRects(

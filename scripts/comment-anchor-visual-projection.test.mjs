@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  createVisualAnchorSearchTextCandidates,
   createVisualTableAnchorProjection,
   markdownInlineToPlainText
 } from "../lib/comments/comment-anchor-visual-projection.ts";
@@ -56,5 +57,48 @@ assert.equal(
   "Use bold, emphasis, code, and a link."
 );
 assert.equal(markdownInlineToPlainText("Escaped \\| pipe"), "Escaped | pipe");
+
+assert.deepEqual(
+  createVisualAnchorSearchTextCandidates({
+    selectedMarkdown:
+      "[PAUL Thailand online delivery](https://www.paulthailand.com/next-day-delivery)",
+    sourceMarkdown:
+      "[PAUL Thailand online delivery](https://www.paulthailand.com/next-day-delivery)"
+  }),
+  ["PAUL Thailand online delivery"]
+);
+
+const rowSearchCandidates = createVisualAnchorSearchTextCandidates({
+  selectedMarkdown: paulRow,
+  sourceMarkdown: paulRow
+});
+
+assert.ok(rowSearchCandidates[0].startsWith("PAUL Thailand online delivery"));
+assert.equal(rowSearchCandidates[0].includes("https://"), false);
+assert.equal(rowSearchCandidates[0].includes("["), false);
+assert.equal(rowSearchCandidates[0].includes("|"), false);
+
+const demandSection = [
+  "## 7. Demand Generation Plan",
+  "",
+  "| **Channel** | **Next step to measure** |",
+  "| --- | --- |",
+  "| Product content and bread photos | LINE add, website visit, paid order. |",
+  "",
+  "## 8. Demand Validation Approach",
+  "",
+  "| **Signal** | **Metric** |",
+  "| --- | --- |",
+  "| Intent | LINE adds, price questions, delivery questions. |"
+].join("\n");
+const lineAddStart = demandSection.indexOf("LINE add");
+
+assert.deepEqual(
+  createVisualAnchorSearchTextCandidates({
+    selectedMarkdown: "LINE add",
+    sourceMarkdown: demandSection.slice(lineAddStart, lineAddStart + "LINE add".length)
+  }),
+  ["LINE add"]
+);
 
 console.log("Comment anchor visual projection tests passed.");

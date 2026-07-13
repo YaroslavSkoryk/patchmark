@@ -312,6 +312,41 @@ const needsReviewImpact = {
     ),
     true
   );
+  assert.equal(
+    documentEditorSource.includes("findVisualSelectedTextMatchForResolvedSourceRange"),
+    true
+  );
+  const sourceRangeMatchCall = documentEditorSource.indexOf(
+    "const sourceRangeMatch = findVisualSelectedTextMatchForResolvedSourceRange"
+  );
+  const contextMatchCallAfterSource = documentEditorSource.indexOf(
+    "const contextMatch = findVisualAnchorContextMatchForResolvedAnchor",
+    sourceRangeMatchCall
+  );
+
+  assert.notEqual(sourceRangeMatchCall, -1);
+  assert.notEqual(contextMatchCallAfterSource, -1);
+  assert.ok(
+    sourceRangeMatchCall < contextMatchCallAfterSource
+  );
+  assert.equal(
+    documentEditorSource.includes('querySelector("[data-lexical-editor]")'),
+    true
+  );
+  assert.equal(
+    documentEditorSource.includes(
+      'normalizeDomText(cellElement.textContent ?? "").length > 0'
+    ),
+    true
+  );
+  assert.equal(
+    documentEditorSource.includes("scrollRangeIntoViewportIfNeeded"),
+    true
+  );
+  assert.equal(
+    documentEditorSource.includes("lastScrolledActiveCommentKeyRef"),
+    true
+  );
 }
 
 console.log("Comment card UX tests passed.");

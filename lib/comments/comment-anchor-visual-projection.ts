@@ -1,4 +1,5 @@
 import { findMarkdownTables } from "../markdown/markdown-tables.ts";
+import { getMarkdownPlainText } from "../markdown/markdown-text.ts";
 
 export type VisualTableAnchorCellProjection = {
   cellIndex: number;
@@ -132,6 +133,24 @@ export function markdownInlineToPlainText(markdown: string): string {
   }
 
   return normalizeProjectedText(textParts.join(""));
+}
+
+export function createVisualAnchorSearchTextCandidates({
+  selectedMarkdown,
+  sourceMarkdown
+}: {
+  selectedMarkdown?: string;
+  sourceMarkdown: string;
+}): string[] {
+  return dedupeNormalizedTextValues([
+    getMarkdownPlainText(sourceMarkdown),
+    markdownInlineToPlainText(sourceMarkdown),
+    selectedMarkdown ? getMarkdownPlainText(selectedMarkdown) : "",
+    selectedMarkdown ? markdownInlineToPlainText(selectedMarkdown) : "",
+    selectedMarkdown && isPlainVisibleMarkdown(selectedMarkdown)
+      ? selectedMarkdown
+      : ""
+  ]);
 }
 
 function getMarkdownTableCellSourceRanges(
@@ -315,6 +334,28 @@ function findClosingParenthesis(text: string, startIndex: number): number {
 
 function normalizeProjectedText(text: string): string {
   return text.replace(/\s+/g, " ").trim();
+}
+
+function dedupeNormalizedTextValues(values: string[]): string[] {
+  const seen = new Set<string>();
+  const dedupedValues: string[] = [];
+
+  for (const value of values) {
+    const normalizedValue = normalizeProjectedText(value);
+
+    if (!normalizedValue || seen.has(normalizedValue)) {
+      continue;
+    }
+
+    seen.add(normalizedValue);
+    dedupedValues.push(normalizedValue);
+  }
+
+  return dedupedValues;
+}
+
+function isPlainVisibleMarkdown(markdown: string): boolean {
+  return !/[`*_~[\]|<>]/.test(markdown) && !/\]\(/.test(markdown);
 }
 
 function rangesOverlap(
