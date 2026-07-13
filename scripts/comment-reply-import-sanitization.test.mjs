@@ -11,6 +11,18 @@ const privateUseCitation = "\uE200cite\uE202turn0search0\uE201";
 const privateUseFileCitation = "\uE200filecite\uE202turn1view0\uE201";
 const bracketedTurnCitation = "【turn1view0†source】";
 
+function sourceReference(overrides = {}) {
+  return {
+    title: "Source",
+    url: "https://example.com/report.pdf",
+    published_at: "2026-03-31",
+    updated_at: null,
+    observed_at: "2026-07-13",
+    supports: "Supports the suggested change.",
+    ...overrides
+  };
+}
+
 function payload(overrides = {}) {
   return {
     protocol: "patchmark.comment_reply_import",
@@ -30,13 +42,10 @@ function payload(overrides = {}) {
         comment_id: "PM-COMMENT-0001",
         target_heading: "## Market View",
         original_text: "Original [linked source](https://example.com/original).",
-        suggested_text: "Suggested [linked source](https://example.com/suggested).",
+        suggested_text:
+          "Suggested [linked source](https://example.com/suggested) — published 31 March 2026.",
         suggested_text_sources: [
-          {
-            title: "Source",
-            url: "https://example.com/report.pdf",
-            supports: "Supports the suggested change."
-          }
+          sourceReference()
         ],
         reason: "Improves clarity.",
         reason_sources: [],
@@ -94,11 +103,11 @@ function parse(input) {
           comment_id: "PM-COMMENT-0001",
           reply: `Reply ${contentReference} with artifact.`,
           reply_sources: [
-            {
+            sourceReference({
               title: `Title ${contentReference}`,
               url: "https://example.com/reply.pdf",
               supports: `Supports the reply ${privateUseCitation}.`
-            }
+            })
           ],
           suggested_user_action: "review"
         }
@@ -109,11 +118,11 @@ function parse(input) {
           original_text: `Original text ${bracketedTurnCitation}.`,
           suggested_text: `Suggested text ${privateUseFileCitation}.`,
           suggested_text_sources: [
-            {
+            sourceReference({
               title: "Patch source",
               url: "https://example.com/report.pdf",
               supports: `Supports patch ${laterContentReference}.`
-            }
+            })
           ],
           reason: `Reason ${contentReference}.`,
           reason_sources: [],
@@ -126,11 +135,11 @@ function parse(input) {
           comment_id: "PM-COMMENT-0001",
           question: `Question ${privateUseFileCitation}?`,
           question_sources: [
-            {
+            sourceReference({
               title: "Question source",
               url: "https://example.com/question.pdf",
               supports: `Supports question ${bracketedTurnCitation}.`
-            }
+            })
           ]
         }
       ]
@@ -194,7 +203,7 @@ function parse(input) {
           original_text:
             "Original [linked source](https://example.com/turn0search0/original).",
           suggested_text:
-            "Suggested [linked source](https://example.com/turn1view0/suggested).",
+            "Suggested [linked source](https://example.com/turn1view0/suggested) — published 31 March 2026.",
           suggested_text_sources: [],
           reason: "Reason.",
           reason_sources: [],
@@ -210,7 +219,7 @@ function parse(input) {
   );
   assert.equal(
     result.patch_proposals[0].suggested_text,
-    "Suggested [linked source](https://example.com/turn1view0/suggested)."
+    "Suggested [linked source](https://example.com/turn1view0/suggested) — published 31 March 2026."
   );
 }
 
@@ -223,11 +232,11 @@ function parse(input) {
           original_text: "Original text.",
           suggested_text: "Suggested text.",
           suggested_text_sources: [
-            {
+            sourceReference({
               title: "Source",
               url: "https://example.com/turn0search0/report.pdf",
               supports: "Supports the suggested text."
-            }
+            })
           ],
           reason: "Reason.",
           reason_sources: [],

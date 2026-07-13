@@ -5,6 +5,12 @@ import type {
 } from "../project/project-types.ts";
 import { containsReservedPatchmarkTableMarker } from "../patches/atomic-table-patches.ts";
 import { normalizePatchDisplayTitleCandidate } from "../patches/patch-display-title.ts";
+import {
+  normalizeSourceDateField,
+  validateConsistentRepeatedSourceDates,
+  validateSourceDateOrder,
+  validateSuggestedTextReferenceDates
+} from "./source-date-validation.ts";
 
 export const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into exactly one fenced json code block containing valid Patchmark JSON.
 
@@ -18,12 +24,16 @@ Do not use footnotes or reference links.
 
 Source rules:
 - Every \`url\` must be a raw URL string starting with \`https://\` or \`http://\`.
+- Every source object must include \`published_at\` and \`observed_at\`.
+- Use \`published_at: null\` when the source publication date is unavailable; never guess.
+- \`observed_at\` must be the complete YYYY-MM-DD date when the source was accessed or verified.
 - Do not use Markdown links in metadata or source fields.
 - Do not include \`[\`, \`]\`, \`(\`, or \`)\` around URLs.
 - Do not include quotes, escaped quotes, or backslashes in URLs.
 - Put all URLs only inside field-local source arrays.
 - \`supports\` must be plain text only.
-- Markdown links are allowed only in document Markdown fields: \`original_text\` and \`suggested_text\`.`;
+- Markdown links are allowed only in document Markdown fields: \`original_text\` and \`suggested_text\`.
+- Any new Markdown link in \`suggested_text\` must visibly include a publication date or the phrase \`publication date unavailable\`; dynamic facts must also include an observation date.`;
 
 export const CHATGPT_INTERNAL_CITATION_PROMPT_RULES = `Internal citation artifact rules:
 
@@ -113,7 +123,7 @@ export function parsePatchmarkCommentReplyImport(
     );
   }
 
-  return {
+  const normalizedResponse: PatchmarkCommentReplyImport = {
     protocol: "patchmark.comment_reply_import",
     protocol_version: 1,
     summary:
@@ -145,6 +155,13 @@ export function parsePatchmarkCommentReplyImport(
         )
       )
   };
+
+  validateConsistentRepeatedSourceDates(
+    collectImportedSources(normalizedResponse)
+  );
+  validatePatchProposalVisibleReferenceDates(normalizedResponse.patch_proposals);
+
+  return normalizedResponse;
 }
 
 export function normalizeSourceChatUrl(sourceChatUrl: string): string | undefined {
@@ -589,13 +606,80 @@ function normalizeImportedSourceReference(
     source.supports === undefined
       ? undefined
       : normalizeSourceTextField(source.supports, `${sourcePath}.supports`);
+  const publishedAt = normalizeSourceDateField({
+    fieldPath: `${sourcePath}.published_at`,
+    required: true,
+    value: source.published_at
+  });
+  const updatedAt = normalizeSourceDateField({
+    fieldPath: `${sourcePath}.updated_at`,
+    required: false,
+    value: source.updated_at
+  });
+  const observedAt = normalizeSourceDateField({
+    fieldPath: `${sourcePath}.observed_at`,
+    required: true,
+    value: source.observed_at
+  });
+
+  if (!supports) {
+    throw new Error(`Invalid source field at ${sourcePath}.supports.`);
+  }
+
+  if (typeof observedAt !== "string") {
+    throw new Error("The source metadata is missing observed_at.");
+  }
+
+  validateSourceDateOrder({
+    observedAt,
+    publishedAt: publishedAt ?? null,
+    sourcePath,
+    sourceText: [title ?? "", note ?? "", supports, normalizedUrl].join(" "),
+    updatedAt
+  });
 
   return {
     title,
     url: normalizedUrl,
+    published_at: publishedAt ?? null,
+    updated_at: updatedAt ?? null,
+    observed_at: observedAt,
     note,
     supports
   };
+}
+
+function collectImportedSources(
+  response: PatchmarkCommentReplyImport
+): PatchmarkSourceReference[] {
+  return [
+    ...(response.sources ?? []),
+    ...response.replies.flatMap((reply) => [
+      ...(reply.reply_sources ?? []),
+      ...(reply.sources ?? [])
+    ]),
+    ...response.patch_proposals.flatMap((patchProposal) => [
+      ...(patchProposal.suggested_text_sources ?? []),
+      ...(patchProposal.reason_sources ?? []),
+      ...(patchProposal.risk_sources ?? []),
+      ...(patchProposal.sources ?? [])
+    ]),
+    ...response.open_questions.flatMap(
+      (openQuestion) => openQuestion.question_sources ?? []
+    )
+  ];
+}
+
+function validatePatchProposalVisibleReferenceDates(
+  patchProposals: PatchmarkCommentReplyImport["patch_proposals"]
+) {
+  for (const patchProposal of patchProposals) {
+    validateSuggestedTextReferenceDates({
+      originalText: patchProposal.original_text,
+      sources: patchProposal.suggested_text_sources ?? [],
+      suggestedText: patchProposal.suggested_text
+    });
+  }
 }
 
 function normalizeImportedOpenQuestion(

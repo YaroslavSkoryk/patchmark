@@ -1360,7 +1360,8 @@ export function DocumentEditor() {
     });
     const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
     const promptText = createFocusedCommentsChatGptPrompt(jsonText, {
-      dedicatedDocumentReview
+      dedicatedDocumentReview,
+      observedAt: exportedAt.slice(0, 10)
     });
     const fileNamePrefix = dedicatedDocumentReview
       ? "document-comment"
@@ -5621,9 +5622,11 @@ function createFileSafeTimestamp(exportedAt: string): string {
 function createFocusedCommentsChatGptPrompt(
   jsonText: string,
   {
-    dedicatedDocumentReview
+    dedicatedDocumentReview,
+    observedAt
   }: {
     dedicatedDocumentReview: boolean;
+    observedAt: string;
   }
 ): string {
   const dedicatedDocumentReviewNote = dedicatedDocumentReview
@@ -5746,10 +5749,26 @@ If the same source supports multiple fields, repeat it in each relevant field-lo
 
 If a field uses no sources, return an empty array for that field's source array.
 
+Source date rules:
+
+- Every source object must include \`published_at\` and \`observed_at\`.
+- \`published_at\` is required but may be \`null\` when unavailable.
+- \`updated_at\` is optional or may be \`null\`.
+- \`observed_at\` is required and should normally be the complete date \`${observedAt}\` if you verify the source while answering this export.
+- Date metadata must use ISO-style precision: \`YYYY-MM-DD\`, \`YYYY-MM\`, \`YYYY\`, or \`null\` for unknown \`published_at\`.
+- Do not invent day or month precision the source does not provide.
+- Do not infer publication dates from copyright years, footers, URL paths, search-result dates, cache dates, report numbers, current year, observation date, product availability, analysis periods, or forecast periods.
+- If a page shows only an update date, use \`published_at: null\`, put that date in \`updated_at\`, and put the access date in \`observed_at\`.
+- Repeated uses of the same URL across source arrays must use consistent \`published_at\`, \`updated_at\`, and \`observed_at\` values.
+- Before returning, verify every source object has \`published_at\`, \`observed_at\`, and \`supports\`.
+
 Source object rules:
 
 - Every source must be an object with a raw \`url\` string.
 - The \`url\` value must start with \`https://\` or \`http://\`.
+- Every source must include \`published_at\`.
+- Every source must include \`observed_at\`.
+- \`updated_at\` should be included as \`null\` unless an explicit update date is known.
 - Do not wrap URLs in Markdown syntax.
 - Do not include \`[\` or \`]\` in URLs.
 - Do not include \`(\` or \`)\` in URLs.
@@ -5762,15 +5781,27 @@ Source preservation rule:
 
 - Patchmark sidecar source arrays are review metadata.
 - If a reference must remain visible in the final Markdown document, include it directly in \`suggested_text\` as a Markdown link or another visible Markdown source format.
+- Every newly introduced or materially revised visible Markdown reference in \`suggested_text\` must include the source date in document prose.
+- If \`published_at\` is known, write a concise human-readable date near the link, such as \`— published 31 March 2026\`.
+- If \`updated_at\` is relevant, write both dates, such as \`— published 12 January 2025; updated 3 June 2026\`.
+- If \`published_at\` is \`null\`, write \`publication date unavailable\` and include the observation date near the link.
+- For prices, menus, availability, delivery fees, opening hours, promotions, and other dynamic facts, include the observation date even when a publication date exists.
+- Keep ISO-style dates in source metadata and human-readable dates in document Markdown.
 - Do not rely only on \`suggested_text_sources\` when the task asks for inline references.
 
 Good inline-reference \`suggested_text\`:
-\`"Thailand foodservice remains resilient. [USDA FAS estimated Thailand foodservice at about USD 35.4 billion in 2025](https://apps.fas.usda.gov/newgainapi/api/Report/DownloadReportByFileName?fileName=Food+Service+-+Hotel+Restaurant+Institutional+Annual_Bangkok_Thailand_TH2025-0045.pdf), despite modest economic growth."\`
+\`"Thailand foodservice remains resilient. [USDA FAS Thailand foodservice report](https://apps.fas.usda.gov/newgainapi/api/Report/DownloadReportByFileName?fileName=Food+Service+-+Hotel+Restaurant+Institutional+Annual_Bangkok_Thailand_TH2025-0045.pdf) — published 31 March 2026 — estimated Thailand foodservice at about USD 35.4 billion in 2025."\`
+
+Good live-price \`suggested_text\`:
+\`"Competitor pricing remains visible on [Example live menu](https://example.com/menu) — publication date unavailable; prices observed 13 July 2026."\`
+
+Matching live-price source object:
+\`{ "title": "Example live menu", "url": "https://example.com/menu", "published_at": null, "updated_at": null, "observed_at": "${observedAt}", "supports": "Shows the menu prices visible on the observation date." }\`
 
 Bad inline-reference \`suggested_text\`:
 \`"Thailand foodservice remains resilient. USDA FAS estimated Thailand foodservice at about USD 35.4 billion in 2025, despite modest economic growth."\`
 
-The bad version loses the visible source if Patchmark sidecar metadata is not exported.
+The bad version loses the visible source and source date if Patchmark sidecar metadata is not exported.
 
 Use this exact protocol:
 
@@ -5793,8 +5824,17 @@ Use this exact protocol:
       "display_title": "Add concise human-readable patch title",
       "target_heading": "## Example Heading",
       "original_text": "Exact Markdown text to replace.",
-      "suggested_text": "Replacement Markdown text.",
-      "suggested_text_sources": [],
+      "suggested_text": "Replacement Markdown text with [Example source](https://example.com/source) — published 31 March 2026.",
+      "suggested_text_sources": [
+        {
+          "title": "Example source",
+          "url": "https://example.com/source",
+          "published_at": "2026-03-31",
+          "updated_at": null,
+          "observed_at": "${observedAt}",
+          "supports": "What this source supports."
+        }
+      ],
       "reason": "Why this change helps.",
       "reason_sources": [],
       "risk": "Tradeoff or caution.",
@@ -5821,6 +5861,9 @@ Example sourced reply object:
     {
       "title": "Crust Chant — Bread Collection",
       "url": "https://crustchant.com/en/collections/bread/",
+      "published_at": null,
+      "updated_at": null,
+      "observed_at": "${observedAt}",
       "supports": "Shows that Campaillou appears in the public bread catalogue."
     }
   ],

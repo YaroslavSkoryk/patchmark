@@ -1329,6 +1329,9 @@ function normalizeSourceReferences(
     .map((source) => ({
       title: source.title,
       url: source.url,
+      published_at: source.published_at,
+      updated_at: source.updated_at,
+      observed_at: source.observed_at,
       note: source.note,
       supports: source.supports
     }));
@@ -1592,6 +1595,13 @@ function isPatchmarkSourceReference(
     typeof value.url === "string" &&
     value.url.trim().length > 0 &&
     (value.title === undefined || typeof value.title === "string") &&
+    (value.published_at === undefined ||
+      value.published_at === null ||
+      typeof value.published_at === "string") &&
+    (value.updated_at === undefined ||
+      value.updated_at === null ||
+      typeof value.updated_at === "string") &&
+    (value.observed_at === undefined || typeof value.observed_at === "string") &&
     (value.note === undefined || typeof value.note === "string") &&
     (value.supports === undefined || typeof value.supports === "string")
   );

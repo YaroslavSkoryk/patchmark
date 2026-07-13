@@ -74,6 +74,9 @@ export type PatchmarkSuggestedUserAction =
 export type PatchmarkSourceReference = {
   title?: string;
   url: string;
+  published_at?: string | null;
+  updated_at?: string | null;
+  observed_at?: string;
   note?: string;
   supports?: string;
 };
