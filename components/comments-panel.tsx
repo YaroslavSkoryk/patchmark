@@ -42,6 +42,11 @@ export type CommentAddRequest = {
   targetHeadingLine?: number | null;
 };
 
+export type CommentReplyRequest = {
+  commentId: string;
+  nonce: number;
+};
+
 export type CommentFormValues = {
   anchorScope: CommentAnchorScope;
   comment: string;
@@ -59,6 +64,7 @@ export type CommentAnchorSummary = {
 export type CommentPatchGroupSummary = {
   accepted: number;
   groupCount: number;
+  latestAcceptedTitle?: string;
   patchCount: number;
   pending: number;
   rejected: number;
@@ -105,6 +111,7 @@ type CommentsPanelProps = {
   pendingPatchGroupTotal: number;
   pendingPatchCountsByCommentId: Record<string, number>;
   pendingPatchTotal: number;
+  replyRequest: CommentReplyRequest | null;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
 };
@@ -169,10 +176,12 @@ export function CommentsPanel({
   pendingPatchGroupTotal,
   pendingPatchCountsByCommentId,
   pendingPatchTotal,
+  replyRequest,
   selectedAnchorContextKind,
   selectedTextPreview
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
+  const handledReplyRequestNonceRef = useRef<number | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addScope, setAddScope] = useState<CommentAnchorScope>("document");
   const [addType, setAddType] = useState<PatchmarkCommentType>("note");
@@ -334,6 +343,53 @@ export function CommentsPanel({
     setEditReplyContent("");
     setReplyEditError("");
   }
+
+  useEffect(() => {
+    if (
+      !replyRequest ||
+      handledReplyRequestNonceRef.current === replyRequest.nonce
+    ) {
+      return;
+    }
+
+    handledReplyRequestNonceRef.current = replyRequest.nonce;
+    const comment = comments.find(
+      (candidate) => candidate.id === replyRequest.commentId
+    );
+
+    if (!comment || comment.status !== "open") {
+      return;
+    }
+
+    onSetActiveCommentState({ kind: "comment", commentId: comment.id });
+    setReplyingCommentId(comment.id);
+    setReplyComment("");
+    setEditingCommentId(null);
+    setIsAdding(false);
+    setAddPositionTop(null);
+    setFormError("");
+  }, [comments, onSetActiveCommentState, replyRequest]);
+
+  useEffect(() => {
+    if (
+      !replyingCommentId ||
+      replyRequest?.commentId !== replyingCommentId
+    ) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      const card = document.getElementById(
+        `patchmark-comment-card-${replyingCommentId}`
+      );
+      card?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+      card
+        ?.querySelector<HTMLTextAreaElement>("[data-comment-reply-input]")
+        ?.focus();
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [replyingCommentId, replyRequest]);
 
   async function handleEditComment(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -1449,6 +1505,7 @@ function CommentCard({
 
   return (
     <article
+      id={`patchmark-comment-card-${comment.id}`}
       aria-label={`${isActive ? "Active comment" : "Comment"} ${comment.id}`}
       aria-current={isActive ? "true" : undefined}
       className={`comment-card ${quiet ? "comment-card-quiet" : ""} ${
@@ -1611,7 +1668,7 @@ function CommentCard({
           <p>{comment.comment}</p>
           {patchGroupSummary ? (
             <div className="comment-pending-patches">
-              <span>{getCommentPatchGroupSummaryLabel(patchGroupSummary)}</span>
+              <strong>{getCommentPatchGroupSummaryLabel(patchGroupSummary)}</strong>
               <span>{formatCommentPatchGroupStatusSummary(patchGroupSummary)}</span>
               <button
                 type="button"
@@ -1754,6 +1811,7 @@ function CommentCard({
               <label>
                 <span>User reply</span>
                 <textarea
+                  data-comment-reply-input
                   required
                   value={replyComment}
                   onChange={(event) => onSetReplyComment(event.target.value)}
@@ -2119,6 +2177,10 @@ function getThreadRoleLabel(role: PatchmarkComment["thread"][number]["role"]): s
 function getCommentPatchGroupSummaryLabel(
   summary: CommentPatchGroupSummary
 ): string {
+  if (summary.latestAcceptedTitle) {
+    return `Latest change applied: ${summary.latestAcceptedTitle}`;
+  }
+
   if (summary.patchCount === 1) {
     return `Patch proposal: ${getSinglePatchStatusLabel(summary)}`;
   }
@@ -2149,23 +2211,17 @@ function getCommentPatchGroupSummaryLabel(
 function getCommentPatchGroupReviewLabel(
   summary: CommentPatchGroupSummary
 ): string {
-  if (summary.groupCount > 1) {
-    return summary.pending > 0 ? "Review groups" : "View groups";
-  }
-
-  if (summary.patchCount === 1) {
-    return summary.pending > 0 ? "Review patch" : "View patch";
-  }
-
-  return summary.pending > 0 ? "Review group" : "View group";
+  return summary.pending > 0
+    ? "Review related patches"
+    : "View related patches";
 }
 
 function formatCommentPatchGroupStatusSummary(
   summary: CommentPatchGroupSummary
 ): string {
   const parts = [
-    summary.pending > 0 ? `${summary.pending} pending` : null,
     summary.accepted > 0 ? `${summary.accepted} applied` : null,
+    summary.pending > 0 ? `${summary.pending} pending` : null,
     summary.rejected > 0 ? `${summary.rejected} rejected` : null,
     summary.stale > 0 ? `${summary.stale} stale` : null
   ].filter(Boolean);

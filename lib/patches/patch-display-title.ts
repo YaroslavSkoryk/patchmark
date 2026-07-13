@@ -100,6 +100,10 @@ export function getPatchGroupDisplayTitle(
     return "Patch group";
   }
 
+  if (patches.length === 1) {
+    return getPatchDisplayTitle(firstPatch, { comment });
+  }
+
   const commentTitle = comment
     ? normalizePatchDisplayTitleCandidate(comment.comment)
     : null;
