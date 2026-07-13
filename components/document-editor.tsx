@@ -27,6 +27,7 @@ import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
 import {
+  findRetainedPatchOriginalTextInPatchReplacement,
   findRetainedSelectedTextInPatchReplacement,
   isSelectedAnchorEquivalentToPatchOriginalText
 } from "@/lib/comments/comment-anchor-patch-mapping";
@@ -6876,10 +6877,48 @@ function getAppliedPatchNormalizedMatches(
       ? findMarkdownPlainTextMatches(markdown, plainText)
       : [];
 
-  return dedupeTextMatches([
+  return dedupeOverlappingAppliedPatchMatches([
     ...findNormalizedTextMatches(markdown, appliedText),
     ...plainTextMatches
   ]);
+}
+
+function dedupeOverlappingAppliedPatchMatches(matches: TextMatch[]): TextMatch[] {
+  const distinctMatches = dedupeTextMatches(matches).sort(
+    (firstMatch, secondMatch) =>
+      firstMatch.start - secondMatch.start || firstMatch.end - secondMatch.end
+  );
+  const overlappingDedupedMatches: TextMatch[] = [];
+
+  for (const match of distinctMatches) {
+    const overlappingIndex = overlappingDedupedMatches.findIndex((candidate) =>
+      doTextRangesOverlap(candidate, match)
+    );
+
+    if (overlappingIndex === -1) {
+      overlappingDedupedMatches.push(match);
+      continue;
+    }
+
+    const existingMatch = overlappingDedupedMatches[overlappingIndex];
+
+    if (getTextRangeLength(match) > getTextRangeLength(existingMatch)) {
+      overlappingDedupedMatches[overlappingIndex] = match;
+    }
+  }
+
+  return overlappingDedupedMatches.sort(
+    (firstMatch, secondMatch) =>
+      firstMatch.start - secondMatch.start || firstMatch.end - secondMatch.end
+  );
+}
+
+function doTextRangesOverlap(firstRange: TextMatch, secondRange: TextMatch): boolean {
+  return firstRange.start < secondRange.end && secondRange.start < firstRange.end;
+}
+
+function getTextRangeLength(range: TextMatch): number {
+  return range.end - range.start;
 }
 
 function findAcceptedPatchTableRowAnchorMatch({
@@ -8018,7 +8057,8 @@ function updateSingleAffectedCommentAnchor({
             newMarkdown,
             originalStart: replacementStart,
             patch,
-            replacementStart
+            replacementStart,
+            replacementText: patch.suggested_text
           })
         : null;
 
@@ -8349,7 +8389,8 @@ function createPreservedSelectedTextAnchorInsidePatch({
     newMarkdown,
     originalStart: replacementStart,
     patch,
-    replacementStart
+    replacementStart,
+    replacementText: patch.suggested_text
   });
 }
 
@@ -8359,7 +8400,8 @@ function createRetainedSelectedTextAnchorInsidePatch({
   newMarkdown,
   originalStart,
   patch,
-  replacementStart
+  replacementStart,
+  replacementText
 }: {
   anchor: SelectedTextAnchor;
   comment: PatchmarkComment;
@@ -8367,13 +8409,14 @@ function createRetainedSelectedTextAnchorInsidePatch({
   originalStart?: number;
   patch: PatchmarkPatch;
   replacementStart: number;
+  replacementText: string;
 }): SelectedTextAnchor | null {
   const retainedMatch = findRetainedSelectedTextInPatchReplacement({
     anchor,
     originalStart,
     originalText: patch.original_text,
     replacementStart,
-    suggestedText: patch.suggested_text
+    replacementText
   });
 
   if (!retainedMatch) {
@@ -8386,6 +8429,50 @@ function createRetainedSelectedTextAnchorInsidePatch({
     comment,
     context: {
       kind: anchor.anchor_context?.kind ?? "block",
+      plain_text: normalizeDomText(retainedMatch.selectedText),
+      markdown_text: retainedMatch.selectedText,
+      selected_start_in_context: 0,
+      selected_end_in_context: retainedMatch.selectedText.length,
+      markdown_start_offset: retainedMatch.start,
+      markdown_end_offset: retainedMatch.end
+    },
+    markdown: newMarkdown,
+    preferredHeadingText: patch.target_heading,
+    selectedText: retainedMatch.selectedText,
+    start: retainedMatch.start,
+    end: retainedMatch.end
+  });
+}
+
+function createRetainedPatchOriginalTextAnchorInsidePatch({
+  comment,
+  newMarkdown,
+  patch,
+  replacementStart,
+  replacementText
+}: {
+  comment: PatchmarkComment;
+  newMarkdown: string;
+  patch: PatchmarkPatch;
+  replacementStart: number;
+  replacementText: string;
+}): SelectedTextAnchor | null {
+  const retainedMatch = findRetainedPatchOriginalTextInPatchReplacement({
+    originalText: patch.original_text,
+    replacementStart,
+    replacementText
+  });
+
+  if (!retainedMatch) {
+    return null;
+  }
+
+  return createSelectedTextAnchorAtRange({
+    anchor: undefined,
+    anchorSource: "patch",
+    comment,
+    context: {
+      kind: "table_cell",
       plain_text: normalizeDomText(retainedMatch.selectedText),
       markdown_text: retainedMatch.selectedText,
       selected_start_in_context: 0,
@@ -9042,32 +9129,57 @@ function repairRetainedLinkedPatchCommentAnchor({
       continue;
     }
 
+    const replacementText = markdown.slice(appliedRange.start, appliedRange.end);
     const retainedAnchor = createRetainedSelectedTextAnchorInsidePatch({
       anchor: historyEntry.previous_anchor,
       comment,
       newMarkdown: markdown,
       originalStart: patch.applied_start_offset,
       patch,
-      replacementStart: appliedRange.start
+      replacementStart: appliedRange.start,
+      replacementText
     });
 
-    if (!retainedAnchor || areCommentAnchorsEqual(comment.anchor, retainedAnchor)) {
+    const retainedPatchOriginalAnchor =
+      createRetainedPatchOriginalTextAnchorInsidePatch({
+        comment,
+        newMarkdown: markdown,
+        patch,
+        replacementStart: appliedRange.start,
+        replacementText
+      });
+    const retainedSelectedTextSpansReplacement =
+      retainedAnchor !== null &&
+      normalizeAcceptedPatchComparisonText(retainedAnchor.selected_text) ===
+        normalizeAcceptedPatchComparisonText(replacementText);
+    const retainedAnchorCandidate =
+      retainedPatchOriginalAnchor && retainedSelectedTextSpansReplacement
+        ? retainedPatchOriginalAnchor
+        : retainedAnchor ?? retainedPatchOriginalAnchor;
+
+    if (!retainedAnchorCandidate) {
       continue;
     }
 
+    if (areCommentAnchorsEqual(comment.anchor, retainedAnchorCandidate)) {
+      return null;
+    }
+
     if (
-      comment.anchor.selected_text === retainedAnchor.selected_text &&
-      comment.anchor.markdown_start_offset === retainedAnchor.markdown_start_offset &&
-      comment.anchor.markdown_end_offset === retainedAnchor.markdown_end_offset
+      comment.anchor.selected_text === retainedAnchorCandidate.selected_text &&
+      comment.anchor.markdown_start_offset ===
+        retainedAnchorCandidate.markdown_start_offset &&
+      comment.anchor.markdown_end_offset ===
+        retainedAnchorCandidate.markdown_end_offset
     ) {
-      continue;
+      return null;
     }
 
     return updateCommentAnchorAfterPatch({
       comment,
       createdAt: repairedAt,
       impactKind: historyEntry.impact_kind ?? "linked_comment",
-      newAnchor: retainedAnchor,
+      newAnchor: retainedAnchorCandidate,
       note: "Linked selected-text comment repaired to retained text inside the applied replacement.",
       patch,
       reason: "anchor_recovered_after_patch",
@@ -9135,6 +9247,10 @@ function recoverPersistableStaleCommentAnchors({
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
+    if (comment.status === "resolved") {
+      return comment;
+    }
+
     const linkedPatchRepair = repairRetainedLinkedPatchCommentAnchor({
       comment,
       markdown,

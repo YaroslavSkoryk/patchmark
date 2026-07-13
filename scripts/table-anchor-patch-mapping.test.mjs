@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  findRetainedPatchOriginalTextInPatchReplacement,
   findRetainedSelectedTextInPatchReplacement,
   isSelectedAnchorEquivalentToPatchOriginalText
 } from "../lib/comments/comment-anchor-patch-mapping.ts";
@@ -72,7 +73,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
     originalStart,
     originalText: paulRow,
     replacementStart,
-    suggestedText: suggestedRows,
+    replacementText: suggestedRows,
     ...overrides
   });
 }
@@ -110,7 +111,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
       originalStart,
       originalText: paulRow,
       replacementStart,
-      suggestedText: suggestedRows
+      replacementText: suggestedRows
     })
   );
 
@@ -151,7 +152,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
     originalStart: 0,
     originalText: whitespaceOriginal,
     replacementStart: 0,
-    suggestedText: whitespaceSuggested
+    replacementText: whitespaceSuggested
   });
 
   assert.equal(match?.selectedText, "Online   delivery");
@@ -174,7 +175,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
     originalStart: fullTableOriginalStart,
     originalText: fullOriginalTable,
     replacementStart: fullTableReplacementStart,
-    suggestedText: fullSuggestedTable
+    replacementText: fullSuggestedTable
   });
 
   assert.equal(match?.selectedText, selectedText);
@@ -189,7 +190,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
     originalStart,
     originalText: paulRow,
     replacementStart,
-    suggestedText: shiftedSuggested
+    replacementText: shiftedSuggested
   });
 
   assert.equal(match?.selectedText, selectedText);
@@ -207,7 +208,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
       originalStart,
       originalText: paulRow,
       replacementStart,
-      suggestedText: partiallyEdited
+      replacementText: partiallyEdited
     }),
     null
   );
@@ -217,7 +218,7 @@ function retainedMatchFor(selectedText, overrides = {}) {
       originalStart,
       originalText: paulRow,
       replacementStart,
-      suggestedText: deleted
+      replacementText: deleted
     }),
     null
   );
@@ -241,6 +242,17 @@ function retainedMatchFor(selectedText, overrides = {}) {
     }),
     false
   );
+}
+
+{
+  const headerLinkedMatch = findRetainedPatchOriginalTextInPatchReplacement({
+    originalText: paulRow,
+    replacementStart,
+    replacementText: suggestedRows
+  });
+
+  assert.equal(headerLinkedMatch?.start, patchedMarkdown.indexOf(paulRow));
+  assert.equal(headerLinkedMatch?.selectedText, paulRow);
 }
 
 {
