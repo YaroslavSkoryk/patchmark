@@ -89,7 +89,7 @@ try {
   await waitForProjectComments(client);
   console.log("browser-step: project loaded");
 
-  await openPatchGroupByTitle(client, fixture.linkedPatch.id);
+  await openPatchGroupByTitle(client, fixture.linkedPatch.display_title);
   console.log("browser-step: linked group opened");
   await clickVisibleButton(client, "Next pending patch");
   await waitForText(client, "Accept Patch");
@@ -157,7 +157,9 @@ try {
   assert.equal(exportedCurrentContextIncludesReplacement, true);
   assert.equal(
     exportedComment.related_patch_history.some(
-      (patch) => patch.patch_id === fixture.linkedPatch.id
+      (patch) =>
+        patch.patch_id === fixture.linkedPatch.id &&
+        patch.display_title === fixture.linkedPatch.display_title
     ),
     true
   );
@@ -184,37 +186,125 @@ try {
   assert.equal(followUpState.acceptedStatus, "accepted");
   assert.equal(followUpState.pendingFollowUpExists, true);
 
+  await openCommentPatchGroupByTitle(
+    client,
+    fixture.comment.id,
+    "Restore validation requirements"
+  );
+  const followUpGroupText = await evaluate(client, {
+    expression: `document.querySelector("[aria-label='Review Patch Group']")?.textContent ?? ""`
+  });
+  assert.match(followUpGroupText, /Restore validation requirements/);
+  assert.match(
+    followUpGroupText,
+    /Refines:\s*Browser continuation test patch/
+  );
+  await clickVisibleButton(client, "Next pending patch");
+  const pendingReviewText = await evaluate(client, {
+    expression: `document.querySelector("[aria-label='Review Patch Proposal']")?.textContent ?? ""`
+  });
+  assert.match(pendingReviewText, /Restore validation requirements/);
+  assert.match(
+    pendingReviewText,
+    /Refines:\s*Browser continuation test patch/
+  );
+  assert.match(pendingReviewText, new RegExp(`Patch ID\\s*${followUpState.patchId}`));
+  await clickVisibleButton(client, "Accept Patch");
+  await waitForText(client, "Follow-up to: Browser continuation test patch");
+  const acceptedFollowUpState = await waitForAcceptedFollowUp(
+    client,
+    fixture.linkedPatch.id,
+    followUpState.patchId,
+    fixture.comment.id
+  );
+  assert.equal(acceptedFollowUpState.earlierStatus, "accepted");
+  assert.equal(acceptedFollowUpState.followUpStatus, "accepted");
+  assert.equal(acceptedFollowUpState.commentStatus, "open");
+  await waitForPersistedPatch(
+    projectDir,
+    followUpState.patchId,
+    "accepted"
+  );
+  console.log("browser-step: follow-up lineage applied");
+  await clickScopedButton(client, ".patch-review-dialog", "Close");
+
+  const commentSummaryText = await evaluate(client, {
+    expression: `document.getElementById(${JSON.stringify(
+      `patchmark-comment-card-${fixture.comment.id}`
+    )})?.textContent ?? ""`
+  });
+  assert.match(
+    commentSummaryText,
+    /Latest change applied:\s*Restore validation requirements/
+  );
+  assert.match(commentSummaryText, /\d+ applied/);
+  assert.match(commentSummaryText, /View related patches/);
+  await waitForText(client, "Before applying: Restore validation requirements");
+
+  await evaluate(client, {
+    expression: `document.getElementById(${JSON.stringify(
+      `patchmark-comment-card-${fixture.comment.id}`
+    )})?.click(); true`,
+    userGesture: true
+  });
+  await clickCommentPatchButton(client, fixture.comment.id);
+  await waitForSelector(client, ".patch-group-list-dialog");
+  const relatedPatchTitles = await evaluate(client, {
+    expression: `Array.from(document.querySelectorAll(".patch-group-summary-card h3")).map((heading) => heading.textContent?.trim())`
+  });
+  assert.ok(
+    relatedPatchTitles.indexOf("Browser continuation test patch") <
+      relatedPatchTitles.indexOf("Restore validation requirements")
+  );
+  await clickScopedButton(client, ".patch-group-list-dialog", "Close");
+
   await applyEdgePatchAndAssertNoContinuation(
     client,
-    fixture.noLinkedPatch.id
+    "Add browser legacy guidance"
   );
-  console.log("browser-step: no-link edge applied");
+  console.log("browser-step: legacy no-link edge applied");
   await applyEdgePatchAndAssertNoContinuation(
     client,
-    fixture.missingCommentPatch.id
+    fixture.differentCommentPatch.display_title
   );
-  console.log("browser-step: missing-comment edge applied");
+  console.log("browser-step: different-comment edge applied");
 
   await client.call("Page.reload");
   await waitForEditorShell(client);
   await clickVisibleButton(client, "Open Project Folder");
   await waitForProjectComments(client);
   console.log("browser-step: project reloaded");
-  const reloadedState = await readFixtureState(
-    client,
-    fixture.linkedPatch.id,
-    fixture.comment.id,
-    fixture.linkedPatch.suggested_text,
-    followUpText
+
+  await evaluate(client, {
+    expression: `document.getElementById(${JSON.stringify(
+      `patchmark-comment-card-${fixture.comment.id}`
+    )})?.click(); true`,
+    userGesture: true
+  });
+  await clickCommentPatchButton(client, fixture.comment.id);
+  await waitForSelector(client, ".patch-group-list-dialog");
+  const reloadedRelatedPatchTitles = await evaluate(client, {
+    expression: `Array.from(document.querySelectorAll(".patch-group-summary-card h3")).map((heading) => heading.textContent?.trim())`
+  });
+  assert.ok(
+    reloadedRelatedPatchTitles.includes("Restore validation requirements"),
+    `Reloaded related titles: ${JSON.stringify(reloadedRelatedPatchTitles)}`
   );
-  assert.equal(reloadedState.commentStatus, "open");
-  assert.equal(reloadedState.selectedText, fixture.linkedPatch.suggested_text);
-  assert.equal(reloadedState.hasFollowUp, true);
+  await clickCardButton(
+    client,
+    ".patch-group-summary-card",
+    "Restore validation requirements",
+    "Review group"
+  );
+  await waitForSelector(client, "[aria-label='Review Patch Group']");
+  await clickVisibleButton(client, "View applied patch");
+  await waitForText(client, "Follow-up to: Browser continuation test patch");
+  await clickScopedButton(client, ".patch-review-dialog", "Close");
 
   await openCommentPatchGroupByTitle(
     client,
     fixture.comment.id,
-    fixture.linkedPatch.id
+    fixture.linkedPatch.display_title
   );
   await clickVisibleButton(client, "View applied patch");
   await waitForText(client, "Continue discussion");
@@ -228,7 +318,7 @@ try {
   await openCommentPatchGroupByTitle(
     client,
     fixture.comment.id,
-    fixture.linkedPatch.id
+    fixture.linkedPatch.display_title
   );
   await clickVisibleButton(client, "View applied patch");
   const resolvedContinuationCount = await evaluate(client, {
@@ -248,9 +338,12 @@ try {
           "apply keeps comment open and re-anchors to replacement",
           "continue activates comment and focuses reply",
           "follow-up export uses current context and accepted history",
-          "follow-up import creates a separate pending patch",
-          "missing and absent linked comments hide continuation",
-          "reload preserves thread, anchor, and accepted continuation",
+          "follow-up import creates a separate titled pending patch",
+          "pending and accepted review preserve descriptive lineage",
+          "comment summary and version history use descriptive titles",
+          "related patches remain chronological and title-first",
+          "legacy and different-comment patches have no false lineage",
+          "reload preserves thread, titles, lineage, and statuses",
           "resolved comments hide continuation"
         ]
       },
@@ -331,7 +424,7 @@ function prepareFixture(projectDir) {
       const match = /^PM-PATCH-(\d+)$/.exec(patch.id);
       return match ? Math.max(maximum, Number(match[1])) : maximum;
     }, 0) + 1;
-  const createdAt = "2026-07-13T12:00:00.000Z";
+  const createdAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
   const linkedPatch = {
     id: `PM-PATCH-${String(nextPatchNumber).padStart(4, "0")}`,
     status: "pending",
@@ -349,26 +442,37 @@ function prepareFixture(projectDir) {
   const noLinkedPatch = {
     id: `PM-PATCH-${String(nextPatchNumber + 1).padStart(4, "0")}`,
     status: "pending",
-    display_title: "Browser no-link test patch",
     original_text: paragraphs[0],
     suggested_text: appendRefinement(
       paragraphs[0],
       "Browser no-link refinement."
     ),
-    reason: "Validates accepted patches without linked comments.",
+    reason: "Add browser legacy guidance.",
     created_at: createdAt
   };
-  const missingCommentPatch = {
+  const differentComment = {
+    id: "PM-COMMENT-BROWSER-OTHER",
+    type: "note",
+    status: "resolved",
+    anchor: { kind: "document" },
+    comment: "Check unrelated browser validation guidance.",
+    thread: [],
+    export_state: { focus_state: "idle" },
+    created_at: createdAt,
+    updated_at: createdAt,
+    resolved_at: createdAt
+  };
+  const differentCommentPatch = {
     id: `PM-PATCH-${String(nextPatchNumber + 2).padStart(4, "0")}`,
     status: "pending",
-    comment_id: "PM-COMMENT-MISSING-BROWSER",
-    display_title: "Browser missing-comment test patch",
+    comment_id: differentComment.id,
+    display_title: "Browser different-comment test patch",
     original_text: paragraphs[1],
     suggested_text: appendRefinement(
       paragraphs[1],
-      "Browser missing-comment refinement."
+      "Browser different-comment refinement."
     ),
-    reason: "Validates accepted patches whose linked comment is unavailable.",
+    reason: "Validates that unrelated comments do not create false lineage.",
     created_at: createdAt
   };
 
@@ -380,17 +484,20 @@ function prepareFixture(projectDir) {
       marked_for_export_at: undefined
     }
   }));
-  writeFileSync(commentsPath, `${JSON.stringify(normalizedComments, null, 2)}\n`);
+  writeFileSync(
+    commentsPath,
+    `${JSON.stringify([...normalizedComments, differentComment], null, 2)}\n`
+  );
   writeFileSync(
     patchesPath,
     `${JSON.stringify(
-      [...patches, linkedPatch, noLinkedPatch, missingCommentPatch],
+      [...patches, linkedPatch, noLinkedPatch, differentCommentPatch],
       null,
       2
     )}\n`
   );
 
-  return { comment, linkedPatch, missingCommentPatch, noLinkedPatch };
+  return { comment, differentCommentPatch, linkedPatch, noLinkedPatch };
 }
 
 function createFollowUpImport({ commentId, originalText }) {
@@ -434,6 +541,17 @@ async function openCommentPatchGroupByTitle(client, commentId, title) {
     userGesture: true
   });
   await waitForSelector(client, `#patchmark-comment-card-${commentId}[data-active='true']`);
+  await waitFor(
+    client,
+    `(() => {
+      const card = document.getElementById(${JSON.stringify(
+        `patchmark-comment-card-${commentId}`
+      )});
+      return card ? Array.from(card.querySelectorAll("button"))
+        .some((candidate) => /^(Review|View) (related patches|patch|patches|group|groups)$/.test(candidate.textContent?.trim() ?? "") && !candidate.disabled) : false;
+    })()`,
+    "comment related patches action"
+  );
   await clickCommentPatchButton(client, commentId);
   await waitForSelector(client, ".patch-group-list-dialog");
   await clickCardButton(client, ".patch-group-summary-card", title, "Review group");
@@ -448,8 +566,23 @@ async function applyEdgePatchAndAssertNoContinuation(client, title) {
     "visible pending patch summary"
   );
   await clickSelector(client, ".patch-summary-card button");
-  await waitForSelector(client, ".patch-group-list-dialog");
-  await clickCardButton(client, ".patch-group-summary-card", title, "Review group");
+  const edgeReviewState = await waitFor(
+    client,
+    `document.querySelector(".patch-group-list-dialog")
+      ? "list"
+      : document.querySelector("[aria-label='Review Patch Group']")
+        ? "group"
+        : null`,
+    "edge patch group review"
+  );
+  if (edgeReviewState === "list") {
+    await clickCardButton(
+      client,
+      ".patch-group-summary-card",
+      title,
+      "Review group"
+    );
+  }
   await waitForSelector(client, "[aria-label='Review Patch Group']");
   await clickVisibleButton(client, "Next pending patch");
   await evaluate(client, {
@@ -585,11 +718,50 @@ async function waitForPendingFollowUp(client, acceptedPatchId, commentId) {
       const accepted = patches.find((patch) => patch.id === ${JSON.stringify(acceptedPatchId)});
       const pending = patches.find((patch) => patch.id !== ${JSON.stringify(acceptedPatchId)} && patch.comment_id === ${JSON.stringify(commentId)} && patch.status === "pending" && patch.display_title === "Restore validation requirements");
       return accepted?.status === "accepted" && pending
-        ? { acceptedStatus: accepted.status, pendingFollowUpExists: true }
+        ? { acceptedStatus: accepted.status, patchId: pending.id, pendingFollowUpExists: true, suggestedText: pending.suggested_text }
         : null;
     })()`,
     "separate pending follow-up patch"
   );
+}
+
+async function waitForAcceptedFollowUp(
+  client,
+  earlierPatchId,
+  followUpPatchId,
+  commentId
+) {
+  return waitFor(
+    client,
+    `(() => {
+      const patches = JSON.parse(window.__patchmarkFixtureWrites.get(".patchmark/patches.json") ?? "[]");
+      const comments = JSON.parse(window.__patchmarkFixtureWrites.get(".patchmark/comments.json") ?? "[]");
+      const earlier = patches.find((patch) => patch.id === ${JSON.stringify(earlierPatchId)});
+      const followUp = patches.find((patch) => patch.id === ${JSON.stringify(followUpPatchId)});
+      const comment = comments.find((entry) => entry.id === ${JSON.stringify(commentId)});
+      return earlier?.status === "accepted" && followUp?.status === "accepted"
+        ? { earlierStatus: earlier.status, followUpStatus: followUp.status, commentStatus: comment?.status }
+        : null;
+    })()`,
+    "accepted independent follow-up records"
+  );
+}
+
+async function waitForPersistedPatch(projectDir, patchId, status) {
+  const patchesPath = join(projectDir, ".patchmark", "patches.json");
+
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    const patches = JSON.parse(readFileSync(patchesPath, "utf8"));
+    const patch = patches.find((candidate) => candidate.id === patchId);
+
+    if (patch?.status === status) {
+      return;
+    }
+
+    await delay(75);
+  }
+
+  throw new Error(`Timed out waiting for persisted patch ${patchId} status ${status}.`);
 }
 
 async function readFixtureState(
@@ -702,7 +874,7 @@ async function clickCommentPatchButton(client, commentId) {
         `patchmark-comment-card-${commentId}`
       )});
       const button = card ? Array.from(card.querySelectorAll("button"))
-        .find((candidate) => /^(Review|View) (patch|patches|group|groups)$/.test(candidate.textContent?.trim() ?? "") && !candidate.disabled) : null;
+        .find((candidate) => /^(Review|View) (related patches|patch|patches|group|groups)$/.test(candidate.textContent?.trim() ?? "") && !candidate.disabled) : null;
       if (!button) throw new Error("Comment patch button not found");
       button.click();
       return true;

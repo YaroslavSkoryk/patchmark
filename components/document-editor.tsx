@@ -89,8 +89,11 @@ import {
   normalizePatchDisplayTitleCandidate
 } from "@/lib/patches/patch-display-title";
 import {
+  createCommentPatchHistorySummary,
   createRelatedAcceptedPatchHistory,
-  getContinuableLinkedComment
+  getContinuableLinkedComment,
+  getPatchFollowUpRelationship,
+  type PatchFollowUpRelationship
 } from "@/lib/patches/comment-patch-history";
 import {
   canOpenProjectFolder,
@@ -483,8 +486,8 @@ export function DocumentEditor() {
     [patchGroups]
   );
   const patchGroupSummariesByCommentId = useMemo(
-    () => getPatchGroupSummariesByCommentId(patchGroups),
-    [patchGroups]
+    () => getPatchGroupSummariesByCommentId(patchGroups, commentsById),
+    [commentsById, patchGroups]
   );
   const selectedPatch = useMemo(
     () =>
@@ -559,6 +562,17 @@ export function DocumentEditor() {
         ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches)
         : null,
     [markdown, patches, selectedPatch]
+  );
+  const selectedPatchFollowUpRelationship = useMemo(
+    () =>
+      selectedPatch
+        ? getPatchFollowUpRelationship({
+            comment: selectedPatchComment,
+            patch: selectedPatch,
+            patches
+          })
+        : null,
+    [patches, selectedPatch, selectedPatchComment]
   );
   const isDirty =
     fileName !== null &&
@@ -3832,6 +3846,7 @@ export function DocumentEditor() {
       ) : null}
       {selectedPatchGroup ? (
         <PatchGroupReviewDialog
+          allPatches={patches}
           comment={selectedPatchGroupComment}
           group={selectedPatchGroup}
           isPatchActionBusy={isSaving}
@@ -3849,6 +3864,7 @@ export function DocumentEditor() {
         <PatchReviewDialog
           anchorStatus={selectedPatchAnchorStatus}
           comment={selectedPatchComment}
+          followUpRelationship={selectedPatchFollowUpRelationship}
           hasMultipleReviewablePatches={reviewablePatches.length > 1}
           isPatchActionBusy={isSaving}
           markdown={markdown}
@@ -3944,6 +3960,7 @@ function PatchGroupListDialog({
 }
 
 function PatchGroupReviewDialog({
+  allPatches,
   comment,
   group,
   isPatchActionBusy,
@@ -3951,6 +3968,7 @@ function PatchGroupReviewDialog({
   onRejectPendingPatches,
   onReviewPatch
 }: {
+  allPatches: PatchmarkPatch[];
   comment: PatchmarkComment | null;
   group: DerivedPatchGroup;
   isPatchActionBusy: boolean;
@@ -4093,6 +4111,7 @@ function PatchGroupReviewDialog({
             <div className="patch-group-patch-list">
               {group.patches.map((patch, index) => (
                 <PatchGroupPatchCard
+                  allPatches={allPatches}
                   comment={comment}
                   group={group}
                   index={index}
@@ -4127,7 +4146,7 @@ function PatchGroupSummaryCard({
           {getPatchGroupStatusLabel(group.status)}
         </span>
         <h3>{groupTitle}</h3>
-        <small>Patch group: {group.display_id}</small>
+        <span>{formatPatchDate(group.created_at)}</span>
         <div className="patch-group-progress patch-group-progress-compact">
           {getPatchGroupProgressItems(group.status_summary).map((item) => (
             <span
@@ -4140,7 +4159,13 @@ function PatchGroupSummaryCard({
         </div>
         <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
         <p>{formatPatchGroupApplicabilitySummary(group)}</p>
-        {group.comment_id ? <small>Linked comment: {group.comment_id}</small> : null}
+        <details className="patch-group-technical-details">
+          <summary>Details</summary>
+          <span>Patch group ID: {group.display_id}</span>
+          {group.comment_id ? (
+            <span>Linked comment ID: {group.comment_id}</span>
+          ) : null}
+        </details>
       </div>
       <button type="button" onClick={() => onOpenGroup(group.id)}>
         Review group
@@ -4150,12 +4175,14 @@ function PatchGroupSummaryCard({
 }
 
 function PatchGroupPatchCard({
+  allPatches,
   comment,
   group,
   index,
   onReviewPatch,
   patch
 }: {
+  allPatches: PatchmarkPatch[];
   comment: PatchmarkComment | null;
   group: DerivedPatchGroup;
   index: number;
@@ -4172,6 +4199,11 @@ function PatchGroupPatchCard({
     comment,
     includeGroupPosition: true
   });
+  const followUpRelationship = getPatchFollowUpRelationship({
+    comment,
+    patch,
+    patches: allPatches
+  });
 
   return (
     <article
@@ -4187,11 +4219,19 @@ function PatchGroupPatchCard({
         <span>
           Patch {index + 1} of {group.patches.length}
         </span>
-        <span>Patch ID: {patch.id}</span>
         {lifecycleDetail ? <span>{lifecycleDetail}</span> : null}
-        {snapshotDetail ? <span>{snapshotDetail}</span> : null}
-        <span>Target: {patch.target_heading ?? "Not specified"}</span>
-        <span>{getPatchReviewAnchorShortLabel(anchorStatus)}</span>
+        {followUpRelationship ? (
+          <span className="patch-follow-up-inline">
+            Refines: {followUpRelationship.display_title}
+          </span>
+        ) : null}
+        <details className="patch-group-technical-details">
+          <summary>Details</summary>
+          <span>Patch ID: {patch.id}</span>
+          {snapshotDetail ? <span>{snapshotDetail}</span> : null}
+          <span>Target: {patch.target_heading ?? "Not specified"}</span>
+          <span>{getPatchReviewAnchorShortLabel(anchorStatus)}</span>
+        </details>
       </div>
       <p>{patch.reason}</p>
       <button type="button" onClick={() => onReviewPatch(patch)}>
@@ -4204,6 +4244,7 @@ function PatchGroupPatchCard({
 function PatchReviewDialog({
   anchorStatus,
   comment,
+  followUpRelationship,
   hasMultipleReviewablePatches,
   isPatchActionBusy,
   markdown,
@@ -4225,6 +4266,7 @@ function PatchReviewDialog({
 }: {
   anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
+  followUpRelationship: PatchFollowUpRelationship | null;
   hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
   markdown: string;
@@ -4431,6 +4473,15 @@ function PatchReviewDialog({
           <span>{getPatchReviewAnchorDetail(anchorStatus)}</span>
         </div>
 
+        {followUpRelationship ? (
+          <div className="patch-follow-up-context" role="note">
+            <strong>Follow-up change</strong>
+            <span>
+              {patch.status === "accepted" ? "Follow-up to" : "Refines"}: {followUpRelationship.display_title}
+            </span>
+          </div>
+        ) : null}
+
         {canContinueDiscussion ? (
           <div className="patch-apply-completion" role="status">
             <div>
@@ -4478,6 +4529,18 @@ function PatchReviewDialog({
                 <dt>Patch ID</dt>
                 <dd>{patch.id}</dd>
               </div>
+              {followUpRelationship ? (
+                <>
+                  <div>
+                    <dt>Earlier patch ID</dt>
+                    <dd>{followUpRelationship.patch_id}</dd>
+                  </div>
+                  <div>
+                    <dt>Earlier patch applied</dt>
+                    <dd>{formatPatchDate(followUpRelationship.applied_at)}</dd>
+                  </div>
+                </>
+              ) : null}
               {patchGroup ? (
                 <>
                   <div>
@@ -5763,6 +5826,7 @@ Do not describe a new proposal as a revision of an already accepted patch. Earli
 - Do not create or include \`patch_group_id\`; Patchmark creates patch group IDs during import.
 - Each \`patch_proposal\` may include optional \`display_title\`: a concise 3–10 word action title such as \`"Add market signals for sourdough"\`.
 - \`display_title\` must be plain text with no technical IDs, URLs, Markdown, citations, or status words.
+- Title the new change itself. Do not use vague lineage labels such as \`"Update previous patch"\`, \`"Revise Patch 21"\`, or any technical patch ID.
 - Do not rewrite the whole document unless explicitly requested.
 - Preserve Markdown structure.
 - Be clear about reason and risk/tradeoff.
@@ -6379,9 +6443,20 @@ function derivePatchGroups(
       };
     })
     .sort(
-      (firstGroup, secondGroup) =>
-        (groupOrder.get(firstGroup.id) ?? 0) -
-        (groupOrder.get(secondGroup.id) ?? 0)
+      (firstGroup, secondGroup) => {
+        const firstTimestamp = Date.parse(firstGroup.created_at);
+        const secondTimestamp = Date.parse(secondGroup.created_at);
+        const chronology =
+          Number.isFinite(firstTimestamp) && Number.isFinite(secondTimestamp)
+            ? firstTimestamp - secondTimestamp
+            : firstGroup.created_at.localeCompare(secondGroup.created_at);
+
+        return (
+          chronology ||
+          (groupOrder.get(firstGroup.id) ?? 0) -
+            (groupOrder.get(secondGroup.id) ?? 0)
+        );
+      }
     );
 }
 
@@ -6495,36 +6570,39 @@ function getPatchGroupStatus(
 }
 
 function getPatchGroupSummariesByCommentId(
-  patchGroups: DerivedPatchGroup[]
+  patchGroups: DerivedPatchGroup[],
+  commentsById: Map<string, PatchmarkComment>
 ): Record<string, CommentPatchGroupSummary> {
-  return patchGroups.reduce<Record<string, CommentPatchGroupSummary>>(
-    (summaries, group) => {
-      if (!group.comment_id) {
-        return summaries;
+  const allPatches = patchGroups.flatMap((group) => group.patches);
+  const groupCountsByCommentId = patchGroups.reduce<Record<string, number>>(
+    (counts, group) => {
+      if (group.comment_id) {
+        counts[group.comment_id] = (counts[group.comment_id] ?? 0) + 1;
       }
 
-      const currentSummary = summaries[group.comment_id] ?? {
-        accepted: 0,
-        groupCount: 0,
-        patchCount: 0,
-        pending: 0,
-        rejected: 0,
-        stale: 0
-      };
-
-      summaries[group.comment_id] = {
-        accepted: currentSummary.accepted + group.status_summary.accepted,
-        groupCount: currentSummary.groupCount + 1,
-        patchCount: currentSummary.patchCount + group.status_summary.total,
-        pending: currentSummary.pending + group.status_summary.pending,
-        rejected: currentSummary.rejected + group.status_summary.rejected,
-        stale: currentSummary.stale + group.status_summary.stale
-      };
-
-      return summaries;
+      return counts;
     },
     {}
   );
+  const summaries: Record<string, CommentPatchGroupSummary> = {};
+
+  for (const [commentId, groupCount] of Object.entries(groupCountsByCommentId)) {
+    const comment = commentsById.get(commentId);
+
+    if (!comment) {
+      continue;
+    }
+
+    summaries[commentId] = {
+      ...createCommentPatchHistorySummary({
+        comment,
+        patches: allPatches
+      }),
+      groupCount
+    };
+  }
+
+  return summaries;
 }
 
 function getPatchApplicabilityForPatch(

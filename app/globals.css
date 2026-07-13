@@ -1583,6 +1583,12 @@ button {
   font-weight: 800;
 }
 
+.comment-pending-patches strong {
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
 .comment-pending-patches button {
   width: fit-content;
 }
@@ -2042,6 +2048,39 @@ button {
 .patch-applicability-not_found {
   background: #fff0ea;
   color: #8d2f18;
+}
+
+.patch-follow-up-context {
+  display: grid;
+  gap: 3px;
+  border-bottom: 1px solid #d7c9ac;
+  background: #fffaf0;
+  color: #76510f;
+  padding: 10px 18px;
+}
+
+.patch-follow-up-context span,
+.patch-follow-up-inline {
+  color: #76510f;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.patch-group-technical-details {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.patch-group-technical-details summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.patch-group-technical-details span {
+  display: block;
+  margin-top: 4px;
 }
 
 .patch-apply-completion {

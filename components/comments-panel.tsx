@@ -62,6 +62,7 @@ export type CommentAnchorSummary = {
 export type CommentPatchGroupSummary = {
   accepted: number;
   groupCount: number;
+  latestAcceptedTitle?: string;
   patchCount: number;
   pending: number;
   rejected: number;
@@ -1524,7 +1525,7 @@ function CommentCard({
           <p>{comment.comment}</p>
           {patchGroupSummary ? (
             <div className="comment-pending-patches">
-              <span>{getCommentPatchGroupSummaryLabel(patchGroupSummary)}</span>
+              <strong>{getCommentPatchGroupSummaryLabel(patchGroupSummary)}</strong>
               <span>{formatCommentPatchGroupStatusSummary(patchGroupSummary)}</span>
               <button
                 type="button"
@@ -1962,6 +1963,10 @@ function getThreadRoleLabel(role: PatchmarkComment["thread"][number]["role"]): s
 function getCommentPatchGroupSummaryLabel(
   summary: CommentPatchGroupSummary
 ): string {
+  if (summary.latestAcceptedTitle) {
+    return `Latest change applied: ${summary.latestAcceptedTitle}`;
+  }
+
   if (summary.patchCount === 1) {
     return `Patch proposal: ${getSinglePatchStatusLabel(summary)}`;
   }
@@ -1992,23 +1997,17 @@ function getCommentPatchGroupSummaryLabel(
 function getCommentPatchGroupReviewLabel(
   summary: CommentPatchGroupSummary
 ): string {
-  if (summary.groupCount > 1) {
-    return summary.pending > 0 ? "Review groups" : "View groups";
-  }
-
-  if (summary.patchCount === 1) {
-    return summary.pending > 0 ? "Review patch" : "View patch";
-  }
-
-  return summary.pending > 0 ? "Review group" : "View group";
+  return summary.pending > 0
+    ? "Review related patches"
+    : "View related patches";
 }
 
 function formatCommentPatchGroupStatusSummary(
   summary: CommentPatchGroupSummary
 ): string {
   const parts = [
-    summary.pending > 0 ? `${summary.pending} pending` : null,
     summary.accepted > 0 ? `${summary.accepted} applied` : null,
+    summary.pending > 0 ? `${summary.pending} pending` : null,
     summary.rejected > 0 ? `${summary.rejected} rejected` : null,
     summary.stale > 0 ? `${summary.stale} stale` : null
   ].filter(Boolean);

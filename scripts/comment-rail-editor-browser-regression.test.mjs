@@ -348,14 +348,7 @@ function createProjectPickerShim({
   return `(() => {
     const filePaths = new Set(${JSON.stringify(files)});
     const directoryPaths = new Set(${JSON.stringify(directories)});
-    const overrideStorageKey = "patchmark:fixture-overrides:" + ${JSON.stringify(projectName)};
-    let persistedOverrides = {};
-
-    try {
-      persistedOverrides = JSON.parse(window.localStorage.getItem(overrideStorageKey) ?? "{}");
-    } catch {}
-
-    const overrides = new Map(Object.entries(persistedOverrides));
+    const overrides = new Map();
 
     function normalizePath(path) {
       return String(path).split("/").filter(Boolean).join("/");
@@ -406,12 +399,6 @@ function createProjectPickerShim({
             const nextContent = chunks.join("");
 
             overrides.set(path, nextContent);
-            try {
-              window.localStorage.setItem(
-                overrideStorageKey,
-                JSON.stringify(Object.fromEntries(overrides))
-              );
-            } catch {}
             await fetch(
               ${JSON.stringify(baseUrl)} + "/write?path=" + encodeURIComponent(path),
               { method: "POST", body: nextContent }
