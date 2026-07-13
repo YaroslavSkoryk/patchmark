@@ -27,6 +27,7 @@ import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
 import {
+  findChangedTableCellInPatchReplacement,
   findRetainedPatchOriginalTextInPatchReplacement,
   findRetainedSelectedTextInPatchReplacement,
   isSelectedAnchorEquivalentToPatchOriginalText
@@ -8077,6 +8078,33 @@ function updateSingleAffectedCommentAnchor({
       });
     }
 
+    const changedTableCellAnchor =
+      comment.anchor.kind === "selected_text"
+        ? createChangedTableCellAnchorInsidePatch({
+            anchor: comment.anchor,
+            comment,
+            newMarkdown,
+            originalStart: replacementStart,
+            patch,
+            replacementStart,
+            replacementText: patch.suggested_text
+          })
+        : null;
+
+    if (changedTableCellAnchor) {
+      return updateCommentAnchorAfterPatch({
+        comment,
+        content: `Patch ${patch.id} was applied to the document and this comment was re-anchored to the corresponding changed table cell.`,
+        createdAt,
+        impactKind,
+        newAnchor: changedTableCellAnchor,
+        note: "Linked selected-text comment was mapped to the corresponding changed table cell in the applied replacement.",
+        patch,
+        reason: "anchor_recovered_after_patch",
+        result: "reanchored"
+      });
+    }
+
     const newAnchor =
       comment.anchor.kind === "selected_text" &&
       !isSelectedAnchorEquivalentToPatchOriginalText({
@@ -8384,15 +8412,26 @@ function createPreservedSelectedTextAnchorInsidePatch({
   patch: PatchmarkPatch;
   replacementStart: number;
 }): SelectedTextAnchor | null {
-  return createRetainedSelectedTextAnchorInsidePatch({
-    anchor,
-    comment,
-    newMarkdown,
-    originalStart: replacementStart,
-    patch,
-    replacementStart,
-    replacementText: patch.suggested_text
-  });
+  return (
+    createRetainedSelectedTextAnchorInsidePatch({
+      anchor,
+      comment,
+      newMarkdown,
+      originalStart: replacementStart,
+      patch,
+      replacementStart,
+      replacementText: patch.suggested_text
+    }) ??
+    createChangedTableCellAnchorInsidePatch({
+      anchor,
+      comment,
+      newMarkdown,
+      originalStart: replacementStart,
+      patch,
+      replacementStart,
+      replacementText: patch.suggested_text
+    })
+  );
 }
 
 function createRetainedSelectedTextAnchorInsidePatch({
@@ -8442,6 +8481,56 @@ function createRetainedSelectedTextAnchorInsidePatch({
     selectedText: retainedMatch.selectedText,
     start: retainedMatch.start,
     end: retainedMatch.end
+  });
+}
+
+function createChangedTableCellAnchorInsidePatch({
+  anchor,
+  comment,
+  newMarkdown,
+  originalStart,
+  patch,
+  replacementStart,
+  replacementText
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  newMarkdown: string;
+  originalStart?: number;
+  patch: PatchmarkPatch;
+  replacementStart: number;
+  replacementText: string;
+}): SelectedTextAnchor | null {
+  const changedCellMatch = findChangedTableCellInPatchReplacement({
+    anchor,
+    originalStart,
+    originalText: patch.original_text,
+    replacementStart,
+    replacementText
+  });
+
+  if (!changedCellMatch) {
+    return null;
+  }
+
+  return createSelectedTextAnchorAtRange({
+    anchor,
+    anchorSource: "patch",
+    comment,
+    context: {
+      kind: "table_cell",
+      plain_text: normalizeDomText(changedCellMatch.selectedText),
+      markdown_text: changedCellMatch.selectedText,
+      selected_start_in_context: 0,
+      selected_end_in_context: changedCellMatch.selectedText.length,
+      markdown_start_offset: changedCellMatch.start,
+      markdown_end_offset: changedCellMatch.end
+    },
+    markdown: newMarkdown,
+    preferredHeadingText: patch.target_heading,
+    selectedText: changedCellMatch.selectedText,
+    start: changedCellMatch.start,
+    end: changedCellMatch.end
   });
 }
 
@@ -9164,6 +9253,8 @@ function repairRetainedLinkedPatchCommentAnchor({
 
     const appliedRange = locateCurrentAppliedPatchRange({ markdown, patch });
     let retainedAnchorCandidate: SelectedTextAnchor | null = null;
+    let retainedAnchorCandidateNote =
+      "Linked selected-text comment repaired to retained text inside the applied replacement.";
 
     if (appliedRange) {
       const replacementText = markdown.slice(appliedRange.start, appliedRange.end);
@@ -9185,6 +9276,15 @@ function repairRetainedLinkedPatchCommentAnchor({
           replacementStart: appliedRange.start,
           replacementText
         });
+      const changedTableCellAnchor = createChangedTableCellAnchorInsidePatch({
+        anchor: historyEntry.previous_anchor,
+        comment,
+        newMarkdown: markdown,
+        originalStart: patch.applied_start_offset,
+        patch,
+        replacementStart: appliedRange.start,
+        replacementText
+      });
       const retainedSelectedTextSpansReplacement =
         retainedAnchor !== null &&
         normalizeAcceptedPatchComparisonText(retainedAnchor.selected_text) ===
@@ -9192,16 +9292,24 @@ function repairRetainedLinkedPatchCommentAnchor({
       retainedAnchorCandidate =
         retainedPatchOriginalAnchor && retainedSelectedTextSpansReplacement
           ? retainedPatchOriginalAnchor
-          : retainedAnchor ?? retainedPatchOriginalAnchor;
+          : retainedAnchor ?? changedTableCellAnchor ?? retainedPatchOriginalAnchor;
+      retainedAnchorCandidateNote = !retainedAnchor && changedTableCellAnchor
+        ? "Linked selected-text comment repaired to the corresponding changed table cell in the applied replacement."
+        : retainedAnchorCandidateNote;
     }
 
     retainedAnchorCandidate =
       retainedAnchorCandidate ??
-      createCurrentPatchOriginalTableRowAnchor({
-        comment,
-        markdown,
-        patch
-      });
+      (isSelectedAnchorEquivalentToPatchOriginalText({
+        anchor: historyEntry.previous_anchor,
+        originalText: patch.original_text
+      })
+        ? createCurrentPatchOriginalTableRowAnchor({
+            comment,
+            markdown,
+            patch
+          })
+        : null);
 
     if (!retainedAnchorCandidate) {
       continue;
@@ -9226,7 +9334,7 @@ function repairRetainedLinkedPatchCommentAnchor({
       createdAt: repairedAt,
       impactKind: historyEntry.impact_kind ?? "linked_comment",
       newAnchor: retainedAnchorCandidate,
-      note: "Linked selected-text comment repaired to retained text inside the applied replacement.",
+      note: retainedAnchorCandidateNote,
       patch,
       reason: "anchor_recovered_after_patch",
       result: "reanchored"
