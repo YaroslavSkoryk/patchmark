@@ -28,6 +28,14 @@ import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
 import {
+  deriveContiguousMarkdownEdit,
+  doesRangeIntersectEdit,
+  isSafeManualAnchorTransformEdit,
+  transformSelectedTextAnchorThroughEdit,
+  type AnchorTransformResult,
+  type MarkdownEdit
+} from "@/lib/comments/comment-anchor-transformation";
+import {
   findChangedTableCellInPatchReplacement,
   findRetainedPatchOriginalTextInPatchReplacement,
   findRetainedSelectedTextInPatchReplacement,
@@ -301,6 +309,12 @@ type PatchReviewAnchorStatus =
       tableRowRebase?: PatchTableRowRebaseCandidate;
       text: string;
     };
+type DocumentMutationSource =
+  | "manual_source"
+  | "manual_visual"
+  | "patch_apply"
+  | "programmatic"
+  | "project_load";
 type PatchmarkPatchGroupStatus =
   | "pending"
   | "in_progress"
@@ -1006,13 +1020,14 @@ export function DocumentEditor() {
           projectHandle,
           markdown
         );
+        await writeProjectComments(nextProjectHandle, comments);
         setProjectHandle(nextProjectHandle);
         setBaselineMarkdown(markdown);
         setRestoredMarkdown(null);
         setSaveStatus("idle");
         setSaveFeedback({
           kind: "success",
-          message: "Saved changes to project document.md."
+          message: "Saved changes to project document.md and comments."
         });
       } catch (error) {
         setSaveStatus("failed");
@@ -1054,7 +1069,7 @@ export function DocumentEditor() {
         message: getSaveErrorMessage(error)
       });
     }
-  }, [activeFileHandle, fileName, isSaving, markdown, projectHandle]);
+  }, [activeFileHandle, comments, fileName, isSaving, markdown, projectHandle]);
 
   useEffect(() => {
     if (!fileName) {
@@ -1153,12 +1168,68 @@ export function DocumentEditor() {
     setAvailableDraft(null);
   }
 
-  function handleMarkdownChange(nextMarkdown: string) {
-    setMarkdown(nextMarkdown);
+  function handleMarkdownChange(
+    nextMarkdown: string,
+    source: DocumentMutationSource
+  ) {
+    applyManualMarkdownMutation(nextMarkdown, source);
 
     if (saveStatus !== "saving") {
       setSaveStatus("idle");
       setSaveFeedback(null);
+    }
+  }
+
+  function applyManualMarkdownMutation(
+    nextMarkdown: string,
+    source: DocumentMutationSource
+  ) {
+    if (nextMarkdown === markdown) {
+      return;
+    }
+
+    if (
+      source !== "manual_source" &&
+      source !== "manual_visual"
+    ) {
+      setMarkdown(nextMarkdown);
+      return;
+    }
+
+    const edit = deriveContiguousMarkdownEdit(markdown, nextMarkdown);
+
+    if (!edit || comments.length === 0) {
+      setMarkdown(nextMarkdown);
+      return;
+    }
+
+    const affectedAnchorCount = countManualEditIntersectingSelectedTextAnchors({
+      comments,
+      edit
+    });
+    const safety = isSafeManualAnchorTransformEdit({
+      affectedAnchorCount,
+      edit,
+      oldMarkdown: markdown
+    });
+
+    if (!safety.safe) {
+      setMarkdown(nextMarkdown);
+      return;
+    }
+
+    const transformedComments = transformCommentsThroughManualMarkdownEdit({
+      comments,
+      edit,
+      newMarkdown: nextMarkdown,
+      oldMarkdown: markdown,
+      source
+    });
+
+    setMarkdown(nextMarkdown);
+
+    if (transformedComments !== comments) {
+      setComments(transformedComments);
     }
   }
 
@@ -2664,8 +2735,8 @@ export function DocumentEditor() {
         createdAt: appliedAt,
         lengthDelta,
         newMarkdown: nextMarkdown,
+        oldMarkdown: markdown,
         patch: currentPatch,
-        replacementEnd,
         replacementStart
       });
       const nextPatches = patches.map((candidate) =>
@@ -3458,12 +3529,16 @@ export function DocumentEditor() {
               <VisualMarkdownEditor
                 key={documentVersion}
                 markdown={markdown}
-                onMarkdownChange={handleMarkdownChange}
+                onMarkdownChange={(nextMarkdown) =>
+                  handleMarkdownChange(nextMarkdown, "manual_visual")
+                }
               />
             ) : (
               <MarkdownSourceEditor
                 markdown={markdown}
-                onMarkdownChange={handleMarkdownChange}
+                onMarkdownChange={(nextMarkdown) =>
+                  handleMarkdownChange(nextMarkdown, "manual_source")
+                }
                 onSelectionChange={setMarkdownSelection}
                 selectionRequest={markdownSelectionRequest}
               />
@@ -8207,14 +8282,176 @@ function rangesOverlap(
   return firstStart < secondEnd && firstEnd > secondStart;
 }
 
+function countManualEditIntersectingSelectedTextAnchors({
+  comments,
+  edit
+}: {
+  comments: PatchmarkComment[];
+  edit: MarkdownEdit;
+}): number {
+  return comments.filter((comment) => {
+    if (
+      comment.status === "resolved" ||
+      comment.anchor.kind !== "selected_text" ||
+      typeof comment.anchor.markdown_start_offset !== "number" ||
+      typeof comment.anchor.markdown_end_offset !== "number"
+    ) {
+      return false;
+    }
+
+    return doesRangeIntersectEdit(
+      {
+        start: comment.anchor.markdown_start_offset,
+        end: comment.anchor.markdown_end_offset
+      },
+      edit
+    );
+  }).length;
+}
+
+function transformCommentsThroughManualMarkdownEdit({
+  comments,
+  edit,
+  newMarkdown,
+  oldMarkdown,
+  source
+}: {
+  comments: PatchmarkComment[];
+  edit: MarkdownEdit;
+  newMarkdown: string;
+  oldMarkdown: string;
+  source: DocumentMutationSource;
+}): PatchmarkComment[] {
+  let didTransform = false;
+  const transformedAt = new Date().toISOString();
+  const nextComments = comments.map((comment) => {
+    if (comment.status === "resolved" || comment.anchor.kind !== "selected_text") {
+      return comment;
+    }
+
+    const transform = transformSelectedTextAnchorThroughEdit({
+      anchor: comment.anchor,
+      edit,
+      newMarkdown,
+      oldMarkdown
+    });
+    const nextAnchor = createSelectedTextAnchorFromManualTransform({
+      anchor: comment.anchor,
+      comment,
+      edit,
+      newMarkdown,
+      source,
+      transform
+    });
+
+    if (!nextAnchor || areCommentAnchorsEqual(comment.anchor, nextAnchor)) {
+      return comment;
+    }
+
+    didTransform = true;
+
+    return {
+      ...comment,
+      anchor: nextAnchor,
+      updated_at: transformedAt
+    };
+  });
+
+  return didTransform ? nextComments : comments;
+}
+
+function createSelectedTextAnchorFromManualTransform({
+  anchor,
+  comment,
+  edit,
+  newMarkdown,
+  source,
+  transform
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  edit: MarkdownEdit;
+  newMarkdown: string;
+  source: DocumentMutationSource;
+  transform: AnchorTransformResult;
+}): SelectedTextAnchor | null {
+  if (transform.outcome === "needs_review") {
+    return null;
+  }
+
+  if (transform.outcome === "inactive") {
+    return createInactiveSelectedTextAnchorAfterManualDeletion({
+      anchor,
+      edit,
+      newMarkdown
+    });
+  }
+
+  const context =
+    createAnchorContextFromMarkdownRange(newMarkdown, {
+      start: transform.start,
+      end: transform.end
+    }) ??
+    ({
+      kind: anchor.anchor_context?.kind ?? "block",
+      plain_text: normalizeDomText(transform.selectedText),
+      markdown_text: transform.selectedText,
+      selected_start_in_context: 0,
+      selected_end_in_context: transform.selectedText.length,
+      markdown_start_offset: transform.start,
+      markdown_end_offset: transform.end
+    } satisfies PatchmarkSelectedTextAnchorContext);
+
+  return createSelectedTextAnchorAtRange({
+    anchor,
+    anchorSource:
+      source === "manual_visual"
+        ? (anchor.anchor_source ?? "visual")
+        : "markdown",
+    comment,
+    context,
+    markdown: newMarkdown,
+    preferredHeadingText: anchor.containing_heading,
+    selectedText: transform.selectedText,
+    start: transform.start,
+    end: transform.end
+  });
+}
+
+function createInactiveSelectedTextAnchorAfterManualDeletion({
+  anchor,
+  edit,
+  newMarkdown
+}: {
+  anchor: SelectedTextAnchor;
+  edit: MarkdownEdit;
+  newMarkdown: string;
+}): SelectedTextAnchor {
+  const deletionOffset = Math.max(0, Math.min(edit.oldStart, newMarkdown.length));
+
+  return refreshSelectedAnchorPositionMetadata({
+    anchor: {
+      ...anchor,
+      selected_text: "",
+      anchor_context: undefined,
+      markdown_start_offset: deletionOffset,
+      markdown_end_offset: deletionOffset
+    },
+    markdown: newMarkdown,
+    preferredHeadingText: anchor.containing_heading,
+    start: deletionOffset,
+    end: deletionOffset
+  });
+}
+
 function updateAffectedCommentAnchors({
   affectedComments,
   comments,
   createdAt,
   lengthDelta,
   newMarkdown,
+  oldMarkdown,
   patch,
-  replacementEnd,
   replacementStart
 }: {
   affectedComments: AffectedPatchComment[];
@@ -8222,8 +8459,8 @@ function updateAffectedCommentAnchors({
   createdAt: string;
   lengthDelta: number;
   newMarkdown: string;
+  oldMarkdown: string;
   patch: PatchmarkPatch;
-  replacementEnd: number;
   replacementStart: number;
 }): AffectedPatchCommentUpdate {
   const affectedByCommentId = new Map(
@@ -8255,8 +8492,8 @@ function updateAffectedCommentAnchors({
       impactKind: affectedComment.impactKind,
       lengthDelta,
       newMarkdown,
+      oldMarkdown,
       patch,
-      replacementEnd,
       replacementStart
     });
 
@@ -8289,8 +8526,8 @@ function updateSingleAffectedCommentAnchor({
   impactKind,
   lengthDelta,
   newMarkdown,
+  oldMarkdown,
   patch,
-  replacementEnd,
   replacementStart
 }: {
   comment: PatchmarkComment;
@@ -8298,8 +8535,8 @@ function updateSingleAffectedCommentAnchor({
   impactKind: PatchCommentImpactKind;
   lengthDelta: number;
   newMarkdown: string;
+  oldMarkdown: string;
   patch: PatchmarkPatch;
-  replacementEnd: number;
   replacementStart: number;
 }): { comment: PatchmarkComment; result: PatchmarkCommentPatchImpact["result"] } {
   const isLinkedComment = comment.id === patch.comment_id;
@@ -8395,20 +8632,27 @@ function updateSingleAffectedCommentAnchor({
       });
     }
 
-    const newAnchor =
+    const selectedAnchorIsCoveredByPatch =
       comment.anchor.kind === "selected_text" &&
-      !isSelectedAnchorEquivalentToPatchOriginalText({
+      (isSelectedAnchorEquivalentToPatchOriginalText({
         anchor: comment.anchor,
         originalText: patch.original_text
-      })
-        ? null
-        : createPatchReplacementAnchor({
-            comment,
-            newMarkdown,
-            patch,
-            replacementEnd,
-            replacementStart
-          });
+      }) ||
+        isSelectedAnchorInsidePatchOriginalText({
+          anchor: comment.anchor,
+          originalStart: replacementStart,
+          originalText: patch.original_text
+        }));
+    const newAnchor = selectedAnchorIsCoveredByPatch
+      ? createLinkedPatchTransformedAnchor({
+          anchor: comment.anchor,
+          comment,
+          newMarkdown,
+          oldMarkdown,
+          patch,
+          replacementStart
+        })
+      : null;
 
     if (!newAnchor) {
       return markCommentAnchorNeedsReviewAfterPatch({
@@ -8544,42 +8788,137 @@ function updateSingleAffectedCommentAnchor({
   };
 }
 
-function createPatchReplacementAnchor({
+function createLinkedPatchTransformedAnchor({
+  anchor,
   comment,
   newMarkdown,
+  oldMarkdown,
   patch,
-  replacementEnd,
   replacementStart
 }: {
+  anchor: SelectedTextAnchor;
   comment: PatchmarkComment;
   newMarkdown: string;
+  oldMarkdown: string;
   patch: PatchmarkPatch;
-  replacementEnd: number;
   replacementStart: number;
 }): SelectedTextAnchor | null {
-  if (patch.suggested_text.length === 0 || replacementEnd < replacementStart) {
+  const transform = transformSelectedTextAnchorThroughEdit({
+    anchor,
+    edit: {
+      oldStart: replacementStart,
+      oldEnd: replacementStart + patch.original_text.length,
+      insertedText: patch.suggested_text
+    },
+    newMarkdown,
+    oldMarkdown
+  });
+
+  if (transform.outcome !== "active") {
     return null;
   }
 
+  const context =
+    createAnchorContextFromMarkdownRange(newMarkdown, {
+      start: transform.start,
+      end: transform.end
+    }) ??
+    ({
+      kind: anchor.anchor_context?.kind ?? "block",
+      plain_text: normalizeDomText(transform.selectedText),
+      markdown_text: transform.selectedText,
+      selected_start_in_context: 0,
+      selected_end_in_context: transform.selectedText.length,
+      markdown_start_offset: transform.start,
+      markdown_end_offset: transform.end
+    } satisfies PatchmarkSelectedTextAnchorContext);
+
   return createSelectedTextAnchorAtRange({
-    anchor: comment.anchor.kind === "selected_text" ? comment.anchor : undefined,
+    anchor,
     anchorSource: "patch",
     comment,
-    context: {
-      kind: "block",
-      plain_text: patch.suggested_text,
-      markdown_text: patch.suggested_text,
-      selected_start_in_context: 0,
-      selected_end_in_context: patch.suggested_text.length,
-      markdown_start_offset: replacementStart,
-      markdown_end_offset: replacementEnd
-    },
+    context,
     markdown: newMarkdown,
     preferredHeadingText: patch.target_heading,
-    selectedText: patch.suggested_text,
+    selectedText: transform.selectedText,
+    start: transform.start,
+    end: transform.end
+  });
+}
+
+function createAppliedReplacementAnchorForLinkedPatchRepair({
+  anchor,
+  comment,
+  markdown,
+  patch,
+  replacementEnd,
+  replacementStart,
+  replacementText
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  markdown: string;
+  patch: PatchmarkPatch;
+  replacementEnd: number;
+  replacementStart: number;
+  replacementText: string;
+}): SelectedTextAnchor {
+  const context =
+    createAnchorContextFromMarkdownRange(markdown, {
+      start: replacementStart,
+      end: replacementEnd
+    }) ??
+    ({
+      kind: anchor.anchor_context?.kind ?? "block",
+      plain_text: normalizeDomText(replacementText),
+      markdown_text: replacementText,
+      selected_start_in_context: 0,
+      selected_end_in_context: replacementText.length,
+      markdown_start_offset: replacementStart,
+      markdown_end_offset: replacementEnd
+    } satisfies PatchmarkSelectedTextAnchorContext);
+
+  return createSelectedTextAnchorAtRange({
+    anchor,
+    anchorSource: "patch",
+    comment,
+    context,
+    markdown,
+    preferredHeadingText: patch.target_heading,
+    selectedText: replacementText,
     start: replacementStart,
     end: replacementEnd
   });
+}
+
+function isSelectedAnchorInsidePatchOriginalText({
+  anchor,
+  originalStart,
+  originalText
+}: {
+  anchor: SelectedTextAnchor;
+  originalStart: number;
+  originalText: string;
+}): boolean {
+  if (!anchor.selected_text.trim()) {
+    return false;
+  }
+
+  if (
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    const originalEnd = originalStart + originalText.length;
+
+    if (
+      anchor.markdown_start_offset >= originalStart &&
+      anchor.markdown_end_offset <= originalEnd
+    ) {
+      return true;
+    }
+  }
+
+  return findExactTextMatches(originalText, anchor.selected_text).length === 1;
 }
 
 function updateAffectedSectionCommentAnchor({
@@ -9078,6 +9417,13 @@ function recoverSelectedTextAnchor({
   }
 
   const { anchor } = comment;
+  if (!anchor.selected_text) {
+    return {
+      reason: "Selected text was deleted.",
+      status: "not_found"
+    };
+  }
+
   const currentOffsetMatch = getCurrentSelectedTextOffsetMatch(anchor, markdown);
   let ambiguousRecovery: Extract<RecoveredAnchorResult, { status: "ambiguous" }> | null =
     null;
@@ -9253,6 +9599,7 @@ function getCurrentSelectedTextOffsetMatch(
   const end = anchor.markdown_end_offset;
 
   if (
+    !anchor.selected_text ||
     typeof start !== "number" ||
     typeof end !== "number" ||
     start < 0 ||
@@ -9575,6 +9922,22 @@ function repairRetainedLinkedPatchCommentAnchor({
         replacementStart: appliedRange.start,
         replacementText
       });
+      const appliedReplacementAnchor =
+        isSelectedAnchorInsidePatchOriginalText({
+          anchor: historyEntry.previous_anchor,
+          originalStart: patch.applied_start_offset ?? appliedRange.start,
+          originalText: patch.original_text
+        }) && replacementText.trim()
+          ? createAppliedReplacementAnchorForLinkedPatchRepair({
+              anchor: historyEntry.previous_anchor,
+              comment,
+              markdown,
+              patch,
+              replacementEnd: appliedRange.end,
+              replacementStart: appliedRange.start,
+              replacementText
+            })
+          : null;
       const retainedSelectedTextSpansReplacement =
         retainedAnchor !== null &&
         normalizeAcceptedPatchComparisonText(retainedAnchor.selected_text) ===
@@ -9582,9 +9945,14 @@ function repairRetainedLinkedPatchCommentAnchor({
       retainedAnchorCandidate =
         retainedPatchOriginalAnchor && retainedSelectedTextSpansReplacement
           ? retainedPatchOriginalAnchor
-          : retainedAnchor ?? changedTableCellAnchor ?? retainedPatchOriginalAnchor;
+          : retainedAnchor ??
+            changedTableCellAnchor ??
+            retainedPatchOriginalAnchor ??
+            appliedReplacementAnchor;
       retainedAnchorCandidateNote = !retainedAnchor && changedTableCellAnchor
         ? "Linked selected-text comment repaired to the corresponding changed table cell in the applied replacement."
+        : !retainedAnchor && !changedTableCellAnchor && appliedReplacementAnchor
+          ? "Linked selected-text comment repaired to the applied replacement because the accepted patch replaced text containing the original selection."
         : retainedAnchorCandidateNote;
     }
 
@@ -13271,6 +13639,7 @@ function resolveCommentAnchor(
   const offsetEnd = anchor.markdown_end_offset;
 
   if (
+    anchor.selected_text.length > 0 &&
     typeof offsetStart === "number" &&
     typeof offsetEnd === "number" &&
     markdown.slice(offsetStart, offsetEnd) === anchor.selected_text
@@ -13514,6 +13883,10 @@ function findSelectedTextMatchesInsideContext(
   contextMatch: { end: number; start: number },
   anchor: SelectedTextAnchor
 ): Array<{ contextEnd: number; contextStart: number; end: number; start: number }> {
+  if (!anchor.selected_text) {
+    return [];
+  }
+
   const contextText = markdown.slice(contextMatch.start, contextMatch.end);
   const directStart = anchor.anchor_context?.selected_start_in_context;
   const directEnd = anchor.anchor_context?.selected_end_in_context;
