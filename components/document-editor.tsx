@@ -82,6 +82,12 @@ import {
   type CanonicalTableContext
 } from "@/lib/patches/atomic-table-patches";
 import {
+  getPatchDisplayTitle,
+  getPatchDisplayTitleInfo,
+  getPatchGroupDisplayTitle,
+  normalizePatchDisplayTitleCandidate
+} from "@/lib/patches/patch-display-title";
+import {
   canOpenProjectFolder,
   createProjectFromMarkdown,
   createProjectSnapshot,
@@ -445,6 +451,10 @@ export function DocumentEditor() {
       ),
     [comments, headings, markdown]
   );
+  const commentsById = useMemo(
+    () => new Map(comments.map((comment) => [comment.id, comment])),
+    [comments]
+  );
   const pendingPatchCountsByCommentId = useMemo(
     () => getPendingPatchCountsByCommentId(patches),
     [patches]
@@ -483,10 +493,9 @@ export function DocumentEditor() {
   const selectedPatchGroupComment = useMemo(
     () =>
       selectedPatchGroup?.comment_id
-        ? comments.find((comment) => comment.id === selectedPatchGroup.comment_id) ??
-          null
+        ? commentsById.get(selectedPatchGroup.comment_id) ?? null
         : null,
-    [comments, selectedPatchGroup]
+    [commentsById, selectedPatchGroup]
   );
   const patchGroupListGroups = useMemo(() => {
     if (!patchGroupListDialog) {
@@ -530,10 +539,9 @@ export function DocumentEditor() {
   const selectedPatchComment = useMemo(
     () =>
       selectedPatch?.comment_id
-        ? comments.find((comment) => comment.id === selectedPatch.comment_id) ??
-          null
+        ? commentsById.get(selectedPatch.comment_id) ?? null
         : null,
-    [comments, selectedPatch]
+    [commentsById, selectedPatch]
   );
   const selectedPatchAnchorStatus = useMemo(
     () =>
@@ -1642,6 +1650,7 @@ export function DocumentEditor() {
       );
       const existingPatches = await readProjectPatches(projectHandle);
       const importedPatches = createImportedPatchProposals({
+        comments,
         existingPatches,
         importedAt,
         importId,
@@ -1737,7 +1746,10 @@ export function DocumentEditor() {
     await persistComments(nextComments, "Marked focused comments as exported.");
   }
 
-  async function handleViewSnapshot(version: PatchmarkVersionEntry) {
+  async function handleViewSnapshot(
+    version: PatchmarkVersionEntry,
+    displayTitle?: string
+  ) {
     if (!projectHandle) {
       return;
     }
@@ -1748,6 +1760,7 @@ export function DocumentEditor() {
         version
       );
       setSnapshotDialog({
+        displayTitle,
         kind: "view",
         snapshotMarkdown,
         version
@@ -1760,7 +1773,10 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleCompareSnapshot(version: PatchmarkVersionEntry) {
+  async function handleCompareSnapshot(
+    version: PatchmarkVersionEntry,
+    displayTitle?: string
+  ) {
     if (!projectHandle) {
       return;
     }
@@ -1772,6 +1788,7 @@ export function DocumentEditor() {
       );
       setSnapshotDialog({
         currentMarkdown: markdown,
+        displayTitle,
         kind: "compare",
         snapshotMarkdown,
         version
@@ -3132,7 +3149,9 @@ export function DocumentEditor() {
       <aside className="document-sidebar" aria-label="Document navigation">
         <DocumentOutline headings={headings} />
         <VersionHistoryPanel
+          comments={comments}
           isProjectMode={isProjectMode}
+          patches={patches}
           versions={versionEntries}
           onCompareVersion={handleCompareSnapshot}
           onViewVersion={handleViewSnapshot}
@@ -3748,6 +3767,7 @@ export function DocumentEditor() {
       ) : null}
       {patchGroupListDialog ? (
         <PatchGroupListDialog
+          commentsById={commentsById}
           groups={patchGroupListGroups}
           onClose={() => setPatchGroupListDialog(null)}
           onOpenGroup={handleOpenPatchGroup}
@@ -3815,11 +3835,13 @@ export function DocumentEditor() {
 }
 
 function PatchGroupListDialog({
+  commentsById,
   groups,
   onClose,
   onOpenGroup,
   scopeLabel
 }: {
+  commentsById: Map<string, PatchmarkComment>;
   groups: DerivedPatchGroup[];
   onClose: () => void;
   onOpenGroup: (groupId: string) => void;
@@ -3849,6 +3871,9 @@ function PatchGroupListDialog({
           ) : (
             groups.map((group) => (
               <PatchGroupSummaryCard
+                comment={
+                  group.comment_id ? commentsById.get(group.comment_id) ?? null : null
+                }
                 group={group}
                 key={group.id}
                 onOpenGroup={onOpenGroup}
@@ -4011,6 +4036,7 @@ function PatchGroupReviewDialog({
             <div className="patch-group-patch-list">
               {group.patches.map((patch, index) => (
                 <PatchGroupPatchCard
+                  comment={comment}
                   group={group}
                   index={index}
                   key={patch.id}
@@ -4027,19 +4053,24 @@ function PatchGroupReviewDialog({
 }
 
 function PatchGroupSummaryCard({
+  comment,
   group,
   onOpenGroup
 }: {
+  comment: PatchmarkComment | null;
   group: DerivedPatchGroup;
   onOpenGroup: (groupId: string) => void;
 }) {
+  const groupTitle = getPatchGroupDisplayTitle(group.patches, comment);
+
   return (
     <article className="patch-group-summary-card">
       <div>
         <span className={`patch-group-status patch-group-status-${group.status}`}>
           {getPatchGroupStatusLabel(group.status)}
         </span>
-        <h3>{group.display_id}</h3>
+        <h3>{groupTitle}</h3>
+        <small>Patch group: {group.display_id}</small>
         <div className="patch-group-progress patch-group-progress-compact">
           {getPatchGroupProgressItems(group.status_summary).map((item) => (
             <span
@@ -4062,11 +4093,13 @@ function PatchGroupSummaryCard({
 }
 
 function PatchGroupPatchCard({
+  comment,
   group,
   index,
   onReviewPatch,
   patch
 }: {
+  comment: PatchmarkComment | null;
   group: DerivedPatchGroup;
   index: number;
   onReviewPatch: (patch: PatchmarkPatch) => void;
@@ -4078,6 +4111,10 @@ function PatchGroupPatchCard({
   const displayState = getPatchDisplayState(patch, anchorStatus);
   const lifecycleDetail = getPatchLifecycleDetail(patch);
   const snapshotDetail = getPatchSnapshotDetail(patch);
+  const patchTitle = getPatchDisplayTitle(patch, {
+    comment,
+    includeGroupPosition: true
+  });
 
   return (
     <article
@@ -4085,14 +4122,15 @@ function PatchGroupPatchCard({
     >
       <div>
         <div className="patch-group-patch-heading">
-          <strong>
-            Patch {index + 1} of {group.patches.length}
-          </strong>
+          <strong>{patchTitle}</strong>
           <span className={`patch-status-badge patch-status-badge-${displayState}`}>
             {getPatchStatusBadgeLabel(displayState)}
           </span>
         </div>
-        <span>{patch.id}</span>
+        <span>
+          Patch {index + 1} of {group.patches.length}
+        </span>
+        <span>Patch ID: {patch.id}</span>
         {lifecycleDetail ? <span>{lifecycleDetail}</span> : null}
         {snapshotDetail ? <span>{snapshotDetail}</span> : null}
         <span>Target: {patch.target_heading ?? "Not specified"}</span>
@@ -4190,6 +4228,10 @@ function PatchReviewDialog({
     anchorStatus.applicability === "table_row_rebase_available" &&
     !isPatchActionBusy;
   const patchDisplayState = getPatchDisplayState(patch, anchorStatus);
+  const patchTitleInfo = getPatchDisplayTitleInfo(patch, {
+    comment,
+    includeGroupPosition: hasMultipleReviewablePatches
+  });
 
   useEffect(() => {
     setReviewMode("visual");
@@ -4241,7 +4283,7 @@ function PatchReviewDialog({
           <div>
             <span>Patch proposal</span>
             <div className="patch-review-heading-row">
-              <h2>Review Patch Proposal</h2>
+              <h2>{patchTitleInfo.title}</h2>
               <span
                 className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
               >
@@ -4338,6 +4380,14 @@ function PatchReviewDialog({
           <section className="patch-review-card">
             <h3>Metadata</h3>
             <dl className="patch-metadata">
+              <div>
+                <dt>Display title</dt>
+                <dd>{patchTitleInfo.title}</dd>
+              </div>
+              <div>
+                <dt>Title source</dt>
+                <dd>{formatPatchTitleSource(patchTitleInfo.source)}</dd>
+              </div>
               <div>
                 <dt>Patch ID</dt>
                 <dd>{patch.id}</dd>
@@ -5617,6 +5667,8 @@ Patchmark is the document control layer. ChatGPT is the reasoning/review layer. 
 - Patch proposals must use exact Markdown from the supplied context as \`original_text\`.
 - Do not create a patch proposal unless \`original_text\` is copied exactly from the supplied Markdown context.
 - Do not create or include \`patch_group_id\`; Patchmark creates patch group IDs during import.
+- Each \`patch_proposal\` may include optional \`display_title\`: a concise 3–10 word action title such as \`"Add market signals for sourdough"\`.
+- \`display_title\` must be plain text with no technical IDs, URLs, Markdown, citations, or status words.
 - Do not rewrite the whole document unless explicitly requested.
 - Preserve Markdown structure.
 - Be clear about reason and risk/tradeoff.
@@ -5646,6 +5698,8 @@ Inside the JSON:
 Markdown links are allowed only inside \`original_text\` and \`suggested_text\`, because those fields represent document Markdown.
 
 Do not use Markdown links in \`reply\`, \`reason\`, \`risk\`, \`question\`, \`supports\`, \`note\`, or \`title\`.
+
+Do not use Markdown links in \`display_title\`.
 
 If the comment asks to make references inline, every reference that remains necessary must be preserved directly inside \`suggested_text\` as Markdown document content.
 
@@ -5736,6 +5790,7 @@ Use this exact protocol:
   "patch_proposals": [
     {
       "comment_id": "PM-COMMENT-0001",
+      "display_title": "Add concise human-readable patch title",
       "target_heading": "## Example Heading",
       "original_text": "Exact Markdown text to replace.",
       "suggested_text": "Replacement Markdown text.",
@@ -5954,6 +6009,7 @@ function createChatGptThreadEntry({
 }
 
 function createImportedPatchProposals({
+  comments,
   existingPatches,
   importedAt,
   importId,
@@ -5961,6 +6017,7 @@ function createImportedPatchProposals({
   patchProposals,
   sourceChatUrl
 }: {
+  comments: PatchmarkComment[];
   existingPatches: PatchmarkPatch[];
   importedAt: string;
   importId: string;
@@ -5995,6 +6052,7 @@ function createImportedPatchProposals({
     new Map()
   );
   const groupIndexesByCommentId = new Map<string, number>();
+  const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
 
   return validPatchProposals.map((patchProposal, index) => {
     const currentGroupIndex =
@@ -6004,7 +6062,7 @@ function createImportedPatchProposals({
       currentGroupIndex
     );
 
-    return {
+    const importedPatch = {
       id: createNextPatchId(existingPatches, index),
       status: "pending" as const,
       patch_group_id: groupIdsByCommentId.get(patchProposal.comment_id),
@@ -6014,6 +6072,7 @@ function createImportedPatchProposals({
       comment_id: patchProposal.comment_id,
       source_import_id: importId,
       source_chat_url: sourceChatUrl,
+      display_title: patchProposal.display_title,
       target_heading: patchProposal.target_heading,
       original_text: patchProposal.original_text,
       suggested_text: patchProposal.suggested_text,
@@ -6025,7 +6084,30 @@ function createImportedPatchProposals({
       sources: patchProposal.sources,
       created_at: importedAt
     };
+    const displayTitle =
+      importedPatch.display_title ??
+      createDerivedImportedPatchDisplayTitle({
+        comment: commentsById.get(patchProposal.comment_id) ?? null,
+        patch: importedPatch
+      });
+
+    return {
+      ...importedPatch,
+      display_title: displayTitle
+    };
   });
+}
+
+function createDerivedImportedPatchDisplayTitle({
+  comment,
+  patch
+}: {
+  comment: PatchmarkComment | null;
+  patch: PatchmarkPatch;
+}): string | undefined {
+  const title = getPatchDisplayTitleInfo(patch, { comment }).title;
+
+  return normalizePatchDisplayTitleCandidate(title) ?? undefined;
 }
 
 function createNextThreadEntryIdFromEntries(
@@ -9436,6 +9518,28 @@ function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
   }
 
   return "Review patch";
+}
+
+function formatPatchTitleSource(
+  source: ReturnType<typeof getPatchDisplayTitleInfo>["source"]
+): string {
+  if (source === "display_title") {
+    return "Explicit patch display title";
+  }
+
+  if (source === "linked_comment") {
+    return "Linked comment summary";
+  }
+
+  if (source === "target_heading") {
+    return "Target heading and patch action";
+  }
+
+  if (source === "reason") {
+    return "Patch reason";
+  }
+
+  return "Technical fallback";
 }
 
 function getPatchReviewIntro(displayState: PatchDisplayState): string {

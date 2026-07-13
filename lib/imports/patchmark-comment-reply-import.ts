@@ -4,6 +4,7 @@ import type {
   PatchmarkSuggestedUserAction
 } from "../project/project-types.ts";
 import { containsReservedPatchmarkTableMarker } from "../patches/atomic-table-patches.ts";
+import { normalizePatchDisplayTitleCandidate } from "../patches/patch-display-title.ts";
 
 export const CHATGPT_IMPORT_REPAIR_PROMPT = `Please repair your previous response into exactly one fenced json code block containing valid Patchmark JSON.
 
@@ -376,6 +377,10 @@ function normalizeImportedPatchProposal(
       fieldName: `${patchProposalPath}.comment_id`,
       value: patchProposal.comment_id
     }),
+    display_title: normalizeImportedPatchDisplayTitle(
+      patchProposal,
+      patchProposalPath
+    ),
     target_heading:
       typeof patchProposal.target_heading === "string"
         ? patchProposal.target_heading
@@ -414,6 +419,29 @@ function normalizeImportedPatchProposal(
       `${patchProposalPath}.sources`
     )
   };
+}
+
+function normalizeImportedPatchDisplayTitle(
+  patchProposal: Record<string, unknown>,
+  patchProposalPath: string
+): string | undefined {
+  const titleInput =
+    typeof patchProposal.display_title === "string"
+      ? patchProposal.display_title
+      : typeof patchProposal.title === "string"
+        ? patchProposal.title
+        : undefined;
+
+  if (titleInput === undefined) {
+    return undefined;
+  }
+
+  const title = validateProtocolTextField(
+    titleInput,
+    `${patchProposalPath}.display_title`
+  );
+
+  return normalizePatchDisplayTitleCandidate(title) ?? undefined;
 }
 
 function normalizeRequiredProtocolField({

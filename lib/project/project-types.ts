@@ -92,6 +92,8 @@ export type PatchmarkCommentReplyImport = {
   }>;
   patch_proposals: Array<{
     comment_id: string;
+    display_title?: string;
+    title?: string;
     target_heading?: string;
     original_text: string;
     suggested_text: string;
@@ -264,6 +266,7 @@ export type PatchmarkPatch = {
   comment_id?: string;
   source_import_id?: string;
   source_chat_url?: string;
+  display_title?: string;
   target_heading?: string;
   original_text: string;
   suggested_text: string;

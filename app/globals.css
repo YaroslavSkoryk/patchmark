@@ -681,6 +681,11 @@ button {
   margin-top: 4px;
 }
 
+.version-history-panel h2 span {
+  color: var(--muted);
+  font-weight: 700;
+}
+
 .version-list {
   display: grid;
   gap: 10px;
@@ -689,12 +694,25 @@ button {
   list-style: none;
 }
 
+.version-list-compact {
+  gap: 8px;
+}
+
 .version-entry {
   display: grid;
   gap: 6px;
   border: 1px solid var(--border);
   background: #fbfcfb;
   padding: 10px;
+}
+
+.version-entry-compact {
+  padding: 9px;
+}
+
+.version-entry-full {
+  gap: 10px;
+  padding: 14px;
 }
 
 .version-entry-heading {
@@ -720,12 +738,29 @@ button {
   white-space: nowrap;
 }
 
+.version-entry-meta {
+  display: grid;
+  gap: 3px;
+}
+
+.version-entry-meta span,
+.version-related-patch {
+  overflow: hidden;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .version-entry-actions {
   display: flex;
   gap: 8px;
 }
 
 .version-entry-actions button,
+.version-history-view-all,
 .snapshot-dialog button,
 .comment-export-dialog button,
 .comment-import-dialog button {
@@ -737,10 +772,77 @@ button {
 }
 
 .version-entry-actions button:hover,
+.version-history-view-all:hover,
 .snapshot-dialog button:hover,
 .comment-export-dialog button:hover,
 .comment-import-dialog button:hover {
   border-color: var(--accent);
+}
+
+.version-history-view-all {
+  width: 100%;
+  margin-top: 10px;
+}
+
+.version-history-dialog {
+  display: flex;
+  width: min(980px, 100%);
+  max-height: min(86vh, 860px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
+}
+
+.version-history-dialog-header {
+  flex: 0 0 auto;
+}
+
+.version-history-dialog-body {
+  overflow: auto;
+  padding: 18px;
+}
+
+.version-list-full {
+  gap: 12px;
+}
+
+.version-entry-details {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
+.version-entry-details summary {
+  cursor: pointer;
+  color: var(--accent-strong);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.version-entry-details dl {
+  display: grid;
+  gap: 8px;
+  margin: 10px 0 0;
+}
+
+.version-entry-details div {
+  display: grid;
+  gap: 2px;
+}
+
+.version-entry-details dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.version-entry-details dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
 }
 
 .snapshot-dialog-backdrop {

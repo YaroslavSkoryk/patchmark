@@ -112,6 +112,8 @@ const payloadRules = CHATGPT_TERMINOLOGY_CLARIFICATION_PAYLOAD_RULES.join("\n");
   assert.match(documentEditorSource, /CHATGPT_ATOMIC_TABLE_PROMPT_RULES/);
   assert.match(documentEditorSource, /Each \\`patch_proposal\\` must have its own exact \\`original_text\\` and \\`suggested_text\\`/);
   assert.match(documentEditorSource, /Do not create or include \\`patch_group_id\\`/);
+  assert.match(documentEditorSource, /optional \\`display_title\\`/);
+  assert.match(documentEditorSource, /no technical IDs, URLs, Markdown, citations, or status words/);
 }
 
 {

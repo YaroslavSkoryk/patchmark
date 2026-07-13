@@ -5,12 +5,14 @@ import { type PatchmarkVersionEntry } from "@/lib/project/project-types";
 
 export type SnapshotDialogState =
   | {
+      displayTitle?: string;
       kind: "view";
       version: PatchmarkVersionEntry;
       snapshotMarkdown: string;
     }
   | {
       currentMarkdown: string;
+      displayTitle?: string;
       kind: "compare";
       version: PatchmarkVersionEntry;
       snapshotMarkdown: string;
@@ -65,7 +67,7 @@ export function SnapshotDialog({ dialog, onClose }: SnapshotDialogProps) {
         <header className="snapshot-dialog-header">
           <div>
             <span>{dialog.kind === "compare" ? "Compare" : "Snapshot"}</span>
-            <h2>{dialog.version.id}</h2>
+            <h2>{dialog.displayTitle ?? dialog.version.id}</h2>
             <p>
               {dialog.version.reason} · {formatSnapshotDate(dialog.version.created_at)}
             </p>

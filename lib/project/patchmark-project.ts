@@ -1147,6 +1147,12 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       typeof patch.source_chat_url === "string"
         ? patch.source_chat_url
         : undefined,
+    display_title:
+      typeof patch.display_title === "string"
+        ? patch.display_title
+        : typeof patch.title === "string"
+          ? patch.title
+          : undefined,
     target_heading:
       typeof patch.target_heading === "string"
         ? patch.target_heading
