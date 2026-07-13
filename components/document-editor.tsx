@@ -31,6 +31,7 @@ import {
   findRetainedSelectedTextInPatchReplacement,
   isSelectedAnchorEquivalentToPatchOriginalText
 } from "@/lib/comments/comment-anchor-patch-mapping";
+import { findUniqueCurrentTableRowForPatchOriginal } from "@/lib/comments/comment-anchor-table-row-recovery";
 import {
   COMMENT_AFFORDANCE_MENU_SIZE,
   chooseSelectionAffordanceRect,
@@ -8488,6 +8489,44 @@ function createRetainedPatchOriginalTextAnchorInsidePatch({
   });
 }
 
+function createCurrentPatchOriginalTableRowAnchor({
+  comment,
+  markdown,
+  patch
+}: {
+  comment: PatchmarkComment;
+  markdown: string;
+  patch: PatchmarkPatch;
+}): SelectedTextAnchor | null {
+  const retainedRow = findUniqueCurrentTableRowForPatchOriginal({
+    markdown,
+    patch
+  });
+
+  if (!retainedRow) {
+    return null;
+  }
+
+  return createSelectedTextAnchorAtRange({
+    anchor: comment.anchor.kind === "selected_text" ? comment.anchor : undefined,
+    anchorSource: "patch",
+    comment,
+    context: {
+      kind: "table_cell",
+      plain_text: normalizeDomText(retainedRow.text),
+      markdown_text: retainedRow.text,
+      selected_start_in_context: 0,
+      selected_end_in_context: retainedRow.text.length,
+      markdown_start_offset: retainedRow.start,
+      markdown_end_offset: retainedRow.end
+    },
+    markdown,
+    selectedText: retainedRow.text,
+    start: retainedRow.start,
+    end: retainedRow.end
+  });
+}
+
 function shiftSelectedTextAnchorAfterPatch({
   anchor,
   lengthDelta,
@@ -9124,38 +9163,45 @@ function repairRetainedLinkedPatchCommentAnchor({
     }
 
     const appliedRange = locateCurrentAppliedPatchRange({ markdown, patch });
+    let retainedAnchorCandidate: SelectedTextAnchor | null = null;
 
-    if (!appliedRange) {
-      continue;
-    }
-
-    const replacementText = markdown.slice(appliedRange.start, appliedRange.end);
-    const retainedAnchor = createRetainedSelectedTextAnchorInsidePatch({
-      anchor: historyEntry.previous_anchor,
-      comment,
-      newMarkdown: markdown,
-      originalStart: patch.applied_start_offset,
-      patch,
-      replacementStart: appliedRange.start,
-      replacementText
-    });
-
-    const retainedPatchOriginalAnchor =
-      createRetainedPatchOriginalTextAnchorInsidePatch({
+    if (appliedRange) {
+      const replacementText = markdown.slice(appliedRange.start, appliedRange.end);
+      const retainedAnchor = createRetainedSelectedTextAnchorInsidePatch({
+        anchor: historyEntry.previous_anchor,
         comment,
         newMarkdown: markdown,
+        originalStart: patch.applied_start_offset,
         patch,
         replacementStart: appliedRange.start,
         replacementText
       });
-    const retainedSelectedTextSpansReplacement =
-      retainedAnchor !== null &&
-      normalizeAcceptedPatchComparisonText(retainedAnchor.selected_text) ===
-        normalizeAcceptedPatchComparisonText(replacementText);
-    const retainedAnchorCandidate =
-      retainedPatchOriginalAnchor && retainedSelectedTextSpansReplacement
-        ? retainedPatchOriginalAnchor
-        : retainedAnchor ?? retainedPatchOriginalAnchor;
+
+      const retainedPatchOriginalAnchor =
+        createRetainedPatchOriginalTextAnchorInsidePatch({
+          comment,
+          newMarkdown: markdown,
+          patch,
+          replacementStart: appliedRange.start,
+          replacementText
+        });
+      const retainedSelectedTextSpansReplacement =
+        retainedAnchor !== null &&
+        normalizeAcceptedPatchComparisonText(retainedAnchor.selected_text) ===
+          normalizeAcceptedPatchComparisonText(replacementText);
+      retainedAnchorCandidate =
+        retainedPatchOriginalAnchor && retainedSelectedTextSpansReplacement
+          ? retainedPatchOriginalAnchor
+          : retainedAnchor ?? retainedPatchOriginalAnchor;
+    }
+
+    retainedAnchorCandidate =
+      retainedAnchorCandidate ??
+      createCurrentPatchOriginalTableRowAnchor({
+        comment,
+        markdown,
+        patch
+      });
 
     if (!retainedAnchorCandidate) {
       continue;
@@ -12853,9 +12899,12 @@ function findMatchingHeading(
   headings: ReturnType<typeof parseMarkdownHeadings>,
   target: { level?: number; text: string }
 ) {
+  const normalizedTargetText = normalizePatchTargetHeading(target.text);
+
   return headings.find(
     (heading) =>
-      heading.text === target.text &&
+      (heading.text === target.text ||
+        normalizePatchTargetHeading(heading.text) === normalizedTargetText) &&
       (target.level === undefined || heading.level === target.level)
   );
 }
