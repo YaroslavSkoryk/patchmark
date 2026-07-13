@@ -27,6 +27,10 @@ import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
 import {
+  findRetainedSelectedTextInPatchReplacement,
+  isSelectedAnchorEquivalentToPatchOriginalText
+} from "@/lib/comments/comment-anchor-patch-mapping";
+import {
   COMMENT_AFFORDANCE_MENU_SIZE,
   chooseSelectionAffordanceRect,
   createCommentAffordanceBounds,
@@ -81,6 +85,7 @@ import {
   validateAtomicTablePatchImport,
   type CanonicalTableContext
 } from "@/lib/patches/atomic-table-patches";
+import { getDeterministicAppliedPatchOffsetMatch } from "@/lib/patches/applied-patch-anchor";
 import {
   getPatchDisplayTitle,
   getPatchDisplayTitleInfo,
@@ -636,7 +641,8 @@ export function DocumentEditor() {
     const recoveredComments = recoverPersistableStaleCommentAnchors({
       comments,
       headings,
-      markdown
+      markdown,
+      patches
     });
 
     if (recoveredComments === comments) {
@@ -660,7 +666,7 @@ export function DocumentEditor() {
     return () => {
       isCancelled = true;
     };
-  }, [comments, headings, isSaving, markdown, projectHandle]);
+  }, [comments, headings, isSaving, markdown, patches, projectHandle]);
 
   useEffect(() => {
     if (!projectHandle || isSaving || patches.length === 0) {
@@ -6729,26 +6735,30 @@ function locateAcceptedPatchAnchor({
     });
   }
 
-  const offsetMatch = getAppliedPatchOffsetMatch(markdown, patch, appliedText);
-  const exactMatches = dedupePatchReviewTextMatches([
-    ...(offsetMatch ? [offsetMatch] : []),
-    ...findExactTextMatches(markdown, appliedText)
-  ]);
+  const offsetMatch = getDeterministicAppliedPatchOffsetMatch({
+    appliedText,
+    markdown,
+    patch
+  });
+
+  if (offsetMatch) {
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: offsetMatch.matchMethod,
+      matches: [offsetMatch],
+      status: offsetMatch.status,
+      text: offsetMatch.text
+    });
+  }
+
+  const exactMatches = dedupePatchReviewTextMatches(
+    findExactTextMatches(markdown, appliedText)
+  );
 
   if (exactMatches.length === 1) {
     return createAcceptedPatchAnchorStatus({
       matchMethod: "exact",
       matches: exactMatches,
       status: "exact_match",
-      text: appliedText
-    });
-  }
-
-  if (exactMatches.length > 1) {
-    return createAcceptedPatchAnchorStatus({
-      matchMethod: "exact",
-      matches: exactMatches,
-      status: "multiple_matches",
       text: appliedText
     });
   }
@@ -6824,6 +6834,15 @@ function locateAcceptedPatchAnchor({
     }
   }
 
+  if (exactMatches.length > 1) {
+    return createAcceptedPatchAnchorStatus({
+      matchMethod: "exact",
+      matches: exactMatches,
+      status: "multiple_matches",
+      text: appliedText
+    });
+  }
+
   if (normalizedMatches.length > 1) {
     return createAcceptedPatchAnchorStatus({
       matchMethod: "normalized",
@@ -6843,36 +6862,6 @@ function locateAcceptedPatchAnchor({
 
 function getPatchAppliedText(patch: PatchmarkPatch): string {
   return patch.applied_text ?? patch.suggested_text;
-}
-
-function getAppliedPatchOffsetMatch(
-  markdown: string,
-  patch: PatchmarkPatch,
-  appliedText: string
-): TextMatch | null {
-  if (
-    typeof patch.applied_start_offset !== "number" ||
-    typeof patch.applied_end_offset !== "number" ||
-    patch.applied_start_offset < 0 ||
-    patch.applied_end_offset < patch.applied_start_offset ||
-    patch.applied_end_offset > markdown.length
-  ) {
-    return null;
-  }
-
-  const candidate = markdown.slice(
-    patch.applied_start_offset,
-    patch.applied_end_offset
-  );
-
-  if (candidate !== appliedText) {
-    return null;
-  }
-
-  return {
-    end: patch.applied_end_offset,
-    start: patch.applied_start_offset
-  };
 }
 
 type AppliedPatchAnchorMatch = TextMatch & { text: string };
@@ -8021,13 +8010,46 @@ function updateSingleAffectedCommentAnchor({
   }
 
   if (isLinkedComment) {
-    const newAnchor = createPatchReplacementAnchor({
-      comment,
-      newMarkdown,
-      patch,
-      replacementEnd,
-      replacementStart
-    });
+    const retainedAnchor =
+      comment.anchor.kind === "selected_text"
+        ? createRetainedSelectedTextAnchorInsidePatch({
+            anchor: comment.anchor,
+            comment,
+            newMarkdown,
+            originalStart: replacementStart,
+            patch,
+            replacementStart
+          })
+        : null;
+
+    if (retainedAnchor) {
+      return updateCommentAnchorAfterPatch({
+        comment,
+        content: `Patch ${patch.id} was applied to the document and this comment stayed anchored to the retained selected text.`,
+        createdAt,
+        impactKind,
+        newAnchor: retainedAnchor,
+        note: "Linked selected-text comment was mapped to retained text inside the applied replacement.",
+        patch,
+        reason: "anchor_recovered_after_patch",
+        result: "reanchored"
+      });
+    }
+
+    const newAnchor =
+      comment.anchor.kind === "selected_text" &&
+      !isSelectedAnchorEquivalentToPatchOriginalText({
+        anchor: comment.anchor,
+        originalText: patch.original_text
+      })
+        ? null
+        : createPatchReplacementAnchor({
+            comment,
+            newMarkdown,
+            patch,
+            replacementEnd,
+            replacementStart
+          });
 
     if (!newAnchor) {
       return markCommentAnchorNeedsReviewAfterPatch({
@@ -8035,7 +8057,7 @@ function updateSingleAffectedCommentAnchor({
         content: `Patch ${patch.id} was applied to the document, but Patchmark could not re-anchor this comment automatically.`,
         createdAt,
         impactKind,
-        note: "The linked selected-text comment could not be re-anchored automatically.",
+        note: "The linked selected-text comment was not uniquely retained in the applied replacement.",
         patch
       });
     }
@@ -8321,17 +8343,42 @@ function createPreservedSelectedTextAnchorInsidePatch({
   patch: PatchmarkPatch;
   replacementStart: number;
 }): SelectedTextAnchor | null {
-  const matchesInSuggestedText = findExactTextMatches(
-    patch.suggested_text,
-    anchor.selected_text
-  );
+  return createRetainedSelectedTextAnchorInsidePatch({
+    anchor,
+    comment,
+    newMarkdown,
+    originalStart: replacementStart,
+    patch,
+    replacementStart
+  });
+}
 
-  if (matchesInSuggestedText.length !== 1) {
+function createRetainedSelectedTextAnchorInsidePatch({
+  anchor,
+  comment,
+  newMarkdown,
+  originalStart,
+  patch,
+  replacementStart
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  newMarkdown: string;
+  originalStart?: number;
+  patch: PatchmarkPatch;
+  replacementStart: number;
+}): SelectedTextAnchor | null {
+  const retainedMatch = findRetainedSelectedTextInPatchReplacement({
+    anchor,
+    originalStart,
+    originalText: patch.original_text,
+    replacementStart,
+    suggestedText: patch.suggested_text
+  });
+
+  if (!retainedMatch) {
     return null;
   }
-
-  const start = replacementStart + matchesInSuggestedText[0].start;
-  const end = replacementStart + matchesInSuggestedText[0].end;
 
   return createSelectedTextAnchorAtRange({
     anchor,
@@ -8339,18 +8386,18 @@ function createPreservedSelectedTextAnchorInsidePatch({
     comment,
     context: {
       kind: anchor.anchor_context?.kind ?? "block",
-      plain_text: anchor.selected_text,
-      markdown_text: anchor.selected_text,
+      plain_text: normalizeDomText(retainedMatch.selectedText),
+      markdown_text: retainedMatch.selectedText,
       selected_start_in_context: 0,
-      selected_end_in_context: anchor.selected_text.length,
-      markdown_start_offset: start,
-      markdown_end_offset: end
+      selected_end_in_context: retainedMatch.selectedText.length,
+      markdown_start_offset: retainedMatch.start,
+      markdown_end_offset: retainedMatch.end
     },
     markdown: newMarkdown,
     preferredHeadingText: patch.target_heading,
-    selectedText: anchor.selected_text,
-    start,
-    end
+    selectedText: retainedMatch.selectedText,
+    start: retainedMatch.start,
+    end: retainedMatch.end
   });
 }
 
@@ -8955,18 +9002,151 @@ function recoverCommentAnchorForFind({
   });
 }
 
+function repairRetainedLinkedPatchCommentAnchor({
+  comment,
+  markdown,
+  patches,
+  repairedAt
+}: {
+  comment: PatchmarkComment;
+  markdown: string;
+  patches: PatchmarkPatch[];
+  repairedAt: string;
+}): PatchmarkComment | null {
+  if (!comment.anchor_history || comment.anchor.kind !== "selected_text") {
+    return null;
+  }
+
+  for (const historyEntry of [...comment.anchor_history].reverse()) {
+    if (
+      !historyEntry.source_patch_id ||
+      historyEntry.previous_anchor.kind !== "selected_text"
+    ) {
+      continue;
+    }
+
+    const patch = patches.find(
+      (candidate) =>
+        candidate.id === historyEntry.source_patch_id &&
+        candidate.status === "accepted" &&
+        candidate.comment_id === comment.id
+    );
+
+    if (!patch) {
+      continue;
+    }
+
+    const appliedRange = locateCurrentAppliedPatchRange({ markdown, patch });
+
+    if (!appliedRange) {
+      continue;
+    }
+
+    const retainedAnchor = createRetainedSelectedTextAnchorInsidePatch({
+      anchor: historyEntry.previous_anchor,
+      comment,
+      newMarkdown: markdown,
+      originalStart: patch.applied_start_offset,
+      patch,
+      replacementStart: appliedRange.start
+    });
+
+    if (!retainedAnchor || areCommentAnchorsEqual(comment.anchor, retainedAnchor)) {
+      continue;
+    }
+
+    if (
+      comment.anchor.selected_text === retainedAnchor.selected_text &&
+      comment.anchor.markdown_start_offset === retainedAnchor.markdown_start_offset &&
+      comment.anchor.markdown_end_offset === retainedAnchor.markdown_end_offset
+    ) {
+      continue;
+    }
+
+    return updateCommentAnchorAfterPatch({
+      comment,
+      createdAt: repairedAt,
+      impactKind: historyEntry.impact_kind ?? "linked_comment",
+      newAnchor: retainedAnchor,
+      note: "Linked selected-text comment repaired to retained text inside the applied replacement.",
+      patch,
+      reason: "anchor_recovered_after_patch",
+      result: "reanchored"
+    }).comment;
+  }
+
+  return null;
+}
+
+function locateCurrentAppliedPatchRange({
+  markdown,
+  patch
+}: {
+  markdown: string;
+  patch: PatchmarkPatch;
+}): TextMatch | null {
+  const appliedText = getPatchAppliedText(patch);
+  const deterministicMatch = getDeterministicAppliedPatchOffsetMatch({
+    appliedText,
+    markdown,
+    patch
+  });
+
+  if (deterministicMatch) {
+    return deterministicMatch;
+  }
+
+  const exactMatches = findExactTextMatches(markdown, appliedText);
+
+  if (exactMatches.length === 1) {
+    return exactMatches[0];
+  }
+
+  const contextMatch = findAcceptedPatchSurroundingContextMatch({
+    markdown,
+    patch
+  });
+
+  if (contextMatch) {
+    return contextMatch;
+  }
+
+  const sectionMatch = findAcceptedPatchSectionAnchorMatch({
+    appliedText,
+    markdown,
+    normalizedMatches: getAppliedPatchNormalizedMatches(markdown, appliedText),
+    patch
+  });
+
+  return sectionMatch;
+}
+
 function recoverPersistableStaleCommentAnchors({
   comments,
   headings,
-  markdown
+  markdown,
+  patches
 }: {
   comments: PatchmarkComment[];
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches: PatchmarkPatch[];
 }): PatchmarkComment[] {
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
+    const linkedPatchRepair = repairRetainedLinkedPatchCommentAnchor({
+      comment,
+      markdown,
+      patches,
+      repairedAt: recoveredAt
+    });
+
+    if (linkedPatchRepair) {
+      didRecover = true;
+      return linkedPatchRepair;
+    }
+
     const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
 
     if (
