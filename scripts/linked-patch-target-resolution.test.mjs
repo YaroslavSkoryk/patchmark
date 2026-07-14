@@ -1,4 +1,9 @@
 import assert from "node:assert/strict";
+import {
+  dedupeCanonicalCandidates,
+  resolveCanonicalCommentTarget,
+  resolveCanonicalPatchTarget
+} from "../lib/comments/canonical-target-resolution.ts";
 import { resolvePendingPatchTarget } from "../lib/patches/linked-patch-target-resolution.ts";
 
 const createdAt = "2026-07-13T00:00:00.000Z";
@@ -73,14 +78,19 @@ function lineAddDocument() {
   const start = markdown.indexOf("LINE add");
   const end = start + "LINE add".length;
   const comment = createComment({ markdown, start, end });
+  const commentResolution = resolveCanonicalCommentTarget(comment, { markdown });
   const resolution = resolvePendingPatchTarget({
     comments: [comment],
     markdown,
     patch: createPatch({ target_heading: "## 7. Demand Generation Plan" })
   });
 
+  assert.equal(commentResolution.state, "resolved");
+  assert.equal(commentResolution.cardinality, "unique");
+  assert.deepEqual(commentResolution.range, { start, end });
   assert.equal(resolution.applicability, "exact_match");
   assert.equal(resolution.method, "linked_comment_anchor");
+  assert.equal(resolution.canonical.cardinality, "unique");
   assert.deepEqual(resolution.matches, [{ start, end }]);
 }
 
@@ -169,6 +179,76 @@ function lineAddDocument() {
   const markdown = [
     "## 7. Demand Generation Plan",
     "",
+    "LINE add, website visit, paid order.",
+    "",
+    "## 8. Demand Validation Approach",
+    "",
+    "website visit elsewhere."
+  ].join("\n");
+  const selectedText = "LINE add, website visit";
+  const selectedStart = markdown.indexOf(selectedText);
+  const selectedEnd = selectedStart + selectedText.length;
+  const expectedStart = markdown.indexOf("website visit");
+  const comment = createComment({
+    markdown,
+    selectedText,
+    start: selectedStart,
+    end: selectedEnd
+  });
+  const resolution = resolvePendingPatchTarget({
+    comments: [comment],
+    markdown,
+    patch: createPatch({
+      original_text: "website visit",
+      suggested_text: "site visit",
+      target_heading: "## 7. Demand Generation Plan"
+    })
+  });
+
+  assert.equal(resolution.applicability, "exact_match");
+  assert.equal(resolution.method, "linked_comment_anchor");
+  assert.deepEqual(resolution.matches, [
+    { start: expectedStart, end: expectedStart + "website visit".length }
+  ]);
+}
+
+{
+  const markdown = [
+    "## 7. Demand Generation Plan",
+    "",
+    "LINE add appears here.",
+    "",
+    "Unique unrelated patch target."
+  ].join("\n");
+  const start = markdown.indexOf("LINE add");
+  const end = start + "LINE add".length;
+  const comment = createComment({ markdown, start, end });
+  const resolution = resolvePendingPatchTarget({
+    comments: [comment],
+    markdown,
+    patch: createPatch({
+      original_text: "Unique unrelated patch target.",
+      suggested_text: "Updated unrelated patch target.",
+      target_heading: "## 7. Demand Generation Plan"
+    })
+  });
+
+  assert.equal(resolution.applicability, "exact_match");
+  assert.equal(resolution.method, "target_heading");
+  assert.deepEqual(resolution.matches, [
+    {
+      start: markdown.indexOf("Unique unrelated patch target."),
+      end:
+        markdown.indexOf("Unique unrelated patch target.") +
+        "Unique unrelated patch target.".length
+    }
+  ]);
+}
+
+{
+  const markdown = [
+    "## 7. Demand Generation Plan",
+    "",
     "LINE add now. LINE add later.",
     "",
     "## 8. Demand Validation Approach",
@@ -193,6 +273,32 @@ function lineAddDocument() {
 
   assert.equal(resolution.applicability, "multiple_matches");
   assert.ok(resolution.matches.length > 1);
+}
+
+{
+  const markdown = [
+    "## 7. Demand Generation Plan",
+    "",
+    "LINE add now. LINE add later."
+  ].join("\n");
+  const comment = createComment({
+    markdown,
+    start: 0,
+    end: "LINE add".length,
+    anchor: {
+      markdown_start_offset: 0,
+      markdown_end_offset: "LINE add".length,
+      anchor_context: undefined
+    }
+  });
+  const canonicalPatchResolution = resolveCanonicalPatchTarget({
+    comments: [comment],
+    markdown,
+    patch: createPatch()
+  });
+
+  assert.equal(canonicalPatchResolution.state, "ambiguous");
+  assert.equal(canonicalPatchResolution.cardinality, "multiple");
 }
 
 {
@@ -244,6 +350,135 @@ function lineAddDocument() {
   assert.equal(resolution.applicability, "exact_match");
   assert.equal(resolution.matches.length, 1);
   assert.deepEqual(resolution.matches[0], { start, end });
+}
+
+{
+  const markdown = "Intro LINE add outro. Later LINE add duplicate.";
+  const start = markdown.indexOf("LINE add");
+  const end = start + "LINE add".length;
+  const comment = createComment({ markdown, start, end });
+  const resolution = resolveCanonicalCommentTarget(comment, { markdown });
+
+  assert.equal(resolution.state, "resolved");
+  assert.equal(resolution.method, "current_offset");
+  assert.equal(resolution.cardinality, "unique");
+  assert.deepEqual(resolution.range, { start, end });
+}
+
+{
+  const candidates = dedupeCanonicalCandidates([
+    {
+      confidence: "high",
+      method: "current_offset",
+      range: { start: 10, end: 18 }
+    },
+    {
+      confidence: "medium",
+      method: "exact",
+      range: { start: 10, end: 18 }
+    },
+    {
+      confidence: "high",
+      method: "section",
+      range: { start: 10, end: 18 }
+    }
+  ]);
+
+  assert.equal(candidates.length, 1);
+  assert.deepEqual(candidates[0].range, { start: 10, end: 18 });
+  assert.deepEqual(candidates[0].supportingMethods, [
+    "current_offset",
+    "exact",
+    "section"
+  ]);
+}
+
+{
+  const oldMarkdown = "Before LINE add after.";
+  const insertedMarkdown = `Inserted.\n${oldMarkdown}`;
+  const oldStart = oldMarkdown.indexOf("LINE add");
+  const oldEnd = oldStart + "LINE add".length;
+  const comment = createComment({
+    markdown: oldMarkdown,
+    start: oldStart,
+    end: oldEnd
+  });
+  const resolution = resolveCanonicalCommentTarget(comment, {
+    markdown: insertedMarkdown
+  });
+  const expectedStart = insertedMarkdown.indexOf("LINE add");
+
+  assert.equal(resolution.state, "resolved");
+  assert.equal(resolution.method, "context");
+  assert.deepEqual(resolution.range, {
+    start: expectedStart,
+    end: expectedStart + "LINE add".length
+  });
+}
+
+{
+  const markdown = [
+    "## 7. Demand Generation Plan",
+    "",
+    "| **Channel** | **Next step** |",
+    "| --- | --- |",
+    "| Product | LINE add, paid order. |",
+    "| Social | LINE add, paid order. |"
+  ].join("\n");
+  const start = markdown.lastIndexOf("LINE add");
+  const end = start + "LINE add".length;
+  const comment = createComment({ markdown, start, end });
+  const resolution = resolveCanonicalCommentTarget(comment, { markdown });
+
+  assert.equal(resolution.state, "resolved");
+  assert.equal(resolution.cardinality, "unique");
+  assert.deepEqual(resolution.range, { start, end });
+}
+
+{
+  const markdown = [
+    "## 7. Demand Generation Plan",
+    "",
+    "LINE add now. LINE add later."
+  ].join("\n");
+  const comment = createComment({
+    markdown,
+    start: 0,
+    end: "LINE add".length,
+    anchor: {
+      markdown_start_offset: 0,
+      markdown_end_offset: "LINE add".length,
+      anchor_context: undefined
+    }
+  });
+  const resolution = resolveCanonicalCommentTarget(comment, { markdown });
+
+  assert.equal(resolution.state, "ambiguous");
+  assert.equal(resolution.cardinality, "multiple");
+}
+
+{
+  const markdown = [
+    "## 7. Demand Generation Plan",
+    "",
+    "LINE add now.",
+    "",
+    "## 8. Demand Validation Approach",
+    "",
+    "LINE add elsewhere."
+  ].join("\n");
+  const resolution = resolveCanonicalPatchTarget({
+    comments: [],
+    markdown,
+    patch: createPatch({
+      comment_id: undefined,
+      target_heading: "## 7. Demand Generation Plan"
+    })
+  });
+
+  assert.equal(resolution.state, "resolved");
+  assert.equal(resolution.method, "target_heading");
+  assert.equal(resolution.cardinality, "unique");
 }
 
 console.log("Linked patch target resolution tests passed.");

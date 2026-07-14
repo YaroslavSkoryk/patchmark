@@ -24,6 +24,10 @@ import {
   getSelectedTextLocationLabel
 } from "@/lib/comments/comment-card-display";
 import {
+  resolveCanonicalCommentTarget,
+  type CanonicalTargetResolution
+} from "@/lib/comments/canonical-target-resolution";
+import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PAYLOAD_RULES,
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
@@ -11225,7 +11229,16 @@ function createExportContext({
   markdown: string;
   tableContexts: CanonicalTableContext[];
 }) {
-  const containingSectionRange = getContainingSectionRange(anchor, markdown, headings);
+  const canonicalResolution = resolveCanonicalCommentTarget(comment, {
+    headings,
+    markdown
+  });
+  const containingSectionRange =
+    getContainingSectionRangeFromCanonical({
+      canonicalResolution,
+      headings,
+      markdown
+    }) ?? getContainingSectionRange(anchor, markdown, headings);
   const containingSectionMarkdown = containingSectionRange
     ? markdown.slice(containingSectionRange.start, containingSectionRange.end)
     : null;
@@ -11239,7 +11252,11 @@ function createExportContext({
 
   return {
     document_brief: null,
-    display_target: getCommentDisplayTarget(anchor),
+    display_target: getCommentDisplayTarget({
+      anchor,
+      canonicalResolution,
+      markdown
+    }),
     anchor_context:
       anchor.kind === "selected_text"
         ? createExportAnchorContextWithTableMarkers({
@@ -11331,7 +11348,15 @@ function createExportAnchorContextWithTableMarkers({
       };
 }
 
-function getCommentDisplayTarget(anchor: PatchmarkCommentAnchor): string {
+function getCommentDisplayTarget({
+  anchor,
+  canonicalResolution,
+  markdown
+}: {
+  anchor: PatchmarkCommentAnchor;
+  canonicalResolution?: CanonicalTargetResolution;
+  markdown: string;
+}): string {
   if (anchor.kind === "document") {
     return "Whole document";
   }
@@ -11340,7 +11365,31 @@ function getCommentDisplayTarget(anchor: PatchmarkCommentAnchor): string {
     return `${"#".repeat(anchor.heading_level ?? 1)} ${anchor.heading}`;
   }
 
-  return anchor.selected_text;
+  return canonicalResolution?.state === "resolved" && canonicalResolution.range
+    ? markdown.slice(canonicalResolution.range.start, canonicalResolution.range.end)
+    : anchor.selected_text;
+}
+
+function getContainingSectionRangeFromCanonical({
+  canonicalResolution,
+  headings,
+  markdown
+}: {
+  canonicalResolution: CanonicalTargetResolution;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): { end: number; start: number } | null {
+  if (canonicalResolution.state !== "resolved" || !canonicalResolution.range) {
+    return null;
+  }
+
+  const heading = getHeadingContainingOffset(
+    markdown,
+    headings,
+    canonicalResolution.range.start
+  );
+
+  return heading ? getSectionRange(markdown, headings, heading) : null;
 }
 
 function getContainingSectionRange(
@@ -13682,6 +13731,10 @@ function resolveCommentAnchor(
 ): CommentAnchorResolution {
   const { anchor } = comment;
   const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
+  const canonicalResolution = resolveCanonicalCommentTarget(comment, {
+    headings,
+    markdown
+  });
 
   if (anchor.kind === "document") {
     return {
@@ -13691,63 +13744,35 @@ function resolveCommentAnchor(
   }
 
   if (anchor.kind === "section") {
-    const currentHeading = findMatchingHeading(headings, {
-      level: anchor.heading_level,
-      text: anchor.heading
-    });
-
-    if (!currentHeading) {
+    if (canonicalResolution.state !== "resolved" || !canonicalResolution.range) {
       return {
         label: "Whole section: Target section not found",
         status: "not_found"
       };
     }
 
-    const lineRange = getHeadingLineRange(markdown, currentHeading);
-
     return {
-      end: lineRange.end,
-      label: `Whole section: ${cleanMarkdownHeadingText(currentHeading.text)}`,
-      start: lineRange.start,
+      end: canonicalResolution.range.end,
+      label: `Whole section: ${cleanMarkdownHeadingText(anchor.heading)}`,
+      start: canonicalResolution.range.start,
       status: "active"
     };
   }
 
   const selectedTextLocationLabel = getSelectedTextHeadingLabel(anchor);
   const selectedTextLabel = `Selected text in ${selectedTextLocationLabel}`;
-  const offsetStart = anchor.markdown_start_offset;
-  const offsetEnd = anchor.markdown_end_offset;
 
-  if (
-    anchor.selected_text.length > 0 &&
-    typeof offsetStart === "number" &&
-    typeof offsetEnd === "number" &&
-    markdown.slice(offsetStart, offsetEnd) === anchor.selected_text
-  ) {
+  if (canonicalResolution.state === "resolved" && canonicalResolution.range) {
     return {
-      end: offsetEnd,
+      end: canonicalResolution.range.end,
       label: selectedTextLabel,
       locationLabel: selectedTextLocationLabel,
-      start: offsetStart,
+      start: canonicalResolution.range.start,
       status: "active"
     };
   }
 
-  const contextResolution = resolveSelectedAnchorViaContext(markdown, anchor);
-
-  if (contextResolution.status === "active") {
-    return {
-      contextEnd: contextResolution.contextEnd,
-      contextStart: contextResolution.contextStart,
-      end: contextResolution.end,
-      label: selectedTextLabel,
-      locationLabel: selectedTextLocationLabel,
-      start: contextResolution.start,
-      status: "active"
-    };
-  }
-
-  if (contextResolution.status === "ambiguous") {
+  if (canonicalResolution.state === "ambiguous") {
     return {
       detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
       label: selectedTextLabel,
@@ -13755,6 +13780,8 @@ function resolveCommentAnchor(
       status: "ambiguous"
     };
   }
+
+  const contextResolution = resolveSelectedAnchorViaContext(markdown, anchor);
 
   if (contextResolution.status === "context_found") {
     return {
@@ -13764,61 +13791,6 @@ function resolveCommentAnchor(
       label: selectedTextLabel,
       locationLabel: selectedTextLocationLabel,
       status: "not_found"
-    };
-  }
-
-  let matches = findExactTextMatches(markdown, anchor.selected_text);
-
-  if (!anchor.anchor_context && matches.length > 1) {
-    matches = filterMatchesByStoredContext(markdown, matches, anchor);
-  }
-
-  if (matches.length === 1) {
-    return {
-      end: matches[0].end,
-      label: selectedTextLabel,
-      locationLabel: selectedTextLocationLabel,
-      start: matches[0].start,
-      status: "active"
-    };
-  }
-
-  if (matches.length > 1) {
-    return {
-      detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
-      label: selectedTextLabel,
-      locationLabel: selectedTextLocationLabel,
-      status: "ambiguous"
-    };
-  }
-
-  const recoveredAnchor = recoverSelectedTextAnchor({
-    comment,
-    headings,
-    markdown,
-    preferredHeadingText: anchor.containing_heading
-  });
-
-  if (recoveredAnchor.status === "recovered") {
-    const recoveredLocationLabel = getSelectedTextHeadingLabel(
-      recoveredAnchor.newAnchor
-    );
-
-    return {
-      end: recoveredAnchor.matchEnd,
-      label: `Selected text in ${recoveredLocationLabel}`,
-      locationLabel: recoveredLocationLabel,
-      start: recoveredAnchor.matchStart,
-      status: "active"
-    };
-  }
-
-  if (recoveredAnchor.status === "ambiguous") {
-    return {
-      detail: getAnchorNeedsReviewDetail(latestNeedsReviewImpact),
-      label: selectedTextLabel,
-      locationLabel: selectedTextLocationLabel,
-      status: "ambiguous"
     };
   }
 
@@ -13992,36 +13964,6 @@ function findSelectedTextMatchesInsideContext(
     end: contextMatch.start + match.end,
     start: contextMatch.start + match.start
   }));
-}
-
-function filterMatchesByStoredContext(
-  markdown: string,
-  matches: Array<{ end: number; start: number }>,
-  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
-): Array<{ end: number; start: number }> {
-  const contextBefore = anchor.context_before ?? "";
-  const contextAfter = anchor.context_after ?? "";
-
-  if (!contextBefore && !contextAfter) {
-    return matches;
-  }
-
-  const contextMatches = matches.filter((match) => {
-    const beforeWindow = markdown.slice(
-      Math.max(0, match.start - contextBefore.length),
-      match.start
-    );
-    const afterWindow = markdown.slice(
-      match.end,
-      Math.min(markdown.length, match.end + contextAfter.length)
-    );
-    const beforeMatches = !contextBefore || beforeWindow === contextBefore;
-    const afterMatches = !contextAfter || afterWindow === contextAfter;
-
-    return beforeMatches && afterMatches;
-  });
-
-  return contextMatches.length > 0 ? contextMatches : matches;
 }
 
 function getSelectedTextHeadingLabel(
