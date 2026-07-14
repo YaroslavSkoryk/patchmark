@@ -1,0 +1,41 @@
+import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+
+const actionsSource = readFileSync("components/document-actions.tsx", "utf8");
+const editorSource = readFileSync("components/document-editor.tsx", "utf8");
+const previewSource = readFileSync("components/pdf-export-preview.tsx", "utf8");
+const readonlyRendererSource = readFileSync(
+  "components/mdx-readonly-preview-client.tsx",
+  "utf8"
+);
+const cssSource = readFileSync("app/globals.css", "utf8");
+
+assert.match(actionsSource, /onExportPdf: \(\) => void/);
+assert.match(actionsSource, /Export PDF/);
+assert.match(editorSource, /import \{ PdfExportPreview \}/);
+assert.match(editorSource, /isPdfExportPreviewOpen/);
+assert.match(editorSource, /markdown=\{markdown\}/);
+
+assert.match(previewSource, /createPortal/);
+assert.match(previewSource, /window\.print\(\)/);
+assert.match(previewSource, /patchmark-pdf-preview-open/);
+assert.match(previewSource, /waitForPreviewAssets/);
+assert.match(previewSource, /Print \/ Save PDF/);
+assert.doesNotMatch(previewSource, /saveProjectDocument|writeProject|createProjectSnapshot/);
+
+assert.match(readonlyRendererSource, /MDXEditor/);
+assert.match(readonlyRendererSource, /readOnly/);
+assert.match(readonlyRendererSource, /tablePlugin\(\)/);
+assert.match(readonlyRendererSource, /linkPlugin\(\)/);
+assert.doesNotMatch(readonlyRendererSource, /toolbarPlugin/);
+
+assert.match(cssSource, /@page\s*\{\s*size: A4 portrait;/);
+assert.match(cssSource, /@media print/);
+assert.match(
+  cssSource,
+  /body\.patchmark-pdf-preview-open > :not\(\.pdf-export-portal-root\)/
+);
+assert.match(cssSource, /body\.patchmark-pdf-preview-open \.pdf-export-header/);
+assert.match(cssSource, /body\.patchmark-pdf-preview-open \.patchmark-pdf-prose table/);
+
+console.log("pdf-export-preview tests passed");

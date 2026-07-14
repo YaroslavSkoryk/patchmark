@@ -11,6 +11,7 @@ type DocumentActionsProps = {
   markdown: string;
   onCreateSnapshot?: () => void;
   onDownload: () => void;
+  onExportPdf: () => void;
   onSaveAs: () => void;
   onSaveChanges: () => void;
   showCreateSnapshot?: boolean;
@@ -22,6 +23,7 @@ export function DocumentActions({
   markdown,
   onCreateSnapshot,
   onDownload,
+  onExportPdf,
   onSaveAs,
   onSaveChanges,
   showCreateSnapshot = false
@@ -71,6 +73,9 @@ export function DocumentActions({
       ) : null}
       <button type="button" onClick={handleDownloadMarkdown}>
         Download .md
+      </button>
+      <button type="button" onClick={onExportPdf}>
+        Export PDF
       </button>
       <button type="button" onClick={handleCopyMarkdown}>
         Copy Markdown

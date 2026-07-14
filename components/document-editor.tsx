@@ -73,6 +73,7 @@ import {
 import { DocumentOutline } from "@/components/document-outline";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
 import { DraftRestoreBanner } from "@/components/draft-restore-banner";
+import { PdfExportPreview } from "@/components/pdf-export-preview";
 import {
   SnapshotDialog,
   type SnapshotDialogState
@@ -494,6 +495,7 @@ export function DocumentEditor() {
   );
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
+  const [isPdfExportPreviewOpen, setIsPdfExportPreviewOpen] = useState(false);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
   const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
@@ -1169,6 +1171,7 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
+    setIsPdfExportPreviewOpen(false);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
@@ -1207,6 +1210,7 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
+    setIsPdfExportPreviewOpen(false);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
@@ -3451,6 +3455,7 @@ export function DocumentEditor() {
     setAvailableDraft(null);
     setSaveStatus("idle");
     setSnapshotDialog(null);
+    setIsPdfExportPreviewOpen(false);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
@@ -3560,6 +3565,7 @@ export function DocumentEditor() {
                 markdown={markdown}
                 onCreateSnapshot={handleCreateSnapshot}
                 onDownload={handleDownload}
+                onExportPdf={() => setIsPdfExportPreviewOpen(true)}
                 onSaveAs={handleSaveAs}
                 onSaveChanges={handleSaveChanges}
                 showCreateSnapshot={isProjectMode}
@@ -3732,6 +3738,14 @@ export function DocumentEditor() {
         <SnapshotDialog
           dialog={snapshotDialog}
           onClose={() => setSnapshotDialog(null)}
+        />
+      ) : null}
+
+      {isPdfExportPreviewOpen && fileName ? (
+        <PdfExportPreview
+          fileName={fileName}
+          markdown={markdown}
+          onClose={() => setIsPdfExportPreviewOpen(false)}
         />
       ) : null}
 
