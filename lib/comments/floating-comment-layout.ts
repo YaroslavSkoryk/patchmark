@@ -72,10 +72,7 @@ export function getStageRelativePreferredTop(
   workspaceRelativeTop: number,
   floatingStageOffsetTop: number
 ): number {
-  return Math.max(
-    0,
-    roundLayoutValue(workspaceRelativeTop - floatingStageOffsetTop)
-  );
+  return roundLayoutValue(workspaceRelativeTop - floatingStageOffsetTop);
 }
 
 function roundLayoutValue(value: number): number {

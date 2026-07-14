@@ -130,7 +130,8 @@ function assertPositionsEqual(actual, expected) {
 
 {
   assert.equal(getStageRelativePreferredTop(720, 96), 624);
-  assert.equal(getStageRelativePreferredTop(40, 96), 0);
+  assert.equal(getStageRelativePreferredTop(40, 96), -56);
+  assert.equal(getStageRelativePreferredTop(-120, 96), -216);
 }
 
 {

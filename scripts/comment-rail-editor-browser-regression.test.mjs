@@ -25,6 +25,10 @@ const scrollMovementTolerance = 2;
 const nearTopScrollTolerance = 100;
 const topCommentId = "PM-COMMENT-0008";
 const lowerCommentId = "PM-COMMENT-0029";
+const lineCommentId = "PM-COMMENT-0018";
+const visualEvidenceDir = process.env.PATCHMARK_PHASE5_SCREENSHOT_DIR;
+const shouldRunFullVisualAudit =
+  process.env.PATCHMARK_PHASE5_FULL_VISUAL_AUDIT === "1";
 
 async function runActualEditorRegression() {
   if (!projectDir) {
@@ -190,12 +194,16 @@ async function runActualEditorRegression() {
     const layoutEvents = await readLayoutEvents(pageClient);
 
     assertActualEditorMeasurements(measurements, targets);
+    const visualEvidence = visualEvidenceDir
+      ? await capturePhase5VisualEvidence(pageClient, visualEvidenceDir)
+      : [];
     printEditorSummary({
       layoutEvents,
       measurements,
       projectDir,
       targets,
-      url: editorUrl
+      url: editorUrl,
+      visualEvidence
     });
     console.log("Comment rail actual-editor browser regression tests passed.");
   } finally {
@@ -957,6 +965,253 @@ async function readLayoutEvents(client) {
   });
 }
 
+async function capturePhase5VisualEvidence(client, outputDir) {
+  mkdirSync(outputDir, { recursive: true });
+
+  const evidence = [];
+
+  evidence.push(
+    await captureCommentHighlightEvidence({
+      client,
+      commentId: lowerCommentId,
+      expectedVisibleText: "PAUL Thailand online delivery",
+      label: "paul-table-link",
+      outputDir,
+      rejectVisibleText: "https://www.paulthailand.com/next-day-delivery"
+    })
+  );
+
+  const hasLineComment = await evaluate(client, {
+    expression: `Boolean(document.querySelector(${JSON.stringify(
+      `[data-comment-id="${lineCommentId}"]`
+    )}))`
+  });
+
+  if (hasLineComment) {
+    evidence.push(
+      await captureCommentHighlightEvidence({
+        client,
+        commentId: lineCommentId,
+        expectedVisibleText: "new LINE Official Account friend",
+        label: "line-ordinary-text",
+        outputDir
+      })
+    );
+  }
+
+  if (shouldRunFullVisualAudit) {
+    evidence.push(await auditAllSelectedTextCommentHighlights(client));
+  }
+
+  return evidence;
+}
+
+async function auditAllSelectedTextCommentHighlights(client) {
+  const rows = await readAllCommentRows(client);
+  const selectedRows = rows.filter((row) => row.anchorKind === "selected_text");
+  const resolvedSelectedRows = selectedRows.filter(
+    (row) => row.anchorStatus === "active"
+  );
+  const failures = [];
+
+  for (const row of resolvedSelectedRows) {
+    try {
+      await scrollCommentIntoView(client, row.id);
+      await activateComment(client, row.id);
+      await waitForActiveHighlightState(client, row.id);
+    } catch (error) {
+      failures.push({
+        error: error instanceof Error ? error.message : String(error),
+        id: row.id
+      });
+    }
+  }
+
+  assert.deepEqual(
+    failures,
+    [],
+    "Every uniquely resolved selected-text comment should paint a visual highlight."
+  );
+
+  return {
+    failedCount: failures.length,
+    kind: "full-selected-text-visual-audit",
+    passedCount: resolvedSelectedRows.length,
+    renderedRailRows: rows.length,
+    resolvedSelectedTextCount: resolvedSelectedRows.length,
+    selectedTextCount: selectedRows.length
+  };
+}
+
+async function readAllCommentRows(client) {
+  return await evaluate(client, {
+    expression: `(() => {
+      return Array.from(document.querySelectorAll(".comment-floating-item")).map((item, order) => ({
+        anchorEndOffset: numberOrNull(item.getAttribute("data-comment-anchor-end")),
+        anchorKind: item.getAttribute("data-comment-anchor-kind"),
+        anchorStartOffset: numberOrNull(item.getAttribute("data-comment-anchor-start")),
+        anchorStatus: item.getAttribute("data-comment-anchor-status"),
+        commentStatus: item.getAttribute("data-comment-status"),
+        id: item.getAttribute("data-comment-id") ?? "",
+        order
+      }));
+
+      function numberOrNull(value) {
+        if (value === null || value === "") {
+          return null;
+        }
+
+        const number = Number(value);
+
+        return Number.isFinite(number) ? number : null;
+      }
+    })()`
+  });
+}
+
+async function captureCommentHighlightEvidence({
+  client,
+  commentId,
+  expectedVisibleText,
+  label,
+  outputDir,
+  rejectVisibleText
+}) {
+  await scrollCommentIntoView(client, commentId);
+  await activateComment(client, commentId);
+  await waitForStableState(client, `phase5 ${label}`, commentId);
+
+  const state = await waitForActiveHighlightState(client, commentId);
+
+  assert.equal(state.activeId, commentId);
+  assert.ok(
+    state.highlightRectCount > 0,
+    `${commentId} should paint a visible CSS Highlight range.`
+  );
+  assert.equal(
+    state.editorText.includes(expectedVisibleText),
+    true,
+    `${commentId} rendered document text should include ${expectedVisibleText}.`
+  );
+
+  if (rejectVisibleText) {
+    assert.equal(
+      state.editorText.includes(rejectVisibleText),
+      false,
+      `${commentId} rendered document text should not expose raw Markdown URL syntax.`
+    );
+  }
+
+  const screenshotPath = join(outputDir, `${label}.png`);
+
+  await capturePageScreenshot(client, screenshotPath);
+
+  return {
+    activeId: state.activeId,
+    anchorEndOffset: state.activeRow?.anchorEndOffset ?? null,
+    anchorKind: state.activeRow?.anchorKind ?? null,
+    anchorStartOffset: state.activeRow?.anchorStartOffset ?? null,
+    commentId,
+    highlightRectCount: state.highlightRectCount,
+    screenshotPath
+  };
+}
+
+async function waitForActiveHighlightState(client, commentId) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const state = await readActiveHighlightState(client, commentId);
+
+    latestState = state;
+
+    if (state.activeId === commentId && state.highlightRectCount > 0) {
+      return state;
+    }
+
+    await delay(100);
+  }
+
+  throw new Error(
+    `Timed out waiting for active highlight for ${commentId}.\n${JSON.stringify(
+      latestState,
+      null,
+      2
+    )}`
+  );
+}
+
+async function readActiveHighlightState(client, commentId) {
+  return await evaluate(client, {
+    expression: `(() => {
+      const item = document.querySelector(${JSON.stringify(
+        `[data-comment-id="${commentId}"]`
+      )});
+      const activeId = document
+        .querySelector("article[aria-current='true']")
+        ?.getAttribute("aria-label")
+        ?.replace(/^Active comment /, "") ?? "none";
+      const activeRow = item
+        ? {
+            anchorEndOffset: numberOrNull(item.getAttribute("data-comment-anchor-end")),
+            anchorKind: item.getAttribute("data-comment-anchor-kind"),
+            anchorStartOffset: numberOrNull(item.getAttribute("data-comment-anchor-start")),
+            anchorStatus: item.getAttribute("data-comment-anchor-status"),
+            commentStatus: item.getAttribute("data-comment-status"),
+            id: item.getAttribute("data-comment-id")
+          }
+        : null;
+      const highlightNames = [
+        "patchmark-comment-open-selected-anchor",
+        "patchmark-comment-resolved-selected-anchor"
+      ];
+      let highlightRectCount = 0;
+
+      for (const name of highlightNames) {
+        const highlight = globalThis.CSS?.highlights?.get(name);
+
+        if (!highlight) {
+          continue;
+        }
+
+        for (const range of highlight) {
+          for (const rect of range.getClientRects()) {
+            if (rect.width > 0 && rect.height > 0) {
+              highlightRectCount += 1;
+            }
+          }
+        }
+      }
+
+      return {
+        activeId,
+        activeRow,
+        editorText: document.querySelector(".patchmark-prose")?.textContent ?? "",
+        highlightRectCount
+      };
+
+      function numberOrNull(value) {
+        if (value === null || value === "") {
+          return null;
+        }
+
+        const number = Number(value);
+
+        return Number.isFinite(number) ? number : null;
+      }
+    })()`
+  });
+}
+
+async function capturePageScreenshot(client, filePath) {
+  const result = await client.call("Page.captureScreenshot", {
+    captureBeyondViewport: false,
+    format: "png"
+  });
+
+  writeFileSync(filePath, Buffer.from(result.data, "base64"));
+}
+
 async function evaluate(client, { expression, userGesture = false }) {
   const result = await client.call("Runtime.evaluate", {
     awaitPromise: true,
@@ -986,7 +1241,10 @@ function chooseScrollActivationTargets(rows) {
   assert.equal(top.commentType, "research_needed");
   assert.ok(top.threadCount >= 10, "Top comment should contain a long thread.");
   assert.equal(lower.anchorKind, "selected_text");
-  assert.equal(lower.commentStatus, "open");
+  assert.ok(
+    ["open", "resolved"].includes(lower.commentStatus),
+    "Lower selected-text comment may be open or resolved; status must not affect geometry."
+  );
   assert.equal(lower.commentType, "research_needed");
   assert.ok(
     lower.anchorTargetY - top.anchorTargetY > viewportHeight,
@@ -1261,7 +1519,8 @@ function printEditorSummary({
   measurements,
   projectDir,
   targets,
-  url
+  url,
+  visualEvidence = []
 }) {
   const compactRows = measurements[0].rows;
   const lowerIndex = compactRows.findIndex((row) => row.id === targets.lower.id);
@@ -1319,7 +1578,8 @@ function printEditorSummary({
       layoutPass: event.layoutPass,
       rowCount: event.rows.length,
       stageHeight: event.stageHeight
-    }))
+    })),
+    visualEvidence
   };
 
   console.log(JSON.stringify(summary, null, 2));

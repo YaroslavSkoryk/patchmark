@@ -400,6 +400,26 @@ type VisualTextMatch = {
   searchText: string;
   top: number;
 };
+type VisualTargetProjection =
+  | {
+      commentId: string;
+      markdownRange: { end: number; start: number };
+      projectionMethod:
+        | "plain_text_range"
+        | "section_heading"
+        | "source_position"
+        | "structural_block"
+        | "table_cell"
+        | "table_row";
+      state: "resolved";
+      structuralElements: HTMLElement[];
+      textRanges: Range[];
+    }
+  | {
+      commentId: string;
+      reason: string;
+      state: "not_projectable";
+    };
 type VisualTextPosition = {
   node: Text;
   offset: number;
@@ -12247,55 +12267,49 @@ function computeCommentPreferredTop({
   }
 
   if (anchor.kind === "section") {
-    const currentHeading = findMatchingHeading(headings, {
-      level: anchor.heading_level,
-      text: anchor.heading
-    });
+    const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
-    if (!currentHeading) {
+    if (resolution.status !== "active" || typeof resolution.start !== "number") {
       return null;
     }
 
     if (mode === "visual") {
-      return (
-        findVisualHeadingTop({
+      const projectionTop = getVisualProjectionTop({
+        projection: findVisualCommentAnchorProjection({
+          comment,
           container,
-          heading: currentHeading,
-          workspaceRect
-        }) ?? estimateTopForLine(currentHeading.line, editorTop)
-      );
+          headings,
+          markdown,
+          patches
+        }),
+        workspaceRect
+      });
+
+      if (projectionTop !== null) {
+        return projectionTop;
+      }
     }
 
-    return estimateTopForLine(currentHeading.line, editorTop);
+    return estimateTopForOffset(markdown, resolution.start, editorTop);
   }
 
   const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
   if (resolution.status === "active" && resolution.start !== undefined) {
     if (mode === "visual") {
-      const visualTextTop = findVisualSelectedTextTopForResolvedAnchor({
-        anchor,
-        container,
-        headings,
-        markdown,
-        resolution,
+      const projectionTop = getVisualProjectionTop({
+        projection: findVisualCommentAnchorProjection({
+          comment,
+          container,
+          headings,
+          markdown,
+          patches
+        }),
         workspaceRect
       });
 
-      if (visualTextTop !== null) {
-        return visualTextTop;
-      }
-
-      const visualContextTop = findVisualAnchorContextTopForResolvedAnchor({
-        anchor,
-        container,
-        markdown,
-        resolution,
-        workspaceRect
-      });
-
-      if (visualContextTop !== null) {
-        return visualContextTop;
+      if (projectionTop !== null) {
+        return projectionTop;
       }
 
       const fallbackHeading = anchor.containing_heading
@@ -12435,7 +12449,7 @@ function findVisualHeadingTop({
     return null;
   }
 
-  return Math.max(0, headingElement.getBoundingClientRect().top - workspaceRect.top);
+  return headingElement.getBoundingClientRect().top - workspaceRect.top;
 }
 
 function getVisualHeadingLevel(element: HTMLElement): number {
@@ -12467,6 +12481,212 @@ function findVisualHeadingElement({
   );
 }
 
+
+function findVisualCommentAnchorProjection({
+  comment,
+  container,
+  headings,
+  markdown,
+  patches = []
+}: {
+  comment: PatchmarkComment;
+  container: HTMLElement;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches?: PatchmarkPatch[];
+}): VisualTargetProjection {
+  const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
+
+  if (resolution.status !== "active") {
+    return {
+      commentId: comment.id,
+      reason: resolution.status,
+      state: "not_projectable"
+    };
+  }
+
+  if (comment.anchor.kind === "document") {
+    return {
+      commentId: comment.id,
+      reason: "document_anchor",
+      state: "not_projectable"
+    };
+  }
+
+  const markdownRange = {
+    end: resolution.end ?? resolution.start ?? 0,
+    start: resolution.start ?? 0
+  };
+
+  if (comment.anchor.kind === "section") {
+    const currentHeading = findHeadingForCanonicalRange({
+      anchor: comment.anchor,
+      headings,
+      markdown,
+      resolution
+    });
+    const headingRange = currentHeading
+      ? findVisualHeadingRange({ container, heading: currentHeading })
+      : null;
+    const headingElement = currentHeading
+      ? findVisualHeadingElement({ container, heading: currentHeading })
+      : null;
+
+    return headingRange
+      ? {
+          commentId: comment.id,
+          markdownRange,
+          projectionMethod: "section_heading",
+          state: "resolved",
+          structuralElements: headingElement ? [headingElement] : [],
+          textRanges: [headingRange]
+        }
+      : {
+          commentId: comment.id,
+          reason: "section_heading_not_projected",
+          state: "not_projectable"
+        };
+  }
+
+  const tableProjection = createVisualTableAnchorProjection({
+    markdown,
+    range: markdownRange
+  });
+  const tableProjectionMatch = tableProjection
+    ? findVisualTableProjectionMatch({ container, projection: tableProjection })
+    : null;
+
+  if (tableProjection && tableProjectionMatch) {
+    return {
+      commentId: comment.id,
+      markdownRange,
+      projectionMethod: isProjectedTableRow(tableProjection)
+        ? "table_row"
+        : "table_cell",
+      state: "resolved",
+      structuralElements: [],
+      textRanges: [tableProjectionMatch.range]
+    };
+  }
+
+  const sourceRangeMatch = findVisualSelectedTextMatchForResolvedSourceRange({
+    anchor: comment.anchor,
+    container,
+    headings,
+    markdown,
+    resolution
+  });
+
+  if (sourceRangeMatch) {
+    return {
+      commentId: comment.id,
+      markdownRange,
+      projectionMethod: "source_position",
+      state: "resolved",
+      structuralElements: [],
+      textRanges: [sourceRangeMatch.range]
+    };
+  }
+
+  const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
+    anchor: comment.anchor,
+    container,
+    markdown,
+    resolution
+  });
+
+  if (contextMatch) {
+    const selectedMatch = findVisualSelectedTextMatchInsideResolvedContext({
+      anchor: comment.anchor,
+      container,
+      contextMatch,
+      markdown,
+      resolution
+    });
+
+    return {
+      commentId: comment.id,
+      markdownRange,
+      projectionMethod: selectedMatch ? "plain_text_range" : "structural_block",
+      state: "resolved",
+      structuralElements: [],
+      textRanges: [selectedMatch?.range ?? contextMatch.range]
+    };
+  }
+
+  const uniqueVisibleMatch = findUniqueVisualSelectedTextMatch({
+    anchor: comment.anchor,
+    container
+  });
+
+  return uniqueVisibleMatch
+    ? {
+        commentId: comment.id,
+        markdownRange,
+        projectionMethod: "plain_text_range",
+        state: "resolved",
+        structuralElements: [],
+        textRanges: [uniqueVisibleMatch.range]
+      }
+    : {
+        commentId: comment.id,
+        reason: "selected_text_not_projected",
+        state: "not_projectable"
+      };
+}
+
+function findHeadingForCanonicalRange({
+  anchor,
+  headings,
+  markdown,
+  resolution
+}: {
+  anchor: Extract<PatchmarkCommentAnchor, { kind: "section" }>;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): ReturnType<typeof parseMarkdownHeadings>[number] | undefined {
+  if (typeof resolution.start === "number") {
+    const headingAtCanonicalStart = headings.find((heading) => {
+      const lineRange = getHeadingLineRange(markdown, heading);
+
+      return lineRange.start === resolution.start;
+    });
+
+    if (headingAtCanonicalStart) {
+      return headingAtCanonicalStart;
+    }
+  }
+
+  return findMatchingHeading(headings, {
+    level: anchor.heading_level,
+    text: anchor.heading
+  });
+}
+
+function isProjectedTableRow(projection: VisualTableAnchorProjection): boolean {
+  return projection.rows.some((row) => row.cells.length > 1);
+}
+
+function getVisualProjectionPrimaryRange(
+  projection: VisualTargetProjection
+): Range | null {
+  return projection.state === "resolved" ? projection.textRanges[0] ?? null : null;
+}
+
+function getVisualProjectionTop({
+  projection,
+  workspaceRect
+}: {
+  projection: VisualTargetProjection;
+  workspaceRect: DOMRect;
+}): number | null {
+  const range = getVisualProjectionPrimaryRange(projection);
+  const primaryRect = range ? getPrimaryRangeClientRect(range) : null;
+
+  return primaryRect ? primaryRect.top - workspaceRect.top : null;
+}
+
 function findVisualHeadingRange({
   container,
   heading
@@ -12486,83 +12706,6 @@ function findVisualHeadingRange({
   return range;
 }
 
-function findVisualSelectedTextTop({
-  anchor,
-  container,
-  workspaceRect
-}: {
-  anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>;
-  container: HTMLElement;
-  workspaceRect: DOMRect;
-}): number | null {
-  const visualMatch = findUniqueVisualSelectedTextMatch({ anchor, container });
-
-  return visualMatch ? Math.max(0, visualMatch.top - workspaceRect.top) : null;
-}
-
-function findVisualSelectedTextTopForResolvedAnchor({
-  anchor,
-  container,
-  headings,
-  markdown,
-  resolution,
-  workspaceRect
-}: {
-  anchor: SelectedTextAnchor;
-  container: HTMLElement;
-  headings: ReturnType<typeof parseMarkdownHeadings>;
-  markdown: string;
-  resolution: CommentAnchorResolution;
-  workspaceRect: DOMRect;
-}): number | null {
-  const tableProjectionMatch = findVisualTableAnchorMatchForResolvedAnchor({
-    container,
-    markdown,
-    resolution
-  });
-
-  if (tableProjectionMatch) {
-    return Math.max(0, tableProjectionMatch.top - workspaceRect.top);
-  }
-
-  const sourceRangeMatch = findVisualSelectedTextMatchForResolvedSourceRange({
-    anchor,
-    container,
-    headings,
-    markdown,
-    resolution
-  });
-
-  if (sourceRangeMatch) {
-    return Math.max(0, sourceRangeMatch.top - workspaceRect.top);
-  }
-
-  const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
-    anchor,
-    container,
-    markdown,
-    resolution
-  });
-
-  if (contextMatch) {
-    const selectedMatch = findVisualSelectedTextMatchInsideResolvedContext({
-      anchor,
-      container,
-      contextMatch,
-      markdown,
-      resolution
-    });
-
-    if (selectedMatch) {
-      return Math.max(0, selectedMatch.top - workspaceRect.top);
-    }
-
-    return Math.max(0, contextMatch.top - workspaceRect.top);
-  }
-
-  return findVisualSelectedTextTop({ anchor, container, workspaceRect });
-}
-
 function findVisualAnchorContextTop({
   anchor,
   container,
@@ -12574,7 +12717,7 @@ function findVisualAnchorContextTop({
 }): number | null {
   const contextMatch = findUniqueVisualAnchorContextMatch({ anchor, container });
 
-  return contextMatch ? Math.max(0, contextMatch.top - workspaceRect.top) : null;
+  return contextMatch ? contextMatch.top - workspaceRect.top : null;
 }
 
 function findVisualAnchorContextTopForResolvedAnchor({
@@ -12598,7 +12741,7 @@ function findVisualAnchorContextTopForResolvedAnchor({
   });
 
   if (contextMatch) {
-    return Math.max(0, contextMatch.top - workspaceRect.top);
+    return contextMatch.top - workspaceRect.top;
   }
 
   return findVisualAnchorContextTop({ anchor, container, workspaceRect });
@@ -13114,36 +13257,6 @@ function findVisualTextMatches({
   return matches;
 }
 
-function findVisualTableAnchorMatchForResolvedAnchor({
-  container,
-  markdown,
-  resolution
-}: {
-  container: HTMLElement;
-  markdown: string;
-  resolution: CommentAnchorResolution;
-}): VisualTextMatch | null {
-  if (
-    resolution.status !== "active" ||
-    typeof resolution.start !== "number" ||
-    typeof resolution.end !== "number"
-  ) {
-    return null;
-  }
-
-  const projection = createVisualTableAnchorProjection({
-    markdown,
-    range: {
-      end: resolution.end,
-      start: resolution.start
-    }
-  });
-
-  return projection
-    ? findVisualTableProjectionMatch({ container, projection })
-    : null;
-}
-
 function findVisualTableProjectionMatch({
   container,
   projection
@@ -13416,7 +13529,7 @@ function findVisualCommentIdsAtPoint({
 
   return comments
     .filter((comment) => {
-      const range = findVisualCommentAnchorRange({
+      const projection = findVisualCommentAnchorProjection({
         comment,
         container,
         headings,
@@ -13424,7 +13537,11 @@ function findVisualCommentIdsAtPoint({
         patches
       });
 
-      return range ? isPointInsideRangeClientRects(range, clientX, clientY) : false;
+      return projection.state === "resolved"
+        ? projection.textRanges.some((range) =>
+            isPointInsideRangeClientRects(range, clientX, clientY)
+          )
+        : false;
     })
     .map((comment) => comment.id);
 }
@@ -13442,72 +13559,15 @@ function findVisualCommentAnchorRange({
   markdown: string;
   patches?: PatchmarkPatch[];
 }): Range | null {
-  const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
-
-  if (resolution.status !== "active") {
-    return null;
-  }
-
-  if (comment.anchor.kind === "document") {
-    return null;
-  }
-
-  if (comment.anchor.kind === "section") {
-    const currentHeading = findMatchingHeading(headings, {
-      level: comment.anchor.heading_level,
-      text: comment.anchor.heading
-    });
-
-    return currentHeading
-      ? findVisualHeadingRange({ container, heading: currentHeading })
-      : null;
-  }
-
-  const tableProjectionMatch = findVisualTableAnchorMatchForResolvedAnchor({
-    container,
-    markdown,
-    resolution
-  });
-
-  if (tableProjectionMatch) {
-    return tableProjectionMatch.range;
-  }
-
-  const sourceRangeMatch = findVisualSelectedTextMatchForResolvedSourceRange({
-    anchor: comment.anchor,
-    container,
-    headings,
-    markdown,
-    resolution
-  });
-
-  if (sourceRangeMatch) {
-    return sourceRangeMatch.range;
-  }
-
-  const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
-    anchor: comment.anchor,
-    container,
-    markdown,
-    resolution
-  });
-
-  if (contextMatch) {
-    return (
-      findVisualSelectedTextMatchInsideResolvedContext({
-        anchor: comment.anchor,
-        container,
-        contextMatch,
-        markdown,
-        resolution
-      })?.range ?? contextMatch.range
-    );
-  }
-
-  return findUniqueVisualSelectedTextMatch({
-    anchor: comment.anchor,
-    container
-  })?.range ?? null;
+  return getVisualProjectionPrimaryRange(
+    findVisualCommentAnchorProjection({
+      comment,
+      container,
+      headings,
+      markdown,
+      patches
+    })
+  );
 }
 
 function scrollRangeIntoViewportIfNeeded(range: Range): void {
@@ -13597,7 +13657,7 @@ function updateVisualCommentHighlights({
       continue;
     }
 
-    const range = findVisualCommentAnchorRange({
+    const projection = findVisualCommentAnchorProjection({
       comment,
       container,
       headings,
@@ -13605,14 +13665,14 @@ function updateVisualCommentHighlights({
       patches
     });
 
-    if (!range) {
+    if (projection.state !== "resolved") {
       continue;
     }
 
     if (comment.status === "resolved") {
-      resolvedSelectedRanges.push(range);
+      resolvedSelectedRanges.push(...projection.textRanges);
     } else {
-      openSelectedRanges.push(range);
+      openSelectedRanges.push(...projection.textRanges);
     }
   }
 

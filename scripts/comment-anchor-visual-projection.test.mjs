@@ -52,11 +52,49 @@ assert.deepEqual(
   ["PAUL Thailand online delivery"]
 );
 
+const duplicateLinkRows = [
+  "### Competitive delivery references",
+  "",
+  "| **Provider** | **Signal** |",
+  "| --- | --- |",
+  "| [PAUL Thailand online delivery](https://www.paulthailand.com/next-day-delivery) | Premium delivery reference. |",
+  "| [PAUL Thailand online delivery](https://example.com/wholesale) | Wholesale duplicate label. |"
+].join("\n");
+const secondDuplicateLinkStart = duplicateLinkRows.lastIndexOf("[PAUL");
+const secondDuplicateLinkEnd = duplicateLinkRows.indexOf(
+  " | Wholesale",
+  secondDuplicateLinkStart
+);
+const duplicateLinkProjection = createVisualTableAnchorProjection({
+  markdown: duplicateLinkRows,
+  range: {
+    end: secondDuplicateLinkEnd,
+    start: secondDuplicateLinkStart
+  }
+});
+
+assert.ok(duplicateLinkProjection);
+assert.equal(duplicateLinkProjection.tableIndex, 0);
+assert.equal(duplicateLinkProjection.rows.length, 1);
+assert.equal(duplicateLinkProjection.rows[0].markdownRowIndex, 3);
+assert.deepEqual(
+  duplicateLinkProjection.rows[0].cells.map((cell) => cell.cellIndex),
+  [0]
+);
+assert.deepEqual(
+  duplicateLinkProjection.rows[0].cells.map((cell) => cell.visibleText),
+  ["PAUL Thailand online delivery"]
+);
+
 assert.equal(
   markdownInlineToPlainText("Use **bold**, *emphasis*, `code`, and [a link](https://example.com)."),
   "Use bold, emphasis, code, and a link."
 );
 assert.equal(markdownInlineToPlainText("Escaped \\| pipe"), "Escaped | pipe");
+assert.equal(
+  markdownInlineToPlainText("Use `LINE add` and **paid order** before [website visit](https://example.com)."),
+  "Use LINE add and paid order before website visit."
+);
 
 assert.deepEqual(
   createVisualAnchorSearchTextCandidates({
@@ -77,6 +115,16 @@ assert.ok(rowSearchCandidates[0].startsWith("PAUL Thailand online delivery"));
 assert.equal(rowSearchCandidates[0].includes("https://"), false);
 assert.equal(rowSearchCandidates[0].includes("["), false);
 assert.equal(rowSearchCandidates[0].includes("|"), false);
+
+assert.deepEqual(
+  createVisualAnchorSearchTextCandidates({
+    selectedMarkdown:
+      "**PAUL** Thailand [online delivery](https://www.paulthailand.com/next-day-delivery)",
+    sourceMarkdown:
+      "**PAUL** Thailand [online delivery](https://www.paulthailand.com/next-day-delivery)"
+  }),
+  ["PAUL Thailand online delivery"]
+);
 
 const demandSection = [
   "## 7. Demand Generation Plan",
