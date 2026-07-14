@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
 import {
+  applyMarkdownEdits,
   classifyRangeAgainstEdit,
   deriveContiguousMarkdownEdit,
+  deriveMarkdownChangeSet,
+  isSafeManualAnchorTransformChangeSet,
   isSafeManualAnchorTransformEdit,
+  transformSelectedTextAnchorThroughChangeSet,
   transformSelectedTextAnchorThroughEdit
 } from "../lib/comments/comment-anchor-transformation.ts";
 
@@ -55,6 +59,23 @@ function transformWithEdit(oldMarkdown, edit, selectedText, occurrence = 0) {
   return transformSelectedTextAnchorThroughEdit({
     anchor: createAnchor(oldMarkdown, selectedText, occurrence),
     edit,
+    newMarkdown,
+    oldMarkdown
+  });
+}
+
+function transformWithChangeSet(oldMarkdown, newMarkdown, selectedText, occurrence = 0) {
+  const changeSet = deriveMarkdownChangeSet({
+    newMarkdown,
+    oldMarkdown,
+    source: "manual_source"
+  });
+  assert.ok(changeSet);
+  assert.equal(applyMarkdownEdits(oldMarkdown, changeSet.edits), newMarkdown);
+
+  return transformSelectedTextAnchorThroughChangeSet({
+    anchor: createAnchor(oldMarkdown, selectedText, occurrence),
+    changeSet,
     newMarkdown,
     oldMarkdown
   });
@@ -251,6 +272,160 @@ function getAnchorResultComparable(result) {
   assert.equal(result.outcome, "active");
   assert.equal(result.selectedText, "LINE add");
   assert.equal(result.start, newMarkdown.indexOf("LINE add"));
+}
+
+{
+  const oldMarkdown = [
+    "Alpha target one.",
+    "Middle untouched.",
+    "Beta target two."
+  ].join("\n");
+  const newMarkdown = [
+    "Alpha target 1.",
+    "Middle untouched.",
+    "Beta target 2."
+  ].join("\n");
+  const changeSet = deriveMarkdownChangeSet({
+    newMarkdown,
+    oldMarkdown,
+    source: "manual_source"
+  });
+
+  assert.ok(changeSet);
+  assert.equal(changeSet.edits.length, 2);
+  assert.equal(applyMarkdownEdits(oldMarkdown, changeSet.edits), newMarkdown);
+}
+
+{
+  const oldMarkdown = "Metric: LINE add";
+  const newMarkdown = "Metric: **LINE add**";
+  const result = transformWithChangeSet(oldMarkdown, newMarkdown, "LINE add");
+
+  assert.equal(result.outcome, "active");
+  assert.equal(result.selectedText, "LINE add");
+  assert.equal(newMarkdown.slice(result.start, result.end), "LINE add");
+}
+
+{
+  const oldMarkdown = "Market: PAUL Thailand";
+  const newMarkdown = "Market: [PAUL Thailand](https://example.com)";
+  const result = transformWithChangeSet(
+    oldMarkdown,
+    newMarkdown,
+    "PAUL Thailand"
+  );
+
+  assert.equal(result.outcome, "active");
+  assert.equal(result.selectedText, "PAUL Thailand");
+  assert.equal(newMarkdown.slice(result.start, result.end), "PAUL Thailand");
+}
+
+{
+  const oldMarkdown = "regular customers need clear payment rules";
+  const newMarkdown = "regular household customers need clearer payment terms";
+  const result = transformWithChangeSet(
+    oldMarkdown,
+    newMarkdown,
+    "regular customers need clear payment rules"
+  );
+
+  assert.equal(result.outcome, "active");
+  assert.equal(
+    result.selectedText,
+    "regular household customers need clearer payment terms"
+  );
+}
+
+{
+  const oldMarkdown = [
+    "Intro.",
+    "Move this anchored paragraph to another section.",
+    "Middle.",
+    "Outro."
+  ].join("\n");
+  const movedText = "Move this anchored paragraph to another section.\n";
+  const newMarkdown = [
+    "Intro.",
+    "Middle.",
+    "Outro.",
+    "Move this anchored paragraph to another section."
+  ].join("\n");
+  const result = transformWithChangeSet(
+    oldMarkdown,
+    newMarkdown,
+    "anchored paragraph"
+  );
+
+  assert.equal(result.outcome, "active");
+  assert.equal(result.selectedText, "anchored paragraph");
+  assert.equal(result.transformation, "moved_with_text");
+  assert.equal(
+    newMarkdown.slice(result.start, result.end),
+    "anchored paragraph"
+  );
+  assert.ok(movedText.length >= 12);
+}
+
+{
+  const oldMarkdown = [
+    "Intro.",
+    "Duplicate anchored paragraph.",
+    "Middle.",
+    "Duplicate anchored paragraph.",
+    "Outro."
+  ].join("\n");
+  const newMarkdown = [
+    "Intro.",
+    "Middle.",
+    "Duplicate anchored paragraph.",
+    "Duplicate anchored paragraph.",
+    "Outro."
+  ].join("\n");
+  const result = transformWithChangeSet(
+    oldMarkdown,
+    newMarkdown,
+    "anchored paragraph"
+  );
+
+  assert.equal(result.outcome, "needs_review");
+}
+
+{
+  const oldMarkdown = [
+    "| Product | Metric |",
+    "| --- | --- |",
+    "| Core | LINE add |"
+  ].join("\n");
+  const newMarkdown = [
+    "| Product | Metric |",
+    "| --- | --- |",
+    "| New | preorder |",
+    "| Core | LINE add |"
+  ].join("\n");
+  const result = transformWithChangeSet(oldMarkdown, newMarkdown, "LINE add");
+
+  assert.equal(result.outcome, "active");
+  assert.equal(result.selectedText, "LINE add");
+  assert.equal(result.start, newMarkdown.indexOf("LINE add"));
+}
+
+{
+  const oldMarkdown = "A\nB target\nC";
+  const newMarkdown = "A changed\nB target\nC changed";
+  const changeSet = deriveMarkdownChangeSet({
+    newMarkdown,
+    oldMarkdown,
+    source: "manual_source"
+  });
+  assert.ok(changeSet);
+
+  const safety = isSafeManualAnchorTransformChangeSet({
+    affectedAnchorCount: 1,
+    changeSet,
+    oldMarkdown
+  });
+
+  assert.equal(safety.safe, true);
 }
 
 {

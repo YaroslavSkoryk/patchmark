@@ -33,12 +33,14 @@ import {
 } from "@/lib/comments/chatgpt-prompt-rules";
 import {
   classifyRangeAgainstEdit,
-  deriveContiguousMarkdownEdit,
+  deriveMarkdownChangeSet,
   doesRangeIntersectEdit,
-  isSafeManualAnchorTransformEdit,
+  isSafeManualAnchorTransformChangeSet,
   transformSelectedTextAnchorThroughEdit,
+  transformSelectedTextAnchorThroughChangeSet,
   type AnchorEditRelationship,
   type AnchorTransformResult,
+  type MarkdownChangeSet,
   type MarkdownEdit
 } from "@/lib/comments/comment-anchor-transformation";
 import {
@@ -68,6 +70,7 @@ import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import {
   MarkdownSourceEditor,
+  type MarkdownMutationHint,
   type MarkdownSelection
 } from "@/components/markdown-source-editor";
 import { DocumentOutline } from "@/components/document-outline";
@@ -317,12 +320,19 @@ type PatchReviewAnchorStatus =
       text: string;
     };
 type DocumentMutationSource =
+  | "composition"
+  | "cut"
+  | "formatter"
   | "manual_source"
   | "manual_visual"
+  | "move"
   | "patch_apply"
+  | "paste"
   | "programmatic_sync"
   | "project_load"
-  | "snapshot_restore";
+  | "redo"
+  | "snapshot_restore"
+  | "undo";
 type CommentMutationOutcome =
   | "deleted"
   | "recovery_required"
@@ -1245,9 +1255,13 @@ export function DocumentEditor() {
 
   function handleMarkdownChange(
     nextMarkdown: string,
-    source: DocumentMutationSource
+    source: DocumentMutationSource,
+    hint?: MarkdownMutationHint
   ) {
-    applyManualMarkdownMutation(nextMarkdown, source);
+    applyManualMarkdownMutation(
+      nextMarkdown,
+      getDocumentMutationSourceFromHint(source, hint)
+    );
 
     if (saveStatus !== "saving") {
       setSaveStatus("idle");
@@ -1263,28 +1277,29 @@ export function DocumentEditor() {
       return;
     }
 
-    if (
-      source !== "manual_source" &&
-      source !== "manual_visual"
-    ) {
+    if (!isManualDocumentMutationSource(source)) {
       setMarkdown(nextMarkdown);
       return;
     }
 
-    const edit = deriveContiguousMarkdownEdit(markdown, nextMarkdown);
-
-    if (!edit || comments.length === 0) {
-      setMarkdown(nextMarkdown);
-      return;
-    }
-
-    const affectedAnchorCount = countManualEditIntersectingSelectedTextAnchors({
-      comments,
-      edit
+    const changeSet = deriveMarkdownChangeSet({
+      newMarkdown: nextMarkdown,
+      oldMarkdown: markdown,
+      source: getMarkdownChangeSetSource(source)
     });
-    const safety = isSafeManualAnchorTransformEdit({
+
+    if (!changeSet || comments.length === 0) {
+      setMarkdown(nextMarkdown);
+      return;
+    }
+
+    const affectedAnchorCount = countManualChangeSetIntersectingSelectedTextAnchors({
+      changeSet,
+      comments,
+    });
+    const safety = isSafeManualAnchorTransformChangeSet({
       affectedAnchorCount,
-      edit,
+      changeSet,
       oldMarkdown: markdown
     });
 
@@ -1296,7 +1311,8 @@ export function DocumentEditor() {
     const mutationResult = orchestrateDocumentMutation({
       comments,
       createdAt: new Date().toISOString(),
-      edits: [edit],
+      changeSet,
+      edits: changeSet.edits,
       newMarkdown: nextMarkdown,
       oldMarkdown: markdown,
       source
@@ -3626,8 +3642,8 @@ export function DocumentEditor() {
             ) : (
               <MarkdownSourceEditor
                 markdown={markdown}
-                onMarkdownChange={(nextMarkdown) =>
-                  handleMarkdownChange(nextMarkdown, "manual_source")
+                onMarkdownChange={(nextMarkdown, hint) =>
+                  handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
                 onSelectionChange={setMarkdownSelection}
                 selectionRequest={markdownSelectionRequest}
@@ -8188,6 +8204,7 @@ function createAppliedTableRowAnchorMetadata({
 }
 
 function orchestrateDocumentMutation({
+  changeSet,
   comments,
   createdAt,
   edits,
@@ -8196,6 +8213,7 @@ function orchestrateDocumentMutation({
   patchContext,
   source
 }: {
+  changeSet?: MarkdownChangeSet;
   comments: PatchmarkComment[];
   createdAt: string;
   edits: MarkdownEdit[];
@@ -8205,6 +8223,15 @@ function orchestrateDocumentMutation({
   source: DocumentMutationSource;
 }): DocumentMutationResult {
   const edit = edits.length === 1 ? edits[0] : null;
+  const effectiveChangeSet =
+    changeSet ??
+    ({
+      broad: edits.length > 1,
+      confidence: edits.length === 1 ? "high" : "medium",
+      derivation: "native",
+      edits,
+      source: getMarkdownChangeSetSource(source)
+    } satisfies MarkdownChangeSet);
   const oldHeadings = parseMarkdownHeadings(oldMarkdown);
   const newHeadings = parseMarkdownHeadings(newMarkdown);
   const commentImpacts: CommentMutationImpact[] = [];
@@ -8234,13 +8261,13 @@ function orchestrateDocumentMutation({
       linkedCommentFound = true;
     }
 
-    if (source === "manual_source" || source === "manual_visual") {
+    if (isManualDocumentMutationSource(source)) {
       const manualUpdate =
-        edit && comment.status !== "resolved" && comment.anchor.kind === "selected_text"
+        comment.status !== "resolved" && comment.anchor.kind === "selected_text"
           ? updateSelectedTextCommentThroughManualMutation({
+              changeSet: effectiveChangeSet,
               comment,
               createdAt,
-              edit,
               newMarkdown,
               oldMarkdown,
               source
@@ -8547,44 +8574,118 @@ function rangesOverlap(
   return firstStart < secondEnd && firstEnd > secondStart;
 }
 
-function countManualEditIntersectingSelectedTextAnchors({
+function isManualDocumentMutationSource(source: DocumentMutationSource): boolean {
+  return (
+    source === "composition" ||
+    source === "cut" ||
+    source === "formatter" ||
+    source === "manual_source" ||
+    source === "manual_visual" ||
+    source === "move" ||
+    source === "paste" ||
+    source === "redo" ||
+    source === "undo"
+  );
+}
+
+function getMarkdownChangeSetSource(
+  source: DocumentMutationSource
+): MarkdownChangeSet["source"] {
+  if (
+    source === "programmatic_sync" ||
+    source === "project_load" ||
+    source === "snapshot_restore"
+  ) {
+    return "programmatic";
+  }
+
+  if (source === "patch_apply") {
+    return "patch_apply";
+  }
+
+  return source;
+}
+
+function getDocumentMutationSourceFromHint(
+  source: DocumentMutationSource,
+  hint?: MarkdownMutationHint
+): DocumentMutationSource {
+  if (!hint || source !== "manual_source") {
+    return source;
+  }
+
+  if (hint.isComposing || hint.event === "compositionend") {
+    return "composition";
+  }
+
+  if (hint.event === "paste" || hint.inputType === "insertFromPaste") {
+    return "paste";
+  }
+
+  if (hint.event === "cut" || hint.inputType === "deleteByCut") {
+    return "cut";
+  }
+
+  if (hint.inputType === "historyUndo") {
+    return "undo";
+  }
+
+  if (hint.inputType === "historyRedo") {
+    return "redo";
+  }
+
+  return source;
+}
+
+function countManualChangeSetIntersectingSelectedTextAnchors({
+  changeSet,
   comments,
-  edit
 }: {
+  changeSet: MarkdownChangeSet;
   comments: PatchmarkComment[];
-  edit: MarkdownEdit;
 }): number {
   return comments.filter((comment) => {
+    const anchorStart =
+      comment.anchor.kind === "selected_text"
+        ? comment.anchor.markdown_start_offset
+        : undefined;
+    const anchorEnd =
+      comment.anchor.kind === "selected_text"
+        ? comment.anchor.markdown_end_offset
+        : undefined;
+
     if (
       comment.status === "resolved" ||
       comment.anchor.kind !== "selected_text" ||
-      typeof comment.anchor.markdown_start_offset !== "number" ||
-      typeof comment.anchor.markdown_end_offset !== "number"
+      typeof anchorStart !== "number" ||
+      typeof anchorEnd !== "number"
     ) {
       return false;
     }
 
-    return doesRangeIntersectEdit(
-      {
-        start: comment.anchor.markdown_start_offset,
-        end: comment.anchor.markdown_end_offset
-      },
-      edit
+    return changeSet.edits.some((edit) =>
+      doesRangeIntersectEdit(
+        {
+          start: anchorStart,
+          end: anchorEnd
+        },
+        edit
+      )
     );
   }).length;
 }
 
 function updateSelectedTextCommentThroughManualMutation({
+  changeSet,
   comment,
   createdAt,
-  edit,
   newMarkdown,
   oldMarkdown,
   source
 }: {
+  changeSet: MarkdownChangeSet;
   comment: PatchmarkComment;
   createdAt: string;
-  edit: MarkdownEdit;
   newMarkdown: string;
   oldMarkdown: string;
   source: DocumentMutationSource;
@@ -8593,16 +8694,15 @@ function updateSelectedTextCommentThroughManualMutation({
     return null;
   }
 
-  const transform = transformSelectedTextAnchorThroughEdit({
+  const transform = transformSelectedTextAnchorThroughChangeSet({
     anchor: comment.anchor,
-    edit,
+    changeSet,
     newMarkdown,
     oldMarkdown
   });
   const nextAnchor = createSelectedTextAnchorFromMutationTransform({
     anchor: comment.anchor,
     comment,
-    edit,
     newMarkdown,
     source,
     transform
@@ -8636,14 +8736,12 @@ function updateSelectedTextCommentThroughManualMutation({
 function createSelectedTextAnchorFromMutationTransform({
   anchor,
   comment,
-  edit,
   newMarkdown,
   source,
   transform
 }: {
   anchor: SelectedTextAnchor;
   comment: PatchmarkComment;
-  edit: MarkdownEdit;
   newMarkdown: string;
   source: DocumentMutationSource;
   transform: AnchorTransformResult;
@@ -8655,7 +8753,7 @@ function createSelectedTextAnchorFromMutationTransform({
   if (transform.outcome === "inactive") {
     return createInactiveSelectedTextAnchorAfterManualDeletion({
       anchor,
-      edit,
+      deletionOffset: transform.start,
       newMarkdown
     });
   }
@@ -8695,27 +8793,35 @@ function createSelectedTextAnchorFromMutationTransform({
 
 function createInactiveSelectedTextAnchorAfterManualDeletion({
   anchor,
-  edit,
+  deletionOffset,
   newMarkdown
 }: {
   anchor: SelectedTextAnchor;
-  edit: MarkdownEdit;
+  deletionOffset?: number;
   newMarkdown: string;
 }): SelectedTextAnchor {
-  const deletionOffset = Math.max(0, Math.min(edit.oldStart, newMarkdown.length));
+  const nextOffset = Math.max(
+    0,
+    Math.min(
+      typeof deletionOffset === "number"
+        ? deletionOffset
+        : anchor.markdown_start_offset ?? 0,
+      newMarkdown.length
+    )
+  );
 
   return refreshSelectedAnchorPositionMetadata({
     anchor: {
       ...anchor,
       selected_text: "",
       anchor_context: undefined,
-      markdown_start_offset: deletionOffset,
-      markdown_end_offset: deletionOffset
+      markdown_start_offset: nextOffset,
+      markdown_end_offset: nextOffset
     },
     markdown: newMarkdown,
     preferredHeadingText: anchor.containing_heading,
-    start: deletionOffset,
-    end: deletionOffset
+    start: nextOffset,
+    end: nextOffset
   });
 }
 
@@ -8891,7 +8997,6 @@ function updateSingleAffectedCommentAnchor({
         ? createSelectedTextAnchorFromMutationTransform({
             anchor: comment.anchor,
             comment,
-            edit: edit as MarkdownEdit,
             newMarkdown,
             source: "patch_apply",
             transform
