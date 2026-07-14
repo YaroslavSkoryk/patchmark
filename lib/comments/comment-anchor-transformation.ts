@@ -40,6 +40,16 @@ export type AnchorTransformResult =
       start?: number;
     };
 
+export type AnchorEditRelationship =
+  | "after"
+  | "anchor_inside_edit"
+  | "before"
+  | "edit_inside_anchor"
+  | "exact_replacement"
+  | "overlap_anchor_end"
+  | "overlap_anchor_start"
+  | "unaffected";
+
 export type ManualEditSafetyResult =
   | {
       reason: string;
@@ -98,6 +108,41 @@ export function getMarkdownEditRange(edit: MarkdownEdit): TextRange {
     end: edit.oldEnd,
     start: edit.oldStart
   };
+}
+
+export function classifyRangeAgainstEdit(
+  range: TextRange,
+  edit: MarkdownEdit
+): AnchorEditRelationship {
+  if (edit.oldEnd <= range.start) {
+    return "after";
+  }
+
+  if (edit.oldStart >= range.end) {
+    return "before";
+  }
+
+  if (edit.oldStart === range.start && edit.oldEnd === range.end) {
+    return "exact_replacement";
+  }
+
+  if (edit.oldStart > range.start && edit.oldEnd < range.end) {
+    return "edit_inside_anchor";
+  }
+
+  if (edit.oldStart <= range.start && edit.oldEnd >= range.end) {
+    return "anchor_inside_edit";
+  }
+
+  if (edit.oldStart <= range.start && edit.oldEnd < range.end) {
+    return "overlap_anchor_start";
+  }
+
+  if (edit.oldStart > range.start && edit.oldStart < range.end) {
+    return "overlap_anchor_end";
+  }
+
+  return "unaffected";
 }
 
 export function isSafeManualAnchorTransformEdit({
@@ -195,7 +240,15 @@ export function transformSelectedTextAnchorThroughEdit({
 
   const delta = edit.insertedText.length - (edit.oldEnd - edit.oldStart);
 
-  if (edit.oldEnd <= anchorStart) {
+  const relationship = classifyRangeAgainstEdit(
+    {
+      start: anchorStart,
+      end: anchorEnd
+    },
+    edit
+  );
+
+  if (relationship === "after") {
     return createActiveTransformResult({
       end: anchorEnd + delta,
       newMarkdown,
@@ -204,7 +257,7 @@ export function transformSelectedTextAnchorThroughEdit({
     });
   }
 
-  if (edit.oldStart >= anchorEnd) {
+  if (relationship === "before") {
     return createActiveTransformResult({
       end: anchorEnd,
       newMarkdown,
@@ -213,7 +266,7 @@ export function transformSelectedTextAnchorThroughEdit({
     });
   }
 
-  if (edit.oldStart === anchorStart && edit.oldEnd === anchorEnd) {
+  if (relationship === "exact_replacement") {
     return createReplacementResult({
       edit,
       newMarkdown,
@@ -222,7 +275,7 @@ export function transformSelectedTextAnchorThroughEdit({
     });
   }
 
-  if (edit.oldStart > anchorStart && edit.oldEnd < anchorEnd) {
+  if (relationship === "edit_inside_anchor") {
     return createActiveTransformResult({
       end: anchorEnd + delta,
       newMarkdown,
@@ -231,7 +284,7 @@ export function transformSelectedTextAnchorThroughEdit({
     });
   }
 
-  if (edit.oldStart <= anchorStart && edit.oldEnd >= anchorEnd) {
+  if (relationship === "anchor_inside_edit") {
     return createReplacementResult({
       edit,
       newMarkdown,
@@ -240,7 +293,7 @@ export function transformSelectedTextAnchorThroughEdit({
     });
   }
 
-  if (edit.oldStart <= anchorStart && edit.oldEnd < anchorEnd) {
+  if (relationship === "overlap_anchor_start") {
     const survivingTailLength = anchorEnd - edit.oldEnd;
     return createActiveTransformResult({
       end: edit.oldStart + edit.insertedText.length + survivingTailLength,
@@ -250,7 +303,7 @@ export function transformSelectedTextAnchorThroughEdit({
     });
   }
 
-  if (edit.oldStart > anchorStart && edit.oldStart < anchorEnd) {
+  if (relationship === "overlap_anchor_end") {
     return createActiveTransformResult({
       end: edit.oldStart + edit.insertedText.length,
       newMarkdown,

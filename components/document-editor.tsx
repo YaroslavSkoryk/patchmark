@@ -28,10 +28,12 @@ import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
 import {
+  classifyRangeAgainstEdit,
   deriveContiguousMarkdownEdit,
   doesRangeIntersectEdit,
   isSafeManualAnchorTransformEdit,
   transformSelectedTextAnchorThroughEdit,
+  type AnchorEditRelationship,
   type AnchorTransformResult,
   type MarkdownEdit
 } from "@/lib/comments/comment-anchor-transformation";
@@ -313,8 +315,40 @@ type DocumentMutationSource =
   | "manual_source"
   | "manual_visual"
   | "patch_apply"
-  | "programmatic"
-  | "project_load";
+  | "programmatic_sync"
+  | "project_load"
+  | "snapshot_restore";
+type CommentMutationOutcome =
+  | "deleted"
+  | "recovery_required"
+  | "transformed_active"
+  | "transformed_needs_review"
+  | "unaffected";
+type CommentMutationImpact = {
+  commentId: string;
+  outcome: CommentMutationOutcome;
+  patchImpactKind?: PatchCommentImpactKind;
+  relationship?: AnchorEditRelationship | "section_may_have_shifted";
+  validation: CommentAnchorResolution;
+};
+type DocumentMutationPatchContext = {
+  linkedCommentId?: string;
+  patch: PatchmarkPatch;
+  replacementStart: number;
+};
+type DocumentMutationResult = {
+  commentImpacts: CommentMutationImpact[];
+  comments: PatchmarkComment[];
+  linkedCommentFound: boolean;
+  markdown: string;
+  needsReviewCount: number;
+  offsetShiftedCount: number;
+  reanchoredCount: number;
+  recoveryRequiredCommentIds: string[];
+  transformedCommentIds: string[];
+  unchangedCount: number;
+  validationResults: Record<string, CommentAnchorResolution>;
+};
 type PatchmarkPatchGroupStatus =
   | "pending"
   | "in_progress"
@@ -1218,18 +1252,19 @@ export function DocumentEditor() {
       return;
     }
 
-    const transformedComments = transformCommentsThroughManualMarkdownEdit({
+    const mutationResult = orchestrateDocumentMutation({
       comments,
-      edit,
+      createdAt: new Date().toISOString(),
+      edits: [edit],
       newMarkdown: nextMarkdown,
       oldMarkdown: markdown,
       source
     });
 
-    setMarkdown(nextMarkdown);
+    setMarkdown(mutationResult.markdown);
 
-    if (transformedComments !== comments) {
-      setComments(transformedComments);
+    if (mutationResult.comments !== comments) {
+      setComments(mutationResult.comments);
     }
   }
 
@@ -2671,9 +2706,6 @@ export function DocumentEditor() {
         : null;
     const originalStart = resolvedPatchTarget?.start ?? -1;
     const originalEnd = resolvedPatchTarget?.end ?? -1;
-    const lengthDelta =
-      currentPatch.suggested_text.length - currentPatch.original_text.length;
-
     if (
       !resolvedPatchTarget ||
       markdown.slice(originalStart, originalEnd) !== currentPatch.original_text
@@ -2685,14 +2717,6 @@ export function DocumentEditor() {
       });
       return;
     }
-
-    const affectedComments = analyzeCommentsAffectedByPatch({
-      comments,
-      currentMarkdown: markdown,
-      originalEnd,
-      originalStart,
-      patch: currentPatch
-    });
 
     setSaveStatus("saving");
     setCommentsError(null);
@@ -2729,15 +2753,24 @@ export function DocumentEditor() {
         start: replacementStart,
         text: currentPatch.suggested_text
       });
-      const affectedCommentUpdate = updateAffectedCommentAnchors({
-        affectedComments,
+      const mutationResult = orchestrateDocumentMutation({
         comments,
         createdAt: appliedAt,
-        lengthDelta,
+        edits: [
+          {
+            oldStart: originalStart,
+            oldEnd: originalEnd,
+            insertedText: currentPatch.suggested_text
+          }
+        ],
         newMarkdown: nextMarkdown,
         oldMarkdown: markdown,
-        patch: currentPatch,
-        replacementStart
+        patchContext: {
+          linkedCommentId: currentPatch.comment_id,
+          patch: currentPatch,
+          replacementStart
+        },
+        source: "patch_apply"
       });
       const nextPatches = patches.map((candidate) =>
         candidate.id === currentPatch.id
@@ -2777,29 +2810,29 @@ export function DocumentEditor() {
       }
 
       const linkedCommentMissing =
-        Boolean(currentPatch.comment_id) && !affectedCommentUpdate.linkedCommentFound;
+        Boolean(currentPatch.comment_id) && !mutationResult.linkedCommentFound;
 
       try {
-        await writeProjectComments(nextProjectHandle, affectedCommentUpdate.comments);
+        await writeProjectComments(nextProjectHandle, mutationResult.comments);
         setProjectHandle(nextProjectHandle);
-        setMarkdown(nextMarkdown);
-        setBaselineMarkdown(nextMarkdown);
+        setMarkdown(mutationResult.markdown);
+        setBaselineMarkdown(mutationResult.markdown);
         setRestoredMarkdown(null);
         setVersionEntries(nextProjectHandle.manifest.versions ?? []);
         setDocumentVersion((currentVersion) => currentVersion + 1);
-        setComments(affectedCommentUpdate.comments);
+        setComments(mutationResult.comments);
         setPatches(nextPatches);
         setRecentlyAppliedPatchId(currentPatch.id);
         setSaveStatus("idle");
         setSaveFeedback({
           kind:
-            linkedCommentMissing || affectedCommentUpdate.needsReviewCount > 0
+            linkedCommentMissing || mutationResult.needsReviewCount > 0
               ? "info"
               : "success",
           message: linkedCommentMissing
             ? "Patch applied, but the linked comment was not found. Other comment anchors were updated where needed."
-            : affectedCommentUpdate.needsReviewCount > 0
-              ? `Patch applied. ${affectedCommentUpdate.needsReviewCount} comment anchor${affectedCommentUpdate.needsReviewCount === 1 ? "" : "s"} need review.`
+            : mutationResult.needsReviewCount > 0
+              ? `Patch applied. ${mutationResult.needsReviewCount} comment anchor${mutationResult.needsReviewCount === 1 ? "" : "s"} need review.`
               : "Patch applied. Comment anchors were updated where needed."
         });
       } catch (error) {
@@ -8101,124 +8134,264 @@ function createAppliedTableRowAnchorMetadata({
   };
 }
 
-type AffectedPatchComment = {
-  commentId: string;
-  impactKind: PatchCommentImpactKind;
-};
-
-type AffectedPatchCommentUpdate = {
-  comments: PatchmarkComment[];
-  linkedCommentFound: boolean;
-  needsReviewCount: number;
-  offsetShiftedCount: number;
-  reanchoredCount: number;
-  unchangedCount: number;
-};
-
-function analyzeCommentsAffectedByPatch({
+function orchestrateDocumentMutation({
   comments,
-  currentMarkdown,
-  originalEnd,
-  originalStart,
-  patch
+  createdAt,
+  edits,
+  newMarkdown,
+  oldMarkdown,
+  patchContext,
+  source
 }: {
   comments: PatchmarkComment[];
-  currentMarkdown: string;
-  originalEnd: number;
-  originalStart: number;
-  patch: PatchmarkPatch;
-}): AffectedPatchComment[] {
-  const headings = parseMarkdownHeadings(currentMarkdown);
+  createdAt: string;
+  edits: MarkdownEdit[];
+  newMarkdown: string;
+  oldMarkdown: string;
+  patchContext?: DocumentMutationPatchContext;
+  source: DocumentMutationSource;
+}): DocumentMutationResult {
+  const edit = edits.length === 1 ? edits[0] : null;
+  const oldHeadings = parseMarkdownHeadings(oldMarkdown);
+  const newHeadings = parseMarkdownHeadings(newMarkdown);
+  const commentImpacts: CommentMutationImpact[] = [];
+  const recoveryRequiredCommentIds: string[] = [];
+  const transformedCommentIds: string[] = [];
+  const validationResults: Record<string, CommentAnchorResolution> = {};
+  let didTransform = false;
+  let linkedCommentFound = false;
+  let needsReviewCount = 0;
+  let offsetShiftedCount = 0;
+  let reanchoredCount = 0;
+  let unchangedCount = 0;
 
-  return comments.flatMap((comment) => {
-    const impactKind = getPatchCommentImpactKind({
+  const nextComments = comments.map((comment) => {
+    const classification = classifyCommentDocumentMutation({
       comment,
-      currentMarkdown,
-      headings,
-      originalEnd,
-      originalStart,
-      patch
+      edit,
+      oldHeadings,
+      oldMarkdown,
+      patchContext,
+      source
+    });
+    let nextComment = comment;
+    let outcome: CommentMutationOutcome = "unaffected";
+
+    if (patchContext?.linkedCommentId === comment.id) {
+      linkedCommentFound = true;
+    }
+
+    if (source === "manual_source" || source === "manual_visual") {
+      const manualUpdate =
+        edit && comment.status !== "resolved" && comment.anchor.kind === "selected_text"
+          ? updateSelectedTextCommentThroughManualMutation({
+              comment,
+              createdAt,
+              edit,
+              newMarkdown,
+              oldMarkdown,
+              source
+            })
+          : null;
+
+      if (manualUpdate) {
+        nextComment = manualUpdate.comment;
+        outcome = manualUpdate.outcome;
+      }
+    } else if (
+      source === "patch_apply" &&
+      patchContext &&
+      classification.patchImpactKind !== "unaffected"
+    ) {
+      const patchUpdate = updateSingleAffectedCommentAnchor({
+        comment,
+        createdAt,
+        edit,
+        impactKind: classification.patchImpactKind,
+        newMarkdown,
+        oldMarkdown,
+        patch: patchContext.patch,
+        replacementStart: patchContext.replacementStart
+      });
+
+      nextComment = patchUpdate.comment;
+      outcome = getCommentMutationOutcomeFromPatchResult(patchUpdate.result);
+
+      if (patchUpdate.result === "needs_review") {
+        needsReviewCount += 1;
+      } else if (patchUpdate.result === "offset_shifted") {
+        offsetShiftedCount += 1;
+      } else if (patchUpdate.result === "reanchored") {
+        reanchoredCount += 1;
+      } else {
+        unchangedCount += 1;
+      }
+    } else {
+      unchangedCount += 1;
+    }
+
+    if (nextComment !== comment) {
+      didTransform = true;
+      transformedCommentIds.push(comment.id);
+    }
+
+    const validation = resolveCommentAnchor(nextComment, newMarkdown, newHeadings);
+    validationResults[comment.id] = validation;
+
+    if (
+      outcome === "transformed_needs_review" ||
+      outcome === "recovery_required" ||
+      validation.status === "ambiguous"
+    ) {
+      recoveryRequiredCommentIds.push(comment.id);
+    }
+
+    commentImpacts.push({
+      commentId: comment.id,
+      outcome,
+      patchImpactKind: classification.patchImpactKind,
+      relationship: classification.relationship,
+      validation
     });
 
-    return impactKind === "unaffected"
-      ? []
-      : [
-          {
-            commentId: comment.id,
-            impactKind
-          }
-        ];
+    return nextComment;
   });
+
+  return {
+    commentImpacts,
+    comments: didTransform ? nextComments : comments,
+    linkedCommentFound,
+    markdown: newMarkdown,
+    needsReviewCount,
+    offsetShiftedCount,
+    reanchoredCount,
+    recoveryRequiredCommentIds,
+    transformedCommentIds,
+    unchangedCount,
+    validationResults
+  };
 }
 
-function getPatchCommentImpactKind({
+function classifyCommentDocumentMutation({
   comment,
-  currentMarkdown,
-  headings,
-  originalEnd,
-  originalStart,
-  patch
+  edit,
+  oldHeadings,
+  oldMarkdown,
+  patchContext,
+  source
 }: {
   comment: PatchmarkComment;
-  currentMarkdown: string;
-  headings: ReturnType<typeof parseMarkdownHeadings>;
-  originalEnd: number;
-  originalStart: number;
-  patch: PatchmarkPatch;
-}): PatchCommentImpactKind {
-  if (comment.id === patch.comment_id) {
-    return "linked_comment";
+  edit: MarkdownEdit | null;
+  oldHeadings: ReturnType<typeof parseMarkdownHeadings>;
+  oldMarkdown: string;
+  patchContext?: DocumentMutationPatchContext;
+  source: DocumentMutationSource;
+}): {
+  patchImpactKind: PatchCommentImpactKind;
+  relationship?: AnchorEditRelationship | "section_may_have_shifted";
+} {
+  if (!edit) {
+    return {
+      patchImpactKind: "unaffected"
+    };
+  }
+
+  if (source === "patch_apply" && comment.id === patchContext?.linkedCommentId) {
+    return {
+      patchImpactKind: "linked_comment"
+    };
   }
 
   const { anchor } = comment;
 
   if (anchor.kind === "document") {
-    return "unaffected";
+    return {
+      patchImpactKind: "unaffected"
+    };
   }
 
   if (anchor.kind === "section") {
     const sectionRange = getSectionAnchorRangeForImpact({
       anchor,
-      headings,
-      markdown: currentMarkdown
+      headings: oldHeadings,
+      markdown: oldMarkdown
     });
 
     if (!sectionRange) {
-      return "unaffected";
+      return {
+        patchImpactKind: "unaffected"
+      };
     }
 
-    return sectionRange.start >= originalEnd ||
-      rangesOverlap(sectionRange.start, sectionRange.end, originalStart, originalEnd)
-      ? "section_may_have_shifted"
-      : "unaffected";
+    const relationship = classifyRangeAgainstEdit(sectionRange, edit);
+
+    return relationship !== "before" && relationship !== "unaffected"
+      ? {
+          patchImpactKind: "section_may_have_shifted",
+          relationship: "section_may_have_shifted"
+        }
+      : {
+          patchImpactKind: "unaffected",
+          relationship
+        };
   }
 
   const selectedRange = getSelectedAnchorRangeForImpact({
     anchor,
-    originalStart,
-    patch
+    originalStart: edit.oldStart,
+    patch: patchContext?.patch
   });
 
   if (!selectedRange) {
-    return "unaffected";
+    return {
+      patchImpactKind: "unaffected"
+    };
   }
 
-  if (selectedRange.start >= originalEnd) {
-    return "anchor_after_replaced_range";
+  const relationship = classifyRangeAgainstEdit(selectedRange, edit);
+
+  if (relationship === "after") {
+    return {
+      patchImpactKind: "anchor_after_replaced_range",
+      relationship
+    };
   }
 
-  if (selectedRange.start >= originalStart && selectedRange.end <= originalEnd) {
-    return "anchor_inside_replaced_range";
+  if (relationship === "before" || relationship === "unaffected") {
+    return {
+      patchImpactKind: "unaffected",
+      relationship
+    };
   }
 
-  return rangesOverlap(
-    selectedRange.start,
-    selectedRange.end,
-    originalStart,
-    originalEnd
-  )
-    ? "anchor_intersects_replaced_range"
-    : "unaffected";
+  if (
+    relationship === "anchor_inside_edit" ||
+    relationship === "exact_replacement"
+  ) {
+    return {
+      patchImpactKind: "anchor_inside_replaced_range",
+      relationship
+    };
+  }
+
+  return {
+    patchImpactKind: "anchor_intersects_replaced_range",
+    relationship
+  };
+}
+
+function getCommentMutationOutcomeFromPatchResult(
+  result: PatchmarkCommentPatchImpact["result"]
+): CommentMutationOutcome {
+  if (result === "needs_review") {
+    return "transformed_needs_review";
+  }
+
+  if (result === "reanchored" || result === "offset_shifted") {
+    return "transformed_active";
+  }
+
+  return "unaffected";
 }
 
 function getSectionAnchorRangeForImpact({
@@ -8259,7 +8432,7 @@ function getSelectedAnchorRangeForImpact({
 }: {
   anchor: SelectedTextAnchor;
   originalStart: number;
-  patch: PatchmarkPatch;
+  patch?: PatchmarkPatch;
 }): { end: number; start: number } | null {
   if (
     typeof anchor.markdown_start_offset === "number" &&
@@ -8269,6 +8442,10 @@ function getSelectedAnchorRangeForImpact({
       start: anchor.markdown_start_offset,
       end: anchor.markdown_end_offset
     };
+  }
+
+  if (!patch) {
+    return null;
   }
 
   const matchesInOriginalText = findExactTextMatches(
@@ -8322,58 +8499,66 @@ function countManualEditIntersectingSelectedTextAnchors({
   }).length;
 }
 
-function transformCommentsThroughManualMarkdownEdit({
-  comments,
+function updateSelectedTextCommentThroughManualMutation({
+  comment,
+  createdAt,
   edit,
   newMarkdown,
   oldMarkdown,
   source
 }: {
-  comments: PatchmarkComment[];
+  comment: PatchmarkComment;
+  createdAt: string;
   edit: MarkdownEdit;
   newMarkdown: string;
   oldMarkdown: string;
   source: DocumentMutationSource;
-}): PatchmarkComment[] {
-  let didTransform = false;
-  const transformedAt = new Date().toISOString();
-  const nextComments = comments.map((comment) => {
-    if (comment.status === "resolved" || comment.anchor.kind !== "selected_text") {
-      return comment;
-    }
+}): { comment: PatchmarkComment; outcome: CommentMutationOutcome } | null {
+  if (comment.anchor.kind !== "selected_text") {
+    return null;
+  }
 
-    const transform = transformSelectedTextAnchorThroughEdit({
-      anchor: comment.anchor,
-      edit,
-      newMarkdown,
-      oldMarkdown
-    });
-    const nextAnchor = createSelectedTextAnchorFromManualTransform({
-      anchor: comment.anchor,
-      comment,
-      edit,
-      newMarkdown,
-      source,
-      transform
-    });
-
-    if (!nextAnchor || areCommentAnchorsEqual(comment.anchor, nextAnchor)) {
-      return comment;
-    }
-
-    didTransform = true;
-
-    return {
-      ...comment,
-      anchor: nextAnchor,
-      updated_at: transformedAt
-    };
+  const transform = transformSelectedTextAnchorThroughEdit({
+    anchor: comment.anchor,
+    edit,
+    newMarkdown,
+    oldMarkdown
+  });
+  const nextAnchor = createSelectedTextAnchorFromMutationTransform({
+    anchor: comment.anchor,
+    comment,
+    edit,
+    newMarkdown,
+    source,
+    transform
   });
 
-  return didTransform ? nextComments : comments;
+  if (!nextAnchor) {
+    return {
+      comment,
+      outcome: "recovery_required"
+    };
+  }
+
+  if (areCommentAnchorsEqual(comment.anchor, nextAnchor)) {
+    return {
+      comment,
+      outcome: "unaffected"
+    };
+  }
+
+  return {
+    comment: {
+      ...comment,
+      anchor: nextAnchor,
+      updated_at: createdAt
+    },
+    outcome:
+      transform.outcome === "inactive" ? "deleted" : "transformed_active"
+  };
 }
 
-function createSelectedTextAnchorFromManualTransform({
+function createSelectedTextAnchorFromMutationTransform({
   anchor,
   comment,
   edit,
@@ -8418,7 +8603,9 @@ function createSelectedTextAnchorFromManualTransform({
   return createSelectedTextAnchorAtRange({
     anchor,
     anchorSource:
-      source === "manual_visual"
+      source === "patch_apply"
+        ? "patch"
+        : source === "manual_visual"
         ? (anchor.anchor_source ?? "visual")
         : "markdown",
     comment,
@@ -8457,87 +8644,11 @@ function createInactiveSelectedTextAnchorAfterManualDeletion({
   });
 }
 
-function updateAffectedCommentAnchors({
-  affectedComments,
-  comments,
-  createdAt,
-  lengthDelta,
-  newMarkdown,
-  oldMarkdown,
-  patch,
-  replacementStart
-}: {
-  affectedComments: AffectedPatchComment[];
-  comments: PatchmarkComment[];
-  createdAt: string;
-  lengthDelta: number;
-  newMarkdown: string;
-  oldMarkdown: string;
-  patch: PatchmarkPatch;
-  replacementStart: number;
-}): AffectedPatchCommentUpdate {
-  const affectedByCommentId = new Map(
-    affectedComments.map((affectedComment) => [
-      affectedComment.commentId,
-      affectedComment
-    ])
-  );
-  let linkedCommentFound = false;
-  let needsReviewCount = 0;
-  let offsetShiftedCount = 0;
-  let reanchoredCount = 0;
-  let unchangedCount = 0;
-
-  const nextComments = comments.map((comment) => {
-    const affectedComment = affectedByCommentId.get(comment.id);
-
-    if (!affectedComment) {
-      return comment;
-    }
-
-    if (comment.id === patch.comment_id) {
-      linkedCommentFound = true;
-    }
-
-    const update = updateSingleAffectedCommentAnchor({
-      comment,
-      createdAt,
-      impactKind: affectedComment.impactKind,
-      lengthDelta,
-      newMarkdown,
-      oldMarkdown,
-      patch,
-      replacementStart
-    });
-
-    if (update.result === "needs_review") {
-      needsReviewCount += 1;
-    } else if (update.result === "offset_shifted") {
-      offsetShiftedCount += 1;
-    } else if (update.result === "reanchored") {
-      reanchoredCount += 1;
-    } else {
-      unchangedCount += 1;
-    }
-
-    return update.comment;
-  });
-
-  return {
-    comments: nextComments,
-    linkedCommentFound,
-    needsReviewCount,
-    offsetShiftedCount,
-    reanchoredCount,
-    unchangedCount
-  };
-}
-
 function updateSingleAffectedCommentAnchor({
   comment,
   createdAt,
+  edit,
   impactKind,
-  lengthDelta,
   newMarkdown,
   oldMarkdown,
   patch,
@@ -8545,8 +8656,8 @@ function updateSingleAffectedCommentAnchor({
 }: {
   comment: PatchmarkComment;
   createdAt: string;
+  edit: MarkdownEdit | null;
   impactKind: PatchCommentImpactKind;
-  lengthDelta: number;
   newMarkdown: string;
   oldMarkdown: string;
   patch: PatchmarkPatch;
@@ -8691,11 +8802,26 @@ function updateSingleAffectedCommentAnchor({
   }
 
   if (impactKind === "anchor_after_replaced_range") {
-    const shiftedAnchor = shiftSelectedTextAnchorAfterPatch({
-      anchor: comment.anchor,
-      lengthDelta,
-      newMarkdown
-    });
+    const transform =
+      edit && comment.anchor.kind === "selected_text"
+        ? transformSelectedTextAnchorThroughEdit({
+            anchor: comment.anchor,
+            edit,
+            newMarkdown,
+            oldMarkdown
+          })
+        : null;
+    const shiftedAnchor =
+      transform && comment.anchor.kind === "selected_text"
+        ? createSelectedTextAnchorFromMutationTransform({
+            anchor: comment.anchor,
+            comment,
+            edit: edit as MarkdownEdit,
+            newMarkdown,
+            source: "patch_apply",
+            transform
+          })
+        : null;
 
     if (!shiftedAnchor) {
       const recoveredAnchor = recoverSelectedTextAnchor({
@@ -9256,68 +9382,6 @@ function createCurrentPatchOriginalTableRowAnchor({
     start: retainedRow.start,
     end: retainedRow.end
   });
-}
-
-function shiftSelectedTextAnchorAfterPatch({
-  anchor,
-  lengthDelta,
-  newMarkdown
-}: {
-  anchor: SelectedTextAnchor;
-  lengthDelta: number;
-  newMarkdown: string;
-}): SelectedTextAnchor | null {
-  if (
-    typeof anchor.markdown_start_offset !== "number" ||
-    typeof anchor.markdown_end_offset !== "number"
-  ) {
-    return null;
-  }
-
-  const start = anchor.markdown_start_offset + lengthDelta;
-  const end = anchor.markdown_end_offset + lengthDelta;
-
-  if (start < 0 || end < start || newMarkdown.slice(start, end) !== anchor.selected_text) {
-    return null;
-  }
-
-  const shiftedContext = shiftAnchorContextOffsets(
-    anchor.anchor_context,
-    lengthDelta
-  );
-
-  return refreshSelectedAnchorPositionMetadata({
-    anchor: {
-      ...anchor,
-      anchor_context: shiftedContext,
-      markdown_start_offset: start,
-      markdown_end_offset: end
-    },
-    markdown: newMarkdown,
-    start,
-    end
-  });
-}
-
-function shiftAnchorContextOffsets(
-  context: PatchmarkSelectedTextAnchorContext | undefined,
-  lengthDelta: number
-): PatchmarkSelectedTextAnchorContext | undefined {
-  if (!context) {
-    return undefined;
-  }
-
-  return {
-    ...context,
-    markdown_start_offset:
-      typeof context.markdown_start_offset === "number"
-        ? context.markdown_start_offset + lengthDelta
-        : undefined,
-    markdown_end_offset:
-      typeof context.markdown_end_offset === "number"
-        ? context.markdown_end_offset + lengthDelta
-        : undefined
-  };
 }
 
 function createSelectedTextAnchorAtRange({

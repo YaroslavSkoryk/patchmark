@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+  classifyRangeAgainstEdit,
   deriveContiguousMarkdownEdit,
   isSafeManualAnchorTransformEdit,
   transformSelectedTextAnchorThroughEdit
@@ -46,6 +47,69 @@ function transform(oldMarkdown, newMarkdown, selectedText, occurrence = 0) {
     newMarkdown,
     oldMarkdown
   });
+}
+
+function transformWithEdit(oldMarkdown, edit, selectedText, occurrence = 0) {
+  const newMarkdown = `${oldMarkdown.slice(0, edit.oldStart)}${edit.insertedText}${oldMarkdown.slice(edit.oldEnd)}`;
+
+  return transformSelectedTextAnchorThroughEdit({
+    anchor: createAnchor(oldMarkdown, selectedText, occurrence),
+    edit,
+    newMarkdown,
+    oldMarkdown
+  });
+}
+
+function getAnchorResultComparable(result) {
+  return result.outcome === "active"
+    ? {
+        end: result.end,
+        outcome: result.outcome,
+        selectedText: result.selectedText,
+        start: result.start
+      }
+    : {
+        end: result.end,
+        outcome: result.outcome,
+        start: result.start
+      };
+}
+
+{
+  const edit = {
+    oldStart: 10,
+    oldEnd: 20,
+    insertedText: "replacement"
+  };
+
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 25, end: 35 }, edit),
+    "after"
+  );
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 0, end: 5 }, edit),
+    "before"
+  );
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 10, end: 20 }, edit),
+    "exact_replacement"
+  );
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 5, end: 25 }, edit),
+    "edit_inside_anchor"
+  );
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 12, end: 18 }, edit),
+    "anchor_inside_edit"
+  );
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 12, end: 25 }, edit),
+    "overlap_anchor_start"
+  );
+  assert.equal(
+    classifyRangeAgainstEdit({ start: 5, end: 12 }, edit),
+    "overlap_anchor_end"
+  );
 }
 
 {
@@ -210,6 +274,96 @@ function transform(oldMarkdown, newMarkdown, selectedText, occurrence = 0) {
   assert.equal(result.outcome, "active");
   assert.equal(result.selectedText, patchSuggestedText);
   assert.equal(result.transformation, "edit_contains_anchor");
+}
+
+{
+  const oldMarkdown = "A LINE add item.\nLater LINE add duplicate.";
+  const manualMarkdown = oldMarkdown.replace(
+    "LINE add item",
+    "LINE account add item"
+  );
+  const manualEdit = deriveContiguousMarkdownEdit(oldMarkdown, manualMarkdown);
+  assert.ok(manualEdit);
+  const patchStart = oldMarkdown.indexOf("LINE add");
+  const patchEdit = {
+    oldStart: patchStart,
+    oldEnd: patchStart + "LINE add".length,
+    insertedText: "LINE account add"
+  };
+
+  const manualResult = transformWithEdit(oldMarkdown, manualEdit, "LINE add");
+  const patchResult = transformWithEdit(oldMarkdown, patchEdit, "LINE add");
+
+  assert.deepEqual(
+    getAnchorResultComparable(patchResult),
+    getAnchorResultComparable(manualResult)
+  );
+  assert.equal(patchResult.outcome, "active");
+  assert.equal(patchResult.selectedText, "LINE account add");
+}
+
+{
+  const oldMarkdown = "The regular customer buys weekly.";
+  const manualMarkdown = oldMarkdown.replace(
+    "regular customer",
+    "regular household customer"
+  );
+  const manualEdit = deriveContiguousMarkdownEdit(oldMarkdown, manualMarkdown);
+  assert.ok(manualEdit);
+  const patchEdit = {
+    oldStart: oldMarkdown.indexOf("regular"),
+    oldEnd: oldMarkdown.indexOf("customer") + "customer".length,
+    insertedText: "regular household customer"
+  };
+
+  assert.deepEqual(
+    getAnchorResultComparable(
+      transformWithEdit(oldMarkdown, patchEdit, "regular customer")
+    ),
+    getAnchorResultComparable(
+      transformWithEdit(oldMarkdown, manualEdit, "regular customer")
+    )
+  );
+}
+
+{
+  const oldMarkdown = "We need acceptable margins soon.";
+  const manualMarkdown = oldMarkdown.replace("acceptable margins", "margins");
+  const manualEdit = deriveContiguousMarkdownEdit(oldMarkdown, manualMarkdown);
+  assert.ok(manualEdit);
+  const patchEdit = {
+    oldStart: oldMarkdown.indexOf("acceptable margins"),
+    oldEnd: oldMarkdown.indexOf("acceptable margins") + "acceptable margins".length,
+    insertedText: "margins"
+  };
+
+  assert.deepEqual(
+    getAnchorResultComparable(
+      transformWithEdit(oldMarkdown, patchEdit, "acceptable margins")
+    ),
+    getAnchorResultComparable(
+      transformWithEdit(oldMarkdown, manualEdit, "acceptable margins")
+    )
+  );
+}
+
+{
+  const oldMarkdown = "First duplicate. Remove me. Second duplicate.";
+  const manualMarkdown = oldMarkdown.replace("Remove me", "");
+  const manualEdit = deriveContiguousMarkdownEdit(oldMarkdown, manualMarkdown);
+  assert.ok(manualEdit);
+  const patchEdit = {
+    oldStart: oldMarkdown.indexOf("Remove me"),
+    oldEnd: oldMarkdown.indexOf("Remove me") + "Remove me".length,
+    insertedText: ""
+  };
+  const patchResult = transformWithEdit(oldMarkdown, patchEdit, "Remove me");
+
+  assert.deepEqual(
+    getAnchorResultComparable(patchResult),
+    getAnchorResultComparable(transformWithEdit(oldMarkdown, manualEdit, "Remove me"))
+  );
+  assert.equal(patchResult.outcome, "inactive");
 }
 
 {
