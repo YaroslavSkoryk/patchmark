@@ -9984,10 +9984,28 @@ function repairRetainedLinkedPatchCommentAnchor({
     return null;
   }
 
+  const sourcePatchIdsWithOriginalHistory = new Set(
+    comment.anchor_history
+      .filter(
+        (historyEntry) =>
+          historyEntry.source_patch_id &&
+          historyEntry.reason !== "anchor_recovered_after_patch" &&
+          historyEntry.previous_anchor.kind === "selected_text"
+      )
+      .map((historyEntry) => historyEntry.source_patch_id as string)
+  );
+
   for (const historyEntry of [...comment.anchor_history].reverse()) {
     if (
       !historyEntry.source_patch_id ||
       historyEntry.previous_anchor.kind !== "selected_text"
+    ) {
+      continue;
+    }
+
+    if (
+      historyEntry.reason === "anchor_recovered_after_patch" &&
+      sourcePatchIdsWithOriginalHistory.has(historyEntry.source_patch_id)
     ) {
       continue;
     }
