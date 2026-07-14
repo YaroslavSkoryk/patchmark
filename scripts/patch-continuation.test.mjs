@@ -166,6 +166,16 @@ assert.match(documentEditorSource, /status: "pending" as const/);
 assert.match(documentEditorSource, /\.\.\.existingPatches/);
 assert.match(documentEditorSource, /createLinkedPatchTransformedAnchor/);
 assert.match(documentEditorSource, /selectedText: transform\.selectedText/);
+assert.match(
+  documentEditorSource,
+  /transform\.outcome !== "active"[\s\S]*createAppliedReplacementAnchorForLinkedPatchRepair/
+);
+assert.match(
+  documentEditorSource,
+  /findMarkdownPlainTextMatches\(originalText, anchor\.selected_text\)/
+);
+assert.match(documentEditorSource, /projectionMethod: "source_blocks"/);
+assert.match(documentEditorSource, /findVisualSourceBlockRangesForResolvedSourceRange/);
 assert.doesNotMatch(documentEditorSource, /patchmark\.patch_question_export/);
 assert.doesNotMatch(documentEditorSource, /patch_revision_number/);
 assert.doesNotMatch(documentEditorSource, /patch discussion/i);

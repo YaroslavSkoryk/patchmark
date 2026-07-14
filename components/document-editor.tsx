@@ -407,6 +407,7 @@ type VisualTargetProjection =
       projectionMethod:
         | "plain_text_range"
         | "section_heading"
+        | "source_blocks"
         | "source_position"
         | "structural_block"
         | "table_cell"
@@ -8472,14 +8473,10 @@ function getSelectedAnchorRangeForImpact({
   originalStart: number;
   patch?: PatchmarkPatch;
 }): { end: number; start: number } | null {
-  if (
-    typeof anchor.markdown_start_offset === "number" &&
-    typeof anchor.markdown_end_offset === "number"
-  ) {
-    return {
-      start: anchor.markdown_start_offset,
-      end: anchor.markdown_end_offset
-    };
+  const storedRange = getSelectedAnchorKnownMarkdownRange(anchor);
+
+  if (storedRange) {
+    return storedRange;
   }
 
   if (!patch) {
@@ -8499,6 +8496,32 @@ function getSelectedAnchorRangeForImpact({
     start: originalStart + matchesInOriginalText[0].start,
     end: originalStart + matchesInOriginalText[0].end
   };
+}
+
+function getSelectedAnchorKnownMarkdownRange(
+  anchor: SelectedTextAnchor
+): { end: number; start: number } | null {
+  if (
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.markdown_start_offset,
+      end: anchor.markdown_end_offset
+    };
+  }
+
+  if (
+    typeof anchor.anchor_context?.markdown_start_offset === "number" &&
+    typeof anchor.anchor_context.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.anchor_context.markdown_start_offset,
+      end: anchor.anchor_context.markdown_end_offset
+    };
+  }
+
+  return null;
 }
 
 function rangesOverlap(
@@ -8992,7 +9015,21 @@ function createLinkedPatchTransformedAnchor({
   });
 
   if (transform.outcome !== "active") {
-    return null;
+    const replacementText = patch.suggested_text;
+
+    if (!replacementText.trim()) {
+      return null;
+    }
+
+    return createAppliedReplacementAnchorForLinkedPatchRepair({
+      anchor,
+      comment,
+      markdown: newMarkdown,
+      patch,
+      replacementEnd: replacementStart + replacementText.length,
+      replacementStart,
+      replacementText
+    });
   }
 
   const context =
@@ -9081,21 +9118,23 @@ function isSelectedAnchorInsidePatchOriginalText({
     return false;
   }
 
-  if (
-    typeof anchor.markdown_start_offset === "number" &&
-    typeof anchor.markdown_end_offset === "number"
-  ) {
+  const storedRange = getSelectedAnchorKnownMarkdownRange(anchor);
+
+  if (storedRange) {
     const originalEnd = originalStart + originalText.length;
 
     if (
-      anchor.markdown_start_offset >= originalStart &&
-      anchor.markdown_end_offset <= originalEnd
+      storedRange.start >= originalStart &&
+      storedRange.end <= originalEnd
     ) {
       return true;
     }
   }
 
-  return findExactTextMatches(originalText, anchor.selected_text).length === 1;
+  return (
+    findExactTextMatches(originalText, anchor.selected_text).length === 1 ||
+    findMarkdownPlainTextMatches(originalText, anchor.selected_text).length === 1
+  );
 }
 
 function updateAffectedSectionCommentAnchor({
@@ -12606,6 +12645,25 @@ function findVisualCommentAnchorProjection({
     };
   }
 
+  const sourceBlockRanges = findVisualSourceBlockRangesForResolvedSourceRange({
+    anchor: comment.anchor,
+    container,
+    headings,
+    markdown,
+    resolution
+  });
+
+  if (sourceBlockRanges.length > 0) {
+    return {
+      commentId: comment.id,
+      markdownRange,
+      projectionMethod: "source_blocks",
+      state: "resolved",
+      structuralElements: [],
+      textRanges: sourceBlockRanges
+    };
+  }
+
   const contextMatch = findVisualAnchorContextMatchForResolvedAnchor({
     anchor: comment.anchor,
     container,
@@ -12904,6 +12962,150 @@ function findVisualSelectedTextMatchForResolvedSourceRange({
   }
 
   return null;
+}
+
+function findVisualSourceBlockRangesForResolvedSourceRange({
+  anchor,
+  container,
+  headings,
+  markdown,
+  resolution
+}: {
+  anchor: SelectedTextAnchor;
+  container: HTMLElement;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CommentAnchorResolution;
+}): Range[] {
+  if (
+    resolution.status !== "active" ||
+    typeof resolution.start !== "number" ||
+    typeof resolution.end !== "number" ||
+    resolution.end <= resolution.start
+  ) {
+    return [];
+  }
+
+  const visualSectionRange = findVisualSectionRangeForResolvedAnchor({
+    anchor,
+    container,
+    headings,
+    markdown,
+    resolution
+  });
+  const sourceSectionRange = findSourceSectionRangeForResolvedAnchor({
+    anchor,
+    headings,
+    markdown,
+    resolution
+  });
+  const sourceBlocks = getProjectedMarkdownSourceBlocks(markdown, {
+    start: resolution.start,
+    end: resolution.end
+  });
+  const projectedRanges: Range[] = [];
+
+  for (const sourceBlock of sourceBlocks) {
+    const projectedRange = findVisualSourceBlockRange({
+      container,
+      markdown,
+      sourceBlock,
+      sourceScope: sourceSectionRange,
+      visualScope: visualSectionRange
+    });
+
+    if (projectedRange) {
+      projectedRanges.push(projectedRange);
+    }
+  }
+
+  return projectedRanges;
+}
+
+function findVisualSourceBlockRange({
+  container,
+  markdown,
+  sourceBlock,
+  sourceScope,
+  visualScope
+}: {
+  container: HTMLElement;
+  markdown: string;
+  sourceBlock: { end: number; markdown: string; start: number };
+  sourceScope: { end: number; start: number } | null;
+  visualScope: Range | null;
+}): Range | null {
+  for (const searchText of createVisualAnchorSearchTextCandidates({
+    sourceMarkdown: sourceBlock.markdown
+  })) {
+    if (normalizeDomText(searchText).length < 8) {
+      continue;
+    }
+
+    const matches = findVisualTextMatches({ container, searchText }).filter(
+      (match) => !visualScope || isRangeInsideRange(match.range, visualScope)
+    );
+
+    if (matches.length === 1) {
+      return matches[0].range;
+    }
+
+    if (matches.length > 1) {
+      const sourceOrdinal = getSourceMatchOrdinalInsideScope({
+        markdown,
+        searchText,
+        sourceRange: {
+          start: sourceBlock.start,
+          end: sourceBlock.end
+        },
+        sourceScope
+      });
+
+      if (
+        typeof sourceOrdinal === "number" &&
+        sourceOrdinal >= 0 &&
+        sourceOrdinal < matches.length
+      ) {
+        return matches[sourceOrdinal].range;
+      }
+    }
+  }
+
+  return null;
+}
+
+function getProjectedMarkdownSourceBlocks(
+  markdown: string,
+  sourceRange: { end: number; start: number }
+): Array<{ end: number; markdown: string; start: number }> {
+  const blocks: Array<{ end: number; markdown: string; start: number }> = [];
+  const rangeStart = Math.max(0, Math.min(sourceRange.start, markdown.length));
+  const rangeEnd = Math.max(rangeStart, Math.min(sourceRange.end, markdown.length));
+  let lineStart = rangeStart;
+
+  while (lineStart < rangeEnd) {
+    const nextNewline = markdown.indexOf("\n", lineStart);
+    const lineEnd =
+      nextNewline === -1 ? rangeEnd : Math.min(nextNewline, rangeEnd);
+    const lineText = markdown.slice(lineStart, lineEnd);
+    const trimmedRange = trimRange(markdown, lineStart, lineEnd);
+
+    if (lineText.trim() && trimmedRange.end > trimmedRange.start) {
+      blocks.push({
+        start: trimmedRange.start,
+        end: trimmedRange.end,
+        markdown: markdown.slice(trimmedRange.start, trimmedRange.end)
+      });
+    }
+
+    if (nextNewline === -1 || nextNewline >= rangeEnd) {
+      break;
+    }
+
+    lineStart = nextNewline + 1;
+  }
+
+  return blocks;
 }
 
 function findVisualSectionRangeForResolvedAnchor({
@@ -14399,8 +14601,7 @@ function buildMarkdownPlainTextIndex(markdown: string): {
     }
 
     const line = lineOrBreak;
-    const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(line);
-    let index = prefixMatch?.[0].length ?? 0;
+    let index = getMarkdownPlainTextLineContentStart(line);
 
     while (index < line.length) {
       const character = line[index];
@@ -14434,6 +14635,24 @@ function buildMarkdownPlainTextIndex(markdown: string): {
     positions,
     text: textParts.join("")
   };
+}
+
+function getMarkdownPlainTextLineContentStart(line: string): number {
+  let index = 0;
+
+  while (index < line.length) {
+    const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(
+      line.slice(index)
+    );
+
+    if (!prefixMatch) {
+      break;
+    }
+
+    index += prefixMatch[0].length;
+  }
+
+  return index;
 }
 
 function buildNormalizedSourceTextIndex(text: string): {

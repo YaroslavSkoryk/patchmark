@@ -26,6 +26,7 @@ const nearTopScrollTolerance = 100;
 const topCommentId = "PM-COMMENT-0008";
 const lowerCommentId = "PM-COMMENT-0029";
 const lineCommentId = "PM-COMMENT-0018";
+const linkedMultiBlockCommentId = "PM-COMMENT-0040";
 const visualEvidenceDir = process.env.PATCHMARK_PHASE5_SCREENSHOT_DIR;
 const shouldRunFullVisualAudit =
   process.env.PATCHMARK_PHASE5_FULL_VISUAL_AUDIT === "1";
@@ -999,6 +1000,24 @@ async function capturePhase5VisualEvidence(client, outputDir) {
     );
   }
 
+  const hasLinkedMultiBlockComment = await evaluate(client, {
+    expression: `Boolean(document.querySelector(${JSON.stringify(
+      `[data-comment-id="${linkedMultiBlockCommentId}"]`
+    )}))`
+  });
+
+  if (hasLinkedMultiBlockComment) {
+    evidence.push(
+      await captureCommentHighlightEvidence({
+        client,
+        commentId: linkedMultiBlockCommentId,
+        expectedVisibleText: "Early Cranberries & Walnut signal",
+        label: "linked-multiblock-replacement",
+        outputDir
+      })
+    );
+  }
+
   if (shouldRunFullVisualAudit) {
     evidence.push(await auditAllSelectedTextCommentHighlights(client));
   }
@@ -1012,6 +1031,9 @@ async function auditAllSelectedTextCommentHighlights(client) {
   const resolvedSelectedRows = selectedRows.filter(
     (row) => row.anchorStatus === "active"
   );
+  const projectSelectedCommentCount = getProjectSelectedTextCommentCount();
+  const unexpectedlyUnresolvedLinkedReplacements =
+    findUnexpectedlyUnresolvedLinkedReplacementComments(rows);
   const failures = [];
 
   for (const row of resolvedSelectedRows) {
@@ -1028,9 +1050,9 @@ async function auditAllSelectedTextCommentHighlights(client) {
   }
 
   assert.deepEqual(
-    failures,
+    [...unexpectedlyUnresolvedLinkedReplacements, ...failures],
     [],
-    "Every uniquely resolved selected-text comment should paint a visual highlight."
+    "Every uniquely resolved selected-text comment should paint a visual highlight, and directly linked accepted replacements must not be silently excluded."
   );
 
   return {
@@ -1039,8 +1061,243 @@ async function auditAllSelectedTextCommentHighlights(client) {
     passedCount: resolvedSelectedRows.length,
     renderedRailRows: rows.length,
     resolvedSelectedTextCount: resolvedSelectedRows.length,
-    selectedTextCount: selectedRows.length
+    selectedTextCount: projectSelectedCommentCount ?? selectedRows.length,
+    unexpectedlyUnresolvedLinkedReplacementCount:
+      unexpectedlyUnresolvedLinkedReplacements.length
   };
+}
+
+function getProjectSelectedTextCommentCount() {
+  const projectComments = readProjectCommentsForAudit();
+
+  return projectComments
+    ? projectComments.filter((comment) => comment.anchor?.kind === "selected_text")
+        .length
+    : null;
+}
+
+function findUnexpectedlyUnresolvedLinkedReplacementComments(rows) {
+  const projectComments = readProjectCommentsForAudit();
+  const projectPatches = readProjectPatchesForAudit();
+
+  if (!projectComments || !projectPatches) {
+    return [];
+  }
+
+  const rowsById = new Map(rows.map((row) => [row.id, row]));
+
+  return projectComments.flatMap((comment) => {
+    if (comment.anchor?.kind !== "selected_text") {
+      return [];
+    }
+
+    const row = rowsById.get(comment.id);
+
+    if (row?.anchorStatus === "active") {
+      return [];
+    }
+
+    const linkedAcceptedPatches = projectPatches.filter(
+      (patch) =>
+        patch.status === "accepted" &&
+        patch.comment_id === comment.id &&
+        getAuditPatchAppliedText(patch).trim()
+    );
+    const failedPatch = linkedAcceptedPatches.find((patch) =>
+      hasHistoricalSelectedAnchorCoveredByPatchOriginalForAudit(comment, patch)
+    );
+
+    return failedPatch
+      ? [
+          {
+            anchorStatus: row?.anchorStatus ?? "missing_from_rail",
+            error:
+              "Directly linked accepted patch has a non-empty replacement, but the selected-text comment is not actively positioned.",
+            id: comment.id,
+            patchId: failedPatch.id
+          }
+        ]
+      : [];
+  });
+}
+
+function readProjectCommentsForAudit() {
+  return readProjectJsonForAudit(join(".patchmark", "comments.json"));
+}
+
+function readProjectPatchesForAudit() {
+  return readProjectJsonForAudit(join(".patchmark", "patches.json"));
+}
+
+function readProjectJsonForAudit(relativePath) {
+  if (!projectDir) {
+    return null;
+  }
+
+  const filePath = join(projectDir, relativePath);
+
+  if (!existsSync(filePath)) {
+    return null;
+  }
+
+  return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+function hasHistoricalSelectedAnchorCoveredByPatchOriginalForAudit(
+  comment,
+  patch
+) {
+  const anchors = getHistoricalSelectedAnchorsForAudit(comment);
+
+  return anchors.some((anchor) =>
+    isSelectedAnchorCoveredByPatchOriginalForAudit(anchor, patch)
+  );
+}
+
+function getHistoricalSelectedAnchorsForAudit(comment) {
+  const anchors = [];
+
+  if (comment.anchor?.kind === "selected_text") {
+    anchors.push(comment.anchor);
+  }
+
+  for (const historyEntry of [...(comment.anchor_history ?? [])].reverse()) {
+    if (historyEntry.new_anchor?.kind === "selected_text") {
+      anchors.push(historyEntry.new_anchor);
+    }
+
+    if (historyEntry.previous_anchor?.kind === "selected_text") {
+      anchors.push(historyEntry.previous_anchor);
+    }
+  }
+
+  const seen = new Set();
+
+  return anchors.filter((anchor) => {
+    const key = [
+      anchor.selected_text,
+      anchor.markdown_start_offset ?? "",
+      anchor.markdown_end_offset ?? "",
+      anchor.anchor_context?.markdown_start_offset ?? "",
+      anchor.anchor_context?.markdown_end_offset ?? "",
+      anchor.anchor_context?.markdown_text ?? ""
+    ].join("\u0000");
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function isSelectedAnchorCoveredByPatchOriginalForAudit(anchor, patch) {
+  if (!anchor.selected_text?.trim() || !patch.original_text?.trim()) {
+    return false;
+  }
+
+  const knownRange = getSelectedAnchorKnownRangeForAudit(anchor);
+  const originalStart = patch.applied_start_offset;
+
+  if (typeof originalStart === "number" && knownRange) {
+    const relativeStart = knownRange.start - originalStart;
+    const relativeEnd = knownRange.end - originalStart;
+
+    if (
+      relativeStart >= 0 &&
+      relativeEnd >= relativeStart &&
+      relativeEnd <= patch.original_text.length
+    ) {
+      const candidateText = patch.original_text.slice(relativeStart, relativeEnd);
+
+      if (
+        normalizeAuditMarkdownText(candidateText) ===
+          normalizeAuditMarkdownText(anchor.selected_text) ||
+        toAuditMarkdownPlainText(candidateText) ===
+          toAuditMarkdownPlainText(anchor.selected_text)
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return (
+    countAuditTextMatches(patch.original_text, anchor.selected_text) === 1 ||
+    countAuditTextMatches(
+      toAuditMarkdownPlainText(patch.original_text),
+      toAuditMarkdownPlainText(anchor.selected_text)
+    ) === 1
+  );
+}
+
+function getSelectedAnchorKnownRangeForAudit(anchor) {
+  if (
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.markdown_start_offset,
+      end: anchor.markdown_end_offset
+    };
+  }
+
+  if (
+    typeof anchor.anchor_context?.markdown_start_offset === "number" &&
+    typeof anchor.anchor_context.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.anchor_context.markdown_start_offset,
+      end: anchor.anchor_context.markdown_end_offset
+    };
+  }
+
+  return null;
+}
+
+function getAuditPatchAppliedText(patch) {
+  return patch.applied_text ?? patch.suggested_text ?? "";
+}
+
+function countAuditTextMatches(text, searchText) {
+  const normalizedText = normalizeAuditMarkdownText(text);
+  const normalizedSearchText = normalizeAuditMarkdownText(searchText);
+
+  if (!normalizedSearchText) {
+    return 0;
+  }
+
+  let count = 0;
+  let fromIndex = 0;
+
+  while (fromIndex <= normalizedText.length) {
+    const index = normalizedText.indexOf(normalizedSearchText, fromIndex);
+
+    if (index === -1) {
+      break;
+    }
+
+    count += 1;
+    fromIndex = index + normalizedSearchText.length;
+  }
+
+  return count;
+}
+
+function normalizeAuditMarkdownText(text) {
+  return String(text ?? "").replace(/\s+/g, " ").trim();
+}
+
+function toAuditMarkdownPlainText(markdown) {
+  return normalizeAuditMarkdownText(
+    String(markdown ?? "")
+      .split("\n")
+      .map((line) => line.replace(/^\s*(?:>\s*)?(?:[-*+]\s+|\d+\.\s+)?/, ""))
+      .join("\n")
+      .replace(/\*\*/g, "")
+      .replace(/__/g, "")
+      .replace(/`/g, "")
+  );
 }
 
 async function readAllCommentRows(client) {

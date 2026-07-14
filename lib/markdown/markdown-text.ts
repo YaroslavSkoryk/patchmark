@@ -119,8 +119,7 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
     }
 
     const line = lineOrBreak;
-    const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(line);
-    let index = prefixMatch?.[0].length ?? 0;
+    let index = getMarkdownPlainTextLineContentStart(line);
 
     while (index < line.length) {
       const character = line[index];
@@ -154,6 +153,24 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
     positions,
     text: textParts.join("")
   };
+}
+
+function getMarkdownPlainTextLineContentStart(line: string): number {
+  let index = 0;
+
+  while (index < line.length) {
+    const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(
+      line.slice(index)
+    );
+
+    if (!prefixMatch) {
+      break;
+    }
+
+    index += prefixMatch[0].length;
+  }
+
+  return index;
 }
 
 export function getMarkdownPlainText(markdown: string): string {

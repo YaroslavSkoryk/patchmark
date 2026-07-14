@@ -10,7 +10,8 @@ import {
   dedupeTextMatches,
   findExactTextMatches,
   findMarkdownPlainTextMatches,
-  findNormalizedTextMatches
+  findNormalizedTextMatches,
+  getMarkdownPlainText
 } from "../markdown/markdown-text.ts";
 import { parseMarkdownHeadings } from "../markdown/parse-headings.ts";
 import type {
@@ -649,6 +650,26 @@ function getAcceptedLinkedPatchCandidatesForAnchor({
     patch,
     replacementRange
   });
+  const anchorIsCoveredByPatchOriginal = isHistoricalAnchorCoveredByPatchOriginal({
+    anchor,
+    originalStart,
+    originalText: patch.original_text
+  });
+  const changedTextSpan = findChangedTextSpanInPatchReplacement({
+    anchor,
+    originalStart,
+    originalText: patch.original_text,
+    replacementStart: replacementRange.start,
+    replacementText
+  });
+  const safeChangedTextSpan =
+    changedTextSpan && isSafeChangedTextSpanSubrange({
+      replacementRange,
+      replacementText,
+      range: changedTextSpan
+    })
+      ? changedTextSpan
+      : null;
   const candidateGroups: Array<Array<TextRange | null>> = [
     [
       findRetainedSelectedTextInPatchReplacement({
@@ -675,21 +696,9 @@ function getAcceptedLinkedPatchCandidatesForAnchor({
         replacementText
       })
     ],
+    [safeChangedTextSpan],
     [
-      findChangedTextSpanInPatchReplacement({
-        anchor,
-        originalStart,
-        originalText: patch.original_text,
-        replacementStart: replacementRange.start,
-        replacementText
-      })
-    ],
-    [
-      isHistoricalAnchorCoveredByPatchOriginal({
-        anchor,
-        originalStart,
-        originalText: patch.original_text
-      })
+      anchorIsCoveredByPatchOriginal
         ? {
             end: replacementRange.end,
             start: replacementRange.start
@@ -718,6 +727,48 @@ function getAcceptedLinkedPatchCandidatesForAnchor({
       range
     })
   }));
+}
+
+function isSafeChangedTextSpanSubrange({
+  range,
+  replacementRange,
+  replacementText
+}: {
+  range: TextRange;
+  replacementRange: TextRange;
+  replacementText: string;
+}): boolean {
+  const relativeStart = range.start - replacementRange.start;
+  const relativeEnd = range.end - replacementRange.start;
+
+  if (
+    relativeStart < 0 ||
+    relativeEnd <= relativeStart ||
+    relativeEnd > replacementText.length
+  ) {
+    return false;
+  }
+
+  const changedText = replacementText.slice(relativeStart, relativeEnd);
+  const trimmedReplacementLength = replacementText.trim().length;
+
+  if (!changedText.trim() || trimmedReplacementLength === 0) {
+    return false;
+  }
+
+  if (/\n\s*\n/.test(changedText)) {
+    return false;
+  }
+
+  const meaningfulLineCount = changedText
+    .split("\n")
+    .filter((line) => line.trim()).length;
+
+  if (meaningfulLineCount > 2) {
+    return false;
+  }
+
+  return changedText.trim().length / trimmedReplacementLength <= 0.75;
 }
 
 function getHistoricalAnchorCandidates({
@@ -852,7 +903,8 @@ function locateCurrentAppliedPatchRange({
     if (
       candidate === appliedText ||
       normalizeCanonicalComparisonText(candidate) ===
-        normalizeCanonicalComparisonText(appliedText)
+        normalizeCanonicalComparisonText(appliedText) ||
+      getMarkdownPlainText(candidate) === getMarkdownPlainText(appliedText)
     ) {
       return range;
     }
@@ -870,7 +922,10 @@ function locateCurrentAppliedPatchRange({
     return normalizedMatches[0];
   }
 
-  const plainMatches = findMarkdownPlainTextMatches(markdown, appliedText);
+  const plainMatches = findMarkdownPlainTextMatches(
+    markdown,
+    getMarkdownPlainText(appliedText)
+  );
 
   if (plainMatches.length === 1) {
     return plainMatches[0];
@@ -918,7 +973,8 @@ function findPatchContextRange(
       return (
         candidate === appliedText ||
         normalizeCanonicalComparisonText(candidate) ===
-          normalizeCanonicalComparisonText(appliedText)
+          normalizeCanonicalComparisonText(appliedText) ||
+        getMarkdownPlainText(candidate) === getMarkdownPlainText(appliedText)
       );
     });
 
@@ -954,13 +1010,11 @@ function isHistoricalAnchorCoveredByPatchOriginal({
     return false;
   }
 
-  if (
-    typeof originalStart === "number" &&
-    typeof anchor.markdown_start_offset === "number" &&
-    typeof anchor.markdown_end_offset === "number"
-  ) {
-    const relativeStart = anchor.markdown_start_offset - originalStart;
-    const relativeEnd = anchor.markdown_end_offset - originalStart;
+  const knownRange = getSelectedAnchorKnownMarkdownRange(anchor);
+
+  if (typeof originalStart === "number" && knownRange) {
+    const relativeStart = knownRange.start - originalStart;
+    const relativeEnd = knownRange.end - originalStart;
 
     if (
       relativeStart >= 0 &&
@@ -979,6 +1033,32 @@ function isHistoricalAnchorCoveredByPatchOriginal({
     ...findNormalizedTextMatches(originalText, anchor.selected_text),
     ...findMarkdownPlainTextMatches(originalText, anchor.selected_text)
   ]).length === 1;
+}
+
+function getSelectedAnchorKnownMarkdownRange(
+  anchor: SelectedTextAnchor
+): TextRange | null {
+  if (
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.markdown_start_offset,
+      end: anchor.markdown_end_offset
+    };
+  }
+
+  if (
+    typeof anchor.anchor_context?.markdown_start_offset === "number" &&
+    typeof anchor.anchor_context.markdown_end_offset === "number"
+  ) {
+    return {
+      start: anchor.anchor_context.markdown_start_offset,
+      end: anchor.anchor_context.markdown_end_offset
+    };
+  }
+
+  return null;
 }
 
 function findChangedTextSpanInPatchReplacement({

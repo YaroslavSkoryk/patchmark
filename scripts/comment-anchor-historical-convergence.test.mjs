@@ -231,6 +231,114 @@ function createPatch(overrides) {
 }
 
 {
+  const originalText =
+    "> **Early Cranberries & Walnut signal.** In the available household retail dataset, Cranberries & Walnut generated 50 units across 40 paid orders from 14 accounts, ranked first in cumulative sales and in weekly sales velocity after accounting for different product launch dates, and generated 26 lifetime repeat orders. In the current wholesale relationship, it generated 208 units across 16 paid orders and had the highest units-per-week rate. These results are encouraging but are not broad market validation: the retail accounts are neighboring households with existing founder relationships, while the wholesale data comes from one business customer operating several shops and does not include store-level sell-through or end-customer behavior.";
+  const selectedText =
+    "Early Cranberries & Walnut signal. In the available household retail dataset, Cranberries & Walnut generated 50 units across 40 paid orders from 14 accounts, ranked first in cumulative sales and in weekly sales velocity after accounting for different product launch dates, and generated 26 lifetime repeat orders. In the current wholesale relationship, it generated 208 units across 16 paid orders and had the highest units-per-week rate. These results are encouraging but are not broad market validation: the retail accounts are neighboring households with existing founder relationships, while the wholesale data comes from one business customer operating several shops and does not include store-level sell-through or end-customer behavior.";
+  const appliedText = [
+    "> **Early Cranberries & Walnut signal**",
+    ">",
+    "> - **Household retail:** 50 units across 40 paid orders from 14 neighboring households, including 26 repeat orders. It ranked first in total sales and in weekly sales rate adjusted for different product launch dates.",
+    "> - **Wholesale:** 208 units across 16 paid orders from one customer operating several shops. It had the highest units-per-week rate in the available wholesale data.",
+    "> - **Interpretation:** The product shows strong early performance across both channels, but this is not broad market validation. The retail sample is relationship-biased, and the wholesale data does not include store-level sell-through or end-customer behavior."
+  ].join("\n");
+  const currentAppliedText = appliedText.replaceAll("> - ", "> * ");
+  const markdown = ["## Target Section", "", currentAppliedText].join("\n");
+  const appliedStart = markdown.indexOf(currentAppliedText);
+  const historicalAnchor = {
+    kind: "selected_text",
+    selected_text: selectedText,
+    anchor_context: {
+      kind: "paragraph",
+      plain_text: selectedText,
+      markdown_text: originalText.slice(4),
+      selected_start_in_context: 0,
+      selected_end_in_context: selectedText.length,
+      markdown_start_offset: appliedStart + 4,
+      markdown_end_offset: appliedStart + originalText.length
+    },
+    containing_heading: "Target Section",
+    containing_heading_level: 2,
+    anchor_source: "visual"
+  };
+  const comment = createSelectedComment({
+    selectedText,
+    start: 0,
+    end: selectedText.length,
+    history: [
+      {
+        changed_at: createdAt,
+        reason: "anchor_marked_needs_review_after_patch",
+        source_patch_id: "PM-PATCH-MULTIBLOCK",
+        previous_anchor: historicalAnchor,
+        impact_kind: "linked_comment"
+      }
+    ]
+  });
+  const staleComment = {
+    ...comment,
+    anchor: historicalAnchor
+  };
+  const patch = createPatch({
+    id: "PM-PATCH-MULTIBLOCK",
+    original_text: originalText,
+    suggested_text: appliedText,
+    applied_text: appliedText,
+    applied_start_offset: appliedStart,
+    applied_end_offset: appliedStart + currentAppliedText.length
+  });
+  const resolution = resolveCanonicalCommentTarget(staleComment, {
+    markdown,
+    patches: [patch]
+  });
+
+  assert.equal(resolution.state, "resolved");
+  assert.equal(resolution.method, "accepted_patch_replacement");
+  assert.deepEqual(resolution.range, {
+    start: appliedStart,
+    end: appliedStart + currentAppliedText.length
+  });
+  assert.equal(
+    markdown.slice(resolution.range.start, resolution.range.end),
+    currentAppliedText
+  );
+}
+
+{
+  const originalText =
+    "> **Early Cranberries & Walnut signal.** Dense evidence paragraph.";
+  const selectedText = "Dense evidence paragraph.";
+  const currentAppliedText = [
+    "> **Early Cranberries & Walnut signal**",
+    ">",
+    "> * **Interpretation:** Easier shareholder wording."
+  ].join("\n");
+  const markdown = ["## Target Section", "", currentAppliedText].join("\n");
+  const appliedStart = markdown.indexOf(currentAppliedText);
+  const unrelatedComment = createSelectedComment({
+    id: "PM-COMMENT-UNRELATED",
+    selectedText,
+    start: 0,
+    end: selectedText.length
+  });
+  const patch = createPatch({
+    id: "PM-PATCH-LINKED-ELSEWHERE",
+    comment_id: "PM-COMMENT-LINKED",
+    original_text: originalText,
+    suggested_text: currentAppliedText,
+    applied_text: currentAppliedText,
+    applied_start_offset: appliedStart,
+    applied_end_offset: appliedStart + currentAppliedText.length
+  });
+  const resolution = resolveCanonicalCommentTarget(unrelatedComment, {
+    markdown,
+    patches: [patch]
+  });
+
+  assert.equal(resolution.state, "not_found");
+}
+
+{
   const markdown = ["## First-Year Priorities", "", "Keep this section."].join("\n");
   const comment = createSectionComment({
     heading: "First 3-6 Month Priorities"
