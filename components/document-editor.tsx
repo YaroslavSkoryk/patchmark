@@ -2759,16 +2759,15 @@ export function DocumentEditor() {
           : candidate
       );
 
-      setProjectHandle(nextProjectHandle);
-      setMarkdown(nextMarkdown);
-      setBaselineMarkdown(nextMarkdown);
-      setRestoredMarkdown(null);
-      setVersionEntries(nextProjectHandle.manifest.versions ?? []);
-      setDocumentVersion((currentVersion) => currentVersion + 1);
-
       try {
         await writeProjectPatches(nextProjectHandle, nextPatches);
       } catch (error) {
+        setProjectHandle(nextProjectHandle);
+        setMarkdown(nextMarkdown);
+        setBaselineMarkdown(nextMarkdown);
+        setRestoredMarkdown(null);
+        setVersionEntries(nextProjectHandle.manifest.versions ?? []);
+        setDocumentVersion((currentVersion) => currentVersion + 1);
         setSaveStatus("failed");
         setSaveFeedback({
           kind: "error",
@@ -2777,14 +2776,20 @@ export function DocumentEditor() {
         return;
       }
 
-      setPatches(nextPatches);
-      setRecentlyAppliedPatchId(currentPatch.id);
       const linkedCommentMissing =
         Boolean(currentPatch.comment_id) && !affectedCommentUpdate.linkedCommentFound;
 
       try {
         await writeProjectComments(nextProjectHandle, affectedCommentUpdate.comments);
+        setProjectHandle(nextProjectHandle);
+        setMarkdown(nextMarkdown);
+        setBaselineMarkdown(nextMarkdown);
+        setRestoredMarkdown(null);
+        setVersionEntries(nextProjectHandle.manifest.versions ?? []);
+        setDocumentVersion((currentVersion) => currentVersion + 1);
         setComments(affectedCommentUpdate.comments);
+        setPatches(nextPatches);
+        setRecentlyAppliedPatchId(currentPatch.id);
         setSaveStatus("idle");
         setSaveFeedback({
           kind:
@@ -2799,6 +2804,14 @@ export function DocumentEditor() {
         });
       } catch (error) {
         const message = getProjectErrorMessage(error);
+        setProjectHandle(nextProjectHandle);
+        setMarkdown(nextMarkdown);
+        setBaselineMarkdown(nextMarkdown);
+        setRestoredMarkdown(null);
+        setVersionEntries(nextProjectHandle.manifest.versions ?? []);
+        setDocumentVersion((currentVersion) => currentVersion + 1);
+        setPatches(nextPatches);
+        setRecentlyAppliedPatchId(currentPatch.id);
         setCommentsError(message);
         setSaveStatus("idle");
         setSaveFeedback({
@@ -11783,12 +11796,15 @@ function getMarkdownBlockRange(
 ): { end: number; start: number } {
   const beforeSelection = markdown.slice(0, range.start);
   const afterSelection = markdown.slice(range.end);
-  const previousBlankLineIndex = beforeSelection.search(/\n\s*\n[^\n]*$/);
+  const previousBlankLineMatches = Array.from(
+    beforeSelection.matchAll(/\n[^\S\r\n]*\n/g)
+  );
+  const previousBlankLineMatch = previousBlankLineMatches.at(-1);
   const nextBlankLineMatch = /\n\s*\n/.exec(afterSelection);
   const start =
-    previousBlankLineIndex === -1
+    previousBlankLineMatch === undefined
       ? 0
-      : beforeSelection.lastIndexOf("\n", previousBlankLineIndex) + 1;
+      : previousBlankLineMatch.index + previousBlankLineMatch[0].length;
   const end = nextBlankLineMatch
     ? range.end + nextBlankLineMatch.index
     : markdown.length;
