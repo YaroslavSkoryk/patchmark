@@ -3,7 +3,13 @@ import {
   type TextRange
 } from "../markdown/markdown-tables.ts";
 import {
+  findChangedTableCellInPatchReplacement,
+  findRetainedSelectedTextInPatchReplacement
+} from "./comment-anchor-patch-mapping.ts";
+import {
+  dedupeTextMatches,
   findExactTextMatches,
+  findMarkdownPlainTextMatches,
   findNormalizedTextMatches
 } from "../markdown/markdown-text.ts";
 import { parseMarkdownHeadings } from "../markdown/parse-headings.ts";
@@ -21,15 +27,19 @@ type SelectedTextAnchor = Extract<
 type SectionAnchor = Extract<PatchmarkComment["anchor"], { kind: "section" }>;
 
 export type CanonicalTargetMethod =
+  | "accepted_patch_replacement"
   | "context"
   | "current_offset"
   | "descendant"
   | "exact"
+  | "historical_anchor"
   | "linked_comment_anchor"
   | "linked_comment_context"
   | "linked_comment_structure"
+  | "markdown_plain"
   | "normalized"
   | "section"
+  | "section_heading_replacement"
   | "table_structural"
   | "target_heading"
   | "transformed_anchor";
@@ -72,6 +82,7 @@ type CandidateInput = {
 type CommentTargetResolutionOptions = {
   headings?: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches?: PatchmarkPatch[];
 };
 
 type PatchTargetResolutionOptions = {
@@ -79,6 +90,7 @@ type PatchTargetResolutionOptions = {
   headings?: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
   patch: PatchmarkPatch;
+  patches?: PatchmarkPatch[];
 };
 
 export function resolveCanonicalCommentTarget(
@@ -104,12 +116,19 @@ export function resolveCanonicalCommentTarget(
   }
 
   if (anchor.kind === "section") {
-    return resolveCanonicalSectionTarget(anchor, options.markdown, headings);
+    return resolveCanonicalSectionTarget(
+      comment,
+      anchor,
+      options.markdown,
+      headings,
+      options.patches ?? []
+    );
   }
 
-  return resolveCanonicalSelectedTextTarget(anchor, {
+  return resolveCanonicalSelectedTextTarget(comment, anchor, {
     headings,
-    markdown: options.markdown
+    markdown: options.markdown,
+    patches: options.patches ?? []
   });
 }
 
@@ -117,7 +136,8 @@ export function resolveCanonicalPatchTarget({
   comments = [],
   headings,
   markdown,
-  patch
+  patch,
+  patches = []
 }: PatchTargetResolutionOptions): CanonicalTargetResolution {
   if (!patch.original_text) {
     return createNotFoundResolution("empty_patch_original_text");
@@ -131,7 +151,8 @@ export function resolveCanonicalPatchTarget({
   if (linkedComment) {
     const linkedResolution = resolveCanonicalCommentTarget(linkedComment, {
       headings: resolvedHeadings,
-      markdown
+      markdown,
+      patches
     });
     const linkedPatchResolution = resolvePatchFromLinkedComment({
       linkedComment,
@@ -250,9 +271,11 @@ export function dedupeCanonicalCandidates(
 }
 
 function resolveCanonicalSectionTarget(
+  comment: PatchmarkComment,
   anchor: SectionAnchor,
   markdown: string,
-  headings: ReturnType<typeof parseMarkdownHeadings>
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  patches: PatchmarkPatch[]
 ): CanonicalTargetResolution {
   const currentHeading = findMatchingHeading(headings, {
     level: anchor.heading_level,
@@ -260,6 +283,18 @@ function resolveCanonicalSectionTarget(
   });
 
   if (!currentHeading) {
+    const replacementHeading = resolveSectionHeadingFromAcceptedLinkedPatch({
+      anchor,
+      comment,
+      headings,
+      markdown,
+      patches
+    });
+
+    if (replacementHeading.state !== "not_found") {
+      return replacementHeading;
+    }
+
     return createNotFoundResolution("section_not_found");
   }
 
@@ -281,13 +316,16 @@ function resolveCanonicalSectionTarget(
 }
 
 function resolveCanonicalSelectedTextTarget(
+  comment: PatchmarkComment,
   anchor: SelectedTextAnchor,
   {
     headings,
-    markdown
+    markdown,
+    patches
   }: {
     headings: ReturnType<typeof parseMarkdownHeadings>;
     markdown: string;
+    patches: PatchmarkPatch[];
   }
 ): CanonicalTargetResolution {
   if (!anchor.selected_text) {
@@ -359,6 +397,18 @@ function resolveCanonicalSelectedTextTarget(
           range
         })
       })
+    ),
+    ...findMarkdownPlainTextMatchesInRange(markdown, anchor.selected_text, scope).map(
+      (range) => ({
+        confidence: "medium" as const,
+        method: "markdown_plain" as const,
+        range,
+        structuralContext: getStructuralContextForRange({
+          headings,
+          markdown,
+          range
+        })
+      })
     )
   ]);
   const sectionResolution = createResolutionFromCandidates({
@@ -371,7 +421,7 @@ function resolveCanonicalSelectedTextTarget(
     return sectionResolution;
   }
 
-  return createResolutionFromCandidates({
+  const documentResolution = createResolutionFromCandidates({
     candidates: [
       ...findExactTextMatches(markdown, anchor.selected_text).map((range) => ({
         confidence: "medium" as const,
@@ -392,11 +442,770 @@ function resolveCanonicalSelectedTextTarget(
           markdown,
           range
         })
+      })),
+      ...findMarkdownPlainTextMatches(markdown, anchor.selected_text).map((range) => ({
+        confidence: "low" as const,
+        method: "markdown_plain" as const,
+        range,
+        structuralContext: getStructuralContextForRange({
+          headings,
+          markdown,
+          range
+        })
       }))
     ],
     emptyCode: "selected_text_not_found",
     multipleCode: "selected_text_ambiguous"
   });
+
+  if (documentResolution.state !== "not_found") {
+    return documentResolution;
+  }
+
+  const historicalResolution = resolveSelectedTextFromHistoricalEvidence({
+    anchor,
+    comment,
+    headings,
+    markdown,
+    patches
+  });
+
+  return historicalResolution.state !== "not_found"
+    ? historicalResolution
+    : documentResolution;
+}
+
+function resolveSectionHeadingFromAcceptedLinkedPatch({
+  anchor,
+  comment,
+  headings,
+  markdown,
+  patches
+}: {
+  anchor: SectionAnchor;
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): CanonicalTargetResolution {
+  const candidates = patches.flatMap((patch): CandidateInput[] => {
+    if (
+      patch.status !== "accepted" ||
+      patch.comment_id !== comment.id ||
+      !patch.suggested_text.trim()
+    ) {
+      return [];
+    }
+
+    const originalHeading = parseSingleHeadingText(patch.original_text);
+    const suggestedHeading = parseSingleHeadingText(
+      patch.applied_text ?? patch.suggested_text
+    );
+
+    if (
+      !originalHeading ||
+      !suggestedHeading ||
+      normalizeHeading(originalHeading.text) !== normalizeHeading(anchor.heading)
+    ) {
+      return [];
+    }
+
+    const currentHeading = findMatchingHeading(headings, {
+      level: suggestedHeading.level ?? anchor.heading_level,
+      text: suggestedHeading.text
+    });
+
+    if (!currentHeading) {
+      return [];
+    }
+
+    const range = getHeadingLineRange(markdown, currentHeading);
+
+    return [
+      {
+        confidence: "high",
+        method: "section_heading_replacement",
+        range,
+        structuralContext: {
+          containingHeading: currentHeading.text,
+          scope: "section"
+        }
+      }
+    ];
+  });
+
+  return createResolutionFromCandidates({
+    candidates,
+    emptyCode: "section_heading_replacement_not_found",
+    multipleCode: "section_heading_replacement_ambiguous"
+  });
+}
+
+function resolveSelectedTextFromHistoricalEvidence({
+  anchor,
+  comment,
+  headings,
+  markdown,
+  patches
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): CanonicalTargetResolution {
+  const linkedPatchCandidates = getAcceptedLinkedPatchCandidates({
+    comment,
+    headings,
+    markdown,
+    patches
+  });
+  const linkedPatchResolution = createResolutionFromCandidates({
+    candidates: linkedPatchCandidates,
+    emptyCode: "accepted_linked_patch_not_found",
+    multipleCode: "accepted_linked_patch_ambiguous"
+  });
+
+  if (linkedPatchResolution.state !== "not_found") {
+    return linkedPatchResolution;
+  }
+
+  const historicalAnchorCandidates = getHistoricalAnchorCandidates({
+    anchor,
+    comment,
+    headings,
+    markdown
+  });
+
+  return createResolutionFromCandidates({
+    candidates: historicalAnchorCandidates,
+    emptyCode: "historical_anchor_not_found",
+    multipleCode: "historical_anchor_ambiguous"
+  });
+}
+
+function getAcceptedLinkedPatchCandidates({
+  comment,
+  headings,
+  markdown,
+  patches
+}: {
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): CandidateInput[] {
+  if (comment.anchor.kind !== "selected_text") {
+    return [];
+  }
+
+  const historicalAnchors = getHistoricalSelectedTextAnchors(comment);
+
+  return patches
+    .filter(
+      (patch) =>
+        patch.status === "accepted" &&
+        patch.comment_id === comment.id &&
+        getPatchAppliedText(patch).trim()
+    )
+    .flatMap((patch) => {
+      const appliedRange = locateCurrentAppliedPatchRange({ markdown, patch });
+
+      if (!appliedRange) {
+        return [];
+      }
+
+      const replacementText = markdown.slice(appliedRange.start, appliedRange.end);
+
+      return historicalAnchors.flatMap((historicalAnchor) =>
+        getAcceptedLinkedPatchCandidatesForAnchor({
+          anchor: historicalAnchor,
+          headings,
+          markdown,
+          patch,
+          replacementRange: appliedRange,
+          replacementText
+        })
+      );
+    });
+}
+
+function getAcceptedLinkedPatchCandidatesForAnchor({
+  anchor,
+  headings,
+  markdown,
+  patch,
+  replacementRange,
+  replacementText
+}: {
+  anchor: SelectedTextAnchor;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patch: PatchmarkPatch;
+  replacementRange: TextRange;
+  replacementText: string;
+}): CandidateInput[] {
+  const originalStart = getPatchOriginalStartForHistoricalMapping({
+    patch,
+    replacementRange
+  });
+  const candidateGroups: Array<Array<TextRange | null>> = [
+    [
+      findRetainedSelectedTextInPatchReplacement({
+        anchor,
+        originalStart,
+        originalText: patch.original_text,
+        replacementStart: replacementRange.start,
+        replacementText
+      })
+    ],
+    [
+      findChangedTableCellInPatchReplacement({
+        anchor,
+        originalStart,
+        originalText: patch.original_text,
+        replacementStart: replacementRange.start,
+        replacementText
+      }),
+      findSameColumnTableCellInPatchReplacement({
+        anchor,
+        originalStart,
+        originalText: patch.original_text,
+        replacementStart: replacementRange.start,
+        replacementText
+      })
+    ],
+    [
+      findChangedTextSpanInPatchReplacement({
+        anchor,
+        originalStart,
+        originalText: patch.original_text,
+        replacementStart: replacementRange.start,
+        replacementText
+      })
+    ],
+    [
+      isHistoricalAnchorCoveredByPatchOriginal({
+        anchor,
+        originalStart,
+        originalText: patch.original_text
+      })
+        ? {
+            end: replacementRange.end,
+            start: replacementRange.start
+          }
+        : null
+    ]
+  ];
+  const mappedRanges =
+    candidateGroups
+      .map((group) =>
+        dedupeTextMatches(
+          group
+            .filter((range): range is TextRange => range !== null)
+            .filter((range) => range.end > range.start)
+        )
+      )
+      .find((group) => group.length > 0) ?? [];
+
+  return mappedRanges.map((range) => ({
+    confidence: "high",
+    method: "accepted_patch_replacement",
+    range,
+    structuralContext: getStructuralContextForRange({
+      headings,
+      markdown,
+      range
+    })
+  }));
+}
+
+function getHistoricalAnchorCandidates({
+  anchor,
+  comment,
+  headings,
+  markdown
+}: {
+  anchor: SelectedTextAnchor;
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): CandidateInput[] {
+  return getHistoricalSelectedTextAnchors(comment)
+    .filter((historicalAnchor) => historicalAnchor !== anchor)
+    .flatMap((historicalAnchor) =>
+      getSelectedTextCandidatesForHistoricalAnchor({
+        anchor: historicalAnchor,
+        headings,
+        markdown
+      })
+    );
+}
+
+function getSelectedTextCandidatesForHistoricalAnchor({
+  anchor,
+  headings,
+  markdown
+}: {
+  anchor: SelectedTextAnchor;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): CandidateInput[] {
+  if (!anchor.selected_text) {
+    return [];
+  }
+
+  const sectionRanges = getSelectedAnchorSectionScopes(markdown, headings, anchor);
+  const sectionCandidates = sectionRanges.flatMap((scope) => [
+    ...findExactTextMatchesInRange(markdown, anchor.selected_text, scope),
+    ...findNormalizedTextMatchesInRange(markdown, anchor.selected_text, scope),
+    ...findMarkdownPlainTextMatchesInRange(markdown, anchor.selected_text, scope)
+  ]);
+  const documentCandidates =
+    sectionCandidates.length > 0
+      ? []
+      : [
+          ...findExactTextMatches(markdown, anchor.selected_text),
+          ...findNormalizedTextMatches(markdown, anchor.selected_text),
+          ...findMarkdownPlainTextMatches(markdown, anchor.selected_text)
+        ];
+
+  return dedupeTextMatches([...sectionCandidates, ...documentCandidates]).map(
+    (range) => ({
+      confidence: "high" as const,
+      method: "historical_anchor" as const,
+      range,
+      structuralContext: getStructuralContextForRange({
+        headings,
+        markdown,
+        range
+      })
+    })
+  );
+}
+
+function getHistoricalSelectedTextAnchors(
+  comment: PatchmarkComment
+): SelectedTextAnchor[] {
+  const anchors: SelectedTextAnchor[] = [];
+
+  if (comment.anchor.kind === "selected_text") {
+    anchors.push(comment.anchor);
+  }
+
+  for (const historyEntry of [...(comment.anchor_history ?? [])].reverse()) {
+    if (historyEntry.new_anchor?.kind === "selected_text") {
+      anchors.push(historyEntry.new_anchor);
+    }
+
+    if (historyEntry.previous_anchor.kind === "selected_text") {
+      anchors.push(historyEntry.previous_anchor);
+    }
+  }
+
+  const seen = new Set<string>();
+
+  return anchors.filter((anchor) => {
+    const key = [
+      anchor.selected_text,
+      anchor.markdown_start_offset ?? "",
+      anchor.markdown_end_offset ?? "",
+      anchor.containing_heading ?? "",
+      anchor.anchor_context?.markdown_text ?? ""
+    ].join("\u0000");
+
+    if (seen.has(key)) {
+      return false;
+    }
+
+    seen.add(key);
+    return true;
+  });
+}
+
+function locateCurrentAppliedPatchRange({
+  markdown,
+  patch
+}: {
+  markdown: string;
+  patch: PatchmarkPatch;
+}): TextRange | null {
+  const appliedText = getPatchAppliedText(patch);
+
+  if (!appliedText) {
+    return null;
+  }
+
+  if (
+    typeof patch.applied_start_offset === "number" &&
+    typeof patch.applied_end_offset === "number" &&
+    patch.applied_start_offset >= 0 &&
+    patch.applied_end_offset >= patch.applied_start_offset &&
+    patch.applied_end_offset <= markdown.length
+  ) {
+    const range = {
+      start: patch.applied_start_offset,
+      end: patch.applied_end_offset
+    };
+    const candidate = markdown.slice(range.start, range.end);
+
+    if (
+      candidate === appliedText ||
+      normalizeCanonicalComparisonText(candidate) ===
+        normalizeCanonicalComparisonText(appliedText)
+    ) {
+      return range;
+    }
+  }
+
+  const exactMatches = findExactTextMatches(markdown, appliedText);
+
+  if (exactMatches.length === 1) {
+    return exactMatches[0];
+  }
+
+  const normalizedMatches = findNormalizedTextMatches(markdown, appliedText);
+
+  if (normalizedMatches.length === 1) {
+    return normalizedMatches[0];
+  }
+
+  const plainMatches = findMarkdownPlainTextMatches(markdown, appliedText);
+
+  if (plainMatches.length === 1) {
+    return plainMatches[0];
+  }
+
+  const contextMatch = findPatchContextRange(markdown, patch, appliedText);
+
+  return contextMatch;
+}
+
+function findPatchContextRange(
+  markdown: string,
+  patch: PatchmarkPatch,
+  appliedText: string
+): TextRange | null {
+  if (!patch.applied_context_before && !patch.applied_context_after) {
+    return null;
+  }
+
+  const before = patch.applied_context_before ?? "";
+  const after = patch.applied_context_after ?? "";
+  const beforeMatches = before ? findExactTextMatches(markdown, before) : [];
+  const candidates: TextRange[] = [];
+
+  if (beforeMatches.length > 0) {
+    for (const beforeMatch of beforeMatches) {
+      const start = beforeMatch.end;
+      const afterStart = after ? markdown.indexOf(after, start) : -1;
+
+      if (after && afterStart !== -1) {
+        candidates.push({ start, end: afterStart });
+      }
+    }
+  } else if (after) {
+    for (const afterMatch of findExactTextMatches(markdown, after)) {
+      candidates.push({ start: 0, end: afterMatch.start });
+    }
+  }
+
+  const plausible = dedupeTextMatches(candidates)
+    .filter((range) => range.end >= range.start)
+    .filter((range) => {
+      const candidate = markdown.slice(range.start, range.end);
+
+      return (
+        candidate === appliedText ||
+        normalizeCanonicalComparisonText(candidate) ===
+          normalizeCanonicalComparisonText(appliedText)
+      );
+    });
+
+  return plausible.length === 1 ? plausible[0] : null;
+}
+
+function getPatchAppliedText(patch: PatchmarkPatch): string {
+  return patch.applied_text ?? patch.suggested_text;
+}
+
+function getPatchOriginalStartForHistoricalMapping({
+  patch,
+  replacementRange
+}: {
+  patch: PatchmarkPatch;
+  replacementRange: TextRange;
+}): number | undefined {
+  return typeof patch.applied_start_offset === "number"
+    ? patch.applied_start_offset
+    : replacementRange.start;
+}
+
+function isHistoricalAnchorCoveredByPatchOriginal({
+  anchor,
+  originalStart,
+  originalText
+}: {
+  anchor: SelectedTextAnchor;
+  originalStart?: number;
+  originalText: string;
+}): boolean {
+  if (!anchor.selected_text.trim()) {
+    return false;
+  }
+
+  if (
+    typeof originalStart === "number" &&
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    const relativeStart = anchor.markdown_start_offset - originalStart;
+    const relativeEnd = anchor.markdown_end_offset - originalStart;
+
+    if (
+      relativeStart >= 0 &&
+      relativeEnd >= relativeStart &&
+      relativeEnd <= originalText.length &&
+      normalizeCanonicalComparisonText(
+        originalText.slice(relativeStart, relativeEnd)
+      ) === normalizeCanonicalComparisonText(anchor.selected_text)
+    ) {
+      return true;
+    }
+  }
+
+  return dedupeTextMatches([
+    ...findExactTextMatches(originalText, anchor.selected_text),
+    ...findNormalizedTextMatches(originalText, anchor.selected_text),
+    ...findMarkdownPlainTextMatches(originalText, anchor.selected_text)
+  ]).length === 1;
+}
+
+function findChangedTextSpanInPatchReplacement({
+  anchor,
+  originalStart,
+  originalText,
+  replacementStart,
+  replacementText
+}: {
+  anchor: SelectedTextAnchor;
+  originalStart?: number;
+  originalText: string;
+  replacementStart: number;
+  replacementText: string;
+}): TextRange | null {
+  const originalSelection = findHistoricalAnchorRangeInOriginalText({
+    anchor,
+    originalStart,
+    originalText
+  });
+
+  if (!originalSelection) {
+    return null;
+  }
+
+  const changedSpan = getMinimalChangedSpan(originalText, replacementText);
+
+  if (!changedSpan || changedSpan.replacementEnd <= changedSpan.replacementStart) {
+    return null;
+  }
+
+  if (
+    originalSelection.end <= changedSpan.originalStart ||
+    originalSelection.start >= changedSpan.originalEnd
+  ) {
+    return null;
+  }
+
+  return {
+    start: replacementStart + changedSpan.replacementStart,
+    end: replacementStart + changedSpan.replacementEnd
+  };
+}
+
+function findSameColumnTableCellInPatchReplacement({
+  anchor,
+  originalStart,
+  originalText,
+  replacementStart,
+  replacementText
+}: {
+  anchor: SelectedTextAnchor;
+  originalStart?: number;
+  originalText: string;
+  replacementStart: number;
+  replacementText: string;
+}): TextRange | null {
+  if (
+    !isSingleMarkdownTableRow(originalText) ||
+    !isSingleMarkdownTableRow(replacementText)
+  ) {
+    return null;
+  }
+
+  const originalSelection = findHistoricalAnchorRangeInOriginalText({
+    anchor,
+    originalStart,
+    originalText
+  });
+
+  if (!originalSelection) {
+    return null;
+  }
+
+  const originalCells = getMarkdownTableCellRanges(originalText, 0);
+  const replacementCells = getMarkdownTableCellRanges(replacementText, 0);
+
+  if (
+    originalCells.length === 0 ||
+    originalCells.length !== replacementCells.length
+  ) {
+    return null;
+  }
+
+  const originalCellIndex = originalCells.findIndex(
+    (cell) =>
+      originalSelection.start >= cell.start && originalSelection.end <= cell.end
+  );
+
+  if (originalCellIndex === -1) {
+    return null;
+  }
+
+  const originalCell = originalCells[originalCellIndex];
+  const replacementCell = replacementCells[originalCellIndex];
+
+  if (!originalCell || !replacementCell) {
+    return null;
+  }
+
+  const selectedText = originalText.slice(
+    originalSelection.start,
+    originalSelection.end
+  );
+  const originalCellText = originalText.slice(originalCell.start, originalCell.end);
+
+  if (
+    normalizeCanonicalComparisonText(selectedText) !==
+      normalizeCanonicalComparisonText(originalCellText) &&
+    findExactTextMatches(originalCellText, selectedText).length !== 1
+  ) {
+    return null;
+  }
+
+  return {
+    start: replacementStart + replacementCell.start,
+    end: replacementStart + replacementCell.end
+  };
+}
+
+function findHistoricalAnchorRangeInOriginalText({
+  anchor,
+  originalStart,
+  originalText
+}: {
+  anchor: SelectedTextAnchor;
+  originalStart?: number;
+  originalText: string;
+}): TextRange | null {
+  if (
+    typeof originalStart === "number" &&
+    typeof anchor.markdown_start_offset === "number" &&
+    typeof anchor.markdown_end_offset === "number"
+  ) {
+    const start = anchor.markdown_start_offset - originalStart;
+    const end = anchor.markdown_end_offset - originalStart;
+
+    if (
+      start >= 0 &&
+      end >= start &&
+      end <= originalText.length &&
+      normalizeCanonicalComparisonText(originalText.slice(start, end)) ===
+        normalizeCanonicalComparisonText(anchor.selected_text)
+    ) {
+      return { start, end };
+    }
+  }
+
+  const matches = dedupeTextMatches([
+    ...findExactTextMatches(originalText, anchor.selected_text),
+    ...findNormalizedTextMatches(originalText, anchor.selected_text),
+    ...findMarkdownPlainTextMatches(originalText, anchor.selected_text)
+  ]);
+
+  return matches.length === 1 ? matches[0] : null;
+}
+
+function getMinimalChangedSpan(
+  originalText: string,
+  replacementText: string
+): {
+  originalEnd: number;
+  originalStart: number;
+  replacementEnd: number;
+  replacementStart: number;
+} | null {
+  if (originalText === replacementText) {
+    return null;
+  }
+
+  let prefixLength = 0;
+
+  while (
+    prefixLength < originalText.length &&
+    prefixLength < replacementText.length &&
+    originalText[prefixLength] === replacementText[prefixLength]
+  ) {
+    prefixLength += 1;
+  }
+
+  let originalEnd = originalText.length;
+  let replacementEnd = replacementText.length;
+
+  while (
+    originalEnd > prefixLength &&
+    replacementEnd > prefixLength &&
+    originalText[originalEnd - 1] === replacementText[replacementEnd - 1]
+  ) {
+    originalEnd -= 1;
+    replacementEnd -= 1;
+  }
+
+  return {
+    originalEnd,
+    originalStart: prefixLength,
+    replacementEnd,
+    replacementStart: prefixLength
+  };
+}
+
+function parseSingleHeadingText(
+  markdown: string
+): { level?: number; text: string } | null {
+  const trimmed = markdown.trim();
+  const match = /^(#{1,6})\s+(.+?)\s*#*$/.exec(trimmed);
+
+  if (!match) {
+    return null;
+  }
+
+  return {
+    level: match[1]?.length,
+    text: match[2] ?? ""
+  };
+}
+
+function isSingleMarkdownTableRow(markdown: string): boolean {
+  const lines = markdown
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  return lines.length === 1 && lines[0].startsWith("|") && lines[0].endsWith("|");
+}
+
+function normalizeCanonicalComparisonText(text: string): string {
+  return text.replace(/\s+/g, " ").trim();
 }
 
 function resolvePatchFromLinkedComment({
@@ -1004,6 +1813,20 @@ function findNormalizedTextMatchesInRange(
   range: TextRange
 ): TextRange[] {
   return findNormalizedTextMatches(
+    markdown.slice(range.start, range.end),
+    searchText
+  ).map((match) => ({
+    start: range.start + match.start,
+    end: range.start + match.end
+  }));
+}
+
+function findMarkdownPlainTextMatchesInRange(
+  markdown: string,
+  searchText: string,
+  range: TextRange
+): TextRange[] {
+  return findMarkdownPlainTextMatches(
     markdown.slice(range.start, range.end),
     searchText
   ).map((match) => ({

@@ -36,16 +36,19 @@ export type PendingPatchTargetResolution = {
 export function resolvePendingPatchTarget({
   comments = [],
   markdown,
-  patch
+  patch,
+  patches = []
 }: {
   comments?: PatchmarkComment[];
   markdown: string;
   patch: PatchmarkPatch;
+  patches?: PatchmarkPatch[];
 }): PendingPatchTargetResolution {
   const canonical = resolveCanonicalPatchTarget({
     comments,
     markdown,
-    patch
+    patch,
+    patches
   });
   const matches =
     canonical.state === "resolved" && canonical.range

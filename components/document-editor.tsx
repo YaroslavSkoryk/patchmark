@@ -383,6 +383,7 @@ type CommentPositionMeasurementInput = {
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
   mode: EditorMode;
+  patches?: PatchmarkPatch[];
   workspace: HTMLElement | null;
 };
 type VisualSelectionSnapshot = {
@@ -528,10 +529,10 @@ export function DocumentEditor() {
       Object.fromEntries(
         comments.map((comment) => [
           comment.id,
-          getCommentAnchorSummary(comment, markdown, headings)
+          getCommentAnchorSummary(comment, markdown, headings, patches)
         ])
       ),
-    [comments, headings, markdown]
+    [comments, headings, markdown, patches]
   );
   const commentsById = useMemo(
     () => new Map(comments.map((comment) => [comment.id, comment])),
@@ -901,6 +902,7 @@ export function DocumentEditor() {
         headings,
         markdown,
         mode,
+        patches,
         workspace: documentWorkspaceRef.current
       });
 
@@ -916,7 +918,8 @@ export function DocumentEditor() {
         container: editorDocumentRef.current,
         headings,
         markdown,
-        mode
+        mode,
+        patches
       });
     }
 
@@ -983,7 +986,15 @@ export function DocumentEditor() {
       window.removeEventListener("resize", scheduleCommentAnchorSync);
       clearVisualCommentHighlights();
     };
-  }, [activeCommentState, comments, documentVersion, headings, markdown, mode]);
+  }, [
+    activeCommentState,
+    comments,
+    documentVersion,
+    headings,
+    markdown,
+    mode,
+    patches
+  ]);
 
   useEffect(() => {
     const activeCommentIds = getActiveCommentIds(activeCommentState);
@@ -1021,7 +1032,8 @@ export function DocumentEditor() {
         comment: activeComment,
         container,
         headings,
-        markdown
+        markdown,
+        patches
       });
 
       if (!range) {
@@ -1033,7 +1045,7 @@ export function DocumentEditor() {
     });
 
     return () => window.cancelAnimationFrame(animationFrameId);
-  }, [activeCommentState, comments, headings, markdown, mode]);
+  }, [activeCommentState, comments, headings, markdown, mode, patches]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving) {
@@ -2343,7 +2355,7 @@ export function DocumentEditor() {
 
   async function handleFindComment(comment: PatchmarkComment) {
     setActiveCommentState({ kind: "comment", commentId: comment.id });
-    const resolution = resolveCommentAnchor(comment, markdown, headings);
+    const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
     if (comment.anchor.kind === "document") {
       setSaveFeedback({
@@ -3189,7 +3201,8 @@ export function DocumentEditor() {
       comments,
       container: editorDocumentRef.current,
       headings,
-      markdown
+      markdown,
+      patches
     });
 
     if (matchingCommentIds.length === 1) {
@@ -7025,7 +7038,8 @@ function getPatchReviewAnchorStatus(
   const pendingResolution = resolvePendingPatchTarget({
     comments,
     markdown,
-    patch
+    patch,
+    patches
   });
 
   if (pendingResolution.applicability === "exact_match") {
@@ -10083,6 +10097,201 @@ function repairRetainedLinkedPatchCommentAnchor({
   return null;
 }
 
+function repairCommentAnchorFromCanonicalResolution({
+  comment,
+  headings,
+  markdown,
+  patches,
+  repairedAt
+}: {
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+  repairedAt: string;
+}): PatchmarkComment | null {
+  const canonicalResolution = resolveCanonicalCommentTarget(comment, {
+    headings,
+    markdown,
+    patches
+  });
+
+  if (
+    canonicalResolution.state !== "resolved" ||
+    canonicalResolution.confidence !== "high" ||
+    !canonicalResolution.range ||
+    !isPersistableCanonicalRecoveryMethod(canonicalResolution.method)
+  ) {
+    return null;
+  }
+
+  const nextAnchor = createCommentAnchorFromCanonicalResolution({
+    comment,
+    headings,
+    markdown,
+    resolution: canonicalResolution
+  });
+
+  if (!nextAnchor) {
+    return null;
+  }
+
+  const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
+  const anchorAlreadyCurrent = areCommentAnchorsEqual(comment.anchor, nextAnchor);
+
+  if (anchorAlreadyCurrent && !latestNeedsReviewImpact) {
+    return null;
+  }
+
+  let nextComment: PatchmarkComment = anchorAlreadyCurrent
+    ? {
+        ...comment,
+        updated_at: repairedAt
+      }
+    : {
+        ...comment,
+        anchor: nextAnchor,
+        anchor_history: [
+          ...(comment.anchor_history ?? []),
+          {
+            changed_at: repairedAt,
+            reason: "anchor_recovered_after_patch",
+            source_patch_id: latestNeedsReviewImpact?.patch_id,
+            previous_anchor: comment.anchor,
+            new_anchor: nextAnchor,
+            impact_kind: latestNeedsReviewImpact?.impact_kind
+          }
+        ],
+        updated_at: repairedAt
+      };
+
+  if (latestNeedsReviewImpact) {
+    nextComment = appendPatchImpactToComment({
+      comment: nextComment,
+      createdAt: repairedAt,
+      impactKind: latestNeedsReviewImpact.impact_kind,
+      note: "Anchor recovered from canonical current document state.",
+      patchId: latestNeedsReviewImpact.patch_id,
+      result: "reanchored"
+    });
+  }
+
+  return nextComment;
+}
+
+function isPersistableCanonicalRecoveryMethod(
+  method: CanonicalTargetResolution["method"]
+): boolean {
+  return (
+    method === "accepted_patch_replacement" ||
+    method === "historical_anchor" ||
+    method === "markdown_plain" ||
+    method === "section_heading_replacement"
+  );
+}
+
+function createCommentAnchorFromCanonicalResolution({
+  comment,
+  headings,
+  markdown,
+  resolution
+}: {
+  comment: PatchmarkComment;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  resolution: CanonicalTargetResolution;
+}): PatchmarkCommentAnchor | null {
+  if (!resolution.range) {
+    return null;
+  }
+
+  if (comment.anchor.kind === "section") {
+    const heading = findHeadingAtRangeStart({
+      headings,
+      markdown,
+      range: resolution.range
+    });
+
+    if (!heading) {
+      return null;
+    }
+
+    const sectionRange = getSectionRange(markdown, headings, heading);
+
+    return {
+      ...comment.anchor,
+      heading: heading.text,
+      heading_level: heading.level,
+      heading_line: heading.line,
+      heading_path: getHeadingPath(headings, heading),
+      section_start_offset: sectionRange.start,
+      section_end_offset: sectionRange.end
+    };
+  }
+
+  if (comment.anchor.kind !== "selected_text") {
+    return null;
+  }
+
+  const selectedText = markdown.slice(resolution.range.start, resolution.range.end);
+  const context =
+    createAnchorContextFromMarkdownRange(markdown, resolution.range) ??
+    ({
+      kind: comment.anchor.anchor_context?.kind ?? "block",
+      plain_text: normalizeDomText(selectedText),
+      markdown_text: selectedText,
+      selected_start_in_context: 0,
+      selected_end_in_context: selectedText.length,
+      markdown_start_offset: resolution.range.start,
+      markdown_end_offset: resolution.range.end
+    } satisfies PatchmarkSelectedTextAnchorContext);
+
+  return createSelectedTextAnchorAtRange({
+    anchor: comment.anchor,
+    anchorSource:
+      resolution.method === "accepted_patch_replacement" ||
+      resolution.method === "historical_anchor"
+        ? "patch"
+        : comment.anchor.anchor_source ?? "markdown",
+    comment,
+    context,
+    markdown,
+    preferredHeadingText:
+      resolution.containingHeading ?? comment.anchor.containing_heading,
+    selectedText,
+    start: resolution.range.start,
+    end: resolution.range.end
+  });
+}
+
+function findHeadingAtRangeStart({
+  headings,
+  markdown,
+  range
+}: {
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  range: TextMatch;
+}) {
+  const lineStarts = getLineStartOffsets(markdown);
+  const line = lineStarts.findIndex((lineStart) => lineStart === range.start) + 1;
+
+  if (line > 0) {
+    const exactHeading = headings.find((heading) => heading.line === line);
+
+    if (exactHeading) {
+      return exactHeading;
+    }
+  }
+
+  return headings.find((heading) => {
+    const lineStart = lineStarts[heading.line - 1] ?? -1;
+    const nextStart = lineStarts[heading.line] ?? markdown.length;
+
+    return lineStart === range.start && nextStart - 1 >= range.end;
+  });
+}
+
 function locateCurrentAppliedPatchRange({
   markdown,
   patch
@@ -10140,8 +10349,17 @@ function recoverPersistableStaleCommentAnchors({
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
-    if (comment.status === "resolved") {
-      return comment;
+    const canonicalRepair = repairCommentAnchorFromCanonicalResolution({
+      comment,
+      headings,
+      markdown,
+      patches,
+      repairedAt: recoveredAt
+    });
+
+    if (canonicalRepair) {
+      didRecover = true;
+      return canonicalRepair;
     }
 
     const linkedPatchRepair = repairRetainedLinkedPatchCommentAnchor({
@@ -11121,6 +11339,7 @@ function createFocusedCommentExportEntry({
       comment,
       headings,
       markdown,
+      patches,
       tableContexts
     })
   };
@@ -11220,6 +11439,7 @@ function createExportContext({
   comment,
   headings,
   markdown,
+  patches,
   tableContexts
 }: {
   actionContext: PatchmarkCommentActionContext;
@@ -11227,11 +11447,13 @@ function createExportContext({
   comment: PatchmarkComment;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches: PatchmarkPatch[];
   tableContexts: CanonicalTableContext[];
 }) {
   const canonicalResolution = resolveCanonicalCommentTarget(comment, {
     headings,
-    markdown
+    markdown,
+    patches
   });
   const containingSectionRange =
     getContainingSectionRangeFromCanonical({
@@ -11967,6 +12189,7 @@ function measureCommentPositions({
   headings,
   markdown,
   mode,
+  patches = [],
   workspace
 }: CommentPositionMeasurementInput): Record<string, number> {
   if (!container || !workspace || comments.length === 0) {
@@ -11986,6 +12209,7 @@ function measureCommentPositions({
       headings,
       markdown,
       mode,
+      patches,
       workspaceRect
     });
 
@@ -12004,6 +12228,7 @@ function computeCommentPreferredTop({
   headings,
   markdown,
   mode,
+  patches = [],
   workspaceRect
 }: {
   comment: PatchmarkComment;
@@ -12012,6 +12237,7 @@ function computeCommentPreferredTop({
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
   mode: EditorMode;
+  patches?: PatchmarkPatch[];
   workspaceRect: DOMRect;
 }): number | null {
   const { anchor } = comment;
@@ -12043,7 +12269,7 @@ function computeCommentPreferredTop({
     return estimateTopForLine(currentHeading.line, editorTop);
   }
 
-  const resolution = resolveCommentAnchor(comment, markdown, headings);
+  const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
   if (resolution.status === "active" && resolution.start !== undefined) {
     if (mode === "visual") {
@@ -13173,7 +13399,8 @@ function findVisualCommentIdsAtPoint({
   comments,
   container,
   headings,
-  markdown
+  markdown,
+  patches = []
 }: {
   clientX: number;
   clientY: number;
@@ -13181,6 +13408,7 @@ function findVisualCommentIdsAtPoint({
   container: HTMLElement | null;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches?: PatchmarkPatch[];
 }): string[] {
   if (!container) {
     return [];
@@ -13192,7 +13420,8 @@ function findVisualCommentIdsAtPoint({
         comment,
         container,
         headings,
-        markdown
+        markdown,
+        patches
       });
 
       return range ? isPointInsideRangeClientRects(range, clientX, clientY) : false;
@@ -13204,14 +13433,16 @@ function findVisualCommentAnchorRange({
   comment,
   container,
   headings,
-  markdown
+  markdown,
+  patches = []
 }: {
   comment: PatchmarkComment;
   container: HTMLElement;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
+  patches?: PatchmarkPatch[];
 }): Range | null {
-  const resolution = resolveCommentAnchor(comment, markdown, headings);
+  const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
   if (resolution.status !== "active") {
     return null;
@@ -13335,7 +13566,8 @@ function updateVisualCommentHighlights({
   container,
   headings,
   markdown,
-  mode
+  mode,
+  patches = []
 }: {
   activeCommentState: ActiveCommentState;
   comments: PatchmarkComment[];
@@ -13343,6 +13575,7 @@ function updateVisualCommentHighlights({
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
   mode: EditorMode;
+  patches?: PatchmarkPatch[];
 }): void {
   const highlightApi = getCssHighlightApi();
 
@@ -13368,7 +13601,8 @@ function updateVisualCommentHighlights({
       comment,
       container,
       headings,
-      markdown
+      markdown,
+      patches
     });
 
     if (!range) {
@@ -13688,9 +13922,10 @@ function getActionIntentForCommentType(
 function getCommentAnchorSummary(
   comment: PatchmarkComment,
   markdown: string,
-  headings: ReturnType<typeof parseMarkdownHeadings>
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  patches: PatchmarkPatch[] = []
 ): CommentAnchorSummary {
-  const resolution = resolveCommentAnchor(comment, markdown, headings);
+  const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
   return {
     detail: resolution.detail,
@@ -13727,13 +13962,15 @@ function getAnchorNotFoundDetail(
 function resolveCommentAnchor(
   comment: PatchmarkComment,
   markdown: string,
-  headings: ReturnType<typeof parseMarkdownHeadings>
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  patches: PatchmarkPatch[] = []
 ): CommentAnchorResolution {
   const { anchor } = comment;
   const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
   const canonicalResolution = resolveCanonicalCommentTarget(comment, {
     headings,
-    markdown
+    markdown,
+    patches
   });
 
   if (anchor.kind === "document") {
