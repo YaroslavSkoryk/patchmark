@@ -4,6 +4,7 @@ import {
   classifyRangeAgainstEdit,
   deriveContiguousMarkdownEdit,
   deriveMarkdownChangeSet,
+  deriveNativeMarkdownChangeSet,
   isSafeManualAnchorTransformChangeSet,
   isSafeManualAnchorTransformEdit,
   transformSelectedTextAnchorThroughChangeSet,
@@ -599,6 +600,39 @@ function getAnchorResultComparable(result) {
   });
 
   assert.equal(safety.safe, false);
+}
+
+{
+  const oldMarkdown = "Alpha beta gamma";
+  const selectionStart = oldMarkdown.indexOf("beta");
+  const selectionEnd = selectionStart + "beta".length;
+  const newMarkdown = `${oldMarkdown.slice(0, selectionStart)}better${oldMarkdown.slice(selectionEnd)}`;
+  const changeSet = deriveNativeMarkdownChangeSet({
+    newMarkdown,
+    oldMarkdown,
+    selectionEnd,
+    selectionStart,
+    source: "manual_source"
+  });
+
+  assert.ok(changeSet);
+  assert.equal(changeSet.derivation, "native");
+  assert.equal(changeSet.confidence, "high");
+  assert.equal(applyMarkdownEdits(oldMarkdown, changeSet.edits), newMarkdown);
+}
+
+{
+  const oldMarkdown = "Alpha beta gamma";
+  const newMarkdown = "Prefix Alpha beta gamma";
+  const changeSet = deriveNativeMarkdownChangeSet({
+    newMarkdown,
+    oldMarkdown,
+    selectionEnd: oldMarkdown.length,
+    selectionStart: oldMarkdown.length,
+    source: "manual_source"
+  });
+
+  assert.equal(changeSet, null);
 }
 
 console.log("Comment anchor transformation tests passed.");

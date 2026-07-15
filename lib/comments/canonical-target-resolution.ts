@@ -94,6 +94,13 @@ type PatchTargetResolutionOptions = {
   patches?: PatchmarkPatch[];
 };
 
+let cachedLineStartOffsets:
+  | {
+      markdown: string;
+      offsets: number[];
+    }
+  | undefined;
+
 export function resolveCanonicalCommentTarget(
   comment: PatchmarkComment,
   options: CommentTargetResolutionOptions
@@ -2107,6 +2114,10 @@ function getHigherConfidence(
 }
 
 function getLineStartOffsets(markdown: string): number[] {
+  if (cachedLineStartOffsets?.markdown === markdown) {
+    return cachedLineStartOffsets.offsets;
+  }
+
   const offsets: number[] = [];
   let offset = 0;
 
@@ -2114,6 +2125,8 @@ function getLineStartOffsets(markdown: string): number[] {
     offsets.push(offset);
     offset += line.length + 1;
   }
+
+  cachedLineStartOffsets = { markdown, offsets };
 
   return offsets;
 }

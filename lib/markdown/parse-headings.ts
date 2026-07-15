@@ -4,7 +4,18 @@ export type MarkdownHeading = {
   line: number;
 };
 
+let cachedMarkdownHeadings:
+  | {
+      headings: MarkdownHeading[];
+      markdown: string;
+    }
+  | undefined;
+
 export function parseMarkdownHeadings(markdown: string): MarkdownHeading[] {
+  if (cachedMarkdownHeadings?.markdown === markdown) {
+    return cachedMarkdownHeadings.headings;
+  }
+
   const headings: MarkdownHeading[] = [];
   const lines = markdown.split(/\r?\n/);
   let activeFence: "```" | "~~~" | null = null;
@@ -45,6 +56,8 @@ export function parseMarkdownHeadings(markdown: string): MarkdownHeading[] {
       line: index + 1
     });
   });
+
+  cachedMarkdownHeadings = { headings, markdown };
 
   return headings;
 }

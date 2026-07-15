@@ -33,10 +33,21 @@ type MarkdownLine = {
   text: string;
 };
 
+let cachedMarkdownTables:
+  | {
+      markdown: string;
+      tables: MarkdownTable[];
+    }
+  | undefined;
+
 export function findMarkdownTables(
   markdown: string,
   range?: TextRange
 ): MarkdownTable[] {
+  if (!range && cachedMarkdownTables?.markdown === markdown) {
+    return cachedMarkdownTables.tables;
+  }
+
   const lines = getMarkdownLines(markdown);
   const tables: MarkdownTable[] = [];
   const startLineIndex =
@@ -115,6 +126,10 @@ export function findMarkdownTables(
     }
 
     lineIndex += 1;
+  }
+
+  if (!range) {
+    cachedMarkdownTables = { markdown, tables };
   }
 
   return tables;

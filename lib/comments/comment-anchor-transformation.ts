@@ -210,6 +210,63 @@ export function deriveMarkdownChangeSet({
   };
 }
 
+export function deriveNativeMarkdownChangeSet({
+  newMarkdown,
+  oldMarkdown,
+  selectionEnd,
+  selectionStart,
+  source = "manual_source"
+}: {
+  newMarkdown: string;
+  oldMarkdown: string;
+  selectionEnd: number;
+  selectionStart: number;
+  source?: MarkdownChangeSetSource;
+}): MarkdownChangeSet | null {
+  if (
+    oldMarkdown === newMarkdown ||
+    !Number.isInteger(selectionStart) ||
+    !Number.isInteger(selectionEnd) ||
+    selectionStart < 0 ||
+    selectionEnd < selectionStart ||
+    selectionEnd > oldMarkdown.length
+  ) {
+    return null;
+  }
+
+  const removedLength = selectionEnd - selectionStart;
+  const insertedLength = newMarkdown.length - oldMarkdown.length + removedLength;
+
+  if (insertedLength < 0) {
+    return null;
+  }
+
+  const insertedText = newMarkdown.slice(
+    selectionStart,
+    selectionStart + insertedLength
+  );
+  const removedText = oldMarkdown.slice(selectionStart, selectionEnd);
+  const edit: MarkdownEdit = {
+    insertedText,
+    kind: getMarkdownEditKind({ insertedText, removedText }),
+    oldEnd: selectionEnd,
+    oldStart: selectionStart,
+    removedText
+  };
+
+  if (!validateMarkdownEdits({ edits: [edit], newMarkdown, oldMarkdown })) {
+    return null;
+  }
+
+  return {
+    broad: false,
+    confidence: "high",
+    derivation: "native",
+    edits: [edit],
+    source
+  };
+}
+
 export function applyMarkdownEdits(
   oldMarkdown: string,
   edits: MarkdownEdit[]

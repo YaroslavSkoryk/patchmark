@@ -31,6 +31,11 @@ import {
   toolbarPlugin
 } from "@mdxeditor/editor";
 import { normalizeMarkdownForVisualEditor } from "@/lib/markdown/normalize-for-visual-editor";
+import {
+  getLatestEditPerformanceOperationId,
+  incrementEditPerformanceCounter,
+  markEditPerformanceOperation
+} from "@/lib/performance/edit-performance";
 
 type MdxEditorClientProps = {
   markdown: string;
@@ -81,6 +86,12 @@ export function MdxEditorClient({
     } catch (error) {
       setRenderError(normalizeVisualModeError(error));
     }
+  }, [visualMarkdown]);
+
+  useEffect(() => {
+    const operationId = getLatestEditPerformanceOperationId();
+    incrementEditPerformanceCounter(operationId, "mdx_editor_effect_count");
+    markEditPerformanceOperation(operationId, "mdx_editor_settled");
   }, [visualMarkdown]);
 
   useEffect(() => {

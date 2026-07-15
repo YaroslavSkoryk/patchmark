@@ -263,8 +263,13 @@ function normalizeFixturePath(path) {
   return path.split(sep).filter(Boolean).join("/");
 }
 
-async function startFixtureFileServer(rootDir, inventory) {
+async function startFixtureFileServer(
+  rootDir,
+  inventory,
+  { persistWrites = true } = {}
+) {
   const fileSet = new Set(inventory.files);
+  const memoryFiles = new Map();
   const server = createServer((request, response) => {
     response.setHeader("Access-Control-Allow-Origin", "*");
 
@@ -284,9 +289,16 @@ async function startFixtureFileServer(rootDir, inventory) {
       const chunks = [];
       request.on("data", (chunk) => chunks.push(chunk));
       request.on("end", () => {
-        const fullPath = join(rootDir, relativePath);
-        mkdirSync(dirname(fullPath), { recursive: true });
-        writeFileSync(fullPath, Buffer.concat(chunks));
+        const content = Buffer.concat(chunks);
+
+        if (persistWrites) {
+          const fullPath = join(rootDir, relativePath);
+          mkdirSync(dirname(fullPath), { recursive: true });
+          writeFileSync(fullPath, content);
+        } else {
+          memoryFiles.set(relativePath, content);
+        }
+
         fileSet.add(relativePath);
         response.writeHead(204);
         response.end();
@@ -313,7 +325,10 @@ async function startFixtureFileServer(rootDir, inventory) {
     response.writeHead(200, {
       "Content-Type": getContentType(relativePath)
     });
-    response.end(Buffer.from(readFileSync(join(rootDir, relativePath), "utf8")));
+    response.end(
+      memoryFiles.get(relativePath) ??
+        Buffer.from(readFileSync(join(rootDir, relativePath), "utf8"))
+    );
   });
 
   await new Promise((resolve, reject) => {
@@ -567,6 +582,7 @@ class CdpClient {
   }
 
   constructor(socket) {
+    this.listeners = new Map();
     this.nextId = 1;
     this.pending = new Map();
     this.socket = socket;
@@ -575,6 +591,9 @@ class CdpClient {
       const message = JSON.parse(event.data);
 
       if (!message.id) {
+        for (const listener of this.listeners.get(message.method) ?? []) {
+          listener(message.params ?? {});
+        }
         return;
       }
 
@@ -602,6 +621,19 @@ class CdpClient {
     return new Promise((resolve, reject) => {
       this.pending.set(id, { reject, resolve });
     });
+  }
+
+  on(method, listener) {
+    const listeners = this.listeners.get(method) ?? new Set();
+    listeners.add(listener);
+    this.listeners.set(method, listeners);
+
+    return () => {
+      listeners.delete(listener);
+      if (listeners.size === 0) {
+        this.listeners.delete(method);
+      }
+    };
   }
 
   async close() {

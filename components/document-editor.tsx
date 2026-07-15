@@ -2,7 +2,9 @@
 
 import {
   useCallback,
+  useDeferredValue,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -34,6 +36,7 @@ import {
 import {
   classifyRangeAgainstEdit,
   deriveMarkdownChangeSet,
+  deriveNativeMarkdownChangeSet,
   doesRangeIntersectEdit,
   isSafeManualAnchorTransformChangeSet,
   transformSelectedTextAnchorThroughEdit,
@@ -180,6 +183,14 @@ import {
   saveDocumentDraft,
   type DocumentDraft
 } from "@/lib/storage/document-draft-storage";
+import {
+  incrementEditPerformanceCounter,
+  markEditPerformanceOperation,
+  markLatestEditPerformanceOperation,
+  recordEditPerformanceDuration,
+  startEditPerformanceOperation,
+  updateEditPerformanceMetadata
+} from "@/lib/performance/edit-performance";
 
 type EditorMode = "visual" | "markdown";
 type PatchReviewMode = "visual" | "markdown-source";
@@ -455,6 +466,13 @@ const COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME =
   "patchmark-comment-resolved-selected-anchor";
 const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/i;
 const DOCUMENT_RAW_URL_PATTERN = /\bhttps?:\/\/\S+/i;
+const visualTextIndexCache = new WeakMap<HTMLElement, VisualTextIndex>();
+let cachedDocumentLineStartOffsets:
+  | {
+      markdown: string;
+      offsets: number[];
+    }
+  | undefined;
 const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
 
 export function DocumentEditor() {
@@ -527,8 +545,10 @@ export function DocumentEditor() {
   const [recentlyAppliedPatchId, setRecentlyAppliedPatchId] = useState<
     string | null
   >(null);
+  const pendingEditPerformanceOperationIdRef = useRef<string | null>(null);
 
   const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
+  const deferredPatchReviewMarkdown = useDeferredValue(markdown);
   const markdownSelectionDraft = useMemo(
     () => createMarkdownSelectionDraft(markdown, markdownSelection),
     [markdown, markdownSelection]
@@ -558,13 +578,21 @@ export function DocumentEditor() {
   const selectedCommentAnchorContextKind =
     selectedCommentDraft?.anchorContext.kind ?? null;
   const commentAnchorSummaries = useMemo(
-    () =>
-      Object.fromEntries(
+    () => {
+      const startedAt = performance.now();
+      const summaries = Object.fromEntries(
         comments.map((comment) => [
           comment.id,
           getCommentAnchorSummary(comment, markdown, headings, patches)
         ])
-      ),
+      );
+      recordEditPerformanceDuration(
+        pendingEditPerformanceOperationIdRef.current,
+        "comment_anchor_summaries",
+        performance.now() - startedAt
+      );
+      return summaries;
+    },
     [comments, headings, markdown, patches]
   );
   const commentsById = useMemo(
@@ -579,9 +607,35 @@ export function DocumentEditor() {
     () => patches.filter((patch) => patch.status === "pending"),
     [patches]
   );
+  const shouldResolvePatchGroupAnchors = Boolean(
+    patchGroupListDialog ||
+      patchReviewCommentScopeId ||
+      patchReviewGroupScopeId ||
+      selectedPatchGroupId ||
+      selectedPatchId
+  );
   const patchGroups = useMemo(
-    () => derivePatchGroups(patches, markdown, comments),
-    [comments, markdown, patches]
+    () => {
+      const startedAt = performance.now();
+      const groups = derivePatchGroups(
+        patches,
+        deferredPatchReviewMarkdown,
+        comments,
+        shouldResolvePatchGroupAnchors
+      );
+      recordEditPerformanceDuration(
+        pendingEditPerformanceOperationIdRef.current,
+        "patch_group_derivation",
+        performance.now() - startedAt
+      );
+      return groups;
+    },
+    [
+      comments,
+      deferredPatchReviewMarkdown,
+      patches,
+      shouldResolvePatchGroupAnchors
+    ]
   );
   const pendingPatchGroups = useMemo(
     () =>
@@ -760,33 +814,78 @@ export function DocumentEditor() {
       return;
     }
 
-    const recoveredComments = recoverPersistableStaleCommentAnchors({
-      comments,
-      headings,
-      markdown,
-      patches
-    });
-
-    if (recoveredComments === comments) {
-      return;
-    }
-
     let isCancelled = false;
+    const operationId = pendingEditPerformanceOperationIdRef.current;
+    const runRecovery = () => {
+      if (isCancelled) {
+        return;
+      }
 
-    void writeProjectComments(projectHandle, recoveredComments)
-      .then(() => {
-        if (!isCancelled) {
-          setComments(recoveredComments);
-        }
-      })
-      .catch((error) => {
-        if (!isCancelled) {
-          setCommentsError(getProjectErrorMessage(error));
-        }
+      const recoveryStartedAt = performance.now();
+      const recoveredComments = recoverPersistableStaleCommentAnchors({
+        comments,
+        headings,
+        markdown,
+        patches
       });
+      recordEditPerformanceDuration(
+        operationId,
+        "background_comment_recovery",
+        performance.now() - recoveryStartedAt
+      );
+      markEditPerformanceOperation(operationId, "background_recovery_settled");
+
+      if (recoveredComments === comments || isCancelled) {
+        markEditPerformanceOperation(
+          operationId,
+          "background_recovery_persisted"
+        );
+        return;
+      }
+
+      const persistenceStartedAt = performance.now();
+      void writeProjectComments(projectHandle, recoveredComments)
+        .then(() => {
+          if (!isCancelled) {
+            setComments(recoveredComments);
+            recordEditPerformanceDuration(
+              operationId,
+              "background_recovery_persistence",
+              performance.now() - persistenceStartedAt
+            );
+            markEditPerformanceOperation(
+              operationId,
+              "background_recovery_persisted"
+            );
+          }
+        })
+        .catch((error) => {
+          if (!isCancelled) {
+            setCommentsError(getProjectErrorMessage(error));
+            markEditPerformanceOperation(
+              operationId,
+              "background_recovery_persisted"
+            );
+          }
+        });
+    };
+    const idleCallbackId =
+      typeof window.requestIdleCallback === "function"
+        ? window.requestIdleCallback(runRecovery, { timeout: 250 })
+        : null;
+    const timeoutId =
+      idleCallbackId === null ? window.setTimeout(runRecovery, 0) : null;
 
     return () => {
       isCancelled = true;
+
+      if (idleCallbackId !== null) {
+        window.cancelIdleCallback(idleCallbackId);
+      }
+
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
     };
   }, [comments, headings, isSaving, markdown, patches, projectHandle]);
 
@@ -870,12 +969,37 @@ export function DocumentEditor() {
       return;
     }
 
+    const operationId = pendingEditPerformanceOperationIdRef.current;
+    const persistenceStartedAt = performance.now();
     saveDocumentDraft({
       fileName,
       markdown,
       updatedAt: new Date().toISOString()
     });
+    recordEditPerformanceDuration(
+      operationId,
+      "draft_persistence",
+      performance.now() - persistenceStartedAt
+    );
+    markEditPerformanceOperation(operationId, "persistence_settled");
   }, [fileName, markdown]);
+
+  useLayoutEffect(() => {
+    const operationId = pendingEditPerformanceOperationIdRef.current;
+
+    if (!operationId) {
+      return;
+    }
+
+    incrementEditPerformanceCounter(operationId, "react_commit_count");
+    markEditPerformanceOperation(operationId, "react_commit");
+
+    const animationFrameId = window.requestAnimationFrame(() => {
+      markEditPerformanceOperation(operationId, "visual_settled");
+    });
+
+    return () => window.cancelAnimationFrame(animationFrameId);
+  }, [comments, markdown]);
 
   useEffect(() => {
     if (!isDirty) {
@@ -920,7 +1044,7 @@ export function DocumentEditor() {
   useEffect(() => {
     let isCancelled = false;
     let animationFrameId: number | null = null;
-    const delayedSyncTimeoutIds: number[] = [];
+    let settledTimeoutId: number | null = null;
     const editorContainer = editorDocumentRef.current;
     const workspace = documentWorkspaceRef.current;
 
@@ -929,6 +1053,9 @@ export function DocumentEditor() {
         return;
       }
 
+      const operationId = pendingEditPerformanceOperationIdRef.current;
+      const projectionStartedAt = performance.now();
+      markEditPerformanceOperation(operationId, "visual_projection_start");
       const nextCommentPositions = measureCommentPositions({
         comments,
         container: editorDocumentRef.current,
@@ -954,9 +1081,32 @@ export function DocumentEditor() {
         mode,
         patches
       });
+      recordEditPerformanceDuration(
+        operationId,
+        "visual_projection_and_rail",
+        performance.now() - projectionStartedAt
+      );
+      incrementEditPerformanceCounter(operationId, "projection_pass_count");
+      markEditPerformanceOperation(operationId, "visual_projection_end");
+
+      if (settledTimeoutId !== null) {
+        window.clearTimeout(settledTimeoutId);
+      }
+
+      settledTimeoutId = window.setTimeout(() => {
+        settledTimeoutId = null;
+        markLatestEditPerformanceOperation(
+          operationId,
+          "all_async_effects_settled"
+        );
+      }, 120);
     }
 
     function scheduleCommentAnchorSync() {
+      if (editorContainer) {
+        visualTextIndexCache.delete(editorContainer);
+      }
+
       if (animationFrameId !== null) {
         window.cancelAnimationFrame(animationFrameId);
       }
@@ -968,12 +1118,6 @@ export function DocumentEditor() {
     }
 
     scheduleCommentAnchorSync();
-
-    for (const delay of [60, 180, 420, 900]) {
-      delayedSyncTimeoutIds.push(
-        window.setTimeout(scheduleCommentAnchorSync, delay)
-      );
-    }
 
     const resizeObserver =
       typeof ResizeObserver === "undefined"
@@ -1010,8 +1154,8 @@ export function DocumentEditor() {
         window.cancelAnimationFrame(animationFrameId);
       }
 
-      for (const timeoutId of delayedSyncTimeoutIds) {
-        window.clearTimeout(timeoutId);
+      if (settledTimeoutId !== null) {
+        window.clearTimeout(settledTimeoutId);
       }
 
       resizeObserver?.disconnect();
@@ -1258,20 +1402,31 @@ export function DocumentEditor() {
     source: DocumentMutationSource,
     hint?: MarkdownMutationHint
   ) {
+    const operationId = startEditPerformanceOperation({
+      newMarkdownLength: nextMarkdown.length,
+      oldMarkdownLength: markdown.length,
+      source: getDocumentMutationSourceFromHint(source, hint)
+    });
+    pendingEditPerformanceOperationIdRef.current = operationId;
     applyManualMarkdownMutation(
       nextMarkdown,
-      getDocumentMutationSourceFromHint(source, hint)
+      getDocumentMutationSourceFromHint(source, hint),
+      operationId,
+      hint
     );
 
     if (saveStatus !== "saving") {
       setSaveStatus("idle");
       setSaveFeedback(null);
     }
+    markEditPerformanceOperation(operationId, "input_handler_return");
   }
 
   function applyManualMarkdownMutation(
     nextMarkdown: string,
-    source: DocumentMutationSource
+    source: DocumentMutationSource,
+    performanceOperationId?: string | null,
+    hint?: MarkdownMutationHint
   ) {
     if (nextMarkdown === markdown) {
       return;
@@ -1282,17 +1437,49 @@ export function DocumentEditor() {
       return;
     }
 
-    const changeSet = deriveMarkdownChangeSet({
-      newMarkdown: nextMarkdown,
-      oldMarkdown: markdown,
-      source: getMarkdownChangeSetSource(source)
+    markEditPerformanceOperation(performanceOperationId, "change_set_start");
+    const changeSetStartedAt = performance.now();
+    const changeSet =
+      (hint && hint.event !== "change"
+        ? deriveNativeMarkdownChangeSet({
+            newMarkdown: nextMarkdown,
+            oldMarkdown: markdown,
+            selectionEnd: hint.selectionEnd,
+            selectionStart: hint.selectionStart,
+            source: getMarkdownChangeSetSource(source)
+          })
+        : null) ??
+      deriveMarkdownChangeSet({
+        newMarkdown: nextMarkdown,
+        oldMarkdown: markdown,
+        source: getMarkdownChangeSetSource(source)
+      });
+    recordEditPerformanceDuration(
+      performanceOperationId,
+      "change_set_derivation",
+      performance.now() - changeSetStartedAt
+    );
+    markEditPerformanceOperation(performanceOperationId, "change_set_end");
+    updateEditPerformanceMetadata(performanceOperationId, {
+      broad: changeSet?.broad,
+      confidence: changeSet?.confidence,
+      hunkCount: changeSet?.edits.length
     });
 
     if (!changeSet || comments.length === 0) {
+      markEditPerformanceOperation(
+        performanceOperationId,
+        "state_update_requested"
+      );
       setMarkdown(nextMarkdown);
       return;
     }
 
+    markEditPerformanceOperation(
+      performanceOperationId,
+      "change_set_validation_start"
+    );
+    const validationStartedAt = performance.now();
     const affectedAnchorCount = countManualChangeSetIntersectingSelectedTextAnchors({
       changeSet,
       comments,
@@ -1302,8 +1489,24 @@ export function DocumentEditor() {
       changeSet,
       oldMarkdown: markdown
     });
+    recordEditPerformanceDuration(
+      performanceOperationId,
+      "change_set_validation",
+      performance.now() - validationStartedAt
+    );
+    markEditPerformanceOperation(
+      performanceOperationId,
+      "change_set_validation_end"
+    );
+    updateEditPerformanceMetadata(performanceOperationId, {
+      affectedCommentCount: affectedAnchorCount
+    });
 
     if (!safety.safe) {
+      markEditPerformanceOperation(
+        performanceOperationId,
+        "state_update_requested"
+      );
       setMarkdown(nextMarkdown);
       return;
     }
@@ -1315,9 +1518,15 @@ export function DocumentEditor() {
       edits: changeSet.edits,
       newMarkdown: nextMarkdown,
       oldMarkdown: markdown,
+      performanceOperationId,
       source
     });
 
+    updateEditPerformanceMetadata(performanceOperationId, {
+      recoveryRequiredCount: mutationResult.recoveryRequiredCommentIds.length,
+      transformedCommentCount: mutationResult.transformedCommentIds.length
+    });
+    markEditPerformanceOperation(performanceOperationId, "state_update_requested");
     setMarkdown(mutationResult.markdown);
 
     if (mutationResult.comments !== comments) {
@@ -6686,7 +6895,8 @@ function getPendingPatchCountsByCommentId(
 function derivePatchGroups(
   patches: PatchmarkPatch[],
   markdown: string,
-  comments: PatchmarkComment[] = []
+  comments: PatchmarkComment[] = [],
+  includeAnchorResolution = true
 ): DerivedPatchGroup[] {
   const groupedPatches = new Map<string, PatchmarkPatch[]>();
   const groupOrder = new Map<string, number>();
@@ -6709,22 +6919,32 @@ function derivePatchGroups(
           getPatchGroupSortIndex(firstPatch) - getPatchGroupSortIndex(secondPatch)
       );
       const statusSummary = createPatchGroupStatusSummary(patchesInOrder);
-      const anchorStatusByPatchId = createPatchGroupAnchorStatusByPatchId({
-        allPatches: patches,
-        comments,
-        markdown,
-        patches: patchesInOrder
-      });
-      const applicabilitySummary = createPatchGroupApplicabilitySummary({
-        comments,
-        markdown,
-        patches: patchesInOrder
-      });
-      const applicabilityByPatchId = createPatchGroupApplicabilityByPatchId({
-        comments,
-        markdown,
-        patches: patchesInOrder
-      });
+      const anchorStatusByPatchId = includeAnchorResolution
+        ? createPatchGroupAnchorStatusByPatchId({
+            allPatches: patches,
+            comments,
+            markdown,
+            patches: patchesInOrder
+          })
+        : {};
+      const applicabilitySummary = includeAnchorResolution
+        ? createPatchGroupApplicabilitySummary({
+            comments,
+            markdown,
+            patches: patchesInOrder
+          })
+        : createDeferredPatchGroupApplicabilitySummary(patchesInOrder);
+      const applicabilityByPatchId = includeAnchorResolution
+        ? createPatchGroupApplicabilityByPatchId({
+            comments,
+            markdown,
+            patches: patchesInOrder
+          })
+        : Object.fromEntries(
+            patchesInOrder
+              .filter((patch) => patch.status === "pending")
+              .map((patch) => [patch.id, "exact_match" as const])
+          );
       const firstPatch = patchesInOrder[0];
       const hasApplicabilityIssue = patchesInOrder.some(
         (patch) =>
@@ -6765,6 +6985,17 @@ function derivePatchGroups(
         );
       }
     );
+}
+
+function createDeferredPatchGroupApplicabilitySummary(
+  patches: PatchmarkPatch[]
+): PatchGroupApplicabilitySummary {
+  return {
+    exact_match: patches.filter((patch) => patch.status === "pending").length,
+    multiple_matches: 0,
+    not_found: 0,
+    table_row_rebase_available: 0
+  };
 }
 
 function getDerivedPatchGroupId(patch: PatchmarkPatch): string {
@@ -8211,7 +8442,8 @@ function orchestrateDocumentMutation({
   newMarkdown,
   oldMarkdown,
   patchContext,
-  source
+  source,
+  performanceOperationId
 }: {
   changeSet?: MarkdownChangeSet;
   comments: PatchmarkComment[];
@@ -8221,6 +8453,7 @@ function orchestrateDocumentMutation({
   oldMarkdown: string;
   patchContext?: DocumentMutationPatchContext;
   source: DocumentMutationSource;
+  performanceOperationId?: string | null;
 }): DocumentMutationResult {
   const edit = edits.length === 1 ? edits[0] : null;
   const effectiveChangeSet =
@@ -8232,8 +8465,14 @@ function orchestrateDocumentMutation({
       edits,
       source: getMarkdownChangeSetSource(source)
     } satisfies MarkdownChangeSet);
+  const headingParseStartedAt = performance.now();
   const oldHeadings = parseMarkdownHeadings(oldMarkdown);
   const newHeadings = parseMarkdownHeadings(newMarkdown);
+  recordEditPerformanceDuration(
+    performanceOperationId,
+    "heading_parse",
+    performance.now() - headingParseStartedAt
+  );
   const commentImpacts: CommentMutationImpact[] = [];
   const recoveryRequiredCommentIds: string[] = [];
   const transformedCommentIds: string[] = [];
@@ -8246,6 +8485,7 @@ function orchestrateDocumentMutation({
   let unchangedCount = 0;
 
   const nextComments = comments.map((comment) => {
+    const classificationStartedAt = performance.now();
     const classification = classifyCommentDocumentMutation({
       comment,
       edit,
@@ -8254,6 +8494,11 @@ function orchestrateDocumentMutation({
       patchContext,
       source
     });
+    recordEditPerformanceDuration(
+      performanceOperationId,
+      "anchor_classification",
+      performance.now() - classificationStartedAt
+    );
     let nextComment = comment;
     let outcome: CommentMutationOutcome = "unaffected";
 
@@ -8262,8 +8507,9 @@ function orchestrateDocumentMutation({
     }
 
     if (isManualDocumentMutationSource(source)) {
+      const transformStartedAt = performance.now();
       const manualUpdate =
-        comment.status !== "resolved" && comment.anchor.kind === "selected_text"
+        comment.anchor.kind === "selected_text"
           ? updateSelectedTextCommentThroughManualMutation({
               changeSet: effectiveChangeSet,
               comment,
@@ -8273,6 +8519,11 @@ function orchestrateDocumentMutation({
               source
             })
           : null;
+      recordEditPerformanceDuration(
+        performanceOperationId,
+        "anchor_transform_and_metadata_refresh",
+        performance.now() - transformStartedAt
+      );
 
       if (manualUpdate) {
         nextComment = manualUpdate.comment;
@@ -8315,7 +8566,25 @@ function orchestrateDocumentMutation({
       transformedCommentIds.push(comment.id);
     }
 
-    const validation = resolveCommentAnchor(nextComment, newMarkdown, newHeadings);
+    const canonicalValidationStartedAt = performance.now();
+    const fastValidation = resolveCommentAnchorAtKnownPosition(
+      nextComment,
+      newMarkdown,
+      newHeadings
+    );
+    const validation =
+      fastValidation ?? resolveCommentAnchor(nextComment, newMarkdown, newHeadings);
+    incrementEditPerformanceCounter(
+      performanceOperationId,
+      fastValidation
+        ? "fast_anchor_validation_count"
+        : "full_anchor_recovery_count"
+    );
+    recordEditPerformanceDuration(
+      performanceOperationId,
+      "canonical_validation",
+      performance.now() - canonicalValidationStartedAt
+    );
     validationResults[comment.id] = validation;
 
     if (
@@ -8336,6 +8605,8 @@ function orchestrateDocumentMutation({
 
     return nextComment;
   });
+
+  markEditPerformanceOperation(performanceOperationId, "anchor_settled");
 
   return {
     commentImpacts,
@@ -10545,6 +10816,15 @@ function recoverPersistableStaleCommentAnchors({
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
+    const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
+
+    if (
+      !latestNeedsReviewImpact &&
+      isStoredCommentAnchorCurrentlyValid({ comment, headings, markdown })
+    ) {
+      return comment;
+    }
+
     const canonicalRepair = repairCommentAnchorFromCanonicalResolution({
       comment,
       headings,
@@ -10569,8 +10849,6 @@ function recoverPersistableStaleCommentAnchors({
       didRecover = true;
       return linkedPatchRepair;
     }
-
-    const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
 
     if (
       latestNeedsReviewImpact &&
@@ -13742,6 +14020,12 @@ function createRangeFromOrderedRanges(ranges: Range[]): Range | null {
 }
 
 function buildVisualTextIndex(container: HTMLElement): VisualTextIndex {
+  const cachedIndex = visualTextIndexCache.get(container);
+
+  if (cachedIndex) {
+    return cachedIndex;
+  }
+
   const root = getVisualSearchRoot(container);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
     acceptNode(node) {
@@ -13804,10 +14088,14 @@ function buildVisualTextIndex(container: HTMLElement): VisualTextIndex {
     positions.pop();
   }
 
-  return {
+  const textIndex = {
     positions,
     text: textParts.join("")
   };
+
+  visualTextIndexCache.set(container, textIndex);
+
+  return textIndex;
 }
 
 function createRangeFromVisualTextIndex(
@@ -14366,11 +14654,16 @@ function resolveCommentAnchor(
 ): CommentAnchorResolution {
   const { anchor } = comment;
   const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
-  const canonicalResolution = resolveCanonicalCommentTarget(comment, {
-    headings,
+
+  const knownPositionResolution = resolveCommentAnchorAtKnownPosition(
+    comment,
     markdown,
-    patches
-  });
+    headings
+  );
+
+  if (knownPositionResolution) {
+    return knownPositionResolution;
+  }
 
   if (anchor.kind === "document") {
     return {
@@ -14378,6 +14671,12 @@ function resolveCommentAnchor(
       status: "document"
     };
   }
+
+  const canonicalResolution = resolveCanonicalCommentTarget(comment, {
+    headings,
+    markdown,
+    patches
+  });
 
   if (anchor.kind === "section") {
     if (canonicalResolution.state !== "resolved" || !canonicalResolution.range) {
@@ -14464,6 +14763,61 @@ function resolveCommentAnchor(
     label: selectedTextLabel,
     locationLabel: selectedTextLocationLabel,
     status: "not_found"
+  };
+}
+
+function resolveCommentAnchorAtKnownPosition(
+  comment: PatchmarkComment,
+  markdown: string,
+  headings: ReturnType<typeof parseMarkdownHeadings>
+): CommentAnchorResolution | null {
+  const { anchor } = comment;
+
+  if (anchor.kind === "document") {
+    return {
+      label: "Whole document",
+      status: "document"
+    };
+  }
+
+  if (anchor.kind === "section") {
+    const currentHeading = findMatchingHeading(headings, {
+      level: anchor.heading_level,
+      text: anchor.heading
+    });
+
+    if (!currentHeading) {
+      return null;
+    }
+
+    const range = getHeadingLineRange(markdown, currentHeading);
+
+    return {
+      end: range.end,
+      label: `Whole section: ${cleanMarkdownHeadingText(anchor.heading)}`,
+      start: range.start,
+      status: "active"
+    };
+  }
+
+  if (
+    typeof anchor.markdown_start_offset !== "number" ||
+    typeof anchor.markdown_end_offset !== "number" ||
+    anchor.markdown_end_offset <= anchor.markdown_start_offset ||
+    markdown.slice(anchor.markdown_start_offset, anchor.markdown_end_offset) !==
+      anchor.selected_text
+  ) {
+    return null;
+  }
+
+  const selectedTextLocationLabel = getSelectedTextHeadingLabel(anchor);
+
+  return {
+    end: anchor.markdown_end_offset,
+    label: `Selected text in ${selectedTextLocationLabel}`,
+    locationLabel: selectedTextLocationLabel,
+    start: anchor.markdown_start_offset,
+    status: "active"
   };
 }
 
@@ -14928,6 +15282,10 @@ function getHeadingLineRange(
 }
 
 function getLineStartOffsets(markdown: string): number[] {
+  if (cachedDocumentLineStartOffsets?.markdown === markdown) {
+    return cachedDocumentLineStartOffsets.offsets;
+  }
+
   const offsets = [0];
 
   for (let index = 0; index < markdown.length; index += 1) {
@@ -14935,6 +15293,8 @@ function getLineStartOffsets(markdown: string): number[] {
       offsets.push(index + 1);
     }
   }
+
+  cachedDocumentLineStartOffsets = { markdown, offsets };
 
   return offsets;
 }
