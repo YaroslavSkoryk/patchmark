@@ -26,6 +26,8 @@
     "test:concise-anchor-history": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/concise-anchor-history.test.mjs",
     "test:comment-history-compaction": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-history-compaction.test.mjs",
     "test:comment-history-compaction-cli": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compact-comment-history-cli.test.mjs",
+    "test:comment-reanchor": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-reanchor.test.mjs",
+    "test:comment-reanchor-browser": "node scripts/comment-reanchor-browser.test.mjs",
     "test:comment-rail-editor-browser": "node scripts/comment-rail-editor-browser-regression.test.mjs",
     "test:comment-rail-browser": "node scripts/comment-rail-browser-regression.test.mjs",
     "test:comment-reply-import-sanitization": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-reply-import-sanitization.test.mjs",

@@ -155,6 +155,7 @@ export function CommentRailRegressionHarness() {
             onReopenComment={noopAsyncId}
             onReplyComment={noopAsyncReply}
             onReviewCommentPatches={noopVoidId}
+            onStartReanchor={noopVoidId}
             onReviewFirstPendingPatch={noopVoid}
             onResolveComment={noopAsyncId}
             onSetActiveCommentState={setActiveCommentState}

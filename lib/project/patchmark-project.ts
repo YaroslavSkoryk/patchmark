@@ -188,6 +188,7 @@ const commentAnchorHistoryReasons: PatchmarkCommentAnchorHistoryEntry["reason"][
   "offset_shifted_after_patch",
   "anchor_recovered_after_patch",
   "anchor_reanchored_after_patch",
+  "anchor_reanchored_by_human",
   "anchor_marked_needs_review_after_patch"
 ];
 const commentAnchorHistoryCauses: PatchmarkConciseCommentAnchorHistoryEntry["cause"][] = [
@@ -2595,6 +2596,32 @@ function normalizeAnchorContext(
     markdown_end_offset:
       typeof context.markdown_end_offset === "number"
         ? context.markdown_end_offset
+        : undefined,
+    table_index:
+      typeof context.table_index === "number" ? context.table_index : undefined,
+    table_row_index:
+      typeof context.table_row_index === "number"
+        ? context.table_row_index
+        : undefined,
+    table_cell_index:
+      typeof context.table_cell_index === "number"
+        ? context.table_cell_index
+        : undefined,
+    table_row_start_offset:
+      typeof context.table_row_start_offset === "number"
+        ? context.table_row_start_offset
+        : undefined,
+    table_row_end_offset:
+      typeof context.table_row_end_offset === "number"
+        ? context.table_row_end_offset
+        : undefined,
+    table_cell_start_offset:
+      typeof context.table_cell_start_offset === "number"
+        ? context.table_cell_start_offset
+        : undefined,
+    table_cell_end_offset:
+      typeof context.table_cell_end_offset === "number"
+        ? context.table_cell_end_offset
         : undefined
   };
 }

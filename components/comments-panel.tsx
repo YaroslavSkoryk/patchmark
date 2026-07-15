@@ -103,6 +103,7 @@ type CommentsPanelProps = {
   onReopenComment: (commentId: string) => Promise<void>;
   onReplyComment: (commentId: string, content: string) => Promise<void>;
   onReviewCommentPatches: (commentId: string) => void;
+  onStartReanchor: (commentId: string) => void;
   onReviewFirstPendingPatch: () => void;
   onResolveComment: (commentId: string) => Promise<void>;
   onSetActiveCommentState: (state: ActiveCommentState) => void;
@@ -168,6 +169,7 @@ export function CommentsPanel({
   onReopenComment,
   onReplyComment,
   onReviewCommentPatches,
+  onStartReanchor,
   onReviewFirstPendingPatch,
   onResolveComment,
   onSetActiveCommentState,
@@ -572,6 +574,7 @@ export function CommentsPanel({
             onReopenComment={onReopenComment}
             onReplyComment={handleReplyComment}
             onReviewCommentPatches={onReviewCommentPatches}
+            onStartReanchor={onStartReanchor}
             onResolveComment={onResolveComment}
             onSetActiveCommentState={onSetActiveCommentState}
             onSetEditComment={setEditComment}
@@ -623,6 +626,7 @@ type CommentGroupProps = {
   onReopenComment?: (commentId: string) => Promise<void>;
   onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onReviewCommentPatches: (commentId: string) => void;
+  onStartReanchor: (commentId: string) => void;
   onResolveComment?: (commentId: string) => Promise<void>;
   onSetActiveCommentState: (state: ActiveCommentState) => void;
   onSetEditComment: (comment: string) => void;
@@ -677,6 +681,7 @@ function FloatingCommentList({
   onReopenComment,
   onReplyComment,
   onReviewCommentPatches,
+  onStartReanchor,
   onResolveComment,
   onSetActiveCommentState,
   onSetEditComment,
@@ -943,6 +948,7 @@ function FloatingCommentList({
                     onReopenComment={onReopenComment}
                     onReplyComment={onReplyComment}
                     onReviewCommentPatches={onReviewCommentPatches}
+                    onStartReanchor={onStartReanchor}
                     onResolveComment={onResolveComment}
                     onActivateComment={(commentId) =>
                       onSetActiveCommentState({ kind: "comment", commentId })
@@ -1002,6 +1008,7 @@ function FloatingCommentList({
           onReopenComment={onReopenComment}
           onReplyComment={onReplyComment}
           onReviewCommentPatches={onReviewCommentPatches}
+          onStartReanchor={onStartReanchor}
           onResolveComment={onResolveComment}
           onSetActiveCommentState={onSetActiveCommentState}
           onSetEditComment={onSetEditComment}
@@ -1229,6 +1236,7 @@ function CommentGroup({
   onReopenComment,
   onReplyComment,
   onReviewCommentPatches,
+  onStartReanchor,
   onResolveComment,
   onSetActiveCommentState,
   onSetEditComment,
@@ -1277,6 +1285,7 @@ function CommentGroup({
                   onReopenComment={onReopenComment}
                   onReplyComment={onReplyComment}
                   onReviewCommentPatches={onReviewCommentPatches}
+                  onStartReanchor={onStartReanchor}
                   onResolveComment={onResolveComment}
                   onActivateComment={(commentId) =>
                     onSetActiveCommentState({ kind: "comment", commentId })
@@ -1348,6 +1357,7 @@ type CommentCardProps = {
   onReopenComment?: (commentId: string) => Promise<void>;
   onReplyComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
   onReviewCommentPatches: (commentId: string) => void;
+  onStartReanchor: (commentId: string) => void;
   onResolveComment?: (commentId: string) => Promise<void>;
   onSetEditComment: (comment: string) => void;
   onSetEditReplyContent: (content: string) => void;
@@ -1459,6 +1469,7 @@ function CommentCard({
   onReopenComment,
   onReplyComment,
   onReviewCommentPatches,
+  onStartReanchor,
   onResolveComment,
   onSetEditComment,
   onSetEditReplyContent,
@@ -1831,6 +1842,18 @@ function CommentCard({
             Updated {formatCommentDate(comment.updated_at)}
           </span>
           <div className="comment-card-actions">
+            {comment.status === "open" &&
+            comment.anchor.kind === "selected_text" &&
+            (anchorSummary.status === "ambiguous" ||
+              anchorSummary.status === "not_found") ? (
+              <button
+                type="button"
+                disabled={isBusy}
+                onClick={() => onStartReanchor(comment.id)}
+              >
+                Re-anchor
+              </button>
+            ) : null}
             <button
               type="button"
               disabled={isBusy}
@@ -1905,6 +1928,20 @@ function CommentCard({
               <button type="button" disabled={isBusy} onClick={onClearActiveComment}>
                 Close details
               </button>
+            ) : null}
+            {comment.status === "open" &&
+            comment.anchor.kind === "selected_text" &&
+            anchorSummary.status === "active" ? (
+              <details className="comment-secondary-actions">
+                <summary>More</summary>
+                <button
+                  type="button"
+                  disabled={isBusy}
+                  onClick={() => onStartReanchor(comment.id)}
+                >
+                  Change anchor
+                </button>
+              </details>
             ) : null}
             <button
               type="button"

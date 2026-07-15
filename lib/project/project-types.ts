@@ -138,6 +138,13 @@ export type PatchmarkSelectedTextAnchorContext = {
   context_hash?: string;
   markdown_start_offset?: number;
   markdown_end_offset?: number;
+  table_index?: number;
+  table_row_index?: number;
+  table_cell_index?: number;
+  table_row_start_offset?: number;
+  table_row_end_offset?: number;
+  table_cell_start_offset?: number;
+  table_cell_end_offset?: number;
 };
 
 export type PatchmarkCommentAnchor =
@@ -211,6 +218,7 @@ export type PatchmarkLegacyCommentAnchorHistoryEntry = {
     | "offset_shifted_after_patch"
     | "anchor_recovered_after_patch"
     | "anchor_reanchored_after_patch"
+    | "anchor_reanchored_by_human"
     | "anchor_marked_needs_review_after_patch";
   source_patch_id?: string;
   previous_anchor: PatchmarkCommentAnchor;

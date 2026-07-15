@@ -34,6 +34,16 @@ import {
   type CanonicalTargetResolution
 } from "@/lib/comments/canonical-target-resolution";
 import {
+  applyHumanReanchor,
+  createDocumentHash,
+  createHumanReanchorCandidates,
+  createHumanReanchorProposal,
+  expandMarkdownRangeForVisibleSelection,
+  mapVisibleSelectionToMarkdownRange,
+  type HumanReanchorCandidate,
+  type HumanReanchorProposal
+} from "@/lib/comments/comment-reanchor";
+import {
   CHATGPT_TERMINOLOGY_CLARIFICATION_PAYLOAD_RULES,
   CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES
 } from "@/lib/comments/chatgpt-prompt-rules";
@@ -165,6 +175,7 @@ import {
   parsePatchmarkCommentReplyImport
 } from "@/lib/imports/patchmark-comment-reply-import";
 import {
+  type CommentAnchorStatus,
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
   type PatchmarkCommentActionContext,
@@ -227,6 +238,16 @@ type CommentContextMenuState = {
   selectionHelp: string | null;
   x: number;
   y: number;
+};
+type ReanchorSession = {
+  candidates: HumanReanchorCandidate[];
+  commentId: string;
+  documentHash: string;
+  documentVersion: number;
+  error: string | null;
+  previousActiveCommentState: ActiveCommentState;
+  previousStatus: CommentAnchorStatus;
+  previewProposal: HumanReanchorProposal | null;
 };
 type ChatGptPromptDialogState = {
   commentIds: string[];
@@ -470,6 +491,8 @@ const COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME =
   "patchmark-comment-open-selected-anchor";
 const COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME =
   "patchmark-comment-resolved-selected-anchor";
+const COMMENT_REANCHOR_PREVIEW_HIGHLIGHT_NAME =
+  "patchmark-comment-reanchor-preview";
 const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/i;
 const DOCUMENT_RAW_URL_PATTERN = /\bhttps?:\/\/\S+/i;
 const visualTextIndexCache = new WeakMap<HTMLElement, VisualTextIndex>();
@@ -527,6 +550,10 @@ export function DocumentEditor() {
     useState<CommentReplyRequest | null>(null);
   const [commentContextMenu, setCommentContextMenu] =
     useState<CommentContextMenuState | null>(null);
+  const [reanchorSession, setReanchorSession] =
+    useState<ReanchorSession | null>(null);
+  const [reanchorConfirmation, setReanchorConfirmation] =
+    useState<HumanReanchorProposal | null>(null);
   const [commentPositions, setCommentPositions] = useState<Record<string, number>>(
     {}
   );
@@ -746,6 +773,7 @@ export function DocumentEditor() {
   const isSaving = saveStatus === "saving";
   const isProjectMode = projectHandle !== null;
   const isProjectRecoveryReadOnly = projectRecovery !== null;
+  const isReanchorMode = reanchorSession !== null;
   const documentStatus: DocumentStatusKind = getDocumentStatus({
     isDirty,
     markdown,
@@ -1050,6 +1078,34 @@ export function DocumentEditor() {
   }, [commentContextMenu]);
 
   useEffect(() => {
+    if (!reanchorSession) {
+      return;
+    }
+
+    const previousActiveCommentState = reanchorSession.previousActiveCommentState;
+
+    function handleReanchorEscape(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      if (reanchorConfirmation) {
+        setReanchorConfirmation(null);
+      } else {
+        setReanchorSession(null);
+        setMarkdownSelection({ end: 0, start: 0 });
+        setMarkdownSelectionRequest(null);
+        setVisualSelectionDraft(null);
+        setActiveCommentState(previousActiveCommentState);
+      }
+    }
+
+    window.addEventListener("keydown", handleReanchorEscape);
+    return () => window.removeEventListener("keydown", handleReanchorEscape);
+  }, [reanchorConfirmation, reanchorSession]);
+
+  useEffect(() => {
     let isCancelled = false;
     let animationFrameId: number | null = null;
     let settledTimeoutId: number | null = null;
@@ -1087,7 +1143,12 @@ export function DocumentEditor() {
         headings,
         markdown,
         mode,
-        patches
+        patches,
+        previewComment: createReanchorPreviewComment({
+          comments,
+          proposal: reanchorSession?.previewProposal ?? null,
+          targetCommentId: reanchorSession?.commentId ?? null
+        })
       });
       recordEditPerformanceDuration(
         operationId,
@@ -1178,8 +1239,44 @@ export function DocumentEditor() {
     headings,
     markdown,
     mode,
-    patches
+    patches,
+    reanchorSession
   ]);
+
+  useEffect(() => {
+    const previewProposal = reanchorSession?.previewProposal;
+
+    if (!previewProposal || mode !== "visual") {
+      return;
+    }
+
+    const animationFrameId = window.requestAnimationFrame(() => {
+      const container = editorDocumentRef.current;
+      const previewComment = createReanchorPreviewComment({
+        comments,
+        proposal: previewProposal,
+        targetCommentId: reanchorSession.commentId
+      });
+
+      if (!container || !previewComment) {
+        return;
+      }
+
+      const range = findVisualCommentAnchorRange({
+        comment: previewComment,
+        container,
+        headings,
+        markdown,
+        patches
+      });
+
+      if (range) {
+        scrollRangeIntoViewportIfNeeded(range);
+      }
+    });
+
+    return () => window.cancelAnimationFrame(animationFrameId);
+  }, [comments, headings, markdown, mode, patches, reanchorSession]);
 
   useEffect(() => {
     const activeCommentIds = getActiveCommentIds(activeCommentState);
@@ -3444,6 +3541,298 @@ export function DocumentEditor() {
     }
   }
 
+  function handleStartReanchor(commentId: string) {
+    if (!projectHandle || reanchorSession) {
+      return;
+    }
+
+    const comment = comments.find((candidate) => candidate.id === commentId);
+
+    if (
+      !comment ||
+      comment.status !== "open" ||
+      comment.anchor.kind !== "selected_text"
+    ) {
+      return;
+    }
+
+    const resolution = resolveCanonicalCommentTarget(comment, {
+      headings,
+      markdown,
+      patches
+    });
+    const previousStatus = commentAnchorSummaries[commentId]?.status ??
+      (resolution.state === "ambiguous"
+        ? "ambiguous"
+        : resolution.state === "not_found"
+          ? "not_found"
+          : "active");
+
+    setCommentContextMenu(null);
+    setCommentAddRequest(null);
+    setCommentReplyRequest(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setReanchorConfirmation(null);
+    setReanchorSession({
+      candidates: createHumanReanchorCandidates({
+        headings,
+        markdown,
+        resolution
+      }),
+      commentId,
+      documentHash: createDocumentHash(markdown),
+      documentVersion,
+      error: null,
+      previousActiveCommentState: activeCommentState,
+      previousStatus,
+      previewProposal: null
+    });
+    setActiveCommentState({ kind: "comment", commentId });
+    setSaveFeedback(null);
+  }
+
+  function cancelReanchorMode() {
+    if (!reanchorSession) {
+      return;
+    }
+
+    setReanchorConfirmation(null);
+    setReanchorSession(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setActiveCommentState(reanchorSession.previousActiveCommentState);
+  }
+
+  function createProposalForRange(
+    range: { end: number; start: number },
+    source: "candidate" | "markdown" | "visual"
+  ): HumanReanchorProposal | null {
+    if (!reanchorSession || !projectHandle) {
+      return null;
+    }
+
+    const comment = comments.find(
+      (candidate) => candidate.id === reanchorSession.commentId
+    );
+
+    if (!comment || comment.anchor.kind !== "selected_text") {
+      return null;
+    }
+
+    try {
+      return createHumanReanchorProposal({
+        documentGeneration: reanchorSession.documentVersion,
+        headings,
+        markdown,
+        previousAnchor: comment.anchor,
+        range,
+        saveGeneration: projectHandle.manifest.save_generation ?? 0,
+        source
+      });
+    } catch (error) {
+      setReanchorSession((current) =>
+        current
+          ? {
+              ...current,
+              error: getProjectErrorMessage(error)
+            }
+          : current
+      );
+      return null;
+    }
+  }
+
+  function handleShowReanchorCandidate(candidate: HumanReanchorCandidate) {
+    const proposal = createProposalForRange(candidate.range, "candidate");
+
+    if (!proposal) {
+      return;
+    }
+
+    setReanchorSession((current) =>
+      current
+        ? {
+            ...current,
+            error: null,
+            previewProposal: proposal
+          }
+        : current
+    );
+
+    if (mode === "markdown") {
+      jumpToMarkdownSelection(candidate.range.start, candidate.range.end);
+    }
+  }
+
+  function handleUseReanchorCandidate(candidate: HumanReanchorCandidate) {
+    const proposal = createProposalForRange(candidate.range, "candidate");
+
+    if (!proposal) {
+      return;
+    }
+
+    setReanchorSession((current) =>
+      current
+        ? {
+            ...current,
+            error: null,
+            previewProposal: proposal
+          }
+        : current
+    );
+    setReanchorConfirmation(proposal);
+  }
+
+  function handleUseSelectionForReanchor() {
+    if (!reanchorSession) {
+      return;
+    }
+
+    const selectionDraft =
+      mode === "markdown"
+        ? createMarkdownSelectionDraft(markdown, markdownSelection)
+        : visualSelectionDraft ??
+          createVisualSelectionDraftResult({
+            container: editorDocumentRef.current,
+            markdown
+          }).draft;
+    const start = getDraftMarkdownStartOffset(selectionDraft);
+    const end = selectionDraft?.markdownEndOffset;
+
+    if (
+      !selectionDraft ||
+      typeof start !== "number" ||
+      typeof end !== "number" ||
+      end <= start
+    ) {
+      setReanchorSession({
+        ...reanchorSession,
+        error: "Select document text before choosing a new anchor."
+      });
+      return;
+    }
+
+    const proposal = createProposalForRange(
+      { start, end },
+      mode === "visual" ? "visual" : "markdown"
+    );
+
+    if (!proposal) {
+      return;
+    }
+
+    setReanchorSession({
+      ...reanchorSession,
+      error: null,
+      previewProposal: proposal
+    });
+    setReanchorConfirmation(proposal);
+  }
+
+  async function handleConfirmReanchor() {
+    if (
+      !reanchorSession ||
+      !reanchorConfirmation ||
+      !projectHandle ||
+      isCommentBusy
+    ) {
+      return;
+    }
+
+    const comment = comments.find(
+      (candidate) => candidate.id === reanchorSession.commentId
+    );
+
+    if (!comment) {
+      setReanchorConfirmation(null);
+      setReanchorSession({
+        ...reanchorSession,
+        error: "The comment is no longer available."
+      });
+      return;
+    }
+
+    const result = applyHumanReanchor({
+      comment,
+      currentDocumentGeneration: documentVersion,
+      currentSaveGeneration: projectHandle.manifest.save_generation ?? 0,
+      markdown,
+      patches,
+      proposal: reanchorConfirmation,
+      timestamp: new Date().toISOString()
+    });
+
+    if (result.kind === "no_op") {
+      setReanchorConfirmation(null);
+      setReanchorSession(null);
+      setMarkdownSelection({ end: 0, start: 0 });
+      setMarkdownSelectionRequest(null);
+      setVisualSelectionDraft(null);
+      setActiveCommentState({ kind: "comment", commentId: comment.id });
+      setSaveFeedback({
+        kind: "info",
+        message: "This comment is already anchored to that text."
+      });
+      return;
+    }
+
+    if (result.kind === "resolved_comment") {
+      setReanchorConfirmation(null);
+      setReanchorSession({
+        ...reanchorSession,
+        error: "Reopen this resolved comment before changing its anchor."
+      });
+      return;
+    }
+
+    if (result.kind === "stale") {
+      setReanchorConfirmation(null);
+      setReanchorSession({
+        ...reanchorSession,
+        error: result.message,
+        previewProposal: null
+      });
+      return;
+    }
+
+    const nextComments = comments.map((candidate) =>
+      candidate.id === result.comment.id ? result.comment : candidate
+    );
+    setIsCommentBusy(true);
+    setCommentsError(null);
+
+    try {
+      await saveProjectState({
+        comments: nextComments,
+        project: projectHandle,
+        reason: `human_reanchor:${comment.id}`
+      });
+      lastScrolledActiveCommentKeyRef.current = null;
+      setComments(nextComments);
+      setReanchorConfirmation(null);
+      setReanchorSession(null);
+      setMarkdownSelection({ end: 0, start: 0 });
+      setMarkdownSelectionRequest(null);
+      setVisualSelectionDraft(null);
+      setActiveCommentState({ kind: "comment", commentId: comment.id });
+      setSaveFeedback({
+        kind: "success",
+        message: "Comment anchor updated."
+      });
+    } catch {
+      setSaveFeedback({
+        kind: "error",
+        message:
+          "Unable to update the comment anchor. The document and comment were not changed."
+      });
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
   function jumpToMarkdownSelection(start: number, end: number) {
     setMode("markdown");
     setMarkdownSelectionRequest({
@@ -3467,7 +3856,11 @@ export function DocumentEditor() {
   }
 
   function handleEditorClick(event: React.MouseEvent<HTMLDivElement>) {
-    if (mode !== "visual" || isToolbarContextMenuTarget(event.target)) {
+    if (
+      mode !== "visual" ||
+      isReanchorMode ||
+      isToolbarContextMenuTarget(event.target)
+    ) {
       return;
     }
 
@@ -3503,6 +3896,11 @@ export function DocumentEditor() {
     }
 
     event.preventDefault();
+
+    if (isReanchorMode) {
+      setCommentContextMenu(null);
+      return;
+    }
 
     const selectionResult =
       mode === "markdown"
@@ -3769,28 +4167,28 @@ export function DocumentEditor() {
             <div className="project-actions" aria-label="Project folder actions">
               <button
                 type="button"
-                disabled={isSaving}
+                disabled={isSaving || isReanchorMode}
                 onClick={handleOpenProjectFolder}
               >
                 Open Project Folder
               </button>
             <button
               type="button"
-              disabled={!fileName || isSaving}
+              disabled={!fileName || isSaving || isReanchorMode}
               onClick={handleCreateProjectFromCurrentDocument}
             >
               Create Project From Current Document
             </button>
             <button
               type="button"
-              disabled={isSaving || isCommentBusy}
+              disabled={isSaving || isCommentBusy || isReanchorMode}
               onClick={handleGenerateChatGptPrompt}
             >
               Generate ChatGPT Prompt
             </button>
             <button
               type="button"
-              disabled={isSaving || isCommentBusy}
+              disabled={isSaving || isCommentBusy || isReanchorMode}
               onClick={handleOpenChatGptImportDialog}
             >
               Import ChatGPT Response
@@ -3824,7 +4222,10 @@ export function DocumentEditor() {
               <DocumentActions
                 fileName={fileName}
                 isSaving={
-                  isSaving || isProjectDataLoading || isProjectRecoveryReadOnly
+                  isSaving ||
+                  isProjectDataLoading ||
+                  isProjectRecoveryReadOnly ||
+                  isReanchorMode
                 }
                 markdown={markdown}
                 onCreateSnapshot={handleCreateSnapshot}
@@ -3894,6 +4295,92 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
+        {reanchorSession ? (
+          <section className="reanchor-mode-panel" aria-label="Re-anchor comment">
+            <div className="reanchor-mode-header">
+              <div>
+                <span>Re-anchoring comment</span>
+                <strong>{reanchorSession.commentId}</strong>
+                <p>
+                  Choose a suggested location or select new text in the document.
+                  Document editing is temporarily read-only.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={cancelReanchorMode}
+              >
+                Cancel
+              </button>
+            </div>
+
+            {reanchorSession.candidates.length > 0 ? (
+              <div className="reanchor-candidate-list">
+                {reanchorSession.candidates.map((candidate, index) => (
+                  <article
+                    className="reanchor-candidate-card"
+                    data-previewed={
+                      reanchorSession.previewProposal?.id === candidate.id
+                        ? "true"
+                        : undefined
+                    }
+                    key={candidate.id}
+                  >
+                    <span>Possible location {index + 1}</span>
+                    <strong>
+                      {candidate.containingHeading ?? "Document beginning"}
+                    </strong>
+                    <small>{candidate.structureLabel}</small>
+                    <p>“…{candidate.contextExcerpt.slice(0, 220)}…”</p>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => handleShowReanchorCandidate(candidate)}
+                      >
+                        Show in document
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUseReanchorCandidate(candidate)}
+                      >
+                        Use this location
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            ) : (
+              <p className="reanchor-empty-candidates">
+                Patchmark did not find a safe suggested location. Select the
+                relevant current text manually.
+              </p>
+            )}
+
+            <div className="reanchor-manual-selection">
+              <div>
+                <strong>Select new text manually</strong>
+                <span>
+                  Current mode: {mode === "visual" ? "Visual Mode" : "Markdown Mode"}
+                </span>
+              </div>
+              <button
+                type="button"
+                disabled={!selectedCommentDraft || isCommentBusy}
+                onClick={handleUseSelectionForReanchor}
+              >
+                Use selection as new anchor
+              </button>
+            </div>
+
+            {reanchorSession.error ? (
+              <p className="comments-error" role="alert">
+                {reanchorSession.error}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
+
         {!fileName && availableDraft ? (
           <DraftRestoreBanner
             draft={availableDraft}
@@ -3917,7 +4404,7 @@ export function DocumentEditor() {
                 onMarkdownChange={(nextMarkdown) =>
                   handleMarkdownChange(nextMarkdown, "manual_visual")
                 }
-                readOnly={isProjectRecoveryReadOnly}
+                readOnly={isProjectRecoveryReadOnly || isReanchorMode}
               />
             ) : (
               <MarkdownSourceEditor
@@ -3926,7 +4413,7 @@ export function DocumentEditor() {
                   handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
                 onSelectionChange={setMarkdownSelection}
-                readOnly={isProjectRecoveryReadOnly}
+                readOnly={isProjectRecoveryReadOnly || isReanchorMode}
                 selectionRequest={markdownSelectionRequest}
               />
             )
@@ -3954,7 +4441,7 @@ export function DocumentEditor() {
           defaultSectionLine={defaultCommentHeading?.line ?? null}
           error={commentsError}
           headings={headings}
-          isBusy={isCommentBusy}
+          isBusy={isCommentBusy || isReanchorMode}
           isProjectMode={isProjectMode}
           onAddComment={handleAddComment}
           onDeleteComment={handleDeleteComment}
@@ -3965,6 +4452,7 @@ export function DocumentEditor() {
           onReopenComment={handleReopenComment}
           onReplyComment={handleReplyToComment}
           onReviewCommentPatches={handleReviewCommentPatches}
+          onStartReanchor={handleStartReanchor}
           onReviewFirstPendingPatch={handleReviewFirstPendingPatch}
           onResolveComment={handleResolveComment}
           onSetActiveCommentState={setActiveCommentState}
@@ -4028,6 +4516,78 @@ export function DocumentEditor() {
               No section detected here.
             </span>
           ) : null}
+        </div>
+      ) : null}
+
+      {reanchorSession && reanchorConfirmation ? (
+        <div className="snapshot-dialog-backdrop">
+          <section
+            className="comment-export-dialog reanchor-confirmation-dialog"
+            aria-label="Confirm comment re-anchor"
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Re-anchor comment</span>
+                <h2>Confirm the new document target</h2>
+                <p>
+                  Review the current historical target and the proposed current
+                  anchor before saving.
+                </p>
+              </div>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={() => setReanchorConfirmation(null)}
+              >
+                Cancel
+              </button>
+            </header>
+            <div className="reanchor-confirmation-body">
+              <section className="reanchor-confirmation-card">
+                <span>Current / historical anchor</span>
+                <strong>
+                  {getSelectedTextCommentAnchor(
+                    commentsById.get(reanchorSession.commentId)
+                  )?.containing_heading ?? "No containing heading"}
+                </strong>
+                <small>
+                  State: {getHumanAnchorStateLabel(reanchorSession.previousStatus)}
+                </small>
+                <blockquote>
+                  {getSelectedTextCommentAnchor(
+                    commentsById.get(reanchorSession.commentId)
+                  )?.selected_text ?? ""}
+                </blockquote>
+              </section>
+              <section className="reanchor-confirmation-card">
+                <span>New proposed anchor</span>
+                <strong>
+                  {reanchorConfirmation.containingHeading ??
+                    "Document beginning"}
+                </strong>
+                <small>{reanchorConfirmation.structureLabel}</small>
+                <MarkdownSnippetPreview markdown={reanchorConfirmation.selectedText} />
+                <p>{reanchorConfirmation.contextExcerpt}</p>
+              </section>
+            </div>
+            <div className="comment-export-actions reanchor-confirmation-actions">
+              <button
+                className="document-action-primary"
+                type="button"
+                disabled={isCommentBusy}
+                onClick={() => void handleConfirmReanchor()}
+              >
+                Confirm re-anchor
+              </button>
+              <button
+                type="button"
+                disabled={isCommentBusy}
+                onClick={() => setReanchorConfirmation(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </section>
         </div>
       ) : null}
 
@@ -12340,15 +12900,25 @@ function createVisualSelectionDraftResult({
   const selectedTextMatches = findExactTextMatches(markdown, snapshot.selectedText);
   const uniqueSelectedTextMatch =
     selectedTextMatches.length === 1 ? selectedTextMatches[0] : null;
+  const exactSelectionRange = selectedOffsets ?? uniqueSelectedTextMatch;
+  const markdownSelectionRange = exactSelectionRange
+    ? expandMarkdownRangeForVisibleSelection({
+        markdown,
+        range: exactSelectionRange,
+        selectedVisibleText: snapshot.selectedText
+      })
+    : null;
 
   return {
     affordanceRect: snapshot.affordanceRect,
     draft: {
       anchorSource: "visual",
       anchorContext,
-      markdownEndOffset: selectedOffsets?.end ?? uniqueSelectedTextMatch?.end,
-      markdownStartOffset: selectedOffsets?.start ?? uniqueSelectedTextMatch?.start,
-      selectedText: snapshot.selectedText
+      markdownEndOffset: markdownSelectionRange?.end,
+      markdownStartOffset: markdownSelectionRange?.start,
+      selectedText: markdownSelectionRange
+        ? markdown.slice(markdownSelectionRange.start, markdownSelectionRange.end)
+        : snapshot.selectedText
     },
     help: null
   };
@@ -12561,6 +13131,23 @@ function findSelectedMarkdownOffsetsFromAnchorContext(
   anchorContext: PatchmarkSelectedTextAnchorContext,
   selectedText: string
 ): { end: number; start: number } | null {
+  if (
+    typeof anchorContext.markdown_start_offset === "number" &&
+    anchorContext.markdown_text
+  ) {
+    const mappedRange = mapVisibleSelectionToMarkdownRange({
+      contextMarkdown: anchorContext.markdown_text,
+      contextStart: anchorContext.markdown_start_offset,
+      selectedVisibleText: selectedText,
+      visibleEnd: anchorContext.selected_end_in_context,
+      visibleStart: anchorContext.selected_start_in_context
+    });
+
+    if (mappedRange) {
+      return mappedRange;
+    }
+  }
+
   if (
     typeof anchorContext.markdown_start_offset === "number" &&
     typeof anchorContext.selected_start_in_context === "number" &&
@@ -14364,7 +14951,8 @@ function updateVisualCommentHighlights({
   headings,
   markdown,
   mode,
-  patches = []
+  patches = [],
+  previewComment
 }: {
   activeCommentState: ActiveCommentState;
   comments: PatchmarkComment[];
@@ -14373,6 +14961,7 @@ function updateVisualCommentHighlights({
   markdown: string;
   mode: EditorMode;
   patches?: PatchmarkPatch[];
+  previewComment?: PatchmarkComment | null;
 }): void {
   const highlightApi = getCssHighlightApi();
 
@@ -14388,6 +14977,7 @@ function updateVisualCommentHighlights({
   const activeCommentIds = getActiveCommentIds(activeCommentState);
   const openSelectedRanges: Range[] = [];
   const resolvedSelectedRanges: Range[] = [];
+  const previewRanges: Range[] = [];
 
   for (const comment of comments) {
     if (!activeCommentIds.includes(comment.id)) {
@@ -14413,10 +15003,30 @@ function updateVisualCommentHighlights({
     }
   }
 
+  if (previewComment) {
+    const previewProjection = findVisualCommentAnchorProjection({
+      comment: previewComment,
+      container,
+      headings,
+      markdown,
+      patches
+    });
+
+    if (previewProjection.state === "resolved") {
+      previewRanges.push(...previewProjection.textRanges);
+    }
+  }
+
   setVisualCommentHighlightRegistry({
     Highlight: highlightApi.Highlight,
     name: COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME,
     ranges: openSelectedRanges,
+    registry: highlightApi.registry
+  });
+  setVisualCommentHighlightRegistry({
+    Highlight: highlightApi.Highlight,
+    name: COMMENT_REANCHOR_PREVIEW_HIGHLIGHT_NAME,
+    ranges: previewRanges,
     registry: highlightApi.registry
   });
   setVisualCommentHighlightRegistry({
@@ -14471,6 +15081,49 @@ function deleteVisualCommentHighlightRegistries(
 ): void {
   registry.delete(COMMENT_OPEN_SELECTED_HIGHLIGHT_NAME);
   registry.delete(COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME);
+  registry.delete(COMMENT_REANCHOR_PREVIEW_HIGHLIGHT_NAME);
+}
+
+function createReanchorPreviewComment({
+  comments,
+  proposal,
+  targetCommentId
+}: {
+  comments: PatchmarkComment[];
+  proposal: HumanReanchorProposal | null;
+  targetCommentId: string | null;
+}): PatchmarkComment | null {
+  if (!proposal || !targetCommentId) {
+    return null;
+  }
+
+  const comment = comments.find((candidate) => candidate.id === targetCommentId);
+
+  return comment
+    ? {
+        ...comment,
+        anchor: proposal.anchor,
+        status: "open"
+      }
+    : null;
+}
+
+function getSelectedTextCommentAnchor(
+  comment: PatchmarkComment | undefined
+): SelectedTextAnchor | null {
+  return comment?.anchor.kind === "selected_text" ? comment.anchor : null;
+}
+
+function getHumanAnchorStateLabel(status: CommentAnchorStatus): string {
+  if (status === "ambiguous") {
+    return "Anchor needs review";
+  }
+
+  if (status === "not_found") {
+    return "Anchor not found";
+  }
+
+  return status === "active" ? "Active" : "Document";
 }
 
 function getCssHighlightApi():

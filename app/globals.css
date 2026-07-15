@@ -13,6 +13,7 @@
   --comment-anchor-open-selected-background: rgba(236, 205, 143, 0.55);
   --comment-anchor-resolved-selected-background: rgba(185, 216, 202, 0.45);
   --comment-anchor-resolved-selected-border: rgba(47, 111, 85, 0.55);
+  --comment-anchor-reanchor-preview-background: rgba(111, 90, 190, 0.3);
   --layer-modal: 100;
   --shadow: 0 18px 50px rgba(22, 35, 29, 0.08);
 }
@@ -56,6 +57,15 @@ button {
   text-decoration: underline;
   text-decoration-color: var(--comment-anchor-resolved-selected-border);
   text-decoration-thickness: 1px;
+}
+
+::highlight(patchmark-comment-reanchor-preview) {
+  background: var(--comment-anchor-reanchor-preview-background);
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: #6f5abe;
+  text-decoration-style: dashed;
+  text-decoration-thickness: 2px;
 }
 
 .app-shell {
@@ -933,6 +943,145 @@ button {
   margin: 0;
   color: var(--text);
   line-height: 1.5;
+}
+
+.reanchor-mode-panel {
+  display: grid;
+  gap: 14px;
+  border-bottom: 1px solid #9b8bd6;
+  background: #f6f3ff;
+  padding: 16px 18px;
+}
+
+.reanchor-mode-header,
+.reanchor-manual-selection,
+.reanchor-candidate-card > div,
+.reanchor-confirmation-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.reanchor-mode-header > div,
+.reanchor-manual-selection > div {
+  display: grid;
+  gap: 3px;
+}
+
+.reanchor-mode-header span,
+.reanchor-candidate-card > span,
+.reanchor-confirmation-card > span {
+  color: #5b4b96;
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.reanchor-mode-header p,
+.reanchor-candidate-card p,
+.reanchor-confirmation-card p,
+.reanchor-empty-candidates {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.reanchor-candidate-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.reanchor-candidate-card {
+  display: grid;
+  gap: 7px;
+  border: 1px solid #cfc6ec;
+  background: var(--surface);
+  padding: 12px;
+}
+
+.reanchor-candidate-card[data-previewed="true"] {
+  border-color: #6f5abe;
+  box-shadow: inset 0 0 0 1px #6f5abe;
+}
+
+.reanchor-candidate-card small,
+.reanchor-manual-selection span,
+.reanchor-confirmation-card small {
+  color: var(--muted);
+}
+
+.reanchor-mode-panel button,
+.reanchor-confirmation-dialog button,
+.comment-secondary-actions button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 10px;
+  font-weight: 700;
+}
+
+.reanchor-manual-selection {
+  border-top: 1px solid #ddd6f2;
+  padding-top: 12px;
+}
+
+.reanchor-confirmation-dialog {
+  width: min(1040px, 100%);
+}
+
+.reanchor-confirmation-body {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  overflow: auto;
+  padding: 18px;
+}
+
+.reanchor-confirmation-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 14px;
+}
+
+.reanchor-confirmation-card blockquote {
+  max-height: 260px;
+  overflow: auto;
+  margin: 0;
+  border-left: 3px solid var(--border);
+  padding-left: 10px;
+  white-space: pre-wrap;
+}
+
+.reanchor-confirmation-actions {
+  border-top: 1px solid var(--border);
+  padding: 14px 18px;
+}
+
+.comment-secondary-actions {
+  position: relative;
+}
+
+.comment-secondary-actions summary {
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.comment-secondary-actions button {
+  display: block;
+  margin-top: 6px;
+}
+
+@media (max-width: 760px) {
+  .reanchor-confirmation-body {
+    grid-template-columns: 1fr;
+  }
 }
 
 .document-export-guard-list {
