@@ -337,6 +337,7 @@ export async function saveProjectDocument(
 
 export async function saveProjectState({
   comments,
+  manifest,
   markdown,
   patches,
   project,
@@ -344,6 +345,7 @@ export async function saveProjectState({
   allowSupersede = false
 }: {
   comments?: PatchmarkComment[];
+  manifest?: PatchmarkManifest;
   markdown?: string;
   patches?: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
@@ -353,6 +355,7 @@ export async function saveProjectState({
   return commitProjectState({
     allowSupersede,
     comments,
+    manifest,
     markdown,
     patches,
     project,

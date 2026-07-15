@@ -31,6 +31,8 @@ const linkedMultiBlockCommentId = "PM-COMMENT-0040";
 const visualEvidenceDir = process.env.PATCHMARK_PHASE5_SCREENSHOT_DIR;
 const shouldRunFullVisualAudit =
   process.env.PATCHMARK_PHASE5_FULL_VISUAL_AUDIT === "1";
+const shouldRunFullVisualAuditOnly =
+  process.env.PATCHMARK_PHASE5_AUDIT_ONLY === "1";
 
 async function runActualEditorRegression() {
   if (!projectDir) {
@@ -108,6 +110,25 @@ async function runActualEditorRegression() {
     await waitForEditorShell(pageClient);
     await clickButtonByText(pageClient, "Open Project Folder");
     await waitForProjectComments(pageClient);
+
+    if (shouldRunFullVisualAuditOnly) {
+      await waitForVisualEditorProjection(pageClient);
+      const audit = await auditAllSelectedTextCommentHighlights(pageClient);
+      console.log(
+        JSON.stringify(
+          {
+            kind: "comment-rail-full-visual-audit-only",
+            projectDir,
+            url: editorUrl,
+            audit
+          },
+          null,
+          2
+        )
+      );
+      console.log("Comment rail full visual audit passed.");
+      return;
+    }
 
     await scrollToTop(pageClient);
 
@@ -224,6 +245,40 @@ async function runActualEditorRegression() {
       retryDelay: 100
     });
   }
+}
+
+async function waitForVisualEditorProjection(client) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 1_200; attempt += 1) {
+    const state = await evaluate(client, {
+      expression: `(() => ({
+        editorTextLength: document.querySelector(".patchmark-prose")?.textContent?.length ?? 0,
+        projectedRows: document.querySelectorAll(".comment-floating-item[data-comment-anchor-status='active']").length,
+        visualError: document.body.textContent?.includes("Visual Mode could not render") ?? false
+      }))()`
+    });
+    latestState = state;
+
+    if (state.visualError) {
+      throw new Error("Visual Mode reported a render error during the full audit.");
+    }
+
+    if (state.editorTextLength > 1_000 && state.projectedRows > 0) {
+      await delay(300);
+      return;
+    }
+
+    await delay(100);
+  }
+
+  throw new Error(
+    `Timed out waiting for Visual Mode projection.\n${JSON.stringify(
+      latestState,
+      null,
+      2
+    )}`
+  );
 }
 
 async function assertEditorIsReachable(url) {
@@ -1285,12 +1340,46 @@ async function auditAllSelectedTextCommentHighlights(client) {
   const unexpectedlyUnresolvedLinkedReplacements =
     findUnexpectedlyUnresolvedLinkedReplacementComments(rows);
   const failures = [];
+  let projectionPasses = 0;
+  let highlightPasses = 0;
+  let findConsistencyPasses = 0;
+  let railPositionPasses = 0;
+  let switchRestorePasses = 0;
 
   for (const row of resolvedSelectedRows) {
     try {
+      assert.equal(typeof row.anchorStartOffset, "number");
+      assert.equal(typeof row.anchorEndOffset, "number");
+      assert.ok(row.anchorEndOffset >= row.anchorStartOffset);
+      projectionPasses += 1;
+
       await scrollCommentIntoView(client, row.id);
       await activateComment(client, row.id);
-      await waitForActiveHighlightState(client, row.id);
+      const highlighted = await waitForActiveHighlightState(client, row.id);
+      highlightPasses += 1;
+      assert.deepEqual(
+        getActiveTargetSignature(highlighted.activeRow),
+        getActiveTargetSignature(row)
+      );
+
+      assert.equal(typeof highlighted.activeRow?.preferredTop, "number");
+      assert.equal(typeof highlighted.activeRow?.layoutTop, "number");
+      railPositionPasses += 1;
+
+      await clickCommentFind(client, row.id);
+      await waitForMarkdownSelection(client, row);
+      findConsistencyPasses += 1;
+
+      await clickButtonByText(client, "Visual Mode");
+      await waitForVisualEditorProjection(client);
+      await scrollCommentIntoView(client, row.id);
+      await activateComment(client, row.id);
+      const restored = await waitForActiveHighlightState(client, row.id);
+      assert.deepEqual(
+        getActiveTargetSignature(restored.activeRow),
+        getActiveTargetSignature(row)
+      );
+      switchRestorePasses += 1;
     } catch (error) {
       failures.push({
         error: error instanceof Error ? error.message : String(error),
@@ -1307,14 +1396,87 @@ async function auditAllSelectedTextCommentHighlights(client) {
 
   return {
     failedCount: failures.length,
+    failures,
+    findConsistencyPasses,
+    highlightPasses,
     kind: "full-selected-text-visual-audit",
     passedCount: resolvedSelectedRows.length,
+    projectionPasses,
+    railPositionPasses,
     renderedRailRows: rows.length,
     resolvedSelectedTextCount: resolvedSelectedRows.length,
     selectedTextCount: projectSelectedCommentCount ?? selectedRows.length,
+    switchRestorePasses,
     unexpectedlyUnresolvedLinkedReplacementCount:
       unexpectedlyUnresolvedLinkedReplacements.length
   };
+}
+
+async function waitForMarkdownSelection(client, row) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const state = await evaluate(client, {
+      expression: `(() => {
+        const textarea = document.querySelector(".markdown-source-editor");
+        return textarea
+          ? {
+              end: textarea.selectionEnd,
+              hasFocus: document.activeElement === textarea,
+              start: textarea.selectionStart
+            }
+          : null;
+      })()`
+    });
+    latestState = state;
+
+    if (
+      state?.hasFocus &&
+      state.start === row.anchorStartOffset &&
+      state.end === row.anchorEndOffset
+    ) {
+      return;
+    }
+
+    await delay(100);
+  }
+
+  throw new Error(
+    `Find selection did not match ${row.id}: expected ${row.anchorStartOffset}-${row.anchorEndOffset}, received ${JSON.stringify(
+      latestState
+    )}`
+  );
+}
+
+async function clickCommentFind(client, commentId) {
+  await evaluate(client, {
+    expression: `(() => {
+      const item = document.querySelector(${JSON.stringify(
+        `[data-comment-id="${commentId}"]`
+      )});
+      const button = Array.from(item?.querySelectorAll("button") ?? [])
+        .find((element) => /^Find(?: |$)/.test(element.textContent?.trim() ?? "") && !element.disabled);
+
+      if (!button) {
+        throw new Error("Find button not found for ${commentId}");
+      }
+
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+function getActiveTargetSignature(row) {
+  return row
+    ? {
+        anchorEndOffset: row.anchorEndOffset,
+        anchorKind: row.anchorKind,
+        anchorStartOffset: row.anchorStartOffset,
+        anchorStatus: row.anchorStatus
+      }
+    : null;
 }
 
 function getProjectSelectedTextCommentCount() {
@@ -1581,6 +1743,8 @@ async function readAllCommentRows(client) {
         anchorStatus: item.getAttribute("data-comment-anchor-status"),
         commentStatus: item.getAttribute("data-comment-status"),
         id: item.getAttribute("data-comment-id") ?? "",
+        layoutTop: numberOrNull(item.getAttribute("data-comment-layout-top")),
+        preferredTop: numberOrNull(item.getAttribute("data-comment-preferred-top")),
         order
       }));
 
@@ -1686,7 +1850,9 @@ async function readActiveHighlightState(client, commentId) {
             anchorStartOffset: numberOrNull(item.getAttribute("data-comment-anchor-start")),
             anchorStatus: item.getAttribute("data-comment-anchor-status"),
             commentStatus: item.getAttribute("data-comment-status"),
-            id: item.getAttribute("data-comment-id")
+            id: item.getAttribute("data-comment-id"),
+            layoutTop: numberOrNull(item.getAttribute("data-comment-layout-top")),
+            preferredTop: numberOrNull(item.getAttribute("data-comment-preferred-top"))
           }
         : null;
       const highlightNames = [

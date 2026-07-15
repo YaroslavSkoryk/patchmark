@@ -202,6 +202,76 @@ export function createConciseAnchorHistoryState(
   };
 }
 
+export function convertLegacyAnchorHistoryEntryToConcise({
+  commentId,
+  entry
+}: {
+  commentId: string;
+  entry: PatchmarkLegacyCommentAnchorHistoryEntry;
+}): PatchmarkConciseCommentAnchorHistoryEntry {
+  const legacyEvidence = entry as PatchmarkLegacyCommentAnchorHistoryEntry &
+    Partial<
+      Pick<
+        PatchmarkConciseCommentAnchorHistoryEntry,
+        | "cause"
+        | "confidence"
+        | "document_hash_after"
+        | "document_hash_before"
+        | "method"
+        | "mutation_generation"
+        | "source_id"
+      >
+    >;
+  const previous = createConciseAnchorHistoryState(
+    entry.previous_anchor,
+    "active"
+  );
+  const next = entry.new_anchor
+    ? createConciseAnchorHistoryState(entry.new_anchor, "active")
+    : entry.reason === "anchor_marked_needs_review_after_patch"
+      ? createConciseAnchorHistoryState(entry.previous_anchor, "needs_review")
+      : undefined;
+  const cause = isAnchorHistoryCause(legacyEvidence.cause)
+    ? legacyEvidence.cause
+    : causeForLegacyEntry(entry);
+  const semanticKey = createHistorySemanticKey({
+    cause,
+    commentId,
+    impactKind: entry.impact_kind,
+    mutationGeneration: legacyEvidence.mutation_generation,
+    next,
+    previous,
+    reason: entry.reason,
+    sourceId: legacyEvidence.source_id,
+    sourcePatchId: entry.source_patch_id
+  });
+
+  return {
+    format_version: 2,
+    history_id: `PM-HISTORY-${stableHash(semanticKey)}`,
+    changed_at: entry.changed_at,
+    reason: entry.reason,
+    cause,
+    source_id: legacyEvidence.source_id,
+    source_patch_id: entry.source_patch_id,
+    mutation_generation: legacyEvidence.mutation_generation,
+    previous,
+    next,
+    impact_kind: entry.impact_kind,
+    method: legacyEvidence.method,
+    confidence: legacyEvidence.confidence,
+    document_hash_before: legacyEvidence.document_hash_before,
+    document_hash_after: legacyEvidence.document_hash_after
+  };
+}
+
+export function areConciseAnchorHistoryStatesEqual(
+  first: PatchmarkConciseAnchorHistoryState,
+  second: PatchmarkConciseAnchorHistoryState
+): boolean {
+  return areConciseAnchorStatesEqual(first, second);
+}
+
 function restoreAnchorFromConciseState(
   evidence: PatchmarkConciseAnchorHistoryState
 ): PatchmarkCommentAnchor | null {
@@ -319,6 +389,19 @@ function causeForLegacyEntry(
   return entry.reason === "anchor_recovered_after_patch"
     ? "canonical_recovery"
     : "patch_apply";
+}
+
+function isAnchorHistoryCause(
+  value: unknown
+): value is PatchmarkConciseCommentAnchorHistoryEntry["cause"] {
+  return [
+    "manual_edit",
+    "patch_apply",
+    "canonical_recovery",
+    "historical_convergence",
+    "human_reanchor",
+    "document_restore"
+  ].includes(String(value));
 }
 
 function isReverseTransition({
