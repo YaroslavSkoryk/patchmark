@@ -347,6 +347,11 @@ async function startFixtureFileServer(
     close: () =>
       new Promise((resolve, reject) => {
         server.close((error) => (error ? reject(error) : resolve()));
+      }),
+    forceClose: () =>
+      new Promise((resolve, reject) => {
+        server.closeAllConnections?.();
+        server.close((error) => (error ? reject(error) : resolve()));
       })
   };
 }
@@ -373,6 +378,18 @@ function createProjectPickerShim({
     const filePaths = new Set(${JSON.stringify(files)});
     const directoryPaths = new Set(${JSON.stringify(directories)});
     const overrides = new Map();
+    const writeLog = [];
+    const writeControls = {
+      delayByPath: {},
+      delayBySequence: {},
+      failNextPath: null,
+      failNextSequence: null
+    };
+    const writeStats = {
+      activeWrites: 0,
+      maximumActiveWrites: 0,
+      nextSequence: 1
+    };
 
     function normalizePath(path) {
       return String(path).split("/").filter(Boolean).join("/");
@@ -421,21 +438,75 @@ function createProjectPickerShim({
           },
           async close() {
             const nextContent = chunks.join("");
+            const sequence = writeStats.nextSequence;
+            writeStats.nextSequence += 1;
+            const event = {
+              sequence,
+              path,
+              bytes: new TextEncoder().encode(nextContent).byteLength,
+              startedAt: performance.now(),
+              completedAt: null,
+              status: "started"
+            };
+            writeLog.push(event);
+            writeStats.activeWrites += 1;
+            writeStats.maximumActiveWrites = Math.max(
+              writeStats.maximumActiveWrites,
+              writeStats.activeWrites
+            );
 
-            overrides.set(path, nextContent);
-            await fetch(
-              ${JSON.stringify(baseUrl)} + "/write?path=" + encodeURIComponent(path),
-              { method: "POST", body: nextContent }
-            ).then((response) => {
-              if (!response.ok) {
-                throw new Error("Could not persist fixture write: " + path);
+            const delay = Number(
+              writeControls.delayBySequence[sequence] ??
+                writeControls.delayByPath[path] ??
+                0
+            );
+
+            if (delay > 0) {
+              await new Promise((resolve) => window.setTimeout(resolve, delay));
+            }
+
+            const shouldFail =
+              writeControls.failNextSequence === sequence ||
+              writeControls.failNextPath === path;
+
+            if (writeControls.failNextSequence === sequence) {
+              writeControls.failNextSequence = null;
+            }
+
+            if (writeControls.failNextPath === path) {
+              writeControls.failNextPath = null;
+            }
+
+            if (shouldFail) {
+              event.status = "failed";
+              event.completedAt = performance.now();
+              writeStats.activeWrites -= 1;
+              throw new Error("Injected fixture write failure: " + path);
+            }
+
+            try {
+              await fetch(
+                ${JSON.stringify(baseUrl)} + "/write?path=" + encodeURIComponent(path),
+                { method: "POST", body: nextContent }
+              ).then((response) => {
+                if (!response.ok) {
+                  throw new Error("Could not persist fixture write: " + path);
+                }
+              });
+              overrides.set(path, nextContent);
+              filePaths.add(path);
+              const parent = path.split("/").slice(0, -1).join("/");
+
+              if (parent) {
+                directoryPaths.add(parent);
               }
-            });
-            filePaths.add(path);
-            const parent = path.split("/").slice(0, -1).join("/");
-
-            if (parent) {
-              directoryPaths.add(parent);
+              event.status = "completed";
+            } catch (error) {
+              event.status = "failed";
+              throw error;
+            } finally {
+              event.completedAt = performance.now();
+              writeStats.activeWrites -= 1;
             }
           }
         };
@@ -484,6 +555,9 @@ function createProjectPickerShim({
     } catch {}
 
     window.__patchmarkFixtureWrites = overrides;
+    window.__patchmarkFixtureWriteLog = writeLog;
+    window.__patchmarkFixtureWriteControls = writeControls;
+    window.__patchmarkFixtureWriteStats = writeStats;
     window.showDirectoryPicker = async () =>
       new PatchmarkFixtureDirectoryHandle("", ${JSON.stringify(projectName)});
   })();`;
