@@ -168,6 +168,21 @@ function getAnchorResultComparable(result) {
 }
 
 {
+  const oldMarkdown =
+    "Cut before anchor prefix. Cut shift anchor target remains after earlier cut.";
+  const newMarkdown = oldMarkdown.replace("Cut before anchor prefix. ", "");
+  const result = transformWithChangeSet(
+    oldMarkdown,
+    newMarkdown,
+    "Cut shift anchor target"
+  );
+
+  assert.equal(result.outcome, "active");
+  assert.equal(result.selectedText, "Cut shift anchor target");
+  assert.equal(result.start, newMarkdown.indexOf("Cut shift anchor target"));
+}
+
+{
   const oldMarkdown = "Before target text after.";
   const newMarkdown = "Inserted. Before target text after.";
   const result = transform(oldMarkdown, newMarkdown, "target text");
@@ -334,6 +349,34 @@ function getAnchorResultComparable(result) {
     result.selectedText,
     "regular household customers need clearer payment terms"
   );
+}
+
+{
+  const oldMarkdown = [
+    "Before.",
+    "",
+    "Paste replacement target paragraph.",
+    "",
+    "After."
+  ].join("\n");
+  const replacement = [
+    "Pasted heading replacement",
+    "",
+    "- pasted item one",
+    "- pasted item two"
+  ].join("\n");
+  const newMarkdown = oldMarkdown.replace(
+    "Paste replacement target paragraph.",
+    replacement
+  );
+  const result = transformWithChangeSet(
+    oldMarkdown,
+    newMarkdown,
+    "Paste replacement target paragraph."
+  );
+
+  assert.equal(result.outcome, "active");
+  assert.equal(result.selectedText, replacement);
 }
 
 {

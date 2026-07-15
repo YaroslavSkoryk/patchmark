@@ -511,6 +511,34 @@ export function transformSelectedTextAnchorThroughEdit({
   }
 
   if (relationship === "overlap_anchor_start") {
+    const removedText = getRemovedTextForEdit(oldMarkdown, edit);
+    const preservedBoundaryPrefixLength = getPreservedBoundaryPrefixLength({
+      anchorText: anchor.selected_text,
+      removedText
+    });
+
+    if (
+      edit.insertedText.length === 0 &&
+      preservedBoundaryPrefixLength > 0
+    ) {
+      const preservedStart = edit.oldStart - preservedBoundaryPrefixLength;
+
+      if (
+        preservedStart >= 0 &&
+        newMarkdown.slice(
+          preservedStart,
+          preservedStart + anchor.selected_text.length
+        ) === anchor.selected_text
+      ) {
+        return createActiveTransformResult({
+          end: preservedStart + anchor.selected_text.length,
+          newMarkdown,
+          start: preservedStart,
+          transformation: "after_edit_shifted"
+        });
+      }
+    }
+
     const survivingTailLength = anchorEnd - edit.oldEnd;
     return createActiveTransformResult({
       end: edit.oldStart + edit.insertedText.length + survivingTailLength,
@@ -611,6 +639,19 @@ export function transformSelectedTextAnchorThroughChangeSet({
     if (edit.oldEnd <= anchorStart) {
       currentStart += delta;
       currentEnd += delta;
+      cumulativeDelta += delta;
+      continue;
+    }
+
+    if (
+      changedInsideAnchor &&
+      edit.oldStart >= anchorEnd &&
+      edit.oldStart === edit.oldEnd &&
+      edit.insertedText.includes("\n") &&
+      oldMarkdown.slice(anchorEnd, edit.oldStart).trim().length === 0
+    ) {
+      currentEnd =
+        editNewStart + edit.insertedText.replace(/\n+$/, "").length;
       cumulativeDelta += delta;
       continue;
     }
@@ -1230,6 +1271,24 @@ function findUniqueTextInInsertedEdit(
     -1
     ? firstIndex
     : null;
+}
+
+function getPreservedBoundaryPrefixLength({
+  anchorText,
+  removedText
+}: {
+  anchorText: string;
+  removedText: string;
+}): number {
+  const maxLength = Math.min(anchorText.length, removedText.length);
+
+  for (let length = maxLength; length > 0; length -= 1) {
+    if (removedText.endsWith(anchorText.slice(0, length))) {
+      return length;
+    }
+  }
+
+  return 0;
 }
 
 function isBroadChangeSet(

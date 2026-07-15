@@ -8813,8 +8813,8 @@ function createInactiveSelectedTextAnchorAfterManualDeletion({
   return refreshSelectedAnchorPositionMetadata({
     anchor: {
       ...anchor,
-      selected_text: "",
-      anchor_context: undefined,
+      selected_text: anchor.selected_text,
+      anchor_context: anchor.anchor_context,
       markdown_start_offset: nextOffset,
       markdown_end_offset: nextOffset
     },

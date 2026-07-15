@@ -283,6 +283,46 @@ function recoverPersistedAnchorFromCurrentMarkdown(comment, markdown) {
     paddedTechnologyRow
   );
 
+  const movedText = "Move Anchor Target Lives Here with stable unique phrase.";
+  const movedMarkdown = [
+    "Before cut.",
+    "",
+    "Destination:",
+    movedText
+  ].join("\n");
+  const emptyRangeMovedComment = {
+    ...reloadedComment,
+    anchor: {
+      ...reloadedComment.anchor,
+      selected_text: movedText,
+      anchor_context: {
+        kind: "paragraph",
+        plain_text: movedText,
+        markdown_text: movedText,
+        selected_start_in_context: 0,
+        selected_end_in_context: movedText.length,
+        markdown_start_offset: 0,
+        markdown_end_offset: movedText.length
+      },
+      markdown_start_offset: 12,
+      markdown_end_offset: 12
+    }
+  };
+  const recoveredMovedComment = recoverPersistedAnchorFromCurrentMarkdown(
+    emptyRangeMovedComment,
+    movedMarkdown
+  );
+
+  assert.equal(validateAnchor(movedMarkdown, emptyRangeMovedComment.anchor), "active");
+  assert.equal(recoveredMovedComment.anchor.selected_text, movedText);
+  assert.equal(
+    movedMarkdown.slice(
+      recoveredMovedComment.anchor.markdown_start_offset,
+      recoveredMovedComment.anchor.markdown_end_offset
+    ),
+    movedText
+  );
+
   const invalidatedMarkdown = patchedMarkdown.replace(suggestedText, "");
 
   assert.equal(validateAnchor(invalidatedMarkdown, reloadedComment.anchor), "not_found");
