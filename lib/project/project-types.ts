@@ -199,9 +199,12 @@ export type PatchmarkManifest = {
   updated_at: string;
   current_version?: string;
   versions?: PatchmarkVersionEntry[];
+  save_generation?: number;
+  save_commit_id?: string;
 };
 
-export type PatchmarkCommentAnchorHistoryEntry = {
+export type PatchmarkLegacyCommentAnchorHistoryEntry = {
+  format_version?: 1;
   changed_at: string;
   reason:
     | "patch_applied"
@@ -213,6 +216,65 @@ export type PatchmarkCommentAnchorHistoryEntry = {
   previous_anchor: PatchmarkCommentAnchor;
   new_anchor?: PatchmarkCommentAnchor;
   impact_kind?: PatchCommentImpactKind;
+};
+
+export type PatchmarkConciseAnchorHistoryState = {
+  kind: PatchmarkCommentAnchor["kind"];
+  start?: number;
+  end?: number;
+  selected_text_hash?: string;
+  selected_text_excerpt?: string;
+  selected_text_length?: number;
+  containing_heading?: string;
+  containing_heading_path?: string[];
+  state?: "active" | "ambiguous" | "not_found" | "needs_review";
+};
+
+export type PatchmarkConciseCommentAnchorHistoryEntry = {
+  format_version: 2;
+  history_id: string;
+  changed_at: string;
+  reason: PatchmarkLegacyCommentAnchorHistoryEntry["reason"];
+  cause:
+    | "manual_edit"
+    | "patch_apply"
+    | "canonical_recovery"
+    | "historical_convergence"
+    | "human_reanchor"
+    | "document_restore";
+  source_id?: string;
+  source_patch_id?: string;
+  mutation_generation?: number;
+  previous: PatchmarkConciseAnchorHistoryState;
+  next?: PatchmarkConciseAnchorHistoryState;
+  impact_kind?: PatchCommentImpactKind;
+  method?: string;
+  confidence?: string;
+  document_hash_before?: string;
+  document_hash_after?: string;
+};
+
+export type PatchmarkCommentAnchorHistoryEntry =
+  | PatchmarkLegacyCommentAnchorHistoryEntry
+  | PatchmarkConciseCommentAnchorHistoryEntry;
+
+export type PatchmarkPersistedFileCommit = {
+  path: string;
+  sha256: string;
+  bytes: number;
+};
+
+export type PatchmarkSaveCommit = {
+  format_version: 1;
+  generation: number;
+  commit_id: string;
+  created_at: string;
+  files: {
+    document: PatchmarkPersistedFileCommit;
+    comments: PatchmarkPersistedFileCommit;
+    patches: PatchmarkPersistedFileCommit;
+    manifest: PatchmarkPersistedFileCommit;
+  };
 };
 
 export type PatchmarkCommentPatchImpact = {

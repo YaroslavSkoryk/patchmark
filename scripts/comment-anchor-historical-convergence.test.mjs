@@ -434,4 +434,54 @@ function createPatch(overrides) {
   assert.deepEqual(second, first);
 }
 
+{
+  const markdown = ["## Target Section", "", "Concise historical target."].join(
+    "\n"
+  );
+  const start = markdown.indexOf("Concise historical target.");
+  const comment = createSelectedComment({
+    selectedText: "stale current target",
+    start: 0,
+    end: "stale current target".length,
+    history: [
+      {
+        changed_at: createdAt,
+        reason: "anchor_recovered_after_patch",
+        previous_anchor: {
+          kind: "selected_text",
+          selected_text: "legacy target",
+          markdown_start_offset: 0,
+          markdown_end_offset: 13,
+          containing_heading: "Target Section"
+        }
+      },
+      {
+        format_version: 2,
+        history_id: "PM-HISTORY-MIXED",
+        changed_at: createdAt,
+        reason: "anchor_recovered_after_patch",
+        cause: "canonical_recovery",
+        previous: {
+          kind: "selected_text",
+          start,
+          end: start + "Concise historical target.".length,
+          selected_text_hash: "fixture-hash",
+          selected_text_excerpt: "Concise historical target.",
+          selected_text_length: "Concise historical target.".length,
+          containing_heading: "Target Section",
+          state: "active"
+        }
+      }
+    ]
+  });
+  const resolution = resolveCanonicalCommentTarget(comment, { markdown });
+
+  assert.equal(resolution.state, "resolved");
+  assert.equal(resolution.method, "historical_anchor");
+  assert.deepEqual(resolution.range, {
+    start,
+    end: start + "Concise historical target.".length
+  });
+}
+
 console.log("Historical comment anchor convergence tests passed.");

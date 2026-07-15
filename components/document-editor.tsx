@@ -22,6 +22,10 @@ import {
 } from "@/components/comments-panel";
 import { getLastKnownCommentAnchorPositionRange } from "@/lib/comments/comment-anchor-position";
 import {
+  appendConciseAnchorHistory,
+  getHistoryPreviousAnchor
+} from "@/lib/comments/comment-anchor-history";
+import {
   cleanMarkdownHeadingText,
   getSelectedTextLocationLabel
 } from "@/lib/comments/comment-card-display";
@@ -144,13 +148,15 @@ import {
   readProjectVersionMarkdown,
   readProjectComments,
   readProjectPatches,
-  saveProjectDocument,
+  restoreProjectLastKnownGood,
+  saveProjectState,
   writeProjectContextPack,
   writeProjectComments,
   writeProjectImport,
   writeProjectPatches,
   type LoadedPatchmarkProject,
-  type PatchmarkProjectHandle
+  type PatchmarkProjectHandle,
+  type PatchmarkProjectRecoveryState
 } from "@/lib/project/patchmark-project";
 import {
   CHATGPT_IMPORT_REPAIR_PROMPT,
@@ -486,6 +492,8 @@ export function DocumentEditor() {
     useState<MarkdownFileHandle | null>(null);
   const [projectHandle, setProjectHandle] =
     useState<PatchmarkProjectHandle | null>(null);
+  const [projectRecovery, setProjectRecovery] =
+    useState<PatchmarkProjectRecoveryState | null>(null);
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
   const [availableDraft, setAvailableDraft] = useState<DocumentDraft | null>(null);
   const [mode, setMode] = useState<EditorMode>("visual");
@@ -497,6 +505,7 @@ export function DocumentEditor() {
   );
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
+  const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
   const [activeCommentState, setActiveCommentState] =
@@ -736,6 +745,7 @@ export function DocumentEditor() {
     (baselineMarkdown === null || markdown !== baselineMarkdown);
   const isSaving = saveStatus === "saving";
   const isProjectMode = projectHandle !== null;
+  const isProjectRecoveryReadOnly = projectRecovery !== null;
   const documentStatus: DocumentStatusKind = getDocumentStatus({
     isDirty,
     markdown,
@@ -751,6 +761,7 @@ export function DocumentEditor() {
     let isCancelled = false;
 
     if (!projectHandle) {
+      setIsProjectDataLoading(false);
       setVersionEntries([]);
       setComments([]);
       setPatches([]);
@@ -763,36 +774,27 @@ export function DocumentEditor() {
       return;
     }
 
-    void listProjectVersions(projectHandle).then((versions) => {
-      if (!isCancelled) {
-        setVersionEntries(versions);
-      }
-    });
-
-    void readProjectComments(projectHandle)
-      .then((projectComments) => {
+    setIsProjectDataLoading(true);
+    void Promise.all([
+      listProjectVersions(projectHandle),
+      readProjectComments(projectHandle),
+      readProjectPatches(projectHandle)
+    ])
+      .then(([versions, projectComments, projectPatches]) => {
         if (!isCancelled) {
+          setVersionEntries(versions);
           setComments(projectComments);
+          setPatches(projectPatches);
           setCommentsError(null);
+          setIsProjectDataLoading(false);
         }
       })
       .catch((error) => {
         if (!isCancelled) {
           setComments([]);
-          setCommentsError(getProjectErrorMessage(error));
-        }
-      });
-
-    void readProjectPatches(projectHandle)
-      .then((projectPatches) => {
-        if (!isCancelled) {
-          setPatches(projectPatches);
-        }
-      })
-      .catch((error) => {
-        if (!isCancelled) {
           setPatches([]);
           setCommentsError(getProjectErrorMessage(error));
+          setIsProjectDataLoading(false);
         }
       });
 
@@ -810,7 +812,7 @@ export function DocumentEditor() {
   }, [patches, selectedPatchId]);
 
   useEffect(() => {
-    if (!projectHandle || isSaving || comments.length === 0) {
+    if (!projectHandle || isSaving || isDirty || comments.length === 0) {
       return;
     }
 
@@ -844,9 +846,12 @@ export function DocumentEditor() {
       }
 
       const persistenceStartedAt = performance.now();
-      void writeProjectComments(projectHandle, recoveredComments)
-        .then(() => {
-          if (!isCancelled) {
+      void writeProjectComments(projectHandle, recoveredComments, {
+        allowSupersede: true,
+        reason: "background_anchor_convergence"
+      })
+        .then((result) => {
+          if (!isCancelled && result.status !== "superseded") {
             setComments(recoveredComments);
             recordEditPerformanceDuration(
               operationId,
@@ -887,10 +892,10 @@ export function DocumentEditor() {
         window.clearTimeout(timeoutId);
       }
     };
-  }, [comments, headings, isSaving, markdown, patches, projectHandle]);
+  }, [comments, headings, isDirty, isSaving, markdown, patches, projectHandle]);
 
   useEffect(() => {
-    if (!projectHandle || isSaving || patches.length === 0) {
+    if (!projectHandle || isSaving || isDirty || patches.length === 0) {
       return;
     }
 
@@ -905,9 +910,12 @@ export function DocumentEditor() {
 
     let isCancelled = false;
 
-    void writeProjectPatches(projectHandle, recoveredPatches)
-      .then(() => {
-        if (!isCancelled) {
+    void writeProjectPatches(projectHandle, recoveredPatches, {
+      allowSupersede: true,
+      reason: "background_patch_anchor_recovery"
+    })
+      .then((result) => {
+        if (!isCancelled && result.status !== "superseded") {
           setPatches(recoveredPatches);
         }
       })
@@ -920,7 +928,7 @@ export function DocumentEditor() {
     return () => {
       isCancelled = true;
     };
-  }, [isSaving, markdown, patches, projectHandle]);
+  }, [isDirty, isSaving, markdown, patches, projectHandle]);
 
   useEffect(() => {
     if (
@@ -1225,7 +1233,7 @@ export function DocumentEditor() {
   }, [activeCommentState, comments, headings, markdown, mode, patches]);
 
   const handleSaveChanges = useCallback(async () => {
-    if (!fileName || isSaving) {
+    if (!fileName || isSaving || isProjectDataLoading) {
       return;
     }
 
@@ -1243,18 +1251,23 @@ export function DocumentEditor() {
       setSaveFeedback(null);
 
       try {
-        const nextProjectHandle = await saveProjectDocument(
-          projectHandle,
-          markdown
-        );
-        await writeProjectComments(nextProjectHandle, comments);
-        setProjectHandle(nextProjectHandle);
+        const result = await saveProjectState({
+          comments,
+          markdown,
+          patches,
+          project: projectHandle,
+          reason: "explicit_save"
+        });
+        setProjectHandle(projectHandle);
         setBaselineMarkdown(markdown);
         setRestoredMarkdown(null);
         setSaveStatus("idle");
         setSaveFeedback({
           kind: "success",
-          message: "Saved changes to project document.md and comments."
+          message:
+            result.status === "unchanged"
+              ? "Everything is already saved."
+              : "Saved project changes as one complete generation."
         });
       } catch (error) {
         setSaveStatus("failed");
@@ -1296,7 +1309,7 @@ export function DocumentEditor() {
         message: getSaveErrorMessage(error)
       });
     }
-  }, [activeFileHandle, comments, fileName, isSaving, markdown, projectHandle]);
+  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, markdown, patches, projectHandle]);
 
   useEffect(() => {
     if (!fileName) {
@@ -1320,6 +1333,7 @@ export function DocumentEditor() {
     setBaselineMarkdown(loadedFile.markdown);
     setActiveFileHandle(loadedFile.fileHandle);
     setProjectHandle(null);
+    setProjectRecovery(null);
     setRestoredMarkdown(null);
     setAvailableDraft(null);
     setSaveStatus("idle");
@@ -1359,6 +1373,7 @@ export function DocumentEditor() {
     setBaselineMarkdown(null);
     setActiveFileHandle(null);
     setProjectHandle(null);
+    setProjectRecovery(null);
     setRestoredMarkdown(availableDraft.markdown);
     setAvailableDraft(null);
     setSaveStatus("idle");
@@ -1633,8 +1648,35 @@ export function DocumentEditor() {
 
       loadProjectIntoEditor(loadedProject);
       setSaveFeedback({
+        kind: loadedProject.recovery ? "info" : "success",
+        message: loadedProject.recovery
+          ? loadedProject.recovery.message
+          : "Opened Patchmark project folder."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleRestoreProjectRecovery() {
+    if (!projectHandle || !projectRecovery?.canRestore || isSaving) {
+      return;
+    }
+
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      const restoredProject = await restoreProjectLastKnownGood(projectHandle);
+      loadProjectIntoEditor(restoredProject);
+      setSaveStatus("idle");
+      setSaveFeedback({
         kind: "success",
-        message: "Opened Patchmark project folder."
+        message:
+          "Restored the last complete project save. Questionable files were preserved for inspection."
       });
     } catch (error) {
       setSaveStatus("failed");
@@ -2157,17 +2199,19 @@ export function DocumentEditor() {
         project: projectHandle
       });
 
-      if (importedPatches.length > 0) {
-        await writeProjectPatches(projectHandle, [
-          ...existingPatches,
-          ...importedPatches
-        ]);
-      }
+      const nextPatches = [...existingPatches, ...importedPatches];
+      await saveProjectState({
+        comments: nextComments,
+        markdown,
+        patches: nextPatches,
+        project: projectHandle,
+        reason: "import_chatgpt_response"
+      });
 
-      await writeProjectComments(projectHandle, nextComments);
-
+      setBaselineMarkdown(markdown);
+      setRestoredMarkdown(null);
       setComments(nextComments);
-      setPatches([...existingPatches, ...importedPatches]);
+      setPatches(nextPatches);
       setChatGptImportDialog(null);
       setSaveFeedback({
         kind: importWarnings.length > 0 ? "info" : "success",
@@ -3008,10 +3052,6 @@ export function DocumentEditor() {
       });
       const replacementStart = originalStart;
       const replacementEnd = replacementStart + currentPatch.suggested_text.length;
-      const nextProjectHandle = await saveProjectDocument(
-        snapshotResult.project,
-        nextMarkdown
-      );
       const appliedAt = new Date().toISOString();
       const appliedAnchorMetadata = createAppliedPatchAnchorMetadata({
         end: replacementEnd,
@@ -3058,67 +3098,37 @@ export function DocumentEditor() {
           : candidate
       );
 
-      try {
-        await writeProjectPatches(nextProjectHandle, nextPatches);
-      } catch (error) {
-        setProjectHandle(nextProjectHandle);
-        setMarkdown(nextMarkdown);
-        setBaselineMarkdown(nextMarkdown);
-        setRestoredMarkdown(null);
-        setVersionEntries(nextProjectHandle.manifest.versions ?? []);
-        setDocumentVersion((currentVersion) => currentVersion + 1);
-        setSaveStatus("failed");
-        setSaveFeedback({
-          kind: "error",
-          message: `Patch was applied to document.md, but Patchmark could not update patches.json: ${getProjectErrorMessage(error)}`
-        });
-        return;
-      }
-
       const linkedCommentMissing =
         Boolean(currentPatch.comment_id) && !mutationResult.linkedCommentFound;
 
-      try {
-        await writeProjectComments(nextProjectHandle, mutationResult.comments);
-        setProjectHandle(nextProjectHandle);
-        setMarkdown(mutationResult.markdown);
-        setBaselineMarkdown(mutationResult.markdown);
-        setRestoredMarkdown(null);
-        setVersionEntries(nextProjectHandle.manifest.versions ?? []);
-        setDocumentVersion((currentVersion) => currentVersion + 1);
-        setComments(mutationResult.comments);
-        setPatches(nextPatches);
-        setRecentlyAppliedPatchId(currentPatch.id);
-        setSaveStatus("idle");
-        setSaveFeedback({
-          kind:
-            linkedCommentMissing || mutationResult.needsReviewCount > 0
-              ? "info"
-              : "success",
-          message: linkedCommentMissing
-            ? "Patch applied, but the linked comment was not found. Other comment anchors were updated where needed."
-            : mutationResult.needsReviewCount > 0
-              ? `Patch applied. ${mutationResult.needsReviewCount} comment anchor${mutationResult.needsReviewCount === 1 ? "" : "s"} need review.`
-              : "Patch applied. Comment anchors were updated where needed."
-        });
-      } catch (error) {
-        const message = getProjectErrorMessage(error);
-        setProjectHandle(nextProjectHandle);
-        setMarkdown(nextMarkdown);
-        setBaselineMarkdown(nextMarkdown);
-        setRestoredMarkdown(null);
-        setVersionEntries(nextProjectHandle.manifest.versions ?? []);
-        setDocumentVersion((currentVersion) => currentVersion + 1);
-        setPatches(nextPatches);
-        setRecentlyAppliedPatchId(currentPatch.id);
-        setCommentsError(message);
-        setSaveStatus("idle");
-        setSaveFeedback({
-          kind: "info",
-          message:
-            "Patch applied, but Patchmark could not update the linked comment thread."
-        });
-      }
+      await saveProjectState({
+        comments: mutationResult.comments,
+        markdown: mutationResult.markdown,
+        patches: nextPatches,
+        project: snapshotResult.project,
+        reason: `accept_patch:${currentPatch.id}`
+      });
+      setProjectHandle(snapshotResult.project);
+      setMarkdown(mutationResult.markdown);
+      setBaselineMarkdown(mutationResult.markdown);
+      setRestoredMarkdown(null);
+      setVersionEntries(snapshotResult.project.manifest.versions ?? []);
+      setDocumentVersion((currentVersion) => currentVersion + 1);
+      setComments(mutationResult.comments);
+      setPatches(nextPatches);
+      setRecentlyAppliedPatchId(currentPatch.id);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind:
+          linkedCommentMissing || mutationResult.needsReviewCount > 0
+            ? "info"
+            : "success",
+        message: linkedCommentMissing
+          ? "Patch applied, but the linked comment was not found. Other comment anchors were updated where needed."
+          : mutationResult.needsReviewCount > 0
+            ? `Patch applied. ${mutationResult.needsReviewCount} comment anchor${mutationResult.needsReviewCount === 1 ? "" : "s"} need review.`
+            : "Patch applied. Comment anchors were updated where needed."
+      });
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({
@@ -3138,6 +3148,14 @@ export function DocumentEditor() {
     }
 
     if (isSaving) {
+      return;
+    }
+
+    if (isDirty) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Save document changes before updating a patch anchor."
+      });
       return;
     }
 
@@ -3188,7 +3206,11 @@ export function DocumentEditor() {
     setSaveFeedback(null);
 
     try {
-      await writeProjectPatches(projectHandle, nextPatches);
+      await saveProjectState({
+        patches: nextPatches,
+        project: projectHandle,
+        reason: `update_patch_anchor:${currentPatch.id}`
+      });
       setPatches(nextPatches);
       setSaveStatus("idle");
       setSaveFeedback({
@@ -3215,6 +3237,14 @@ export function DocumentEditor() {
     }
 
     if (isSaving) {
+      return;
+    }
+
+    if (isDirty) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Save document changes before rejecting a patch."
+      });
       return;
     }
 
@@ -3251,9 +3281,23 @@ export function DocumentEditor() {
           }
         : candidate
     );
+    const nextComments = currentPatch.comment_id
+      ? appendPatchSystemThreadEntry({
+          comments,
+          commentId: currentPatch.comment_id,
+          content: `Patch ${currentPatch.id} was rejected.`,
+          createdAt: rejectedAt,
+          patchId: currentPatch.id
+        })
+      : null;
 
     try {
-      await writeProjectPatches(projectHandle, nextPatches);
+      await saveProjectState({
+        comments: nextComments ?? undefined,
+        patches: nextPatches,
+        project: projectHandle,
+        reason: `reject_patch:${currentPatch.id}`
+      });
       setPatches(nextPatches);
 
       if (!currentPatch.comment_id) {
@@ -3265,14 +3309,6 @@ export function DocumentEditor() {
         return;
       }
 
-      const nextComments = appendPatchSystemThreadEntry({
-        comments,
-        commentId: currentPatch.comment_id,
-        content: `Patch ${currentPatch.id} was rejected.`,
-        createdAt: rejectedAt,
-        patchId: currentPatch.id
-      });
-
       if (!nextComments) {
         setSaveStatus("idle");
         setSaveFeedback({
@@ -3283,24 +3319,12 @@ export function DocumentEditor() {
         return;
       }
 
-      try {
-        await writeProjectComments(projectHandle, nextComments);
-        setComments(nextComments);
-        setSaveStatus("idle");
-        setSaveFeedback({
-          kind: "success",
-          message: "Patch rejected. Comment remains open."
-        });
-      } catch (error) {
-        const message = getProjectErrorMessage(error);
-        setCommentsError(message);
-        setSaveStatus("idle");
-        setSaveFeedback({
-          kind: "info",
-          message:
-            "Patch rejected, but Patchmark could not update the linked comment thread."
-        });
-      }
+      setComments(nextComments);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Patch rejected. Comment remains open."
+      });
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({
@@ -3320,6 +3344,14 @@ export function DocumentEditor() {
     }
 
     if (isSaving) {
+      return;
+    }
+
+    if (isDirty) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Save document changes before rejecting a patch group."
+      });
       return;
     }
 
@@ -3360,9 +3392,22 @@ export function DocumentEditor() {
           }
         : candidate
     );
+    const nextComments = group.comment_id
+      ? appendPatchSystemThreadEntry({
+          comments,
+          commentId: group.comment_id,
+          content: `Pending patches in ${group.display_id} were rejected.`,
+          createdAt: rejectedAt
+        })
+      : null;
 
     try {
-      await writeProjectPatches(projectHandle, nextPatches);
+      await saveProjectState({
+        comments: nextComments ?? undefined,
+        patches: nextPatches,
+        project: projectHandle,
+        reason: `reject_patch_group:${group.id}`
+      });
       setPatches(nextPatches);
 
       if (!group.comment_id) {
@@ -3374,13 +3419,6 @@ export function DocumentEditor() {
         return;
       }
 
-      const nextComments = appendPatchSystemThreadEntry({
-        comments,
-        commentId: group.comment_id,
-        content: `Pending patches in ${group.display_id} were rejected.`,
-        createdAt: rejectedAt
-      });
-
       if (!nextComments) {
         setSaveStatus("idle");
         setSaveFeedback({
@@ -3391,24 +3429,12 @@ export function DocumentEditor() {
         return;
       }
 
-      try {
-        await writeProjectComments(projectHandle, nextComments);
-        setComments(nextComments);
-        setSaveStatus("idle");
-        setSaveFeedback({
-          kind: "success",
-          message: "Pending patches in group rejected. Comment remains open."
-        });
-      } catch (error) {
-        const message = getProjectErrorMessage(error);
-        setCommentsError(message);
-        setSaveStatus("idle");
-        setSaveFeedback({
-          kind: "info",
-          message:
-            "Pending patches in group rejected, but Patchmark could not update the linked comment thread."
-        });
-      }
+      setComments(nextComments);
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Pending patches in group rejected. Comment remains open."
+      });
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({
@@ -3651,7 +3677,15 @@ export function DocumentEditor() {
     setCommentsError(null);
 
     try {
-      await writeProjectComments(projectHandle, nextComments);
+      await saveProjectState({
+        comments: nextComments,
+        markdown,
+        patches,
+        project: projectHandle,
+        reason: "update_comment_state"
+      });
+      setBaselineMarkdown(markdown);
+      setRestoredMarkdown(null);
       setComments(nextComments);
       setSaveFeedback({
         kind: "success",
@@ -3672,6 +3706,7 @@ export function DocumentEditor() {
 
   function loadProjectIntoEditor(loadedProject: LoadedPatchmarkProject) {
     setProjectHandle(loadedProject.project);
+    setProjectRecovery(loadedProject.recovery ?? null);
     setFileName(loadedProject.project.manifest.document_file);
     setMarkdown(loadedProject.markdown);
     setBaselineMarkdown(loadedProject.markdown);
@@ -3687,7 +3722,9 @@ export function DocumentEditor() {
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
     setCommentContextMenu(null);
+    setComments([]);
     setPatches([]);
+    setIsProjectDataLoading(true);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
     setPatchGroupListDialog(null);
@@ -3786,7 +3823,9 @@ export function DocumentEditor() {
             <div className="document-toolbar-controls">
               <DocumentActions
                 fileName={fileName}
-                isSaving={isSaving}
+                isSaving={
+                  isSaving || isProjectDataLoading || isProjectRecoveryReadOnly
+                }
                 markdown={markdown}
                 onCreateSnapshot={handleCreateSnapshot}
                 onDownload={handleDownload}
@@ -3814,6 +3853,37 @@ export function DocumentEditor() {
             </div>
           ) : null}
         </div>
+
+        {projectRecovery ? (
+          <div
+            className="document-save-banner document-save-banner-info project-recovery-banner"
+            role="status"
+          >
+            <strong>{projectRecovery.message}</strong>
+            {projectRecovery.canRestore ? (
+              <button
+                type="button"
+                disabled={isSaving}
+                onClick={handleRestoreProjectRecovery}
+              >
+                Restore last complete save
+              </button>
+            ) : null}
+            <details>
+              <summary>Show technical details</summary>
+              <ul>
+                {projectRecovery.technicalDetails.map((detail) => (
+                  <li key={detail}>{detail}</li>
+                ))}
+                {projectRecovery.temporaryFiles.length > 0 ? (
+                  <li>
+                    Unfinished temporary files: {projectRecovery.temporaryFiles.join(", ")}
+                  </li>
+                ) : null}
+              </ul>
+            </details>
+          </div>
+        ) : null}
 
         {saveFeedback ? (
           <div
@@ -3847,6 +3917,7 @@ export function DocumentEditor() {
                 onMarkdownChange={(nextMarkdown) =>
                   handleMarkdownChange(nextMarkdown, "manual_visual")
                 }
+                readOnly={isProjectRecoveryReadOnly}
               />
             ) : (
               <MarkdownSourceEditor
@@ -3855,6 +3926,7 @@ export function DocumentEditor() {
                   handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
                 onSelectionChange={setMarkdownSelection}
+                readOnly={isProjectRecoveryReadOnly}
                 selectionRequest={markdownSelectionRequest}
               />
             )
@@ -10367,20 +10439,26 @@ function recoverCommentAnchorForFind({
   latestNeedsReviewImpact: PatchmarkCommentPatchImpact | null;
   newAnchor: SelectedTextAnchor;
 }): PatchmarkComment {
+  const nextHistory = appendConciseAnchorHistory({
+    cause: "canonical_recovery",
+    commentId: comment.id,
+    history: comment.anchor_history,
+    impactKind: latestNeedsReviewImpact?.impact_kind,
+    nextAnchor: newAnchor,
+    previousAnchor: comment.anchor,
+    reason: "anchor_recovered_after_patch",
+    sourcePatchId: latestNeedsReviewImpact?.patch_id,
+    timestamp: createdAt
+  });
+
+  if (nextHistory === comment.anchor_history) {
+    return comment;
+  }
+
   const recoveredComment: PatchmarkComment = {
     ...comment,
     anchor: newAnchor,
-    anchor_history: [
-      ...(comment.anchor_history ?? []),
-      {
-        changed_at: createdAt,
-        reason: "anchor_recovered_after_patch",
-        source_patch_id: latestNeedsReviewImpact?.patch_id,
-        previous_anchor: comment.anchor,
-        new_anchor: newAnchor,
-        impact_kind: latestNeedsReviewImpact?.impact_kind
-      }
-    ],
+    anchor_history: nextHistory,
     updated_at: createdAt
   };
 
@@ -10415,19 +10493,23 @@ function repairRetainedLinkedPatchCommentAnchor({
 
   const sourcePatchIdsWithOriginalHistory = new Set(
     comment.anchor_history
-      .filter(
-        (historyEntry) =>
+      .filter((historyEntry) => {
+        const previousAnchor = getHistoryPreviousAnchor(historyEntry);
+        return (
           historyEntry.source_patch_id &&
           historyEntry.reason !== "anchor_recovered_after_patch" &&
-          historyEntry.previous_anchor.kind === "selected_text"
-      )
+          previousAnchor?.kind === "selected_text"
+        );
+      })
       .map((historyEntry) => historyEntry.source_patch_id as string)
   );
 
   for (const historyEntry of [...comment.anchor_history].reverse()) {
+    const previousAnchor = getHistoryPreviousAnchor(historyEntry);
+
     if (
       !historyEntry.source_patch_id ||
-      historyEntry.previous_anchor.kind !== "selected_text"
+      previousAnchor?.kind !== "selected_text"
     ) {
       continue;
     }
@@ -10458,7 +10540,7 @@ function repairRetainedLinkedPatchCommentAnchor({
     if (appliedRange) {
       const replacementText = markdown.slice(appliedRange.start, appliedRange.end);
       const retainedAnchor = createRetainedSelectedTextAnchorInsidePatch({
-        anchor: historyEntry.previous_anchor,
+        anchor: previousAnchor,
         comment,
         newMarkdown: markdown,
         originalStart: patch.applied_start_offset,
@@ -10476,7 +10558,7 @@ function repairRetainedLinkedPatchCommentAnchor({
           replacementText
         });
       const changedTableCellAnchor = createChangedTableCellAnchorInsidePatch({
-        anchor: historyEntry.previous_anchor,
+        anchor: previousAnchor,
         comment,
         newMarkdown: markdown,
         originalStart: patch.applied_start_offset,
@@ -10486,12 +10568,12 @@ function repairRetainedLinkedPatchCommentAnchor({
       });
       const appliedReplacementAnchor =
         isSelectedAnchorInsidePatchOriginalText({
-          anchor: historyEntry.previous_anchor,
+          anchor: previousAnchor,
           originalStart: patch.applied_start_offset ?? appliedRange.start,
           originalText: patch.original_text
         }) && replacementText.trim()
           ? createAppliedReplacementAnchorForLinkedPatchRepair({
-              anchor: historyEntry.previous_anchor,
+              anchor: previousAnchor,
               comment,
               markdown,
               patch,
@@ -10521,7 +10603,7 @@ function repairRetainedLinkedPatchCommentAnchor({
     retainedAnchorCandidate =
       retainedAnchorCandidate ??
       (isSelectedAnchorEquivalentToPatchOriginalText({
-        anchor: historyEntry.previous_anchor,
+        anchor: previousAnchor,
         originalText: patch.original_text
       })
         ? createCurrentPatchOriginalTableRowAnchor({
@@ -10618,19 +10700,25 @@ function repairCommentAnchorFromCanonicalResolution({
     : {
         ...comment,
         anchor: nextAnchor,
-        anchor_history: [
-          ...(comment.anchor_history ?? []),
-          {
-            changed_at: repairedAt,
-            reason: "anchor_recovered_after_patch",
-            source_patch_id: latestNeedsReviewImpact?.patch_id,
-            previous_anchor: comment.anchor,
-            new_anchor: nextAnchor,
-            impact_kind: latestNeedsReviewImpact?.impact_kind
-          }
-        ],
+        anchor_history: appendConciseAnchorHistory({
+          cause: "canonical_recovery",
+          commentId: comment.id,
+          history: comment.anchor_history,
+          impactKind: latestNeedsReviewImpact?.impact_kind,
+          method: canonicalResolution.method,
+          confidence: canonicalResolution.confidence,
+          nextAnchor,
+          previousAnchor: comment.anchor,
+          reason: "anchor_recovered_after_patch",
+          sourcePatchId: latestNeedsReviewImpact?.patch_id,
+          timestamp: repairedAt
+        }),
         updated_at: repairedAt
       };
+
+  if (!anchorAlreadyCurrent && nextComment.anchor_history === comment.anchor_history) {
+    return null;
+  }
 
   if (latestNeedsReviewImpact) {
     nextComment = appendPatchImpactToComment({
@@ -10917,20 +11005,27 @@ function recoverPersistableStaleCommentAnchor({
   recovery: Extract<RecoveredAnchorResult, { status: "recovered" }>;
 }): PatchmarkComment {
   const latestPatchImpact = comment.patch_impacts?.at(-1);
+  const nextHistory = appendConciseAnchorHistory({
+    cause: "historical_convergence",
+    commentId: comment.id,
+    history: comment.anchor_history,
+    impactKind: latestPatchImpact?.impact_kind,
+    method: recovery.reason,
+    nextAnchor: recovery.newAnchor,
+    previousAnchor: comment.anchor,
+    reason: "anchor_recovered_after_patch",
+    sourcePatchId: latestPatchImpact?.patch_id,
+    timestamp: recoveredAt
+  });
+
+  if (nextHistory === comment.anchor_history) {
+    return comment;
+  }
+
   const recoveredComment: PatchmarkComment = {
     ...comment,
     anchor: recovery.newAnchor,
-    anchor_history: [
-      ...(comment.anchor_history ?? []),
-      {
-        changed_at: recoveredAt,
-        reason: "anchor_recovered_after_patch",
-        source_patch_id: latestPatchImpact?.patch_id,
-        previous_anchor: comment.anchor,
-        new_anchor: recovery.newAnchor,
-        impact_kind: latestPatchImpact?.impact_kind
-      }
-    ],
+    anchor_history: nextHistory,
     updated_at: recoveredAt
   };
 
@@ -10996,21 +11091,22 @@ function updateCommentAnchorAfterPatch({
   reason: NonNullable<PatchmarkComment["anchor_history"]>[number]["reason"];
   result: PatchmarkCommentPatchImpact["result"];
 }): { comment: PatchmarkComment; result: PatchmarkCommentPatchImpact["result"] } {
+  const nextHistory = appendConciseAnchorHistory({
+    cause: "patch_apply",
+    commentId: comment.id,
+    history: comment.anchor_history,
+    impactKind,
+    nextAnchor: newAnchor,
+    previousAnchor: comment.anchor,
+    reason,
+    sourcePatchId: patch.id,
+    timestamp: createdAt
+  });
   let nextComment = appendPatchImpactToComment({
     comment: {
       ...comment,
       anchor: newAnchor,
-      anchor_history: [
-        ...(comment.anchor_history ?? []),
-        {
-          changed_at: createdAt,
-          reason,
-          source_patch_id: patch.id,
-          previous_anchor: comment.anchor,
-          new_anchor: newAnchor,
-          impact_kind: impactKind
-        }
-      ]
+      anchor_history: nextHistory
     },
     createdAt,
     impactKind,
@@ -11053,16 +11149,17 @@ function markCommentAnchorNeedsReviewAfterPatch({
     comment: appendPatchImpactToComment({
       comment: {
         ...comment,
-        anchor_history: [
-          ...(comment.anchor_history ?? []),
-          {
-            changed_at: createdAt,
-            reason: "anchor_marked_needs_review_after_patch",
-            source_patch_id: patch.id,
-            previous_anchor: comment.anchor,
-            impact_kind: impactKind
-          }
-        ]
+        anchor_history: appendConciseAnchorHistory({
+          cause: "patch_apply",
+          commentId: comment.id,
+          history: comment.anchor_history,
+          impactKind,
+          nextState: "needs_review",
+          previousAnchor: comment.anchor,
+          reason: "anchor_marked_needs_review_after_patch",
+          sourcePatchId: patch.id,
+          timestamp: createdAt
+        })
       },
       createdAt,
       impactKind,
@@ -11096,17 +11193,30 @@ function appendPatchImpactToComment({
   patchId: string;
   result: PatchmarkCommentPatchImpact["result"];
 }): PatchmarkComment {
+  const nextImpact = {
+    patch_id: patchId,
+    impacted_at: createdAt,
+    impact_kind: impactKind,
+    result,
+    note
+  } satisfies PatchmarkCommentPatchImpact;
+  const hasEquivalentImpact = (comment.patch_impacts ?? []).some(
+    (impact) =>
+      impact.patch_id === nextImpact.patch_id &&
+      impact.impact_kind === nextImpact.impact_kind &&
+      impact.result === nextImpact.result &&
+      impact.note === nextImpact.note
+  );
+
+  if (hasEquivalentImpact) {
+    return comment;
+  }
+
   return {
     ...comment,
     patch_impacts: [
       ...(comment.patch_impacts ?? []),
-      {
-        patch_id: patchId,
-        impacted_at: createdAt,
-        impact_kind: impactKind,
-        result,
-        note
-      }
+      nextImpact
     ],
     updated_at: createdAt
   };

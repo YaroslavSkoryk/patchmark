@@ -24,6 +24,7 @@ const editorUrl = addPerformanceQuery(
 );
 const projectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
 const rapidEditCount = Number(process.env.PATCHMARK_RAPID_EDIT_COUNT ?? 75);
+const runRecoveryBrowser = process.env.PATCHMARK_RECOVERY_BROWSER === "1";
 
 if (!projectDir) {
   throw new Error(
@@ -130,9 +131,10 @@ async function run() {
       await delay(200);
       await clickExactButton(client, "Close");
     });
-    await runAuditedAction(client, noOpResults, "save_without_changes", () =>
-      clickExactButton(client, "Save Changes")
-    );
+    await runAuditedAction(client, noOpResults, "save_without_changes", async () => {
+      await clickExactButton(client, "Save Changes");
+      await waitForButtonEnabled(client, "Save Changes", 120_000);
+    });
     await runAuditedAction(client, noOpResults, "canonical_validation", async () => {
       await clickExactButton(client, "Markdown Mode");
       await clickExactButton(client, "Visual Mode");
@@ -178,12 +180,21 @@ async function run() {
 
     await clearAuditLogs(client);
     await clickExactButton(client, "Save Changes");
-    const rapidSaveQuiet = await waitForWriteQuiet(client, 500, 5_000);
+    await waitForButtonEnabled(client, "Save Changes", 120_000);
+    const rapidSaveQuiet = await waitForWriteQuiet(client, 500, 120_000);
     const rapidSave = summarizeAudit(await readAuditLogs(client));
     progress("rapid_edits_sampled");
 
     const partialSave = await runPartialDocumentSave(client);
     progress("partial_save_sampled");
+    const incompleteSaveRecovery = runRecoveryBrowser
+      ? await runIncompleteSaveRecovery(client)
+      : null;
+    if (runRecoveryBrowser) progress("incomplete_save_recovered");
+    const malformedJsonRecovery = runRecoveryBrowser
+      ? await runMalformedJsonRecovery(client)
+      : null;
+    if (runRecoveryBrowser) progress("malformed_json_recovered");
     const longTasks = await evaluate(client, {
       expression: "window.__PATCHMARK_PERSISTENCE_LONG_TASKS__ ?? []"
     });
@@ -206,6 +217,9 @@ async function run() {
             explicitSave: rapidSave
           },
           partialSave,
+          recoveryBrowserEnabled: runRecoveryBrowser,
+          incompleteSaveRecovery,
+          malformedJsonRecovery,
           longTasks: summarizeLongTasks(longTasks)
         },
         null,
@@ -288,22 +302,192 @@ async function runAuditedAction(client, results, name, action) {
 }
 
 async function runPartialDocumentSave(client) {
+  await waitForButtonEnabled(client, "Save Changes", 120_000);
   await clickExactButton(client, "Markdown Mode").catch(() => {});
   await waitForMarkdownEditor(client);
   await appendTextareaText(client, " partial-save-audit");
   await clearAuditLogs(client);
   await evaluate(client, {
     expression:
-      "window.__patchmarkFixtureWriteControls.failNextPath = '.patchmark/comments.json'; true"
+      "window.__patchmarkFixtureWriteControls.failNextPath = '.patchmark/manifest.json'; true"
   });
   await clickExactButton(client, "Save Changes");
-  const quiet = await waitForWriteQuiet(client, 500, 5_000);
+  await waitForButtonEnabled(client, "Save Changes", 120_000);
+  const quiet = await waitForWriteQuiet(client, 500, 120_000);
   const audit = await readAuditLogs(client);
   const feedback = await evaluate(client, {
     expression:
       "Array.from(document.querySelectorAll('[role=alert], .save-feedback')).map((node) => node.textContent?.trim()).filter(Boolean).at(-1) ?? null"
   });
   return { quiet: quiet.quiet, feedback, ...summarizeAudit(audit) };
+}
+
+async function runIncompleteSaveRecovery(client) {
+  progress("incomplete_recovery_reload_started");
+  await reloadAcceptingBeforeUnload(client);
+  progress("incomplete_recovery_reload_finished");
+  await waitForEditorShell(client);
+  progress("incomplete_recovery_editor_ready");
+  await clickExactButton(client, "Open Project Folder");
+  progress("incomplete_recovery_project_opened");
+  await waitForButtonEnabled(client, "Restore last complete save", 120_000);
+  progress("incomplete_recovery_restore_available");
+  const recoveryMessage = await readRecoveryMessage(client);
+  await clearAuditLogs(client);
+  await clickExactButton(client, "Restore last complete save");
+  progress("incomplete_recovery_restore_clicked");
+  await delay(500);
+  process.stderr.write(
+    `[persistence-browser-audit] incomplete_restore_ui ${JSON.stringify(
+      await readRecoveryUiState(client)
+    )}\n`
+  );
+  await waitForButtonMissing(client, "Restore last complete save", 20_000);
+  progress("incomplete_recovery_restore_finished");
+  const quiet = await waitForWriteQuiet(client, 500, 120_000);
+  const recoveryStillVisible = await hasButton(client, "Restore last complete save");
+  return {
+    recoveryMessage,
+    recoveryStillVisible,
+    quiet: quiet.quiet,
+    ...summarizeAudit(await readAuditLogs(client))
+  };
+}
+
+async function runMalformedJsonRecovery(client) {
+  const malformedSource = '{"truncated":';
+  await evaluate(client, {
+    expression: `window.__patchmarkFixtureSetFile('.patchmark/comments.json', ${JSON.stringify(
+      malformedSource
+    )})`
+  });
+  progress("malformed_recovery_reload_started");
+  await reloadAcceptingBeforeUnload(client);
+  progress("malformed_recovery_reload_finished");
+  await waitForEditorShell(client);
+  progress("malformed_recovery_editor_ready");
+  await clickExactButton(client, "Open Project Folder");
+  progress("malformed_recovery_project_opened");
+  await waitForButtonEnabled(client, "Restore last complete save", 120_000);
+  progress("malformed_recovery_restore_available");
+  const preservedBeforeRestore = await evaluate(client, {
+    expression:
+      "window.__patchmarkFixtureReadFile('.patchmark/comments.json')"
+  });
+  const recoveryMessage = await readRecoveryMessage(client);
+  await clearAuditLogs(client);
+  await clickExactButton(client, "Restore last complete save");
+  progress("malformed_recovery_restore_clicked");
+  await delay(500);
+  process.stderr.write(
+    `[persistence-browser-audit] malformed_restore_ui ${JSON.stringify(
+      await readRecoveryUiState(client)
+    )}\n`
+  );
+  await waitForButtonMissing(client, "Restore last complete save", 20_000);
+  progress("malformed_recovery_restore_finished");
+  const restoredComments = await evaluate(client, {
+    expression:
+      "window.__patchmarkFixtureReadFile('.patchmark/comments.json')"
+  });
+  return {
+    malformedSourcePreserved: preservedBeforeRestore === malformedSource,
+    restoredJsonValid: isJsonArray(restoredComments),
+    recoveryMessage,
+    ...summarizeAudit(await readAuditLogs(client))
+  };
+}
+
+async function reloadAcceptingBeforeUnload(client) {
+  let loadTimeout;
+  const loaded = new Promise((resolve, reject) => {
+    const removeLoadListener = client.on("Page.loadEventFired", () => {
+      clearTimeout(loadTimeout);
+      removeLoadListener();
+      resolve();
+    });
+    loadTimeout = setTimeout(() => {
+      removeLoadListener();
+      reject(new Error("Timed out waiting for the recovery reload to finish."));
+    }, 30_000);
+  });
+  const removeDialogListener = client.on(
+    "Page.javascriptDialogOpening",
+    () => {
+      progress("beforeunload_dialog_accepted");
+      void client
+        .call("Page.handleJavaScriptDialog", { accept: true })
+        .catch(() => {});
+    }
+  );
+
+  try {
+    await client.call("Page.reload", { ignoreCache: true });
+    await loaded;
+  } finally {
+    clearTimeout(loadTimeout);
+    removeDialogListener();
+  }
+}
+
+async function readRecoveryMessage(client) {
+  return evaluate(client, {
+    expression:
+      "document.querySelector('.project-recovery-banner strong')?.textContent?.trim() ?? null"
+  });
+}
+
+async function readRecoveryUiState(client) {
+  return evaluate(client, {
+    expression: `({
+      feedback: Array.from(document.querySelectorAll("[role='alert'], [role='status']"))
+        .map((node) => node.textContent?.trim())
+        .filter(Boolean),
+      restoreDisabled: Array.from(document.querySelectorAll("button"))
+        .find((node) => node.textContent?.trim() === "Restore last complete save")?.disabled ?? null
+    })`
+  });
+}
+
+async function hasButton(client, text) {
+  return evaluate(client, {
+    expression: `Array.from(document.querySelectorAll("button")).some((node) => node.textContent?.trim() === ${JSON.stringify(
+      text
+    )})`
+  });
+}
+
+function isJsonArray(value) {
+  try {
+    return Array.isArray(JSON.parse(value));
+  } catch {
+    return false;
+  }
+}
+
+async function waitForButtonEnabled(client, text, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const state = await evaluate(client, {
+      expression: `(() => {
+        const button = Array.from(document.querySelectorAll("button"))
+          .find((node) => node.textContent?.trim() === ${JSON.stringify(text)});
+        return button ? { exists: true, enabled: !button.disabled } : { exists: false, enabled: false };
+      })()`
+    });
+    if (state.exists && state.enabled) return;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for enabled button: ${text}`);
+}
+
+async function waitForButtonMissing(client, text, timeoutMs) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (!(await hasButton(client, text))) return;
+    await delay(100);
+  }
+  throw new Error(`Timed out waiting for button to disappear: ${text}`);
 }
 
 async function clearAuditLogs(client) {

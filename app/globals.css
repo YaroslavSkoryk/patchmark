@@ -268,6 +268,22 @@ button {
   color: #2f4b73;
 }
 
+.project-recovery-banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 16px;
+}
+
+.project-recovery-banner details {
+  flex-basis: 100%;
+  font-weight: 500;
+}
+
+.project-recovery-banner ul {
+  margin: 8px 0 0;
+}
+
 .document-actions {
   display: flex;
   flex-wrap: wrap;

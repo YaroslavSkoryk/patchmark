@@ -111,7 +111,11 @@ try {
   );
   assert.equal(appliedState.patchStatus, "accepted");
   assert.equal(appliedState.commentStatus, "open");
-  assert.equal(appliedState.selectedText, fixture.linkedPatch.suggested_text);
+  assert.equal(
+    fixture.linkedPatch.suggested_text.includes(appliedState.selectedText),
+    true,
+    "The linked comment should remain anchored to text retained within the applied replacement."
+  );
   assert.equal(appliedState.documentIncludesSuggestedText, true);
 
   await clickVisibleButtonNonBlocking(client, "Continue discussion");
@@ -136,8 +140,10 @@ try {
     true
   );
   assert.equal(
-    exportedComment.anchor.selected_text,
-    fixture.linkedPatch.suggested_text
+    fixture.linkedPatch.suggested_text.includes(
+      exportedComment.anchor.selected_text
+    ),
+    true
   );
   assert.equal(
     typeof exportedComment.context.containing_section_markdown,

@@ -26,6 +26,7 @@ type MarkdownSourceEditorProps = {
   markdown: string;
   onMarkdownChange: (markdown: string, hint?: MarkdownMutationHint) => void;
   onSelectionChange?: (selection: MarkdownSelection) => void;
+  readOnly?: boolean;
   selectionRequest?: (MarkdownSelection & { nonce: number }) | null;
 };
 
@@ -33,6 +34,7 @@ export function MarkdownSourceEditor({
   markdown,
   onMarkdownChange,
   onSelectionChange,
+  readOnly = false,
   selectionRequest
 }: MarkdownSourceEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -80,6 +82,7 @@ export function MarkdownSourceEditor({
       className="markdown-source-editor"
       aria-label="Markdown Mode"
       spellCheck={false}
+      readOnly={readOnly}
       value={markdown}
       onBeforeInput={(event) => {
         const nativeEvent = event.nativeEvent as InputEvent;

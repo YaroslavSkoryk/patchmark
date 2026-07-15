@@ -2,6 +2,11 @@ import type {
   PatchmarkComment,
   PatchmarkCommentAnchor
 } from "../project/project-types.ts";
+import {
+  getHistoryAnchorState,
+  getHistoryNextAnchor,
+  getHistoryPreviousAnchor
+} from "./comment-anchor-history.ts";
 
 export type CommentAnchorPositionRange = {
   end: number;
@@ -42,17 +47,19 @@ function getLastKnownAnchorHistoryPositionRange(
   anchorHistory: NonNullable<PatchmarkComment["anchor_history"]>
 ): CommentAnchorPositionRange | null {
   for (const entry of [...anchorHistory].reverse()) {
-    const newAnchorRange = entry.new_anchor
-      ? getStoredAnchorPositionRange(entry.new_anchor)
-      : null;
+    const newAnchor = getHistoryNextAnchor(entry);
+    const newAnchorRange = newAnchor
+      ? getStoredAnchorPositionRange(newAnchor)
+      : getConciseHistoryPositionRange(entry, "next");
 
     if (newAnchorRange) {
       return newAnchorRange;
     }
 
-    const previousAnchorRange = getStoredAnchorPositionRange(
-      entry.previous_anchor
-    );
+    const previousAnchor = getHistoryPreviousAnchor(entry);
+    const previousAnchorRange = previousAnchor
+      ? getStoredAnchorPositionRange(previousAnchor)
+      : getConciseHistoryPositionRange(entry, "previous");
 
     if (previousAnchorRange) {
       return previousAnchorRange;
@@ -60,6 +67,16 @@ function getLastKnownAnchorHistoryPositionRange(
   }
 
   return null;
+}
+
+function getConciseHistoryPositionRange(
+  entry: NonNullable<PatchmarkComment["anchor_history"]>[number],
+  side: "previous" | "next"
+): CommentAnchorPositionRange | null {
+  const state = getHistoryAnchorState(entry, side);
+  return state
+    ? getValidOffsetRange({ end: state.end, start: state.start })
+    : null;
 }
 
 function getStoredAnchorPositionRange(

@@ -9,6 +9,7 @@ import {
   readdirSync,
   rmSync,
   statSync,
+  unlinkSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -269,9 +270,21 @@ async function startFixtureFileServer(
   { persistWrites = true } = {}
 ) {
   const fileSet = new Set(inventory.files);
+  const directorySet = new Set(inventory.directories);
   const memoryFiles = new Map();
   const server = createServer((request, response) => {
     response.setHeader("Access-Control-Allow-Origin", "*");
+    response.setHeader(
+      "Access-Control-Allow-Methods",
+      "DELETE, GET, OPTIONS, POST"
+    );
+    response.setHeader("Access-Control-Allow-Headers", "Content-Type");
+
+    if (request.method === "OPTIONS") {
+      response.writeHead(204);
+      response.end();
+      return;
+    }
 
     const requestUrl = new URL(request.url ?? "/", "http://127.0.0.1");
 
@@ -300,9 +313,54 @@ async function startFixtureFileServer(
         }
 
         fileSet.add(relativePath);
+        const pathParts = relativePath.split("/");
+        pathParts.pop();
+        while (pathParts.length > 0) {
+          directorySet.add(pathParts.join("/"));
+          pathParts.pop();
+        }
         response.writeHead(204);
         response.end();
       });
+      return;
+    }
+
+    if (requestUrl.pathname === "/exists" && request.method === "GET") {
+      const relativePath = normalizeFixturePath(
+        requestUrl.searchParams.get("path") ?? ""
+      );
+      const kind = requestUrl.searchParams.get("kind");
+      const exists =
+        kind === "directory"
+          ? directorySet.has(relativePath)
+          : fileSet.has(relativePath);
+      response.writeHead(exists ? 204 : 404);
+      response.end();
+      return;
+    }
+
+    if (requestUrl.pathname === "/file" && request.method === "DELETE") {
+      const relativePath = normalizeFixturePath(
+        requestUrl.searchParams.get("path") ?? ""
+      );
+
+      if (!relativePath || relativePath.split("/").includes("..")) {
+        response.writeHead(400);
+        response.end("invalid path");
+        return;
+      }
+
+      if (persistWrites) {
+        const fullPath = join(rootDir, relativePath);
+        if (existsSync(fullPath)) {
+          unlinkSync(fullPath);
+        }
+      } else {
+        memoryFiles.delete(relativePath);
+      }
+      fileSet.delete(relativePath);
+      response.writeHead(204);
+      response.end();
       return;
     }
 
@@ -525,11 +583,17 @@ function createProjectPickerShim({
 
         if (!filePaths.has(path)) {
           if (!options.create) {
-            throw notFound("Missing fixture file: " + path);
+            const exists = await fetch(
+              ${JSON.stringify(baseUrl)} + "/exists?kind=file&path=" + encodeURIComponent(path)
+            ).then((response) => response.ok);
+            if (!exists) {
+              throw notFound("Missing fixture file: " + path);
+            }
+          } else {
+            overrides.set(path, "");
           }
 
           filePaths.add(path);
-          overrides.set(path, "");
         }
 
         return new PatchmarkFixtureFileHandle(path);
@@ -540,13 +604,72 @@ function createProjectPickerShim({
 
         if (!directoryPaths.has(path)) {
           if (!options.create) {
-            throw notFound("Missing fixture directory: " + path);
+            const exists = await fetch(
+              ${JSON.stringify(baseUrl)} + "/exists?kind=directory&path=" + encodeURIComponent(path)
+            ).then((response) => response.ok);
+            if (!exists) {
+              throw notFound("Missing fixture directory: " + path);
+            }
           }
 
           directoryPaths.add(path);
         }
 
         return new PatchmarkFixtureDirectoryHandle(path, name);
+      }
+
+      async removeEntry(name, options = {}) {
+        const path = joinPath(this.path, name);
+
+        if (filePaths.has(path)) {
+          await fetch(
+            ${JSON.stringify(baseUrl)} + "/file?path=" + encodeURIComponent(path),
+            { method: "DELETE" }
+          ).then((response) => {
+            if (!response.ok) {
+              throw new Error("Could not remove fixture file: " + path);
+            }
+          });
+          filePaths.delete(path);
+          overrides.delete(path);
+          return;
+        }
+
+        if (directoryPaths.has(path) && options.recursive) {
+          for (const filePath of [...filePaths]) {
+            if (filePath.startsWith(path + "/")) {
+              filePaths.delete(filePath);
+              overrides.delete(filePath);
+            }
+          }
+          for (const directoryPath of [...directoryPaths]) {
+            if (directoryPath === path || directoryPath.startsWith(path + "/")) {
+              directoryPaths.delete(directoryPath);
+            }
+          }
+          return;
+        }
+
+        throw notFound("Missing fixture entry: " + path);
+      }
+
+      async *entries() {
+        const prefix = this.path ? this.path + "/" : "";
+        for (const filePath of filePaths) {
+          if (!filePath.startsWith(prefix)) continue;
+          const relativePath = filePath.slice(prefix.length);
+          if (!relativePath || relativePath.includes("/")) continue;
+          yield [relativePath, new PatchmarkFixtureFileHandle(filePath)];
+        }
+        for (const directoryPath of directoryPaths) {
+          if (!directoryPath.startsWith(prefix)) continue;
+          const relativePath = directoryPath.slice(prefix.length);
+          if (!relativePath || relativePath.includes("/")) continue;
+          yield [
+            relativePath,
+            new PatchmarkFixtureDirectoryHandle(directoryPath, relativePath)
+          ];
+        }
       }
     }
 
@@ -558,6 +681,27 @@ function createProjectPickerShim({
     window.__patchmarkFixtureWriteLog = writeLog;
     window.__patchmarkFixtureWriteControls = writeControls;
     window.__patchmarkFixtureWriteStats = writeStats;
+    window.__patchmarkFixtureSetFile = async (path, content) => {
+      const normalizedPath = normalizePath(path);
+      await fetch(
+        ${JSON.stringify(baseUrl)} + "/write?path=" + encodeURIComponent(normalizedPath),
+        { method: "POST", body: String(content) }
+      ).then((response) => {
+        if (!response.ok) throw new Error("Could not set fixture file: " + normalizedPath);
+      });
+      overrides.set(normalizedPath, String(content));
+      filePaths.add(normalizedPath);
+      return true;
+    };
+    window.__patchmarkFixtureReadFile = async (path) => {
+      const normalizedPath = normalizePath(path);
+      return fetch(
+        ${JSON.stringify(baseUrl)} + "/file?path=" + encodeURIComponent(normalizedPath)
+      ).then((response) => {
+        if (!response.ok) throw notFound("Missing fixture file: " + normalizedPath);
+        return response.text();
+      });
+    };
     window.showDirectoryPicker = async () =>
       new PatchmarkFixtureDirectoryHandle("", ${JSON.stringify(projectName)});
   })();`;
@@ -1268,6 +1412,27 @@ function getHistoricalSelectedAnchorsForAudit(comment) {
   }
 
   for (const historyEntry of [...(comment.anchor_history ?? [])].reverse()) {
+    if (historyEntry.format_version === 2) {
+      for (const state of [historyEntry.next, historyEntry.previous]) {
+        if (
+          state?.kind === "selected_text" &&
+          typeof state.selected_text_excerpt === "string" &&
+          state.selected_text_excerpt.length === state.selected_text_length
+        ) {
+          anchors.push({
+            kind: "selected_text",
+            selected_text: state.selected_text_excerpt,
+            selected_text_hash: state.selected_text_hash,
+            markdown_start_offset: state.start,
+            markdown_end_offset: state.end,
+            containing_heading: state.containing_heading,
+            containing_heading_path: state.containing_heading_path
+          });
+        }
+      }
+      continue;
+    }
+
     if (historyEntry.new_anchor?.kind === "selected_text") {
       anchors.push(historyEntry.new_anchor);
     }

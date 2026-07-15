@@ -40,11 +40,13 @@ import {
 type MdxEditorClientProps = {
   markdown: string;
   onMarkdownChange: (markdown: string) => void;
+  readOnly?: boolean;
 };
 
 export function MdxEditorClient({
   markdown,
-  onMarkdownChange
+  onMarkdownChange,
+  readOnly = false
 }: MdxEditorClientProps) {
   const visualMarkdown = useMemo(
     () => normalizeMarkdownForVisualEditor(markdown),
@@ -180,6 +182,7 @@ export function MdxEditorClient({
           </div>
           <textarea
             aria-label="Visual Mode fallback Markdown editor"
+            readOnly={readOnly}
             spellCheck={false}
             value={markdown}
             onChange={(event) => handleFallbackMarkdownChange(event.target.value)}
@@ -192,6 +195,7 @@ export function MdxEditorClient({
           className="patchmark-mdx-editor"
           contentEditableClassName="patchmark-prose"
           markdown={visualMarkdown}
+          readOnly={readOnly}
           onChange={handleMarkdownChange}
           onError={queueRenderError}
           plugins={[

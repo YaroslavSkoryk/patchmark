@@ -1,4 +1,4 @@
-import { createMarkdownDownloadName } from "@/lib/files/download-markdown";
+import { createMarkdownDownloadName } from "./download-markdown.ts";
 
 type FilePickerAcceptType = {
   description?: string;

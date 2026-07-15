@@ -1,4 +1,4 @@
-import { type MarkdownFileHandle } from "@/lib/files/file-system-access";
+import { type MarkdownFileHandle } from "../files/file-system-access.ts";
 import {
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
@@ -6,6 +6,8 @@ import {
   type PatchmarkCommentAnchor,
   type PatchmarkComment,
   type PatchmarkCommentAnchorHistoryEntry,
+  type PatchmarkConciseAnchorHistoryState,
+  type PatchmarkConciseCommentAnchorHistoryEntry,
   type PatchmarkCommentExportState,
   type PatchmarkCommentFocusState,
   type PatchmarkCommentPatchImpact,
@@ -17,14 +19,21 @@ import {
   type PatchmarkPatchAnchorRecoveryEntry,
   type PatchmarkPatchAnchorRecoveryMethod,
   type PatchmarkPatchStatus,
+  type PatchmarkPersistedFileCommit,
+  type PatchmarkSaveCommit,
   type PatchmarkSuggestedUserAction,
   type PatchmarkSourceReference,
   type PatchmarkVersionEntry
-} from "@/lib/project/project-types";
+} from "./project-types.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
 const manifestFileName = "manifest.json";
+const commentsFileName = "comments.json";
+const patchesFileName = "patches.json";
+const saveCommitFileName = "save-commit.json";
+const recoveryDirectoryName = "recovery";
+const saveCommitFormatVersion = 1;
 
 type DirectoryPickerOptions = {
   mode?: "read" | "readwrite";
@@ -50,17 +59,102 @@ export type PatchmarkDirectoryHandle = {
     name: string,
     options?: DirectoryHandleOptions
   ) => Promise<PatchmarkDirectoryHandle>;
+  removeEntry?: (name: string, options?: { recursive?: boolean }) => Promise<void>;
+  entries?: () => AsyncIterableIterator<[string, { kind?: "file" | "directory" }]>;
+};
+
+export type PatchmarkProjectRecoveryState = {
+  kind: "incomplete_save" | "invalid_current_state";
+  canRestore: boolean;
+  message: string;
+  technicalDetails: string[];
+  temporaryFiles: string[];
+};
+
+type PatchmarkProjectPersistenceState = {
+  generation: number;
+  commit: PatchmarkSaveCommit | null;
+  files: Partial<Record<ProjectCommitFileKey, PatchmarkPersistedFileCommit>>;
+  documentText: string;
+  manifestText: string;
+  commentsReference?: PatchmarkComment[];
+  patchesReference?: PatchmarkPatch[];
+  commentsRaw?: string;
+  patchesRaw?: string;
+  readSource: "current" | "current_readonly" | "lkg";
+  recovery?: PatchmarkProjectRecoveryState;
+  debug: PatchmarkPersistenceDebugState;
 };
 
 export type PatchmarkProjectHandle = {
   directoryHandle: PatchmarkDirectoryHandle;
   manifest: PatchmarkManifest;
+  persistence: PatchmarkProjectPersistenceState;
 };
 
 export type LoadedPatchmarkProject = {
   project: PatchmarkProjectHandle;
   markdown: string;
+  recovery?: PatchmarkProjectRecoveryState;
 };
+
+export type PatchmarkProjectCommitResult = {
+  status: "committed" | "unchanged" | "superseded";
+  generation: number;
+  commitId?: string;
+  changedFiles: ProjectCommitFileKey[];
+  serializedFiles: ProjectCommitFileKey[];
+  bytesWritten: number;
+};
+
+export type PatchmarkPersistenceDebugState = {
+  requestedCommits: number;
+  committedGenerations: number;
+  unchangedCommits: number;
+  supersededCommits: number;
+  serializationCount: number;
+  writeCount: number;
+  bytesWritten: number;
+  staleRequestsSkipped: number;
+  lastResult?: PatchmarkProjectCommitResult;
+  lastFileResults: Partial<
+    Record<ProjectCommitFileKey, "changed" | "unchanged" | "skipped">
+  >;
+};
+
+export type ProjectCommitFileKey =
+  | "document"
+  | "comments"
+  | "patches"
+  | "manifest";
+
+type PreparedProjectFile = {
+  key: ProjectCommitFileKey | "commit";
+  directoryHandle: PatchmarkDirectoryHandle;
+  temporaryFileName: string;
+  targetFileName: string;
+  text: string;
+  descriptor: PatchmarkPersistedFileCommit;
+};
+
+type ProjectCommitRequest = {
+  markdown?: string;
+  comments?: PatchmarkComment[];
+  patches?: PatchmarkPatch[];
+  manifest?: PatchmarkManifest;
+  reason: string;
+  allowSupersede?: boolean;
+};
+
+type ProjectWriteQueueState = {
+  tail: Promise<void>;
+  latestRequestId: number;
+};
+
+const projectWriteQueues = new WeakMap<
+  PatchmarkDirectoryHandle,
+  ProjectWriteQueueState
+>();
 
 export type CreateProjectSnapshotResult =
   | {
@@ -95,6 +189,14 @@ const commentAnchorHistoryReasons: PatchmarkCommentAnchorHistoryEntry["reason"][
   "anchor_recovered_after_patch",
   "anchor_reanchored_after_patch",
   "anchor_marked_needs_review_after_patch"
+];
+const commentAnchorHistoryCauses: PatchmarkConciseCommentAnchorHistoryEntry["cause"][] = [
+  "manual_edit",
+  "patch_apply",
+  "canonical_recovery",
+  "historical_convergence",
+  "human_reanchor",
+  "document_restore"
 ];
 const patchCommentImpactKinds: PatchmarkCommentPatchImpact["impact_kind"][] = [
   "linked_comment",
@@ -151,19 +253,18 @@ export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null
     "This folder is missing .patchmark/manifest.json."
   );
 
-  const manifest = normalizeManifest(
-    JSON.parse(await readTextFile(manifestFileHandle)),
-    directoryHandle.name
-  );
-
-  await ensureProjectMetadata(directoryHandle, manifest);
+  const manifestText = await readTextFile(manifestFileHandle);
+  const markdown = await readTextFile(documentFileHandle);
+  const openedProject = await createOpenedProjectHandle({
+    directoryHandle,
+    manifestText,
+    markdown
+  });
 
   return {
-    markdown: await readTextFile(documentFileHandle),
-    project: {
-      directoryHandle,
-      manifest
-    }
+    markdown: openedProject.markdown,
+    project: openedProject.project,
+    recovery: openedProject.project.persistence.recovery
   };
 }
 
@@ -202,14 +303,22 @@ export async function createProjectFromMarkdown({
   };
 
   await writeProjectDocument(directoryHandle, markdown);
-  await ensureProjectMetadata(directoryHandle, manifest);
+  await ensureProjectMetadata(directoryHandle, manifest, true);
+
+  const manifestText = serializeManifest(manifest);
+  const project: PatchmarkProjectHandle = {
+    directoryHandle,
+    manifest,
+    persistence: await createLegacyPersistenceState({
+      directoryHandle,
+      documentText: markdown,
+      manifestText
+    })
+  };
 
   return {
     markdown,
-    project: {
-      directoryHandle,
-      manifest
-    }
+    project
   };
 }
 
@@ -217,18 +326,38 @@ export async function saveProjectDocument(
   project: PatchmarkProjectHandle,
   markdown: string
 ): Promise<PatchmarkProjectHandle> {
-  const manifest = {
-    ...project.manifest,
-    updated_at: new Date().toISOString()
-  };
+  await commitProjectState({
+    project,
+    markdown,
+    reason: "save_document"
+  });
 
-  await writeProjectDocument(project.directoryHandle, markdown);
-  await writeManifest(project.directoryHandle, manifest);
+  return project;
+}
 
-  return {
-    ...project,
-    manifest
-  };
+export async function saveProjectState({
+  comments,
+  markdown,
+  patches,
+  project,
+  reason,
+  allowSupersede = false
+}: {
+  comments?: PatchmarkComment[];
+  markdown?: string;
+  patches?: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+  reason: string;
+  allowSupersede?: boolean;
+}): Promise<PatchmarkProjectCommitResult> {
+  return commitProjectState({
+    allowSupersede,
+    comments,
+    markdown,
+    patches,
+    project,
+    reason
+  });
 }
 
 export async function createProjectSnapshot({
@@ -293,15 +422,16 @@ export async function createProjectSnapshot({
   };
 
   await writeTextFile(snapshotFileHandle, markdown);
-  await writeManifest(project.directoryHandle, manifest);
+  await commitProjectState({
+    manifest,
+    project,
+    reason: "create_snapshot"
+  });
 
   return {
     created: true,
     version: versionEntry,
-    project: {
-      ...project,
-      manifest
-    }
+      project
   };
 }
 
@@ -402,23 +532,28 @@ export async function readProjectVersionMarkdown(
 export async function readProjectComments(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkComment[]> {
-  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
-    metadataDirectoryName,
-    { create: true }
-  );
+  const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
 
   let commentsFileHandle: MarkdownFileHandle;
 
   try {
     commentsFileHandle =
-      await metadataDirectoryHandle.getFileHandle("comments.json");
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? "comments.json.lkg"
+          : commentsFileName
+      );
   } catch (error) {
     if (!isNotFoundError(error)) {
       throw error;
     }
 
+    if (project.persistence.readSource === "lkg") {
+      throw new Error("The last complete comments recovery file is missing.");
+    }
+
     commentsFileHandle = await metadataDirectoryHandle.getFileHandle(
-      "comments.json",
+      commentsFileName,
       { create: true }
     );
     await writeTextFile(commentsFileHandle, "[]\n");
@@ -426,9 +561,11 @@ export async function readProjectComments(
   }
 
   let parsedComments: unknown;
+  const rawComments =
+    project.persistence.commentsRaw ?? (await readTextFile(commentsFileHandle));
 
   try {
-    parsedComments = JSON.parse(await readTextFile(commentsFileHandle));
+    parsedComments = JSON.parse(rawComments);
   } catch {
     throw new Error(
       ".patchmark/comments.json is invalid JSON. Fix the file before editing comments."
@@ -441,26 +578,27 @@ export async function readProjectComments(
     );
   }
 
-  return parsedComments.map(normalizeComment);
+  const comments = parsedComments.map(normalizeComment);
+  project.persistence.commentsReference = comments;
+  project.persistence.commentsRaw = undefined;
+  project.persistence.files.comments = await createPersistedFileCommit(
+    ".patchmark/comments.json",
+    rawComments
+  );
+  return comments;
 }
 
 export async function writeProjectComments(
   project: PatchmarkProjectHandle,
-  comments: PatchmarkComment[]
-): Promise<void> {
-  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
-    metadataDirectoryName,
-    { create: true }
-  );
-  const commentsFileHandle = await metadataDirectoryHandle.getFileHandle(
-    "comments.json",
-    { create: true }
-  );
-
-  await writeTextFile(
-    commentsFileHandle,
-    `${JSON.stringify(comments.map(normalizeComment), null, 2)}\n`
-  );
+  comments: PatchmarkComment[],
+  options: { allowSupersede?: boolean; reason?: string } = {}
+): Promise<PatchmarkProjectCommitResult> {
+  return commitProjectState({
+    allowSupersede: options.allowSupersede,
+    comments,
+    project,
+    reason: options.reason ?? "update_comments"
+  });
 }
 
 export async function writeProjectContextPack({
@@ -493,23 +631,28 @@ export async function writeProjectContextPack({
 export async function readProjectPatches(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkPatch[]> {
-  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
-    metadataDirectoryName,
-    { create: true }
-  );
+  const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
 
   let patchesFileHandle: MarkdownFileHandle;
 
   try {
     patchesFileHandle =
-      await metadataDirectoryHandle.getFileHandle("patches.json");
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? "patches.json.lkg"
+          : patchesFileName
+      );
   } catch (error) {
     if (!isNotFoundError(error)) {
       throw error;
     }
 
+    if (project.persistence.readSource === "lkg") {
+      throw new Error("The last complete patches recovery file is missing.");
+    }
+
     patchesFileHandle = await metadataDirectoryHandle.getFileHandle(
-      "patches.json",
+      patchesFileName,
       { create: true }
     );
     await writeTextFile(patchesFileHandle, "[]\n");
@@ -517,9 +660,11 @@ export async function readProjectPatches(
   }
 
   let parsedPatches: unknown;
+  const rawPatches =
+    project.persistence.patchesRaw ?? (await readTextFile(patchesFileHandle));
 
   try {
-    parsedPatches = JSON.parse(await readTextFile(patchesFileHandle));
+    parsedPatches = JSON.parse(rawPatches);
   } catch {
     throw new Error(
       ".patchmark/patches.json is invalid JSON. Fix the file before importing ChatGPT responses."
@@ -530,26 +675,27 @@ export async function readProjectPatches(
     throw new Error(".patchmark/patches.json must contain an array of patches.");
   }
 
-  return parsedPatches.map(normalizePatch);
+  const patches = parsedPatches.map(normalizePatch);
+  project.persistence.patchesReference = patches;
+  project.persistence.patchesRaw = undefined;
+  project.persistence.files.patches = await createPersistedFileCommit(
+    ".patchmark/patches.json",
+    rawPatches
+  );
+  return patches;
 }
 
 export async function writeProjectPatches(
   project: PatchmarkProjectHandle,
-  patches: PatchmarkPatch[]
-): Promise<void> {
-  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
-    metadataDirectoryName,
-    { create: true }
-  );
-  const patchesFileHandle = await metadataDirectoryHandle.getFileHandle(
-    "patches.json",
-    { create: true }
-  );
-
-  await writeTextFile(
-    patchesFileHandle,
-    `${JSON.stringify(patches.map(normalizePatch), null, 2)}\n`
-  );
+  patches: PatchmarkPatch[],
+  options: { allowSupersede?: boolean; reason?: string } = {}
+): Promise<PatchmarkProjectCommitResult> {
+  return commitProjectState({
+    allowSupersede: options.allowSupersede,
+    patches,
+    project,
+    reason: options.reason ?? "update_patches"
+  });
 }
 
 export async function writeProjectImport({
@@ -578,6 +724,1405 @@ export async function writeProjectImport({
   return `${metadataDirectoryName}/imports/${fileName}`;
 }
 
+export function getProjectPersistenceDebugState(
+  project: PatchmarkProjectHandle
+): PatchmarkPersistenceDebugState {
+  return {
+    ...project.persistence.debug,
+    lastFileResults: { ...project.persistence.debug.lastFileResults },
+    lastResult: project.persistence.debug.lastResult
+      ? { ...project.persistence.debug.lastResult }
+      : undefined
+  };
+}
+
+export function resetProjectPersistenceDebugState(
+  project: PatchmarkProjectHandle
+): void {
+  project.persistence.debug = createEmptyPersistenceDebugState();
+}
+
+export async function restoreProjectLastKnownGood(
+  project: PatchmarkProjectHandle
+): Promise<LoadedPatchmarkProject> {
+  const lkg = await readValidLastKnownGoodGeneration(project.directoryHandle);
+
+  if (!lkg) {
+    throw new Error("The last complete project save is no longer available.");
+  }
+
+  await preserveQuestionableCurrentProjectFiles(project.directoryHandle);
+  const restoreId = `restore-${Date.now().toString(36)}`;
+  const preparedFiles: PreparedProjectFile[] = [];
+
+  try {
+    for (const key of ["document", "comments", "patches", "manifest"] as const) {
+      preparedFiles.push(
+        await prepareProjectTemporaryFile({
+          commitId: restoreId,
+          directoryHandle: project.directoryHandle,
+          key,
+          text: lkg.texts[key],
+          onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+        })
+      );
+    }
+    preparedFiles.push(
+      await prepareSaveCommitTemporaryFile({
+        commitId: restoreId,
+        directoryHandle: project.directoryHandle,
+        text: serializeSaveCommit(lkg.commit),
+        onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+      })
+    );
+
+    for (const prepared of preparedFiles.filter(
+      (file) => file.key !== "manifest" && file.key !== "commit"
+    )) {
+      await installPreparedProjectFile(prepared, (bytes) =>
+        recordPersistenceWrite(project, bytes)
+      );
+    }
+
+    const manifestPrepared = preparedFiles.find(
+      (file) => file.key === "manifest"
+    );
+    const commitPrepared = preparedFiles.find((file) => file.key === "commit");
+
+    if (!manifestPrepared || !commitPrepared) {
+      throw new Error("Could not prepare the last complete project save.");
+    }
+
+    await installPreparedProjectFile(manifestPrepared, (bytes) =>
+      recordPersistenceWrite(project, bytes)
+    );
+    await installPreparedProjectFile(commitPrepared, (bytes) =>
+      recordPersistenceWrite(project, bytes)
+    );
+  } finally {
+    await cleanupPreparedFiles(preparedFiles);
+  }
+
+  const restoredProject: PatchmarkProjectHandle = {
+    directoryHandle: project.directoryHandle,
+    manifest: lkg.manifest,
+    persistence: {
+      generation: lkg.commit.generation,
+      commit: lkg.commit,
+      files: lkg.commit.files,
+      documentText: lkg.texts.document,
+      manifestText: lkg.texts.manifest,
+      commentsRaw: lkg.texts.comments,
+      patchesRaw: lkg.texts.patches,
+      readSource: "current",
+      debug: createEmptyPersistenceDebugState()
+    }
+  };
+  await cleanupStaleProjectTemporaryFiles(project.directoryHandle);
+  return {
+    markdown: lkg.texts.document,
+    project: restoredProject
+  };
+}
+
+export async function cleanupStaleProjectTemporaryFiles(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<number> {
+  let removed = 0;
+  removed += await cleanupTemporaryFilesInDirectory(directoryHandle);
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    removed += await cleanupTemporaryFilesInDirectory(metadataDirectoryHandle);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
+  return removed;
+}
+
+async function commitProjectState({
+  allowSupersede = false,
+  comments,
+  manifest,
+  markdown,
+  patches,
+  project,
+  reason
+}: ProjectCommitRequest & {
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectCommitResult> {
+  if (project.persistence.readSource !== "current") {
+    throw new Error(
+      "Restore the last complete project save before making persistent changes."
+    );
+  }
+
+  const queue = getProjectWriteQueue(project.directoryHandle);
+  const requestId = queue.latestRequestId + 1;
+  queue.latestRequestId = requestId;
+  project.persistence.debug.requestedCommits += 1;
+
+  let resolveResult!: (result: PatchmarkProjectCommitResult) => void;
+  let rejectResult!: (error: unknown) => void;
+  const resultPromise = new Promise<PatchmarkProjectCommitResult>(
+    (resolve, reject) => {
+      resolveResult = resolve;
+      rejectResult = reject;
+    }
+  );
+
+  const run = async () => {
+    try {
+      if (allowSupersede && requestId < queue.latestRequestId) {
+        resolveResult(recordSupersededCommit(project));
+        return;
+      }
+
+      const result = await executeProjectCommit({
+        allowSupersede,
+        comments,
+        manifest,
+        markdown,
+        patches,
+        project,
+        queue,
+        reason,
+        requestId
+      });
+      resolveResult(result);
+    } catch (error) {
+      rejectResult(error);
+    }
+  };
+
+  queue.tail = queue.tail.then(run, run);
+  queue.tail = queue.tail.catch(() => undefined);
+  return resultPromise;
+}
+
+async function executeProjectCommit({
+  allowSupersede,
+  comments,
+  manifest,
+  markdown,
+  patches,
+  project,
+  queue,
+  reason,
+  requestId
+}: ProjectCommitRequest & {
+  project: PatchmarkProjectHandle;
+  queue: ProjectWriteQueueState;
+  requestId: number;
+}): Promise<PatchmarkProjectCommitResult> {
+  const persistence = project.persistence;
+  const debug = persistence.debug;
+  const bytesWrittenBeforeCommit = debug.bytesWritten;
+  const changedFiles: ProjectCommitFileKey[] = [];
+  const serializedFiles: ProjectCommitFileKey[] = [];
+  const desiredTexts: Partial<Record<ProjectCommitFileKey, string>> = {};
+
+  debug.lastFileResults = {
+    document: "skipped",
+    comments: "skipped",
+    patches: "skipped",
+    manifest: "skipped"
+  };
+
+  if (markdown !== undefined) {
+    if (markdown === persistence.documentText) {
+      debug.lastFileResults.document = "unchanged";
+    } else {
+      changedFiles.push("document");
+      desiredTexts.document = markdown;
+      debug.lastFileResults.document = "changed";
+    }
+  }
+
+  if (comments !== undefined) {
+    if (comments === persistence.commentsReference) {
+      debug.lastFileResults.comments = "unchanged";
+    } else {
+      const commentsText = serializeComments(comments);
+      serializedFiles.push("comments");
+      debug.serializationCount += 1;
+      const commentsCommit = await createPersistedFileCommit(
+        ".patchmark/comments.json",
+        commentsText
+      );
+      const currentCommentsCommit =
+        persistence.files.comments ??
+        (await readCurrentFileCommit(project, "comments"));
+
+      if (commentsCommit.sha256 === currentCommentsCommit.sha256) {
+        persistence.commentsReference = comments;
+        debug.lastFileResults.comments = "unchanged";
+      } else {
+        changedFiles.push("comments");
+        desiredTexts.comments = commentsText;
+        debug.lastFileResults.comments = "changed";
+      }
+    }
+  }
+
+  if (patches !== undefined) {
+    if (patches === persistence.patchesReference) {
+      debug.lastFileResults.patches = "unchanged";
+    } else {
+      const patchesText = serializePatches(patches);
+      serializedFiles.push("patches");
+      debug.serializationCount += 1;
+      const patchesCommit = await createPersistedFileCommit(
+        ".patchmark/patches.json",
+        patchesText
+      );
+      const currentPatchesCommit =
+        persistence.files.patches ??
+        (await readCurrentFileCommit(project, "patches"));
+
+      if (patchesCommit.sha256 === currentPatchesCommit.sha256) {
+        persistence.patchesReference = patches;
+        debug.lastFileResults.patches = "unchanged";
+      } else {
+        changedFiles.push("patches");
+        desiredTexts.patches = patchesText;
+        debug.lastFileResults.patches = "changed";
+      }
+    }
+  }
+
+  const manifestChanged =
+    manifest !== undefined &&
+    createManifestMeaningfulKey(manifest) !==
+      createManifestMeaningfulKey(project.manifest);
+
+  if (manifestChanged) {
+    changedFiles.push("manifest");
+    debug.lastFileResults.manifest = "changed";
+  } else if (manifest !== undefined) {
+    debug.lastFileResults.manifest = "unchanged";
+  }
+
+  if (changedFiles.length === 0) {
+    const result: PatchmarkProjectCommitResult = {
+      status: "unchanged",
+      generation: persistence.generation,
+      changedFiles: [],
+      serializedFiles,
+      bytesWritten: 0
+    };
+    debug.unchangedCommits += 1;
+    debug.lastResult = result;
+    return result;
+  }
+
+  if (allowSupersede && requestId < queue.latestRequestId) {
+    return recordSupersededCommit(project, serializedFiles);
+  }
+
+  const currentTexts = await readCurrentProjectTexts(project.directoryHandle);
+  const currentDescriptors = await createProjectFileDescriptors(currentTexts);
+  const currentCommit =
+    persistence.commit ??
+    createLegacyBaselineCommit({
+      descriptors: currentDescriptors,
+      manifest: project.manifest
+    });
+
+  await writeLastKnownGoodGeneration({
+    commit: currentCommit,
+    directoryHandle: project.directoryHandle,
+    texts: currentTexts,
+    onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+  });
+
+  const createdAt = new Date().toISOString();
+  const generation = Math.max(persistence.generation, currentCommit.generation) + 1;
+  const commitId = createSaveCommitId(generation);
+  const nextManifest: PatchmarkManifest = {
+    ...(manifest ?? project.manifest),
+    updated_at: createdAt,
+    save_generation: generation,
+    save_commit_id: commitId
+  };
+  const manifestText = serializeManifest(nextManifest);
+  desiredTexts.manifest = manifestText;
+  debug.serializationCount += 1;
+  serializedFiles.push("manifest");
+
+  const nextTexts = {
+    ...currentTexts,
+    ...desiredTexts
+  } satisfies Record<ProjectCommitFileKey, string>;
+  const nextDescriptors = await createProjectFileDescriptors(nextTexts);
+  const saveCommit: PatchmarkSaveCommit = {
+    format_version: saveCommitFormatVersion,
+    generation,
+    commit_id: commitId,
+    created_at: createdAt,
+    files: nextDescriptors
+  };
+  const commitText = serializeSaveCommit(saveCommit);
+  const preparedFiles: PreparedProjectFile[] = [];
+
+  try {
+    for (const key of changedFiles.filter((key) => key !== "manifest")) {
+      preparedFiles.push(
+        await prepareProjectTemporaryFile({
+          commitId,
+          directoryHandle: project.directoryHandle,
+          key,
+          text: nextTexts[key],
+          onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+        })
+      );
+    }
+    preparedFiles.push(
+      await prepareProjectTemporaryFile({
+        commitId,
+        directoryHandle: project.directoryHandle,
+        key: "manifest",
+        text: manifestText,
+        onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+      })
+    );
+    preparedFiles.push(
+      await prepareSaveCommitTemporaryFile({
+        commitId,
+        directoryHandle: project.directoryHandle,
+        text: commitText,
+        onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+      })
+    );
+
+    if (allowSupersede && requestId < queue.latestRequestId) {
+      await cleanupPreparedFiles(preparedFiles);
+      return recordSupersededCommit(project, serializedFiles);
+    }
+
+    for (const prepared of preparedFiles.filter(
+      (file) => file.key !== "manifest" && file.key !== "commit"
+    )) {
+      await installPreparedProjectFile(prepared, (bytes) =>
+        recordPersistenceWrite(project, bytes)
+      );
+    }
+
+    const manifestPrepared = preparedFiles.find(
+      (file) => file.key === "manifest"
+    );
+    const commitPrepared = preparedFiles.find((file) => file.key === "commit");
+
+    if (!manifestPrepared || !commitPrepared) {
+      throw new Error(`Could not prepare project save ${reason}.`);
+    }
+
+    await installPreparedProjectFile(manifestPrepared, (bytes) =>
+      recordPersistenceWrite(project, bytes)
+    );
+    await installPreparedProjectFile(commitPrepared, (bytes) =>
+      recordPersistenceWrite(project, bytes)
+    );
+  } finally {
+    await cleanupPreparedFiles(preparedFiles);
+  }
+
+  project.manifest = nextManifest;
+  persistence.generation = generation;
+  persistence.commit = saveCommit;
+  persistence.files = nextDescriptors;
+  persistence.documentText = nextTexts.document;
+  persistence.manifestText = manifestText;
+  persistence.readSource = "current";
+  persistence.recovery = undefined;
+
+  if (comments !== undefined) {
+    persistence.commentsReference = comments;
+  }
+
+  if (patches !== undefined) {
+    persistence.patchesReference = patches;
+  }
+
+  const bytesWritten = debug.bytesWritten - bytesWrittenBeforeCommit;
+  const result: PatchmarkProjectCommitResult = {
+    status: "committed",
+    generation,
+    commitId,
+    changedFiles: Array.from(
+      new Set<ProjectCommitFileKey>([...changedFiles, "manifest"])
+    ),
+    serializedFiles,
+    bytesWritten
+  };
+  debug.committedGenerations += 1;
+  debug.lastResult = result;
+  return result;
+}
+
+function getProjectWriteQueue(
+  directoryHandle: PatchmarkDirectoryHandle
+): ProjectWriteQueueState {
+  const existing = projectWriteQueues.get(directoryHandle);
+
+  if (existing) {
+    return existing;
+  }
+
+  const queue: ProjectWriteQueueState = {
+    tail: Promise.resolve(),
+    latestRequestId: 0
+  };
+  projectWriteQueues.set(directoryHandle, queue);
+  return queue;
+}
+
+function recordSupersededCommit(
+  project: PatchmarkProjectHandle,
+  serializedFiles: ProjectCommitFileKey[] = []
+): PatchmarkProjectCommitResult {
+  const result: PatchmarkProjectCommitResult = {
+    status: "superseded",
+    generation: project.persistence.generation,
+    changedFiles: [],
+    serializedFiles,
+    bytesWritten: 0
+  };
+  project.persistence.debug.supersededCommits += 1;
+  project.persistence.debug.staleRequestsSkipped += 1;
+  project.persistence.debug.lastResult = result;
+  return result;
+}
+
+function recordPersistenceWrite(
+  project: PatchmarkProjectHandle,
+  bytes: number
+): void {
+  project.persistence.debug.writeCount += 1;
+  project.persistence.debug.bytesWritten += bytes;
+}
+
+function createEmptyPersistenceDebugState(): PatchmarkPersistenceDebugState {
+  return {
+    requestedCommits: 0,
+    committedGenerations: 0,
+    unchangedCommits: 0,
+    supersededCommits: 0,
+    serializationCount: 0,
+    writeCount: 0,
+    bytesWritten: 0,
+    staleRequestsSkipped: 0,
+    lastFileResults: {}
+  };
+}
+
+function serializeComments(comments: PatchmarkComment[]): string {
+  return `${JSON.stringify(comments.map(normalizeComment), null, 2)}\n`;
+}
+
+function serializePatches(patches: PatchmarkPatch[]): string {
+  return `${JSON.stringify(patches.map(normalizePatch), null, 2)}\n`;
+}
+
+function serializeManifest(manifest: PatchmarkManifest): string {
+  return `${JSON.stringify(normalizeManifest(manifest, manifest.project_name), null, 2)}\n`;
+}
+
+function serializeSaveCommit(commit: PatchmarkSaveCommit): string {
+  return `${JSON.stringify(commit, null, 2)}\n`;
+}
+
+function createManifestMeaningfulKey(manifest: PatchmarkManifest): string {
+  const { updated_at, save_generation, save_commit_id, ...meaningful } = manifest;
+  void updated_at;
+  void save_generation;
+  void save_commit_id;
+  return JSON.stringify(meaningful);
+}
+
+function createSaveCommitId(generation: number): string {
+  const randomId = globalThis.crypto?.randomUUID?.() ??
+    `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+  return `PM-SAVE-${String(generation).padStart(6, "0")}-${randomId}`;
+}
+
+async function createOpenedProjectHandle({
+  directoryHandle,
+  manifestText,
+  markdown
+}: {
+  directoryHandle: PatchmarkDirectoryHandle;
+  manifestText: string;
+  markdown: string;
+}): Promise<LoadedPatchmarkProject> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const temporaryFiles = await listProjectTemporaryFiles(directoryHandle);
+  const commentsText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    commentsFileName
+  );
+  const patchesText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    patchesFileName
+  );
+  const commitText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    saveCommitFileName
+  );
+  const currentDetails: string[] = [];
+  const currentManifest = parseManifestForValidation(
+    manifestText,
+    directoryHandle.name,
+    currentDetails
+  );
+
+  if (commentsText === null) {
+    currentDetails.push("Missing .patchmark/comments.json.");
+  }
+
+  if (patchesText === null) {
+    currentDetails.push("Missing .patchmark/patches.json.");
+  }
+
+  const currentTexts =
+    commentsText !== null && patchesText !== null
+      ? {
+          document: markdown,
+          comments: commentsText,
+          patches: patchesText,
+          manifest: manifestText
+        }
+      : null;
+  const currentCommit = commitText
+    ? parseSaveCommitForValidation(commitText, currentDetails)
+    : null;
+
+  if (!commitText && currentManifest && currentTexts) {
+    validatePersistedJson(currentTexts, currentDetails);
+    const persistence = await createLegacyPersistenceState({
+      commentsText: currentTexts.comments,
+      directoryHandle,
+      documentText: markdown,
+      manifestText,
+      patchesText: currentTexts.patches
+    });
+
+    if (currentDetails.length > 0) {
+      persistence.readSource = "current_readonly";
+      persistence.recovery = {
+        kind: "invalid_current_state",
+        canRestore: false,
+        message: "Patchmark detected invalid project metadata.",
+        technicalDetails: currentDetails,
+        temporaryFiles
+      };
+    }
+
+    const project: PatchmarkProjectHandle = {
+      directoryHandle,
+      manifest: currentManifest,
+      persistence
+    };
+    return {
+      markdown,
+      project,
+      recovery: persistence.recovery
+    };
+  }
+
+  if (currentManifest && currentTexts && currentCommit) {
+    await validateCommittedProjectTexts(
+      currentTexts,
+      currentCommit,
+      currentDetails
+    );
+    validateManifestCommitIdentity(
+      currentManifest,
+      currentCommit,
+      currentDetails
+    );
+
+    if (currentDetails.length === 0) {
+      await cleanupStaleProjectTemporaryFiles(directoryHandle);
+      const project: PatchmarkProjectHandle = {
+        directoryHandle,
+        manifest: currentManifest,
+        persistence: {
+          generation: currentCommit.generation,
+          commit: currentCommit,
+          files: currentCommit.files,
+          documentText: markdown,
+          manifestText,
+          commentsRaw: currentTexts.comments,
+          patchesRaw: currentTexts.patches,
+          readSource: "current",
+          debug: createEmptyPersistenceDebugState()
+        }
+      };
+      return { markdown, project };
+    }
+  }
+
+  const lkg = await readValidLastKnownGoodGeneration(directoryHandle);
+
+  if (lkg) {
+    const recovery: PatchmarkProjectRecoveryState = {
+      kind: "incomplete_save",
+      canRestore: true,
+      message:
+        "Patchmark detected an incomplete project save. The last complete version can be restored.",
+      technicalDetails: currentDetails.length > 0
+        ? currentDetails
+        : ["The active save metadata is missing or invalid."],
+      temporaryFiles
+    };
+    const project: PatchmarkProjectHandle = {
+      directoryHandle,
+      manifest: lkg.manifest,
+      persistence: {
+        generation: lkg.commit.generation,
+        commit: lkg.commit,
+        files: lkg.commit.files,
+        documentText: lkg.texts.document,
+        manifestText: lkg.texts.manifest,
+        commentsRaw: lkg.texts.comments,
+        patchesRaw: lkg.texts.patches,
+        readSource: "lkg",
+        recovery,
+        debug: createEmptyPersistenceDebugState()
+      }
+    };
+    return {
+      markdown: lkg.texts.document,
+      project,
+      recovery
+    };
+  }
+
+  if (!currentManifest || !currentTexts) {
+    throw new Error(
+      currentDetails[0] ?? "Patchmark could not load this project safely."
+    );
+  }
+
+  const recovery: PatchmarkProjectRecoveryState = {
+    kind: "invalid_current_state",
+    canRestore: false,
+    message:
+      "Patchmark detected inconsistent project files. Open files are read-only until the issue is repaired.",
+    technicalDetails: currentDetails,
+    temporaryFiles
+  };
+  const descriptors = await createProjectFileDescriptors(currentTexts);
+  const project: PatchmarkProjectHandle = {
+    directoryHandle,
+    manifest: currentManifest,
+    persistence: {
+      generation: currentCommit?.generation ?? 0,
+      commit: currentCommit,
+      files: descriptors,
+      documentText: markdown,
+      manifestText,
+      commentsRaw: commentsText ?? undefined,
+      patchesRaw: patchesText ?? undefined,
+      readSource: "current_readonly",
+      recovery,
+      debug: createEmptyPersistenceDebugState()
+    }
+  };
+  return { markdown, project, recovery };
+}
+
+async function createLegacyPersistenceState({
+  commentsText,
+  directoryHandle,
+  documentText,
+  manifestText,
+  patchesText
+}: {
+  commentsText?: string;
+  directoryHandle: PatchmarkDirectoryHandle;
+  documentText: string;
+  manifestText: string;
+  patchesText?: string;
+}): Promise<PatchmarkProjectPersistenceState> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const resolvedCommentsText =
+    commentsText ??
+    (await readOptionalTextFile(metadataDirectoryHandle, commentsFileName)) ??
+    "[]\n";
+  const resolvedPatchesText =
+    patchesText ??
+    (await readOptionalTextFile(metadataDirectoryHandle, patchesFileName)) ??
+    "[]\n";
+  const texts = {
+    document: documentText,
+    comments: resolvedCommentsText,
+    patches: resolvedPatchesText,
+    manifest: manifestText
+  };
+
+  return {
+    generation: 0,
+    commit: null,
+    files: await createProjectFileDescriptors(texts),
+    documentText,
+    manifestText,
+    commentsRaw: resolvedCommentsText,
+    patchesRaw: resolvedPatchesText,
+    readSource: "current",
+    debug: createEmptyPersistenceDebugState()
+  };
+}
+
+async function readCurrentProjectTexts(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<Record<ProjectCommitFileKey, string>> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const [document, comments, patches, manifest] = await Promise.all([
+    readTextFile(await directoryHandle.getFileHandle(documentFileName)),
+    readTextFile(await metadataDirectoryHandle.getFileHandle(commentsFileName)),
+    readTextFile(await metadataDirectoryHandle.getFileHandle(patchesFileName)),
+    readTextFile(await metadataDirectoryHandle.getFileHandle(manifestFileName))
+  ]);
+  return { document, comments, patches, manifest };
+}
+
+async function readCurrentFileCommit(
+  project: PatchmarkProjectHandle,
+  key: ProjectCommitFileKey
+): Promise<PatchmarkPersistedFileCommit> {
+  const texts = await readCurrentProjectTexts(project.directoryHandle);
+  return createPersistedFileCommit(getProjectFilePath(key), texts[key]);
+}
+
+async function createProjectFileDescriptors(
+  texts: Record<ProjectCommitFileKey, string>
+): Promise<PatchmarkSaveCommit["files"]> {
+  const [document, comments, patches, manifest] = await Promise.all(
+    (["document", "comments", "patches", "manifest"] as const).map((key) =>
+      createPersistedFileCommit(getProjectFilePath(key), texts[key])
+    )
+  );
+  return { document, comments, patches, manifest };
+}
+
+async function createPersistedFileCommit(
+  path: string,
+  text: string
+): Promise<PatchmarkPersistedFileCommit> {
+  const bytes = new TextEncoder().encode(text);
+  return {
+    path,
+    sha256: await createSha256(bytes),
+    bytes: bytes.byteLength
+  };
+}
+
+async function createSha256(bytes: Uint8Array): Promise<string> {
+  const subtleCrypto = globalThis.crypto?.subtle;
+
+  if (subtleCrypto) {
+    const digestBytes = new Uint8Array(bytes.byteLength);
+    digestBytes.set(bytes);
+    const digest = await subtleCrypto.digest("SHA-256", digestBytes.buffer);
+    return Array.from(new Uint8Array(digest))
+      .map((byte) => byte.toString(16).padStart(2, "0"))
+      .join("");
+  }
+
+  let first = 0x811c9dc5;
+  let second = 0x9e3779b9;
+  for (const byte of bytes) {
+    first = Math.imul(first ^ byte, 0x01000193) >>> 0;
+    second = Math.imul(second ^ byte, 0x85ebca6b) >>> 0;
+  }
+  return `${first.toString(16).padStart(8, "0")}${second
+    .toString(16)
+    .padStart(8, "0")}`;
+}
+
+function getProjectFilePath(key: ProjectCommitFileKey): string {
+  if (key === "document") {
+    return documentFileName;
+  }
+  if (key === "comments") {
+    return `${metadataDirectoryName}/${commentsFileName}`;
+  }
+  if (key === "patches") {
+    return `${metadataDirectoryName}/${patchesFileName}`;
+  }
+  return `${metadataDirectoryName}/${manifestFileName}`;
+}
+
+function getProjectFileName(key: ProjectCommitFileKey): string {
+  if (key === "document") {
+    return documentFileName;
+  }
+  if (key === "comments") {
+    return commentsFileName;
+  }
+  if (key === "patches") {
+    return patchesFileName;
+  }
+  return manifestFileName;
+}
+
+function createLegacyBaselineCommit({
+  descriptors,
+  manifest
+}: {
+  descriptors: PatchmarkSaveCommit["files"];
+  manifest: PatchmarkManifest;
+}): PatchmarkSaveCommit {
+  const identity = [
+    descriptors.document.sha256,
+    descriptors.comments.sha256,
+    descriptors.patches.sha256,
+    descriptors.manifest.sha256
+  ]
+    .map((hash) => hash.slice(0, 8))
+    .join("-");
+  return {
+    format_version: saveCommitFormatVersion,
+    generation: 0,
+    commit_id: `PM-SAVE-BASELINE-${identity}`,
+    created_at: manifest.updated_at,
+    files: descriptors
+  };
+}
+
+async function writeLastKnownGoodGeneration({
+  commit,
+  directoryHandle,
+  onWrite,
+  texts
+}: {
+  commit: PatchmarkSaveCommit;
+  directoryHandle: PatchmarkDirectoryHandle;
+  onWrite: (bytes: number) => void;
+  texts: Record<ProjectCommitFileKey, string>;
+}): Promise<void> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const recoveryDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle(recoveryDirectoryName, {
+      create: true
+    });
+
+  for (const key of ["document", "comments", "patches", "manifest"] as const) {
+    const text = texts[key];
+    const fileHandle = await recoveryDirectoryHandle.getFileHandle(
+      `${getProjectFileName(key)}.lkg`,
+      { create: true }
+    );
+    await writeTextFile(fileHandle, text);
+    onWrite(new TextEncoder().encode(text).byteLength);
+  }
+
+  const commitText = serializeSaveCommit(commit);
+  const commitFileHandle = await recoveryDirectoryHandle.getFileHandle(
+    `${saveCommitFileName}.lkg`,
+    { create: true }
+  );
+  await writeTextFile(commitFileHandle, commitText);
+  onWrite(new TextEncoder().encode(commitText).byteLength);
+}
+
+async function prepareProjectTemporaryFile({
+  commitId,
+  directoryHandle,
+  key,
+  onWrite,
+  text
+}: {
+  commitId: string;
+  directoryHandle: PatchmarkDirectoryHandle;
+  key: ProjectCommitFileKey;
+  onWrite: (bytes: number) => void;
+  text: string;
+}): Promise<PreparedProjectFile> {
+  const targetDirectory =
+    key === "document"
+      ? directoryHandle
+      : await directoryHandle.getDirectoryHandle(metadataDirectoryName, {
+          create: true
+        });
+  return prepareTemporaryFile({
+    commitId,
+    directoryHandle: targetDirectory,
+    key,
+    onWrite,
+    targetFileName: getProjectFileName(key),
+    text
+  });
+}
+
+async function prepareSaveCommitTemporaryFile({
+  commitId,
+  directoryHandle,
+  onWrite,
+  text
+}: {
+  commitId: string;
+  directoryHandle: PatchmarkDirectoryHandle;
+  onWrite: (bytes: number) => void;
+  text: string;
+}): Promise<PreparedProjectFile> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  return prepareTemporaryFile({
+    commitId,
+    directoryHandle: metadataDirectoryHandle,
+    key: "commit",
+    onWrite,
+    targetFileName: saveCommitFileName,
+    text
+  });
+}
+
+async function prepareTemporaryFile({
+  commitId,
+  directoryHandle,
+  key,
+  onWrite,
+  targetFileName,
+  text
+}: {
+  commitId: string;
+  directoryHandle: PatchmarkDirectoryHandle;
+  key: ProjectCommitFileKey | "commit";
+  onWrite: (bytes: number) => void;
+  targetFileName: string;
+  text: string;
+}): Promise<PreparedProjectFile> {
+  const temporaryFileName = `.patchmark-tmp-${commitId}-${targetFileName}`;
+  const temporaryFileHandle = await directoryHandle.getFileHandle(
+    temporaryFileName,
+    { create: true }
+  );
+  await writeTextFile(temporaryFileHandle, text);
+  const bytes = new TextEncoder().encode(text).byteLength;
+  onWrite(bytes);
+  const writtenText = await readTextFile(temporaryFileHandle);
+  const descriptor = await createPersistedFileCommit(
+    key === "commit" ? `${metadataDirectoryName}/${saveCommitFileName}` : getProjectFilePath(key),
+    writtenText
+  );
+  const expectedDescriptor = await createPersistedFileCommit(
+    descriptor.path,
+    text
+  );
+
+  if (
+    descriptor.bytes !== expectedDescriptor.bytes ||
+    descriptor.sha256 !== expectedDescriptor.sha256
+  ) {
+    throw new Error(`Could not verify temporary project file ${targetFileName}.`);
+  }
+
+  return {
+    key,
+    directoryHandle,
+    temporaryFileName,
+    targetFileName,
+    text,
+    descriptor
+  };
+}
+
+async function installPreparedProjectFile(
+  prepared: PreparedProjectFile,
+  onWrite: (bytes: number) => void
+): Promise<void> {
+  const temporaryFileHandle = await prepared.directoryHandle.getFileHandle(
+    prepared.temporaryFileName
+  );
+  const temporaryText = await readTextFile(temporaryFileHandle);
+  const temporaryDescriptor = await createPersistedFileCommit(
+    prepared.descriptor.path,
+    temporaryText
+  );
+
+  if (
+    temporaryDescriptor.sha256 !== prepared.descriptor.sha256 ||
+    temporaryDescriptor.bytes !== prepared.descriptor.bytes
+  ) {
+    throw new Error(
+      `Temporary project file ${prepared.targetFileName} changed before install.`
+    );
+  }
+
+  const targetFileHandle = await prepared.directoryHandle.getFileHandle(
+    prepared.targetFileName,
+    { create: true }
+  );
+  await writeTextFile(targetFileHandle, temporaryText);
+  onWrite(temporaryDescriptor.bytes);
+  const installedText = await readTextFile(targetFileHandle);
+  const installedDescriptor = await createPersistedFileCommit(
+    prepared.descriptor.path,
+    installedText
+  );
+
+  if (
+    installedDescriptor.sha256 !== prepared.descriptor.sha256 ||
+    installedDescriptor.bytes !== prepared.descriptor.bytes
+  ) {
+    throw new Error(`Could not verify installed project file ${prepared.targetFileName}.`);
+  }
+}
+
+async function cleanupPreparedFiles(
+  preparedFiles: PreparedProjectFile[]
+): Promise<void> {
+  await Promise.all(
+    preparedFiles.map(async (prepared) => {
+      if (!prepared.directoryHandle.removeEntry) {
+        return;
+      }
+      try {
+        await prepared.directoryHandle.removeEntry(prepared.temporaryFileName);
+      } catch (error) {
+        if (!isNotFoundError(error)) {
+          return;
+        }
+      }
+    })
+  );
+}
+
+async function getProjectReadMetadataDirectory(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkDirectoryHandle> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  return project.persistence.readSource === "lkg"
+    ? metadataDirectoryHandle.getDirectoryHandle(recoveryDirectoryName)
+    : metadataDirectoryHandle;
+}
+
+async function readValidLastKnownGoodGeneration(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<{
+  commit: PatchmarkSaveCommit;
+  manifest: PatchmarkManifest;
+  texts: Record<ProjectCommitFileKey, string>;
+} | null> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    const recoveryDirectoryHandle =
+      await metadataDirectoryHandle.getDirectoryHandle(recoveryDirectoryName);
+    const [document, comments, patches, manifest, commitText] = await Promise.all([
+      readTextFile(
+        await recoveryDirectoryHandle.getFileHandle(`${documentFileName}.lkg`)
+      ),
+      readTextFile(
+        await recoveryDirectoryHandle.getFileHandle(`${commentsFileName}.lkg`)
+      ),
+      readTextFile(
+        await recoveryDirectoryHandle.getFileHandle(`${patchesFileName}.lkg`)
+      ),
+      readTextFile(
+        await recoveryDirectoryHandle.getFileHandle(`${manifestFileName}.lkg`)
+      ),
+      readTextFile(
+        await recoveryDirectoryHandle.getFileHandle(`${saveCommitFileName}.lkg`)
+      )
+    ]);
+    const details: string[] = [];
+    const commit = parseSaveCommitForValidation(commitText, details);
+    const normalizedManifest = parseManifestForValidation(
+      manifest,
+      directoryHandle.name,
+      details
+    );
+    const texts = { document, comments, patches, manifest };
+
+    if (!commit || !normalizedManifest) {
+      return null;
+    }
+
+    await validateCommittedProjectTexts(texts, commit, details);
+    validateManifestCommitIdentity(normalizedManifest, commit, details);
+    return details.length === 0
+      ? { commit, manifest: normalizedManifest, texts }
+      : null;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+function validateManifestCommitIdentity(
+  manifest: PatchmarkManifest,
+  commit: PatchmarkSaveCommit,
+  details: string[]
+): void {
+  if (commit.generation === 0) {
+    return;
+  }
+  if (manifest.save_generation !== commit.generation) {
+    details.push("Manifest save generation does not match active save metadata.");
+  }
+  if (manifest.save_commit_id !== commit.commit_id) {
+    details.push("Manifest save commit does not match active save metadata.");
+  }
+}
+
+async function validateCommittedProjectTexts(
+  texts: Record<ProjectCommitFileKey, string>,
+  commit: PatchmarkSaveCommit,
+  details: string[]
+): Promise<void> {
+  validatePersistedJson(texts, details);
+  const descriptors = await createProjectFileDescriptors(texts);
+
+  for (const key of ["document", "comments", "patches", "manifest"] as const) {
+    const expected = commit.files[key];
+    const actual = descriptors[key];
+    if (
+      expected.path !== actual.path ||
+      expected.bytes !== actual.bytes ||
+      expected.sha256 !== actual.sha256
+    ) {
+      details.push(`${actual.path} does not match save generation ${commit.generation}.`);
+    }
+  }
+}
+
+function validatePersistedJson(
+  texts: Record<ProjectCommitFileKey, string>,
+  details: string[]
+): void {
+  for (const key of ["comments", "patches"] as const) {
+    try {
+      if (!Array.isArray(JSON.parse(texts[key]))) {
+        details.push(`${getProjectFilePath(key)} must contain a JSON array.`);
+      }
+    } catch {
+      details.push(`${getProjectFilePath(key)} contains malformed JSON.`);
+    }
+  }
+
+  try {
+    JSON.parse(texts.manifest);
+  } catch {
+    details.push(`${getProjectFilePath("manifest")} contains malformed JSON.`);
+  }
+}
+
+function parseManifestForValidation(
+  text: string,
+  fallbackProjectName: string,
+  details: string[]
+): PatchmarkManifest | null {
+  try {
+    return normalizeManifest(JSON.parse(text), fallbackProjectName);
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/manifest.json is invalid."
+    );
+    return null;
+  }
+}
+
+function parseSaveCommitForValidation(
+  text: string,
+  details: string[]
+): PatchmarkSaveCommit | null {
+  try {
+    const value = JSON.parse(text);
+    if (!isPatchmarkSaveCommit(value)) {
+      details.push(".patchmark/save-commit.json is invalid.");
+      return null;
+    }
+    return value;
+  } catch {
+    details.push(".patchmark/save-commit.json contains malformed JSON.");
+    return null;
+  }
+}
+
+function isPatchmarkSaveCommit(value: unknown): value is PatchmarkSaveCommit {
+  if (
+    !isRecord(value) ||
+    value.format_version !== saveCommitFormatVersion ||
+    typeof value.generation !== "number" ||
+    !Number.isInteger(value.generation) ||
+    value.generation < 0 ||
+    typeof value.commit_id !== "string" ||
+    typeof value.created_at !== "string" ||
+    !isRecord(value.files)
+  ) {
+    return false;
+  }
+
+  const files = value.files;
+  return (["document", "comments", "patches", "manifest"] as const).every(
+    (key) => isPersistedFileCommit(files[key], getProjectFilePath(key))
+  );
+}
+
+function isPersistedFileCommit(
+  value: unknown,
+  expectedPath: string
+): value is PatchmarkPersistedFileCommit {
+  return (
+    isRecord(value) &&
+    value.path === expectedPath &&
+    typeof value.sha256 === "string" &&
+    value.sha256.length > 0 &&
+    typeof value.bytes === "number" &&
+    Number.isInteger(value.bytes) &&
+    value.bytes >= 0
+  );
+}
+
+async function readOptionalTextFile(
+  directoryHandle: PatchmarkDirectoryHandle,
+  fileName: string
+): Promise<string | null> {
+  try {
+    return readTextFile(await directoryHandle.getFileHandle(fileName));
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function listProjectTemporaryFiles(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<string[]> {
+  const temporaryFiles: string[] = [];
+  await collectTemporaryFiles(directoryHandle, "", temporaryFiles);
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    await collectTemporaryFiles(
+      metadataDirectoryHandle,
+      `${metadataDirectoryName}/`,
+      temporaryFiles
+    );
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
+  return temporaryFiles;
+}
+
+async function collectTemporaryFiles(
+  directoryHandle: PatchmarkDirectoryHandle,
+  prefix: string,
+  output: string[]
+): Promise<void> {
+  if (!directoryHandle.entries) {
+    return;
+  }
+  for await (const [name, entry] of directoryHandle.entries()) {
+    if (entry.kind !== "directory" && name.startsWith(".patchmark-tmp-")) {
+      output.push(`${prefix}${name}`);
+    }
+  }
+}
+
+async function cleanupTemporaryFilesInDirectory(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<number> {
+  if (!directoryHandle.entries || !directoryHandle.removeEntry) {
+    return 0;
+  }
+  const temporaryFileNames: string[] = [];
+  for await (const [name, entry] of directoryHandle.entries()) {
+    if (entry.kind !== "directory" && name.startsWith(".patchmark-tmp-")) {
+      temporaryFileNames.push(name);
+    }
+  }
+  let removed = 0;
+  for (const fileName of temporaryFileNames) {
+    try {
+      await directoryHandle.removeEntry(fileName);
+      removed += 1;
+    } catch (error) {
+      if (!isNotFoundError(error)) {
+        throw error;
+      }
+    }
+  }
+  return removed;
+}
+
+async function preserveQuestionableCurrentProjectFiles(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+    metadataDirectoryName,
+    { create: true }
+  );
+  const recoveryDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle(recoveryDirectoryName, {
+      create: true
+    });
+  const questionableDirectoryHandle =
+    await recoveryDirectoryHandle.getDirectoryHandle(
+      `questionable-${new Date().toISOString().replace(/[:.]/g, "-")}`,
+      { create: true }
+    );
+  const files = [
+    {
+      sourceDirectory: directoryHandle,
+      sourceName: documentFileName,
+      targetName: documentFileName
+    },
+    ...[
+      commentsFileName,
+      patchesFileName,
+      manifestFileName,
+      saveCommitFileName
+    ].map((fileName) => ({
+      sourceDirectory: metadataDirectoryHandle,
+      sourceName: fileName,
+      targetName: fileName
+    }))
+  ];
+
+  for (const file of files) {
+    const text = await readOptionalTextFile(file.sourceDirectory, file.sourceName);
+    if (text === null) {
+      continue;
+    }
+    const targetFileHandle = await questionableDirectoryHandle.getFileHandle(
+      file.targetName,
+      { create: true }
+    );
+    await writeTextFile(targetFileHandle, text);
+  }
+}
+
 async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> {
   const directoryPicker = getFileSystemAccessWindow().showDirectoryPicker;
 
@@ -600,14 +2145,17 @@ async function pickProjectDirectory(): Promise<PatchmarkDirectoryHandle | null> 
 
 async function ensureProjectMetadata(
   directoryHandle: PatchmarkDirectoryHandle,
-  manifest: PatchmarkManifest
+  manifest: PatchmarkManifest,
+  shouldWriteManifest = false
 ): Promise<void> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName,
     { create: true }
   );
 
-  await writeManifest(directoryHandle, manifest);
+  if (shouldWriteManifest) {
+    await writeManifest(directoryHandle, manifest);
+  }
 
   await Promise.all(
     Object.entries(emptyMetadataFiles).map(async ([fileName, contents]) => {
@@ -767,6 +2315,16 @@ function normalizeManifest(
       typeof manifest.current_version === "string"
         ? manifest.current_version
         : undefined,
+    save_generation:
+      typeof manifest.save_generation === "number" &&
+      Number.isInteger(manifest.save_generation) &&
+      manifest.save_generation >= 0
+        ? manifest.save_generation
+        : undefined,
+    save_commit_id:
+      typeof manifest.save_commit_id === "string"
+        ? manifest.save_commit_id
+        : undefined,
     versions: Array.isArray(manifest.versions)
       ? manifest.versions.filter(isPatchmarkVersionEntry)
       : undefined
@@ -831,18 +2389,59 @@ function normalizeCommentAnchorHistory(
 
   const normalizedHistory = history
     .filter(isPatchmarkCommentAnchorHistoryEntry)
-    .map((entry) => ({
-      changed_at: entry.changed_at,
-      reason: entry.reason,
-      source_patch_id: entry.source_patch_id,
-      previous_anchor: normalizeKnownCommentAnchor(entry.previous_anchor, "note"),
-      new_anchor: entry.new_anchor
-        ? normalizeKnownCommentAnchor(entry.new_anchor, "note")
-        : undefined,
-      impact_kind: entry.impact_kind
-    }));
+    .map((entry) =>
+      entry.format_version === 2
+        ? {
+            format_version: 2 as const,
+            history_id: entry.history_id,
+            changed_at: entry.changed_at,
+            reason: entry.reason,
+            cause: entry.cause,
+            source_id: entry.source_id,
+            source_patch_id: entry.source_patch_id,
+            mutation_generation: entry.mutation_generation,
+            previous: normalizeConciseAnchorHistoryState(entry.previous),
+            next: entry.next
+              ? normalizeConciseAnchorHistoryState(entry.next)
+              : undefined,
+            impact_kind: entry.impact_kind,
+            method: entry.method,
+            confidence: entry.confidence,
+            document_hash_before: entry.document_hash_before,
+            document_hash_after: entry.document_hash_after
+          }
+        : {
+            changed_at: entry.changed_at,
+            reason: entry.reason,
+            source_patch_id: entry.source_patch_id,
+            previous_anchor: normalizeKnownCommentAnchor(
+              entry.previous_anchor,
+              "note"
+            ),
+            new_anchor: entry.new_anchor
+              ? normalizeKnownCommentAnchor(entry.new_anchor, "note")
+              : undefined,
+            impact_kind: entry.impact_kind
+          }
+    );
 
   return normalizedHistory.length > 0 ? normalizedHistory : undefined;
+}
+
+function normalizeConciseAnchorHistoryState(
+  state: PatchmarkConciseAnchorHistoryState
+): PatchmarkConciseAnchorHistoryState {
+  return {
+    kind: state.kind,
+    start: state.start,
+    end: state.end,
+    selected_text_hash: state.selected_text_hash,
+    selected_text_excerpt: state.selected_text_excerpt,
+    selected_text_length: state.selected_text_length,
+    containing_heading: state.containing_heading,
+    containing_heading_path: state.containing_heading_path,
+    state: state.state
+  };
 }
 
 function normalizeCommentPatchImpacts(
@@ -1467,6 +3066,33 @@ function getActionIntentForCommentType(
 function isPatchmarkCommentAnchorHistoryEntry(
   value: unknown
 ): value is PatchmarkCommentAnchorHistoryEntry {
+  if (
+    isRecord(value) &&
+    value.format_version === 2 &&
+    typeof value.history_id === "string" &&
+    typeof value.changed_at === "string" &&
+    isCommentAnchorHistoryReason(value.reason) &&
+    isCommentAnchorHistoryCause(value.cause) &&
+    isConciseAnchorHistoryState(value.previous) &&
+    (value.next === undefined || isConciseAnchorHistoryState(value.next))
+  ) {
+    return (
+      (value.source_id === undefined || typeof value.source_id === "string") &&
+      (value.source_patch_id === undefined ||
+        typeof value.source_patch_id === "string") &&
+      (value.mutation_generation === undefined ||
+        typeof value.mutation_generation === "number") &&
+      (value.impact_kind === undefined ||
+        isPatchCommentImpactKind(value.impact_kind)) &&
+      (value.method === undefined || typeof value.method === "string") &&
+      (value.confidence === undefined || typeof value.confidence === "string") &&
+      (value.document_hash_before === undefined ||
+        typeof value.document_hash_before === "string") &&
+      (value.document_hash_after === undefined ||
+        typeof value.document_hash_after === "string")
+    );
+  }
+
   return (
     isRecord(value) &&
     typeof value.changed_at === "string" &&
@@ -1476,6 +3102,48 @@ function isPatchmarkCommentAnchorHistoryEntry(
     isPatchmarkCommentAnchor(value.previous_anchor) &&
     (value.new_anchor === undefined || isPatchmarkCommentAnchor(value.new_anchor)) &&
     (value.impact_kind === undefined || isPatchCommentImpactKind(value.impact_kind))
+  );
+}
+
+function isConciseAnchorHistoryState(
+  value: unknown
+): value is PatchmarkConciseAnchorHistoryState {
+  return (
+    isRecord(value) &&
+    (value.kind === "document" ||
+      value.kind === "section" ||
+      value.kind === "selected_text") &&
+    (value.start === undefined || typeof value.start === "number") &&
+    (value.end === undefined || typeof value.end === "number") &&
+    (value.selected_text_hash === undefined ||
+      typeof value.selected_text_hash === "string") &&
+    (value.selected_text_excerpt === undefined ||
+      typeof value.selected_text_excerpt === "string") &&
+    (value.selected_text_length === undefined ||
+      typeof value.selected_text_length === "number") &&
+    (value.containing_heading === undefined ||
+      typeof value.containing_heading === "string") &&
+    (value.containing_heading_path === undefined ||
+      (Array.isArray(value.containing_heading_path) &&
+        value.containing_heading_path.every(
+          (item) => typeof item === "string"
+        ))) &&
+    (value.state === undefined ||
+      value.state === "active" ||
+      value.state === "ambiguous" ||
+      value.state === "not_found" ||
+      value.state === "needs_review")
+  );
+}
+
+function isCommentAnchorHistoryCause(
+  value: unknown
+): value is PatchmarkConciseCommentAnchorHistoryEntry["cause"] {
+  return (
+    typeof value === "string" &&
+    commentAnchorHistoryCauses.includes(
+      value as PatchmarkConciseCommentAnchorHistoryEntry["cause"]
+    )
   );
 }
 

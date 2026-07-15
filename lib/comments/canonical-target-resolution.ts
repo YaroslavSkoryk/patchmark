@@ -19,6 +19,10 @@ import type {
   PatchmarkPatch,
   PatchmarkSelectedTextAnchorContext
 } from "../project/project-types.ts";
+import {
+  getHistoryNextAnchor,
+  getHistoryPreviousAnchor
+} from "./comment-anchor-history.ts";
 
 type SelectedTextAnchor = Extract<
   PatchmarkComment["anchor"],
@@ -852,12 +856,15 @@ function getHistoricalSelectedTextAnchors(
   }
 
   for (const historyEntry of [...(comment.anchor_history ?? [])].reverse()) {
-    if (historyEntry.new_anchor?.kind === "selected_text") {
-      anchors.push(historyEntry.new_anchor);
+    const nextAnchor = getHistoryNextAnchor(historyEntry);
+    const previousAnchor = getHistoryPreviousAnchor(historyEntry);
+
+    if (nextAnchor?.kind === "selected_text") {
+      anchors.push(nextAnchor);
     }
 
-    if (historyEntry.previous_anchor.kind === "selected_text") {
-      anchors.push(historyEntry.previous_anchor);
+    if (previousAnchor?.kind === "selected_text") {
+      anchors.push(previousAnchor);
     }
   }
 

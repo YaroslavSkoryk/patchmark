@@ -18,15 +18,21 @@ const MdxEditorClient = dynamic(
 type VisualMarkdownEditorProps = {
   markdown: string;
   onMarkdownChange: (markdown: string) => void;
+  readOnly?: boolean;
 };
 
 export function VisualMarkdownEditor({
   markdown,
-  onMarkdownChange
+  onMarkdownChange,
+  readOnly = false
 }: VisualMarkdownEditorProps) {
   return (
     <div className="visual-editor-shell">
-      <MdxEditorClient markdown={markdown} onMarkdownChange={onMarkdownChange} />
+      <MdxEditorClient
+        markdown={markdown}
+        onMarkdownChange={onMarkdownChange}
+        readOnly={readOnly}
+      />
     </div>
   );
 }
