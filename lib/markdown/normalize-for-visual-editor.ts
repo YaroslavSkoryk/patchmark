@@ -47,13 +47,15 @@ export function normalizeMarkdownForVisualEditor(markdown: string): string {
         return line;
       }
 
-      return line.replace(htmlVoidTagPattern, (match, tagName, attributes = "") => {
-        if (/\/\s*>$/.test(match)) {
-          return match;
-        }
+      return line
+        .replace(htmlVoidTagPattern, (match, tagName, attributes = "") => {
+          if (/\/\s*>$/.test(match)) {
+            return match;
+          }
 
-        return `<${tagName}${attributes} />`;
-      });
+          return `<${tagName}${attributes} />`;
+        })
+        .replace(/(?<!\\)<(?=\d)/g, "\\<");
     })
     .join("");
 }

@@ -53,8 +53,10 @@ export function MdxEditorClient({
     [markdown]
   );
   const editorRef = useRef<MDXEditorMethods>(null);
+  const editorShellRef = useRef<HTMLDivElement>(null);
   const lastSyncedMarkdownRef = useRef(visualMarkdown);
   const renderErrorTimerRef = useRef<number | null>(null);
+  const renderVerificationTimerRef = useRef<number | null>(null);
   const isMountedRef = useRef(false);
   const queuedRenderErrorRef = useRef<string | null>(null);
   const lastAutoRetryMarkdownRef = useRef<string | null>(null);
@@ -69,6 +71,10 @@ export function MdxEditorClient({
 
       if (renderErrorTimerRef.current !== null) {
         window.clearTimeout(renderErrorTimerRef.current);
+      }
+
+      if (renderVerificationTimerRef.current !== null) {
+        window.clearTimeout(renderVerificationTimerRef.current);
       }
     };
   }, []);
@@ -95,6 +101,39 @@ export function MdxEditorClient({
     incrementEditPerformanceCounter(operationId, "mdx_editor_effect_count");
     markEditPerformanceOperation(operationId, "mdx_editor_settled");
   }, [visualMarkdown]);
+
+  useEffect(() => {
+    if (renderError || visualMarkdown.trim().length === 0) {
+      return;
+    }
+
+    if (renderVerificationTimerRef.current !== null) {
+      window.clearTimeout(renderVerificationTimerRef.current);
+    }
+
+    renderVerificationTimerRef.current = window.setTimeout(() => {
+      renderVerificationTimerRef.current = null;
+
+      if (!isMountedRef.current) {
+        return;
+      }
+
+      const content = editorShellRef.current?.querySelector(".patchmark-prose");
+
+      if (content && content.childNodes.length === 0) {
+        setRenderError(
+          "MDXEditor initialized without rendering the loaded Markdown."
+        );
+      }
+    }, 500);
+
+    return () => {
+      if (renderVerificationTimerRef.current !== null) {
+        window.clearTimeout(renderVerificationTimerRef.current);
+        renderVerificationTimerRef.current = null;
+      }
+    };
+  }, [editorInstanceKey, renderError, visualMarkdown]);
 
   useEffect(() => {
     if (
@@ -164,7 +203,7 @@ export function MdxEditorClient({
   }
 
   return (
-    <>
+    <div ref={editorShellRef}>
       {renderError && markdown.trim().length > 0 ? (
         <div className="visual-editor-error" role="alert">
           <strong>Visual Mode could not render this Markdown.</strong>
@@ -257,7 +296,7 @@ export function MdxEditorClient({
           ]}
         />
       )}
-    </>
+    </div>
   );
 }
 
