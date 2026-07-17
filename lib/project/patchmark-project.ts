@@ -1,5 +1,31 @@
 import { type MarkdownFileHandle } from "../files/file-system-access.ts";
 import {
+  addExistingProjectDocument as registerExistingProjectDocument,
+  archiveRegisteredDocument,
+  completePendingProjectMigration,
+  convertLegacyProject,
+  createDocumentScopedDirectoryHandle,
+  createProjectDocument as registerCreatedProjectDocument,
+  getRegisteredDocument,
+  listProjectDocuments,
+  locateProjectDocument as repairProjectDocumentPath,
+  markLegacyConversionReopened,
+  readProjectManifest,
+  reorderRegisteredDocument,
+  resolveProjectFilePath,
+  rollbackPendingProjectMigration,
+  restoreRegisteredDocument,
+  updateDocumentRegistration,
+  writeProjectManifestAtomic,
+  type PatchmarkDocumentAvailability,
+  type PatchmarkDocumentRole,
+  type PatchmarkProjectDocumentView,
+  type PatchmarkProjectManifestV1,
+  type PatchmarkRegisteredDocument,
+  type ProjectDirectoryHandle,
+  type ProjectFileHandle
+} from "./multi-document-project.ts";
+import {
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
   type PatchmarkCommentActionScope,
@@ -61,10 +87,15 @@ export type PatchmarkDirectoryHandle = {
   ) => Promise<PatchmarkDirectoryHandle>;
   removeEntry?: (name: string, options?: { recursive?: boolean }) => Promise<void>;
   entries?: () => AsyncIterableIterator<[string, { kind?: "file" | "directory" }]>;
+  resolve?: (possibleDescendant: { kind?: "file" | "directory" }) => Promise<string[] | null>;
 };
 
 export type PatchmarkProjectRecoveryState = {
-  kind: "incomplete_save" | "invalid_current_state";
+  kind:
+    | "incomplete_save"
+    | "invalid_current_state"
+    | "missing_document"
+    | "migration_rolled_back";
   canRestore: boolean;
   message: string;
   technicalDetails: string[];
@@ -90,6 +121,11 @@ export type PatchmarkProjectHandle = {
   directoryHandle: PatchmarkDirectoryHandle;
   manifest: PatchmarkManifest;
   persistence: PatchmarkProjectPersistenceState;
+  projectMode?: "legacy" | "multi";
+  projectDirectoryHandle?: PatchmarkDirectoryHandle;
+  projectManifest?: PatchmarkProjectManifestV1;
+  document?: PatchmarkRegisteredDocument;
+  documentAvailability?: PatchmarkDocumentAvailability;
 };
 
 export type LoadedPatchmarkProject = {
@@ -236,37 +272,100 @@ export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null
     return null;
   }
 
-  const documentFileHandle = await getRequiredFileHandle(
-    directoryHandle,
-    documentFileName,
-    "This folder does not contain document.md."
-  );
+  let multiDocumentManifestError: unknown;
+  let migrationRollbackError: unknown;
+  let projectManifest: PatchmarkProjectManifestV1 | null = null;
+  try {
+    projectManifest = await readProjectManifest(
+      directoryHandle as ProjectDirectoryHandle
+    );
+  } catch (error) {
+    multiDocumentManifestError = error;
+  }
+  if (projectManifest) {
+    try {
+      const loaded = await openRegisteredProjectFromManifest(
+        directoryHandle,
+        projectManifest
+      );
+      await completePendingProjectMigration(
+        directoryHandle as ProjectDirectoryHandle,
+        projectManifest
+      );
+      return loaded;
+    } catch (error) {
+      const rolledBack = await rollbackPendingProjectMigration(
+        directoryHandle as ProjectDirectoryHandle,
+        projectManifest,
+        error
+      );
+      if (!rolledBack) {
+        throw error;
+      }
+      migrationRollbackError = error;
+    }
+  }
 
-  const metadataDirectoryHandle = await getRequiredDirectoryHandle(
-    directoryHandle,
-    metadataDirectoryName,
-    "This folder contains document.md but is not initialized as a Patchmark project."
-  );
+  try {
+    const documentFileHandle = await getRequiredFileHandle(
+      directoryHandle,
+      documentFileName,
+      "This folder does not contain document.md."
+    );
 
-  const manifestFileHandle = await getRequiredFileHandle(
-    metadataDirectoryHandle,
-    manifestFileName,
-    "This folder is missing .patchmark/manifest.json."
-  );
+    const metadataDirectoryHandle = await getRequiredDirectoryHandle(
+      directoryHandle,
+      metadataDirectoryName,
+      "This folder contains document.md but is not initialized as a Patchmark project."
+    );
 
-  const manifestText = await readTextFile(manifestFileHandle);
-  const markdown = await readTextFile(documentFileHandle);
-  const openedProject = await createOpenedProjectHandle({
-    directoryHandle,
-    manifestText,
-    markdown
-  });
+    const manifestFileHandle = await getRequiredFileHandle(
+      metadataDirectoryHandle,
+      manifestFileName,
+      "This folder is missing .patchmark/manifest.json."
+    );
 
-  return {
-    markdown: openedProject.markdown,
-    project: openedProject.project,
-    recovery: openedProject.project.persistence.recovery
-  };
+    const manifestText = await readTextFile(manifestFileHandle);
+    const markdown = await readTextFile(documentFileHandle);
+    const openedProject = await createOpenedProjectHandle({
+      directoryHandle,
+      manifestText,
+      markdown
+    });
+    openedProject.project.projectMode = "legacy";
+    openedProject.project.projectDirectoryHandle = directoryHandle;
+    if (migrationRollbackError) {
+      const recovery: PatchmarkProjectRecoveryState = {
+        kind: "migration_rolled_back",
+        canRestore: false,
+        message:
+          "Patchmark rolled back an incomplete multi-document conversion and reopened the untouched legacy project.",
+        technicalDetails: [
+          migrationRollbackError instanceof Error
+            ? migrationRollbackError.message
+            : String(migrationRollbackError)
+        ],
+        temporaryFiles: []
+      };
+      openedProject.project.persistence.recovery = recovery;
+      return {
+        markdown: openedProject.markdown,
+        project: openedProject.project,
+        recovery
+      };
+    }
+
+    return {
+      markdown: openedProject.markdown,
+      project: openedProject.project,
+      recovery: openedProject.project.persistence.recovery
+    };
+  } catch (error) {
+    if (multiDocumentManifestError) {
+      throw multiDocumentManifestError;
+    }
+    throw error;
+  }
 }
 
 export async function createProjectFromMarkdown({
@@ -310,6 +409,8 @@ export async function createProjectFromMarkdown({
   const project: PatchmarkProjectHandle = {
     directoryHandle,
     manifest,
+    projectMode: "legacy",
+    projectDirectoryHandle: directoryHandle,
     persistence: await createLegacyPersistenceState({
       directoryHandle,
       documentText: markdown,
@@ -321,6 +422,296 @@ export async function createProjectFromMarkdown({
     markdown,
     project
   };
+}
+
+export function isMultiDocumentProject(project: PatchmarkProjectHandle): boolean {
+  return project.projectMode === "multi" && Boolean(project.projectManifest);
+}
+
+export function getProjectTitle(project: PatchmarkProjectHandle): string {
+  return project.projectManifest?.title ?? project.manifest.project_name;
+}
+
+export function getActiveProjectDocument(
+  project: PatchmarkProjectHandle
+): PatchmarkRegisteredDocument | null {
+  return project.document ?? null;
+}
+
+export function getProjectDocumentExportIdentity(
+  project: PatchmarkProjectHandle
+): {
+  project_name: string;
+  project_id?: string;
+  document_file: string;
+  document_id?: string;
+  document_title?: string;
+  document_role?: PatchmarkDocumentRole;
+} {
+  return {
+    project_name: getProjectTitle(project),
+    project_id: project.projectManifest?.project_id,
+    document_file: project.document?.path ?? project.manifest.document_file,
+    document_id: project.document?.document_id,
+    document_title: project.document?.display_title,
+    document_role: project.document?.role
+  };
+}
+
+export async function getProjectDocumentList(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkProjectDocumentView[]> {
+  const root = getAuthoritativeProjectDirectory(project);
+  if (!project.projectManifest) {
+    return [
+      {
+        document_id: "legacy-document",
+        path: project.manifest.document_file,
+        display_title: createLegacyDocumentTitle(project),
+        role: null,
+        status: "active",
+        position: 1000,
+        added_at: project.manifest.created_at,
+        archived_at: null,
+        availability: "available"
+      }
+    ];
+  }
+  return listProjectDocuments(
+    root as ProjectDirectoryHandle,
+    project.projectManifest
+  );
+}
+
+export async function convertProjectToMultiDocument(
+  project: PatchmarkProjectHandle
+): Promise<LoadedPatchmarkProject> {
+  const prepared = await prepareMultiDocumentProject(project);
+  if (prepared.migrationId) {
+    await markLegacyConversionReopened(
+      getAuthoritativeProjectDirectory(prepared.loaded.project) as ProjectDirectoryHandle,
+      prepared.migrationId,
+      "complete"
+    );
+  }
+  return prepared.loaded;
+}
+
+export async function createNewProjectDocument({
+  displayTitle,
+  markdown,
+  path,
+  project,
+  role
+}: {
+  displayTitle: string;
+  markdown?: string;
+  path: string;
+  project: PatchmarkProjectHandle;
+  role: PatchmarkDocumentRole;
+}): Promise<LoadedPatchmarkProject> {
+  const prepared = await prepareMultiDocumentProject(project);
+  const activeProject = prepared.loaded.project;
+  const root = getAuthoritativeProjectDirectory(activeProject);
+  const registry = requireProjectManifest(activeProject);
+  const result = await registerCreatedProjectDocument({
+    displayTitle,
+    manifest: registry,
+    markdown,
+    path,
+    role,
+    root: root as ProjectDirectoryHandle
+  });
+  updateProjectRegistryContext(activeProject, result.manifest);
+  const loaded = await openRegisteredProjectDocument(
+    root,
+    result.manifest,
+    result.document.document_id
+  );
+  if (prepared.migrationId) {
+    await markLegacyConversionReopened(
+      root as ProjectDirectoryHandle,
+      prepared.migrationId,
+      "complete"
+    );
+  }
+  return loaded;
+}
+
+export async function addExistingDocumentToProject({
+  displayTitle,
+  path,
+  project,
+  role
+}: {
+  displayTitle?: string;
+  path: string;
+  project: PatchmarkProjectHandle;
+  role: PatchmarkDocumentRole;
+}): Promise<LoadedPatchmarkProject> {
+  const prepared = await prepareMultiDocumentProject(project);
+  const activeProject = prepared.loaded.project;
+  const root = getAuthoritativeProjectDirectory(activeProject);
+  const registry = requireProjectManifest(activeProject);
+  const result = await registerExistingProjectDocument({
+    displayTitle,
+    manifest: registry,
+    path,
+    role,
+    root: root as ProjectDirectoryHandle
+  });
+  updateProjectRegistryContext(activeProject, result.manifest);
+  const loaded = await openRegisteredProjectDocument(
+    root,
+    result.manifest,
+    result.document.document_id
+  );
+  if (prepared.migrationId) {
+    await markLegacyConversionReopened(
+      root as ProjectDirectoryHandle,
+      prepared.migrationId,
+      "complete"
+    );
+  }
+  return loaded;
+}
+
+export async function resolveDocumentPathFromFileHandle(
+  project: PatchmarkProjectHandle,
+  fileHandle: MarkdownFileHandle
+): Promise<string> {
+  return resolveProjectFilePath(
+    getAuthoritativeProjectDirectory(project) as ProjectDirectoryHandle,
+    fileHandle as ProjectFileHandle
+  );
+}
+
+export async function openProjectDocument(
+  project: PatchmarkProjectHandle,
+  documentId: string
+): Promise<LoadedPatchmarkProject> {
+  return openRegisteredProjectDocument(
+    getAuthoritativeProjectDirectory(project),
+    requireProjectManifest(project),
+    documentId
+  );
+}
+
+export async function switchProjectDocument({
+  comments,
+  documentId,
+  markdown,
+  patches,
+  project
+}: {
+  comments: PatchmarkComment[];
+  documentId: string;
+  markdown: string;
+  patches: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+}): Promise<LoadedPatchmarkProject> {
+  if (project.documentAvailability !== "missing") {
+    await saveProjectState({
+      comments,
+      markdown,
+      patches,
+      project,
+      reason: "switch_document"
+    });
+  }
+  return openProjectDocument(project, documentId);
+}
+
+export async function updateProjectDocumentMetadata({
+  displayTitle,
+  documentId,
+  project,
+  role
+}: {
+  displayTitle?: string;
+  documentId: string;
+  project: PatchmarkProjectHandle;
+  role?: PatchmarkDocumentRole;
+}): Promise<PatchmarkProjectManifestV1> {
+  const next = updateDocumentRegistration(
+    requireProjectManifest(project),
+    documentId,
+    {
+      ...(displayTitle !== undefined ? { display_title: displayTitle } : {}),
+      ...(role !== undefined ? { role } : {})
+    }
+  );
+  if (next !== project.projectManifest) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function moveProjectDocument({
+  direction,
+  documentId,
+  project
+}: {
+  direction: "up" | "down";
+  documentId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = reorderRegisteredDocument(current, documentId, direction);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function archiveProjectDocument({
+  documentId,
+  project
+}: {
+  documentId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = archiveRegisteredDocument(current, documentId);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function restoreProjectDocument({
+  documentId,
+  project
+}: {
+  documentId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = restoreRegisteredDocument(current, documentId);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function locateProjectDocument({
+  documentId,
+  path,
+  project
+}: {
+  documentId: string;
+  path: string;
+  project: PatchmarkProjectHandle;
+}): Promise<LoadedPatchmarkProject> {
+  const root = getAuthoritativeProjectDirectory(project);
+  const next = await repairProjectDocumentPath({
+    documentId,
+    manifest: requireProjectManifest(project),
+    path,
+    root: root as ProjectDirectoryHandle
+  });
+  updateProjectRegistryContext(project, next);
+  return openRegisteredProjectDocument(root, next, documentId);
 }
 
 export async function saveProjectDocument(
@@ -809,7 +1200,12 @@ export async function restoreProjectLastKnownGood(
 
   const restoredProject: PatchmarkProjectHandle = {
     directoryHandle: project.directoryHandle,
+    document: project.document,
+    documentAvailability: project.documentAvailability,
     manifest: lkg.manifest,
+    projectDirectoryHandle: project.projectDirectoryHandle,
+    projectManifest: project.projectManifest,
+    projectMode: project.projectMode,
     persistence: {
       generation: lkg.commit.generation,
       commit: lkg.commit,
@@ -1251,6 +1647,318 @@ function createSaveCommitId(generation: number): string {
   const randomId = globalThis.crypto?.randomUUID?.() ??
     `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `PM-SAVE-${String(generation).padStart(6, "0")}-${randomId}`;
+}
+
+async function openRegisteredProjectFromManifest(
+  directoryHandle: PatchmarkDirectoryHandle,
+  manifest: PatchmarkProjectManifestV1
+): Promise<LoadedPatchmarkProject> {
+  const documents = await listProjectDocuments(
+    directoryHandle as ProjectDirectoryHandle,
+    manifest
+  );
+  const activeDocuments = documents.filter(
+    (document) => document.status === "active"
+  );
+  const preferredDocumentId = readPreferredDocumentId(manifest.project_id);
+  const selected =
+    activeDocuments.find(
+      (document) =>
+        document.document_id === preferredDocumentId &&
+        document.availability === "available"
+    ) ??
+    activeDocuments.find((document) => document.availability === "available") ??
+    activeDocuments[0];
+  if (!selected) {
+    throw new Error("This Patchmark project has no active documents.");
+  }
+  return openRegisteredProjectDocument(
+    directoryHandle,
+    manifest,
+    selected.document_id
+  );
+}
+
+async function openRegisteredProjectDocument(
+  root: PatchmarkDirectoryHandle,
+  projectManifest: PatchmarkProjectManifestV1,
+  documentId: string
+): Promise<LoadedPatchmarkProject> {
+  const document = getRegisteredDocument(projectManifest, documentId);
+  const documentView = (await listProjectDocuments(
+    root as ProjectDirectoryHandle,
+    projectManifest
+  )).find((candidate) => candidate.document_id === documentId);
+  if (!documentView) {
+    throw new Error(`Document ${documentId} is not registered in this project.`);
+  }
+  const scopedDirectory = (await createDocumentScopedDirectoryHandle(
+    root as ProjectDirectoryHandle,
+    document
+  )) as PatchmarkDirectoryHandle;
+
+  if (documentView.availability === "missing") {
+    const missing = await createMissingDocumentProject({
+      document,
+      projectManifest,
+      root,
+      scopedDirectory
+    });
+    rememberPreferredDocumentId(projectManifest.project_id, documentId);
+    return missing;
+  }
+
+  const documentFile = await scopedDirectory.getFileHandle(documentFileName);
+  const metadataDirectory = await scopedDirectory.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const documentManifestFile = await getRequiredFileHandle(
+    metadataDirectory,
+    manifestFileName,
+    `Document store ${documentId} is missing manifest.json.`
+  );
+  const loaded = await createOpenedProjectHandle({
+    directoryHandle: scopedDirectory,
+    manifestText: await readTextFile(documentManifestFile),
+    markdown: await readTextFile(documentFile)
+  });
+  applyMultiDocumentContext({
+    availability: "available",
+    document,
+    loaded,
+    projectManifest,
+    root
+  });
+  rememberPreferredDocumentId(projectManifest.project_id, documentId);
+  return loaded;
+}
+
+async function createMissingDocumentProject({
+  document,
+  projectManifest,
+  root,
+  scopedDirectory
+}: {
+  document: PatchmarkRegisteredDocument;
+  projectManifest: PatchmarkProjectManifestV1;
+  root: PatchmarkDirectoryHandle;
+  scopedDirectory: PatchmarkDirectoryHandle;
+}): Promise<LoadedPatchmarkProject> {
+  const metadataDirectory = await scopedDirectory.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const manifestText = await readTextFile(
+    await getRequiredFileHandle(
+      metadataDirectory,
+      manifestFileName,
+      `Document store ${document.document_id} is missing manifest.json.`
+    )
+  );
+  const details: string[] = [];
+  const manifest = parseManifestForValidation(
+    manifestText,
+    projectManifest.title,
+    details
+  );
+  if (!manifest || details.length > 0) {
+    throw new Error(
+      details[0] ?? `Document store ${document.document_id} has an invalid manifest.`
+    );
+  }
+  const recovery: PatchmarkProjectRecoveryState = {
+    kind: "missing_document",
+    canRestore: false,
+    message: `The registered Markdown file ${document.path} is missing. Locate it to restore this document.`,
+    technicalDetails: [
+      `Document ID: ${document.document_id}`,
+      `Registered path: ${document.path}`
+    ],
+    temporaryFiles: []
+  };
+  const project: PatchmarkProjectHandle = {
+    directoryHandle: scopedDirectory,
+    document,
+    documentAvailability: "missing",
+    manifest,
+    projectDirectoryHandle: root,
+    projectManifest,
+    projectMode: "multi",
+    persistence: {
+      generation: manifest.save_generation ?? 0,
+      commit: null,
+      files: {},
+      documentText: "",
+      manifestText,
+      readSource: "current_readonly",
+      recovery,
+      debug: createEmptyPersistenceDebugState()
+    }
+  };
+  return { markdown: "", project, recovery };
+}
+
+function applyMultiDocumentContext({
+  availability,
+  document,
+  loaded,
+  projectManifest,
+  root
+}: {
+  availability: PatchmarkDocumentAvailability;
+  document: PatchmarkRegisteredDocument;
+  loaded: LoadedPatchmarkProject;
+  projectManifest: PatchmarkProjectManifestV1;
+  root: PatchmarkDirectoryHandle;
+}): void {
+  loaded.project.projectMode = "multi";
+  loaded.project.projectDirectoryHandle = root;
+  loaded.project.projectManifest = projectManifest;
+  loaded.project.document = document;
+  loaded.project.documentAvailability = availability;
+}
+
+async function prepareMultiDocumentProject(
+  project: PatchmarkProjectHandle
+): Promise<{ loaded: LoadedPatchmarkProject; migrationId?: string }> {
+  if (project.projectManifest && project.document) {
+    return {
+      loaded: {
+        markdown: project.persistence.documentText,
+        project,
+        recovery: project.persistence.recovery
+      }
+    };
+  }
+  if (project.persistence.readSource !== "current") {
+    throw new Error("Repair or restore the legacy project before converting it.");
+  }
+
+  const expectedComments = await readProjectComments(project);
+  const expectedPatches = await readProjectPatches(project);
+  const expectedVersions = await listProjectVersions(project);
+  const expectedVersionContents = await Promise.all(
+    expectedVersions.map((version) => readProjectVersionMarkdown(project, version))
+  );
+  const root = getAuthoritativeProjectDirectory(project);
+  const conversion = await convertLegacyProject({
+    projectTitle: project.manifest.project_name,
+    root: root as ProjectDirectoryHandle
+  });
+  const loaded = await openRegisteredProjectDocument(
+    root,
+    conversion.manifest,
+    conversion.document.document_id
+  );
+  const reopenedComments = await readProjectComments(loaded.project);
+  const reopenedPatches = await readProjectPatches(loaded.project);
+  const reopenedVersions = await listProjectVersions(loaded.project);
+  const reopenedVersionContents = await Promise.all(
+    reopenedVersions.map((version) =>
+      readProjectVersionMarkdown(loaded.project, version)
+    )
+  );
+  if (
+    createObjectIdentitySignature(reopenedComments) !==
+      createObjectIdentitySignature(expectedComments) ||
+    createObjectIdentitySignature(reopenedPatches) !==
+      createObjectIdentitySignature(expectedPatches) ||
+    createObjectIdentitySignature(reopenedVersions) !==
+      createObjectIdentitySignature(expectedVersions) ||
+    JSON.stringify(reopenedVersionContents) !==
+      JSON.stringify(expectedVersionContents) ||
+    loaded.markdown !== project.persistence.documentText
+  ) {
+    throw new Error("Converted project did not pass semantic reopen verification.");
+  }
+  const validationSave = await saveProjectState({
+    comments: reopenedComments,
+    markdown: loaded.markdown,
+    patches: reopenedPatches,
+    project: loaded.project,
+    reason: "migration_reopen_validation"
+  });
+  if (validationSave.status !== "unchanged") {
+    throw new Error("Converted project required an unexpected validation write.");
+  }
+  const validatedLoaded = await openRegisteredProjectDocument(
+    root,
+    conversion.manifest,
+    conversion.document.document_id
+  );
+  await markLegacyConversionReopened(
+    root as ProjectDirectoryHandle,
+    conversion.migrationId,
+    "reopened"
+  );
+  return { loaded: validatedLoaded, migrationId: conversion.migrationId };
+}
+
+function createObjectIdentitySignature(values: Array<{ id: string }>): string {
+  return JSON.stringify(values.map((value) => value.id));
+}
+
+async function commitProjectRegistry(
+  project: PatchmarkProjectHandle,
+  manifest: PatchmarkProjectManifestV1
+): Promise<void> {
+  await writeProjectManifestAtomic(
+    getAuthoritativeProjectDirectory(project) as ProjectDirectoryHandle,
+    manifest
+  );
+  updateProjectRegistryContext(project, manifest);
+}
+
+function updateProjectRegistryContext(
+  project: PatchmarkProjectHandle,
+  manifest: PatchmarkProjectManifestV1
+): void {
+  project.projectManifest = manifest;
+  if (project.document) {
+    project.document = getRegisteredDocument(
+      manifest,
+      project.document.document_id
+    );
+  }
+}
+
+function requireProjectManifest(
+  project: PatchmarkProjectHandle
+): PatchmarkProjectManifestV1 {
+  if (!project.projectManifest) {
+    throw new Error("Convert this legacy project before managing documents.");
+  }
+  return project.projectManifest;
+}
+
+function getAuthoritativeProjectDirectory(
+  project: PatchmarkProjectHandle
+): PatchmarkDirectoryHandle {
+  return project.projectDirectoryHandle ?? project.directoryHandle;
+}
+
+function createLegacyDocumentTitle(project: PatchmarkProjectHandle): string {
+  return project.manifest.project_name.replace(/[_-]+/g, " ").trim() || "Document";
+}
+
+function readPreferredDocumentId(projectId: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(
+      `patchmark:active-document:${projectId}`
+    ) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberPreferredDocumentId(projectId: string, documentId: string): void {
+  try {
+    globalThis.localStorage?.setItem(
+      `patchmark:active-document:${projectId}`,
+      documentId
+    );
+  } catch {
+    return;
+  }
 }
 
 async function createOpenedProjectHandle({

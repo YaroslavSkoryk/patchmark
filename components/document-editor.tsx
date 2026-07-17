@@ -85,6 +85,7 @@ import {
 import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
+import { ProjectDocumentNavigator } from "@/components/project-document-navigator";
 import {
   MarkdownSourceEditor,
   type MarkdownMutationHint,
@@ -103,6 +104,7 @@ import { VisualMarkdownEditor } from "@/components/visual-markdown-editor";
 import { downloadMarkdown } from "@/lib/files/download-markdown";
 import {
   canSaveMarkdownFilePicker,
+  openMarkdownFileWithPicker,
   saveMarkdownAsFile,
   saveMarkdownToFileHandle,
   type LoadedMarkdownFile,
@@ -150,24 +152,44 @@ import {
   type PatchFollowUpRelationship
 } from "@/lib/patches/comment-patch-history";
 import {
+  addExistingDocumentToProject,
+  archiveProjectDocument,
   canOpenProjectFolder,
+  convertProjectToMultiDocument,
   createProjectFromMarkdown,
+  createNewProjectDocument,
   createProjectSnapshot,
+  getActiveProjectDocument,
+  getProjectDocumentList,
+  getProjectDocumentExportIdentity,
+  getProjectTitle,
+  isMultiDocumentProject,
   listProjectVersions,
+  locateProjectDocument,
+  moveProjectDocument,
   openProjectFolder,
+  openProjectDocument,
   readProjectVersionMarkdown,
   readProjectComments,
   readProjectPatches,
+  resolveDocumentPathFromFileHandle,
+  restoreProjectDocument,
   restoreProjectLastKnownGood,
   saveProjectState,
+  switchProjectDocument,
   writeProjectContextPack,
   writeProjectComments,
   writeProjectImport,
   writeProjectPatches,
+  updateProjectDocumentMetadata,
   type LoadedPatchmarkProject,
   type PatchmarkProjectHandle,
   type PatchmarkProjectRecoveryState
 } from "@/lib/project/patchmark-project";
+import {
+  type PatchmarkDocumentRole,
+  type PatchmarkProjectDocumentView
+} from "@/lib/project/multi-document-project";
 import {
   CHATGPT_IMPORT_REPAIR_PROMPT,
   CHATGPT_INTERNAL_CITATION_PROMPT_RULES,
@@ -517,6 +539,9 @@ export function DocumentEditor() {
     useState<PatchmarkProjectHandle | null>(null);
   const [projectRecovery, setProjectRecovery] =
     useState<PatchmarkProjectRecoveryState | null>(null);
+  const [projectDocuments, setProjectDocuments] = useState<
+    PatchmarkProjectDocumentView[]
+  >([]);
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
   const [availableDraft, setAvailableDraft] = useState<DocumentDraft | null>(null);
   const [mode, setMode] = useState<EditorMode>("visual");
@@ -531,6 +556,7 @@ export function DocumentEditor() {
   const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
+  const documentSwitchRequestRef = useRef(0);
   const [activeCommentState, setActiveCommentState] =
     useState<ActiveCommentState>({ kind: "none" });
   const lastScrolledActiveCommentKeyRef = useRef<string | null>(null);
@@ -772,7 +798,8 @@ export function DocumentEditor() {
     (baselineMarkdown === null || markdown !== baselineMarkdown);
   const isSaving = saveStatus === "saving";
   const isProjectMode = projectHandle !== null;
-  const isProjectRecoveryReadOnly = projectRecovery !== null;
+  const isProjectRecoveryReadOnly =
+    projectRecovery !== null && projectRecovery.kind !== "migration_rolled_back";
   const isReanchorMode = reanchorSession !== null;
   const documentStatus: DocumentStatusKind = getDocumentStatus({
     isDirty,
@@ -790,6 +817,7 @@ export function DocumentEditor() {
 
     if (!projectHandle) {
       setIsProjectDataLoading(false);
+      setProjectDocuments([]);
       setVersionEntries([]);
       setComments([]);
       setPatches([]);
@@ -803,13 +831,25 @@ export function DocumentEditor() {
     }
 
     setIsProjectDataLoading(true);
+    const documentDataPromise =
+      projectHandle.documentAvailability === "missing"
+        ? Promise.resolve([
+            [],
+            [],
+            []
+          ] as [PatchmarkVersionEntry[], PatchmarkComment[], PatchmarkPatch[]])
+        : Promise.all([
+            listProjectVersions(projectHandle),
+            readProjectComments(projectHandle),
+            readProjectPatches(projectHandle)
+          ]);
     void Promise.all([
-      listProjectVersions(projectHandle),
-      readProjectComments(projectHandle),
-      readProjectPatches(projectHandle)
+      getProjectDocumentList(projectHandle),
+      documentDataPromise
     ])
-      .then(([versions, projectComments, projectPatches]) => {
+      .then(([documents, [versions, projectComments, projectPatches]]) => {
         if (!isCancelled) {
+          setProjectDocuments(documents);
           setVersionEntries(versions);
           setComments(projectComments);
           setPatches(projectPatches);
@@ -819,6 +859,7 @@ export function DocumentEditor() {
       })
       .catch((error) => {
         if (!isCancelled) {
+          setProjectDocuments([]);
           setComments([]);
           setPatches([]);
           setCommentsError(getProjectErrorMessage(error));
@@ -1834,6 +1875,331 @@ export function DocumentEditor() {
         message: getProjectErrorMessage(error)
       });
     }
+  }
+
+  async function flushActiveDocumentForBoundary(
+    project: PatchmarkProjectHandle,
+    reason: string
+  ) {
+    if (project.documentAvailability === "missing") {
+      return;
+    }
+    await saveProjectState({
+      comments,
+      markdown,
+      patches,
+      project,
+      reason
+    });
+    setBaselineMarkdown(markdown);
+    setRestoredMarkdown(null);
+  }
+
+  async function handleSelectProjectDocument(documentId: string) {
+    if (
+      !projectHandle ||
+      !isMultiDocumentProject(projectHandle) ||
+      projectHandle.document?.document_id === documentId
+    ) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    const requestId = documentSwitchRequestRef.current + 1;
+    documentSwitchRequestRef.current = requestId;
+    persistProjectDocumentUiState(projectHandle, {
+      markdownSelection,
+      mode,
+      scrollY: window.scrollY
+    });
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      const loaded = await switchProjectDocument({
+        comments,
+        documentId,
+        markdown,
+        patches,
+        project: projectHandle
+      });
+      setBaselineMarkdown(markdown);
+      setRestoredMarkdown(null);
+      if (requestId !== documentSwitchRequestRef.current) {
+        return;
+      }
+      loadProjectIntoEditor(loaded);
+      setSaveFeedback({
+        kind: loaded.project.documentAvailability === "missing" ? "info" : "success",
+        message:
+          loaded.project.documentAvailability === "missing"
+            ? `The registered file ${loaded.project.document?.path} is missing.`
+            : `Opened ${loaded.project.document?.display_title}.`
+      });
+    } catch (error) {
+      if (requestId !== documentSwitchRequestRef.current) {
+        return;
+      }
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: `Could not switch documents. ${getProjectErrorMessage(error)}`
+      });
+    }
+  }
+
+  async function handleCreateProjectDocument({
+    displayTitle,
+    path,
+    role
+  }: {
+    displayTitle: string;
+    path: string;
+    role: PatchmarkDocumentRole;
+  }) {
+    if (!projectHandle || isSaving) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    let activeProject = projectHandle;
+    try {
+      await flushActiveDocumentForBoundary(activeProject, "before_create_document");
+      if (!isMultiDocumentProject(activeProject)) {
+        const converted = await convertProjectToMultiDocument(activeProject);
+        activeProject = converted.project;
+        loadProjectIntoEditor(converted);
+      }
+      const loaded = await createNewProjectDocument({
+        displayTitle,
+        path,
+        project: activeProject,
+        role
+      });
+      loadProjectIntoEditor(loaded);
+      setSaveFeedback({
+        kind: "success",
+        message: `Created ${loaded.project.document?.display_title}.`
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleAddExistingProjectDocument() {
+    if (!projectHandle || isSaving) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    try {
+      const selected = await openMarkdownFileWithPicker();
+      if (!selected) {
+        return;
+      }
+      if (!selected.fileHandle) {
+        throw new Error(
+          "Patchmark needs a filesystem handle to verify that this file is inside the project."
+        );
+      }
+      const path = await resolveDocumentPathFromFileHandle(
+        projectHandle,
+        selected.fileHandle
+      );
+      setSaveStatus("saving");
+      setSaveFeedback(null);
+      await flushActiveDocumentForBoundary(
+        projectHandle,
+        "before_add_existing_document"
+      );
+      let activeProject = projectHandle;
+      if (!isMultiDocumentProject(activeProject)) {
+        const converted = await convertProjectToMultiDocument(activeProject);
+        activeProject = converted.project;
+        loadProjectIntoEditor(converted);
+      }
+      const loaded = await addExistingDocumentToProject({
+        path,
+        project: activeProject,
+        role: null
+      });
+      loadProjectIntoEditor(loaded);
+      setSaveFeedback({
+        kind: "success",
+        message: `Added ${loaded.project.document?.display_title} without changing its Markdown.`
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleUpdateProjectDocument(
+    documentId: string,
+    changes: { displayTitle?: string; role?: PatchmarkDocumentRole }
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await updateProjectDocumentMetadata({
+        documentId,
+        project: projectHandle,
+        ...(changes.displayTitle !== undefined
+          ? { displayTitle: changes.displayTitle }
+          : {}),
+        ...(changes.role !== undefined ? { role: changes.role } : {})
+      });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Updated document metadata." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleMoveProjectDocument(
+    documentId: string,
+    direction: "up" | "down"
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    try {
+      await moveProjectDocument({ direction, documentId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleArchiveProjectDocument(documentId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      const isActive = projectHandle.document?.document_id === documentId;
+      if (isActive && !confirmTransientDraftLoss()) {
+        setSaveStatus("idle");
+        return;
+      }
+      if (isActive) {
+        persistProjectDocumentUiState(projectHandle, {
+          markdownSelection,
+          mode,
+          scrollY: window.scrollY
+        });
+        await flushActiveDocumentForBoundary(projectHandle, "before_archive_document");
+      }
+      await archiveProjectDocument({ documentId, project: projectHandle });
+      const documents = await getProjectDocumentList(projectHandle);
+      setProjectDocuments(documents);
+      if (isActive) {
+        const nextDocument =
+          documents.find(
+            (document) =>
+              document.status === "active" && document.availability === "available"
+          ) ?? documents.find((document) => document.status === "active");
+        if (!nextDocument) {
+          throw new Error("No active document remains after archive.");
+        }
+        loadProjectIntoEditor(
+          await openProjectDocument(projectHandle, nextDocument.document_id)
+        );
+      } else {
+        setSaveStatus("idle");
+      }
+      setSaveFeedback({ kind: "success", message: "Archived document metadata only." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleRestoreProjectDocument(documentId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    try {
+      await restoreProjectDocument({ documentId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Restored document." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleLocateProjectDocument(documentId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    try {
+      const selected = await openMarkdownFileWithPicker();
+      if (!selected?.fileHandle) {
+        return;
+      }
+      const path = await resolveDocumentPathFromFileHandle(
+        projectHandle,
+        selected.fileHandle
+      );
+      setSaveStatus("saving");
+      persistProjectDocumentUiState(projectHandle, {
+        markdownSelection,
+        mode,
+        scrollY: window.scrollY
+      });
+      await flushActiveDocumentForBoundary(
+        projectHandle,
+        "before_locate_document"
+      );
+      const loaded = await locateProjectDocument({
+        documentId,
+        path,
+        project: projectHandle
+      });
+      loadProjectIntoEditor(loaded);
+      setSaveFeedback({
+        kind: "success",
+        message: `Located ${loaded.project.document?.display_title}.`
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  function confirmTransientDraftLoss(): boolean {
+    if (!commentAddRequest && !commentReplyRequest) {
+      return true;
+    }
+    return window.confirm(
+      "Switching documents will discard the unsubmitted comment or reply draft. Continue?"
+    );
   }
 
   async function handleCreateSnapshot() {
@@ -4103,9 +4469,13 @@ export function DocumentEditor() {
   }
 
   function loadProjectIntoEditor(loadedProject: LoadedPatchmarkProject) {
+    const restoredUiState = readProjectDocumentUiState(loadedProject.project);
     setProjectHandle(loadedProject.project);
     setProjectRecovery(loadedProject.recovery ?? null);
-    setFileName(loadedProject.project.manifest.document_file);
+    setFileName(
+      loadedProject.project.document?.path ??
+        loadedProject.project.manifest.document_file
+    );
     setMarkdown(loadedProject.markdown);
     setBaselineMarkdown(loadedProject.markdown);
     setActiveFileHandle(null);
@@ -4114,7 +4484,9 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSnapshotDialog(null);
     setIsPdfExportPreviewOpen(false);
-    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelection(
+      restoredUiState?.markdownSelection ?? { end: 0, start: 0 }
+    );
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
@@ -4122,6 +4494,7 @@ export function DocumentEditor() {
     setCommentContextMenu(null);
     setComments([]);
     setPatches([]);
+    setActiveCommentState({ kind: "none" });
     setIsProjectDataLoading(true);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
@@ -4134,8 +4507,13 @@ export function DocumentEditor() {
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
-    setMode("visual");
+    setMode(restoredUiState?.mode ?? "visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
+    if (restoredUiState) {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: restoredUiState.scrollY });
+      });
+    }
   }
 
   return (
@@ -4145,6 +4523,41 @@ export function DocumentEditor() {
       aria-label="Patchmark editor"
     >
       <aside className="document-sidebar" aria-label="Document navigation">
+        {projectHandle ? (
+          <ProjectDocumentNavigator
+            activeDocumentId={
+              getActiveProjectDocument(projectHandle)?.document_id ??
+              "legacy-document"
+            }
+            busy={isSaving || isProjectDataLoading || isCommentBusy}
+            documents={projectDocuments}
+            legacy={!isMultiDocumentProject(projectHandle)}
+            projectTitle={getProjectTitle(projectHandle)}
+            onAddExisting={() => void handleAddExistingProjectDocument()}
+            onArchive={(documentId) =>
+              void handleArchiveProjectDocument(documentId)
+            }
+            onCreate={(request) => void handleCreateProjectDocument(request)}
+            onLocate={(documentId) =>
+              void handleLocateProjectDocument(documentId)
+            }
+            onMove={(documentId, direction) =>
+              void handleMoveProjectDocument(documentId, direction)
+            }
+            onRename={(documentId, displayTitle) =>
+              void handleUpdateProjectDocument(documentId, { displayTitle })
+            }
+            onRestore={(documentId) =>
+              void handleRestoreProjectDocument(documentId)
+            }
+            onRoleChange={(documentId, role) =>
+              void handleUpdateProjectDocument(documentId, { role })
+            }
+            onSelect={(documentId) =>
+              void handleSelectProjectDocument(documentId)
+            }
+          />
+        ) : null}
         <DocumentOutline headings={headings} />
         <VersionHistoryPanel
           comments={comments}
@@ -4174,7 +4587,7 @@ export function DocumentEditor() {
               </button>
             <button
               type="button"
-              disabled={!fileName || isSaving || isReanchorMode}
+              disabled={!fileName || isProjectMode || isSaving || isReanchorMode}
               onClick={handleCreateProjectFromCurrentDocument}
             >
               Create Project From Current Document
@@ -4202,16 +4615,26 @@ export function DocumentEditor() {
               </span>
               {projectHandle ? (
                 <>
-                  <span>Project: {projectHandle.manifest.project_name}</span>
-                  <span>Document: {projectHandle.manifest.document_file}</span>
+                  <span>Project: {getProjectTitle(projectHandle)}</span>
+                  <span>
+                    Document:{" "}
+                    {projectHandle.document?.display_title ??
+                      projectHandle.manifest.document_file}
+                  </span>
                 </>
               ) : null}
             </div>
 
             {fileName ? (
               <div className="document-meta">
-                <span>{isProjectMode ? "Project document" : "Loaded file"}</span>
-                <strong title={fileName}>{fileName}</strong>
+                <span>{isProjectMode ? "Project / document" : "Loaded file"}</span>
+                <strong title={fileName}>
+                  {projectHandle
+                    ? `${getProjectTitle(projectHandle)} / ${
+                        projectHandle.document?.display_title ?? fileName
+                      }`
+                    : fileName}
+                </strong>
                 <DocumentStatus status={documentStatus} />
               </div>
             ) : null}
@@ -6802,6 +7225,75 @@ function getAcceptedOriginalSourceNote(
   }
 
   return "Exact persisted Markdown that existed before this patch was applied.";
+}
+
+type ProjectDocumentUiState = {
+  markdownSelection: MarkdownSelection;
+  mode: EditorMode;
+  scrollY: number;
+};
+
+function persistProjectDocumentUiState(
+  project: PatchmarkProjectHandle,
+  state: ProjectDocumentUiState
+): void {
+  const key = getProjectDocumentUiStateKey(project);
+  if (!key) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    return;
+  }
+}
+
+function readProjectDocumentUiState(
+  project: PatchmarkProjectHandle
+): ProjectDocumentUiState | null {
+  const key = getProjectDocumentUiStateKey(project);
+  if (!key) {
+    return null;
+  }
+  try {
+    const value = JSON.parse(window.localStorage.getItem(key) ?? "null") as unknown;
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("mode" in value) ||
+      (value.mode !== "visual" && value.mode !== "markdown") ||
+      !("scrollY" in value) ||
+      typeof value.scrollY !== "number" ||
+      !("markdownSelection" in value) ||
+      !value.markdownSelection ||
+      typeof value.markdownSelection !== "object" ||
+      !("start" in value.markdownSelection) ||
+      !("end" in value.markdownSelection) ||
+      typeof value.markdownSelection.start !== "number" ||
+      typeof value.markdownSelection.end !== "number"
+    ) {
+      return null;
+    }
+    return {
+      markdownSelection: {
+        start: value.markdownSelection.start,
+        end: value.markdownSelection.end
+      },
+      mode: value.mode,
+      scrollY: value.scrollY
+    };
+  } catch {
+    return null;
+  }
+}
+
+function getProjectDocumentUiStateKey(
+  project: PatchmarkProjectHandle
+): string | null {
+  if (!project.projectManifest || !project.document) {
+    return null;
+  }
+  return `patchmark:document-ui:${project.projectManifest.project_id}:${project.document.document_id}`;
 }
 
 function getDocumentStatus({
@@ -12375,8 +12867,7 @@ function createFocusedCommentsExportPayload({
       ? "dedicated_document_comment"
       : "focused_comments",
     project: {
-      project_name: project.manifest.project_name,
-      document_file: project.manifest.document_file,
+      ...getProjectDocumentExportIdentity(project),
       exported_at: exportedAt
     },
     instructions_for_chatgpt: {

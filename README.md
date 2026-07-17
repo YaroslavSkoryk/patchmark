@@ -30,7 +30,9 @@ Patchmark can work in Single File Mode or Project Folder Mode.
 
 ### Project Folder Mode
 
-Project Folder Mode stores the clean document separately from Patchmark metadata:
+Project Folder Mode stores clean Markdown documents separately from Patchmark metadata.
+Legacy projects continue to use the original single-document layout until a second
+document is explicitly created or added:
 
 ```text
 Project Folder/
@@ -68,3 +70,40 @@ Comments can apply to selected Markdown text, a whole section, or the whole docu
 Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
 
 Git is optional and can be used manually around the project folder, but Patchmark does not run Git commands yet.
+
+### Multi-Document Projects
+
+After explicit conversion, a project has a versioned document registry and one
+independent review store per registered Markdown document:
+
+```text
+Project Folder/
+  action-plan.md
+  ready-to-eat-investigation.md
+  .patchmark/
+    project.json
+    documents/
+      doc_.../
+        document.json
+        manifest.json
+        comments.json
+        patches.json
+        save-commit.json
+        versions/
+        recovery/
+    migrations/
+    transactions/
+```
+
+- `.patchmark/project.json` is the multi-document commit marker and stores only portable project registry metadata.
+- Markdown paths are relative to the project root; outside files, traversal, `.patchmark` paths, and symbolic links are rejected.
+- Documents are registered explicitly. Patchmark never scans and auto-registers every Markdown file.
+- Each document keeps independent comments, patches, anchors, generations, snapshots, recovery, imports, context packs, and exports.
+- Display-title and role changes never rename or edit the Markdown file.
+- Archive is reversible metadata only; it does not delete Markdown or review history.
+- Missing registered files retain their document identity and review store and can be repaired with **Locate file**.
+- Active document, editor mode, selection, and scroll restoration are device-local browser state.
+
+See [`docs/phase-a-core-multi-document.md`](docs/phase-a-core-multi-document.md)
+for the persistence model, conversion state machine, safety rules, and current
+Phase A non-goals.

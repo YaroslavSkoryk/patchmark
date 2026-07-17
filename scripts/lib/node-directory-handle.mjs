@@ -6,6 +6,7 @@ export class NodeDirectoryHandle {
   constructor(directoryPath, controller = createNodeHandleController()) {
     this.path = path.resolve(directoryPath);
     this.name = path.basename(this.path);
+    this.kind = "directory";
     this.controller = controller;
   }
 
@@ -81,13 +82,34 @@ export class NodeDirectoryHandle {
       ];
     }
   }
+
+  async resolve(possibleDescendant) {
+    if (!possibleDescendant?.path) {
+      return null;
+    }
+    const relativePath = path.relative(this.path, possibleDescendant.path);
+    if (
+      relativePath === "" ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativePath)
+    ) {
+      return relativePath === "" ? [] : null;
+    }
+    return relativePath.split(path.sep);
+  }
 }
 
 class NodeFileHandle {
   constructor(filePath, controller) {
     this.path = filePath;
     this.name = path.basename(filePath);
+    this.kind = "file";
     this.controller = controller;
+  }
+
+  async isSymbolicLink() {
+    return fs.lstatSync(this.path).isSymbolicLink();
   }
 
   async getFile() {

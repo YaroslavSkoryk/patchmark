@@ -123,6 +123,168 @@ button {
   overflow: auto;
 }
 
+.project-document-navigator {
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 14px;
+  box-shadow: var(--shadow);
+}
+
+.project-document-navigator > header {
+  display: grid;
+  gap: 3px;
+}
+
+.project-document-navigator > header span,
+.project-document-navigator > header small {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.project-document-navigator > header span {
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.project-document-list {
+  display: grid;
+  gap: 8px;
+}
+
+.project-document-item {
+  display: grid;
+  gap: 7px;
+  border: 1px solid var(--border);
+  padding: 9px;
+}
+
+.project-document-item[data-active="true"] {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
+.project-document-item[data-missing="true"] {
+  border-style: dashed;
+}
+
+.project-document-select {
+  display: grid;
+  gap: 3px;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 0;
+  text-align: left;
+}
+
+.project-document-select span {
+  overflow: hidden;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-document-select small {
+  overflow: hidden;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-document-badges,
+.project-document-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  align-items: center;
+}
+
+.project-document-badges span {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  padding: 2px 6px;
+  font-size: 0.7rem;
+  font-weight: 800;
+}
+
+.project-document-badges .project-document-missing {
+  border-color: #efb7a9;
+  background: #fff0ea;
+  color: #8d2f18;
+}
+
+.project-document-controls button,
+.project-document-controls select,
+.project-add-existing,
+.project-create-document button,
+.project-create-document input,
+.project-create-document select,
+.project-archived-documents button {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 6px 7px;
+  font: inherit;
+  font-size: 0.74rem;
+}
+
+.project-document-controls button,
+.project-add-existing,
+.project-create-document button,
+.project-archived-documents button {
+  font-weight: 800;
+}
+
+.project-document-controls button:disabled,
+.project-document-controls select:disabled,
+.project-add-existing:disabled,
+.project-create-document button:disabled,
+.project-archived-documents button:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
+.project-create-document,
+.project-archived-documents {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+}
+
+.project-create-document summary,
+.project-archived-documents summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.project-create-document form {
+  display: grid;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.project-create-document label {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.project-archived-documents > div {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 8px;
+  font-size: 0.8rem;
+}
+
 .comments-rail {
   align-self: stretch;
   position: relative;
