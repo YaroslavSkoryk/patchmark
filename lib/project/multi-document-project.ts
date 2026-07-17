@@ -39,7 +39,7 @@ export type PatchmarkDocumentStoreIdentity = {
   schema_version: 1;
   document_id: string;
   created_at: string;
-  source: "created" | "existing" | "legacy-conversion";
+  source: "created" | "existing" | "legacy-conversion" | "legacy-assembly";
 };
 
 export type PatchmarkProjectMigrationStage =
@@ -64,9 +64,10 @@ export type ProjectFileHandle = EntryHandle & {
     size?: number;
     type?: string;
     text: () => Promise<string>;
+    arrayBuffer?: () => Promise<ArrayBuffer>;
   }>;
   createWritable: () => Promise<{
-    write: (data: string) => Promise<void>;
+    write: (data: string | ArrayBuffer | ArrayBufferView) => Promise<void>;
     close: () => Promise<void>;
   }>;
 };
@@ -93,6 +94,11 @@ export type LegacyConversionResult = {
   document: PatchmarkRegisteredDocument;
   manifest: PatchmarkProjectManifestV1;
   migrationId: string;
+};
+
+export type LegacyProjectImportSnapshot = {
+  markdown: string;
+  metadataFiles: ReadonlyMap<string, string>;
 };
 
 const metadataDirectoryName = ".patchmark";
@@ -497,22 +503,14 @@ export async function convertLegacyProject({
   projectTitle: string;
   root: ProjectDirectoryHandle;
 }): Promise<LegacyConversionResult> {
-  if (await readProjectManifest(root)) {
-    throw new Error("This project is already using the multi-document format.");
-  }
-
   const now = new Date().toISOString();
   const migrationId = createStableId("migration");
   const documentId = createDocumentId();
   const documentPath = "document.md";
-  const documentFile = await getFileHandleAtPath(root, documentPath);
-  await assertRegularNonSymlinkFile(documentFile);
-  const markdown = await readText(documentFile);
+  const legacyImport = await inspectLegacyProjectImportSource(root);
+  const markdown = legacyImport.markdown;
+  const legacySnapshot = new Map(legacyImport.metadataFiles);
   const metadata = await root.getDirectoryHandle(metadataDirectoryName);
-  const legacySnapshot = await collectDirectoryFiles(metadata, {
-    excludedRootEntries: reservedMetadataEntries
-  });
-  validateLegacySnapshot(legacySnapshot);
 
   const document: PatchmarkRegisteredDocument = {
     document_id: documentId,
@@ -607,6 +605,40 @@ export async function convertLegacyProject({
     }
     throw error;
   }
+}
+
+export async function inspectLegacyProjectImportSource(
+  root: ProjectDirectoryHandle,
+  options: { allowInvalidCurrentState?: boolean } = {}
+): Promise<LegacyProjectImportSnapshot> {
+  if (await readProjectManifest(root)) {
+    throw new Error("This project is already using the multi-document format.");
+  }
+
+  const documentFile = await getFileHandleAtPath(root, "document.md");
+  await assertRegularNonSymlinkFile(documentFile);
+  const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+  if (await directoryExists(metadata, documentStoreDirectoryName)) {
+    throw new Error(
+      "This legacy project contains multi-document stores without a valid project manifest."
+    );
+  }
+  const metadataFiles = await collectDirectoryFiles(metadata, {
+    excludedRootEntries: reservedMetadataEntries
+  });
+  if (!options.allowInvalidCurrentState) {
+    validateLegacySnapshot(metadataFiles);
+  }
+  for (const reserved of [documentStoreIdentityFileName, "import-provenance.json"]) {
+    if (metadataFiles.has(reserved)) {
+      throw new Error(`Legacy project metadata uses reserved file ${reserved}.`);
+    }
+  }
+
+  return {
+    markdown: await readText(documentFile),
+    metadataFiles
+  };
 }
 
 export async function markLegacyConversionReopened(
@@ -1220,7 +1252,12 @@ function validateLegacySnapshot(snapshot: Map<string, string>): void {
       throw new Error(`Legacy project is missing .patchmark/${required}.`);
     }
   }
-  const manifest = JSON.parse(snapshot.get("manifest.json") ?? "null") as unknown;
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(snapshot.get("manifest.json") ?? "null") as unknown;
+  } catch {
+    throw new Error("Legacy .patchmark/manifest.json is invalid JSON.");
+  }
   if (!isRecord(manifest) || manifest.schema_version !== 1) {
     throw new Error("Legacy project manifest is invalid.");
   }
@@ -1228,18 +1265,6 @@ function validateLegacySnapshot(snapshot: Map<string, string>): void {
   const patches = parseJsonArray(snapshot.get("patches.json") ?? "", "patches.json");
   assertUniqueObjectIds(comments, "comment");
   assertUniqueObjectIds(patches, "patch");
-  const commentIds = new Set(
-    comments.filter(isRecord).map((comment) => comment.id).filter(isNonEmptyString)
-  );
-  for (const patch of patches) {
-    if (
-      isRecord(patch) &&
-      isNonEmptyString(patch.comment_id) &&
-      !commentIds.has(patch.comment_id)
-    ) {
-      throw new Error(`Patch ${String(patch.id)} refers to an unknown comment.`);
-    }
-  }
 }
 
 function getJsonArrayCount(snapshot: Map<string, string>, path: string): number {

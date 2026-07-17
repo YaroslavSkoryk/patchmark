@@ -187,6 +187,13 @@ type ProjectWriteQueueState = {
   latestRequestId: number;
 };
 
+type PendingLegacyAssemblyTransaction = {
+  assemblyId: string;
+  directory: PatchmarkDirectoryHandle;
+  stage: string;
+  updatedAt: string;
+};
+
 const projectWriteQueues = new WeakMap<
   PatchmarkDirectoryHandle,
   ProjectWriteQueueState
@@ -272,6 +279,14 @@ export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null
     return null;
   }
 
+  return openProjectFolderHandle(directoryHandle);
+}
+
+export async function openProjectFolderHandle(
+  directoryHandle: PatchmarkDirectoryHandle,
+  options: { deferAssemblyRecovery?: boolean; readOnly?: boolean } = {}
+): Promise<LoadedPatchmarkProject> {
+
   let multiDocumentManifestError: unknown;
   let migrationRollbackError: unknown;
   let projectManifest: PatchmarkProjectManifestV1 | null = null;
@@ -283,17 +298,49 @@ export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null
     multiDocumentManifestError = error;
   }
   if (projectManifest) {
+    const pendingAssembly = options.deferAssemblyRecovery
+      ? null
+      : await findPendingLegacyAssemblyTransaction(
+          directoryHandle,
+          projectManifest.project_id
+        );
     try {
       const loaded = await openRegisteredProjectFromManifest(
         directoryHandle,
-        projectManifest
+        projectManifest,
+        options
       );
-      await completePendingProjectMigration(
-        directoryHandle as ProjectDirectoryHandle,
-        projectManifest
-      );
+      if (!options.readOnly) {
+        await completePendingProjectMigration(
+          directoryHandle as ProjectDirectoryHandle,
+          projectManifest
+        );
+        if (pendingAssembly) {
+          await completePendingLegacyAssemblyTransaction(
+            directoryHandle,
+            projectManifest,
+            loaded,
+            pendingAssembly
+          );
+        }
+      }
       return loaded;
     } catch (error) {
+      if (options.readOnly) {
+        throw error;
+      }
+      if (pendingAssembly) {
+        await invalidatePendingLegacyAssemblyTransaction(
+          directoryHandle,
+          pendingAssembly,
+          error
+        );
+        throw new Error(
+          `An interrupted assembled project failed reopen validation and was marked incomplete: ${getErrorMessage(
+            error
+          )}`
+        );
+      }
       const rolledBack = await rollbackPendingProjectMigration(
         directoryHandle as ProjectDirectoryHandle,
         projectManifest,
@@ -330,7 +377,8 @@ export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null
     const openedProject = await createOpenedProjectHandle({
       directoryHandle,
       manifestText,
-      markdown
+      markdown,
+      readOnly: options.readOnly
     });
     openedProject.project.projectMode = "legacy";
     openedProject.project.projectDirectoryHandle = directoryHandle;
@@ -1651,7 +1699,8 @@ function createSaveCommitId(generation: number): string {
 
 async function openRegisteredProjectFromManifest(
   directoryHandle: PatchmarkDirectoryHandle,
-  manifest: PatchmarkProjectManifestV1
+  manifest: PatchmarkProjectManifestV1,
+  options: { readOnly?: boolean } = {}
 ): Promise<LoadedPatchmarkProject> {
   const documents = await listProjectDocuments(
     directoryHandle as ProjectDirectoryHandle,
@@ -1675,14 +1724,16 @@ async function openRegisteredProjectFromManifest(
   return openRegisteredProjectDocument(
     directoryHandle,
     manifest,
-    selected.document_id
+    selected.document_id,
+    options
   );
 }
 
 async function openRegisteredProjectDocument(
   root: PatchmarkDirectoryHandle,
   projectManifest: PatchmarkProjectManifestV1,
-  documentId: string
+  documentId: string,
+  options: { readOnly?: boolean } = {}
 ): Promise<LoadedPatchmarkProject> {
   const document = getRegisteredDocument(projectManifest, documentId);
   const documentView = (await listProjectDocuments(
@@ -1720,7 +1771,8 @@ async function openRegisteredProjectDocument(
   const loaded = await createOpenedProjectHandle({
     directoryHandle: scopedDirectory,
     manifestText: await readTextFile(documentManifestFile),
-    markdown: await readTextFile(documentFile)
+    markdown: await readTextFile(documentFile),
+    readOnly: options.readOnly
   });
   applyMultiDocumentContext({
     availability: "available",
@@ -1961,14 +2013,166 @@ function rememberPreferredDocumentId(projectId: string, documentId: string): voi
   }
 }
 
+async function findPendingLegacyAssemblyTransaction(
+  root: PatchmarkDirectoryHandle,
+  projectId: string
+): Promise<PendingLegacyAssemblyTransaction | null> {
+  try {
+    const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+    const transactions = await metadata.getDirectoryHandle("transactions");
+    if (!transactions.entries) {
+      return null;
+    }
+    const candidates: PendingLegacyAssemblyTransaction[] = [];
+    for await (const [assemblyId, entry] of transactions.entries()) {
+      if (entry.kind !== "directory") {
+        continue;
+      }
+      const directory = await transactions.getDirectoryHandle(assemblyId);
+      const text = await readOptionalTextFile(directory, "assembly.json");
+      if (!text) {
+        continue;
+      }
+      try {
+        const journal = JSON.parse(text) as unknown;
+        if (
+          isRecord(journal) &&
+          journal.format === "patchmark-legacy-assembly-transaction" &&
+          journal.destination_project_id === projectId &&
+          ["manifest_committed", "reopened", "sources_verified"].includes(
+            String(journal.stage)
+          )
+        ) {
+          candidates.push({
+            assemblyId,
+            directory,
+            stage: String(journal.stage),
+            updatedAt:
+              typeof journal.updated_at === "string" ? journal.updated_at : ""
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+    candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return candidates[0] ?? null;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function completePendingLegacyAssemblyTransaction(
+  root: PatchmarkDirectoryHandle,
+  manifest: PatchmarkProjectManifestV1,
+  initiallyLoaded: LoadedPatchmarkProject,
+  transaction: PendingLegacyAssemblyTransaction
+): Promise<void> {
+  for (const document of manifest.documents) {
+    const loaded = await openRegisteredProjectDocument(
+      root,
+      manifest,
+      document.document_id,
+      { readOnly: true }
+    );
+    if (loaded.recovery || loaded.project.documentAvailability !== "available") {
+      throw new Error(
+        `Imported document ${document.document_id} did not reopen as authoritative.`
+      );
+    }
+    await readProjectComments(loaded.project);
+    await readProjectPatches(loaded.project);
+    for (const version of await listProjectVersions(loaded.project)) {
+      await readProjectVersionMarkdown(loaded.project, version);
+    }
+  }
+  if (initiallyLoaded.project.document) {
+    rememberPreferredDocumentId(
+      manifest.project_id,
+      initiallyLoaded.project.document.document_id
+    );
+  }
+  await updateLegacyAssemblyJournal(transaction.directory, "complete");
+  try {
+    const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+    const transactions = await metadata.getDirectoryHandle("transactions");
+    await transactions.removeEntry?.(transaction.assemblyId, { recursive: true });
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      return;
+    }
+  }
+}
+
+async function invalidatePendingLegacyAssemblyTransaction(
+  root: PatchmarkDirectoryHandle,
+  transaction: PendingLegacyAssemblyTransaction,
+  error: unknown
+): Promise<void> {
+  try {
+    await updateLegacyAssemblyJournal(
+      transaction.directory,
+      "invalid_destination",
+      error
+    );
+  } finally {
+    const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+    if (!metadata.removeEntry) {
+      throw new Error(
+        "This filesystem cannot remove the invalid assembled project manifest."
+      );
+    }
+    try {
+      await metadata.removeEntry("project.json");
+    } catch (removeError) {
+      if (!isNotFoundError(removeError)) {
+        throw removeError;
+      }
+    }
+  }
+}
+
+async function updateLegacyAssemblyJournal(
+  directory: PatchmarkDirectoryHandle,
+  stage: string,
+  error?: unknown
+): Promise<void> {
+  const text = await readOptionalTextFile(directory, "assembly.json");
+  let journal: Record<string, unknown> = {};
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (isRecord(parsed)) {
+        journal = parsed;
+      }
+    } catch {
+      journal = {};
+    }
+  }
+  await writeTextFile(
+    await directory.getFileHandle("assembly.json", { create: true }),
+    `${JSON.stringify({
+      ...journal,
+      stage,
+      updated_at: new Date().toISOString(),
+      ...(error ? { error: getErrorMessage(error) } : {})
+    }, null, 2)}\n`
+  );
+}
+
 async function createOpenedProjectHandle({
   directoryHandle,
   manifestText,
-  markdown
+  markdown,
+  readOnly = false
 }: {
   directoryHandle: PatchmarkDirectoryHandle;
   manifestText: string;
   markdown: string;
+  readOnly?: boolean;
 }): Promise<LoadedPatchmarkProject> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
@@ -2060,7 +2264,9 @@ async function createOpenedProjectHandle({
     );
 
     if (currentDetails.length === 0) {
-      await cleanupStaleProjectTemporaryFiles(directoryHandle);
+      if (!readOnly) {
+        await cleanupStaleProjectTemporaryFiles(directoryHandle);
+      }
       const project: PatchmarkProjectHandle = {
         directoryHandle,
         manifest: currentManifest,
@@ -4115,4 +4321,8 @@ function isNotFoundError(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

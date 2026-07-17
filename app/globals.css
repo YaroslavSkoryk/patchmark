@@ -1080,6 +1080,269 @@ button {
   box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
 }
 
+.legacy-assembly-backdrop {
+  background: rgba(16, 24, 21, 0.62);
+}
+
+.legacy-assembly-dialog {
+  display: flex;
+  width: min(980px, 100%);
+  max-height: min(92vh, 920px);
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 30px 80px rgba(22, 35, 29, 0.28);
+}
+
+.legacy-assembly-steps {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  margin: 0;
+  border-block: 1px solid var(--border);
+  padding: 0;
+  list-style: none;
+}
+
+.legacy-assembly-steps li {
+  padding: 11px 16px;
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  text-align: center;
+  text-transform: uppercase;
+}
+
+.legacy-assembly-steps li[aria-current="step"] {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
+.legacy-assembly-body {
+  display: grid;
+  gap: 16px;
+  overflow: auto;
+  padding: 20px;
+}
+
+.legacy-assembly-section-heading,
+.legacy-source-card-header,
+.legacy-configured-card > header,
+.legacy-assembly-actions {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.legacy-assembly-section-heading h3,
+.legacy-source-card h4,
+.legacy-assembly-review h3 {
+  margin: 0;
+}
+
+.legacy-assembly-section-heading p,
+.legacy-source-card p,
+.legacy-assembly-error p,
+.legacy-assembly-review p {
+  margin: 4px 0 0;
+}
+
+.legacy-source-list,
+.legacy-configured-list {
+  display: grid;
+  gap: 12px;
+}
+
+.legacy-source-card,
+.legacy-configured-card,
+.legacy-assembly-review-summary {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised, var(--surface));
+  padding: 16px;
+}
+
+.legacy-source-card-header span,
+.legacy-configured-card header span,
+.legacy-assembly-review-summary > span {
+  color: var(--accent-strong, var(--accent));
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.legacy-source-counts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.legacy-source-counts div {
+  display: grid;
+  gap: 2px;
+}
+
+.legacy-source-counts dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.legacy-source-counts dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.legacy-source-warnings {
+  border-top: 1px solid var(--border);
+  padding-top: 10px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.legacy-source-warnings ul {
+  margin-bottom: 0;
+  padding-left: 20px;
+}
+
+.legacy-assembly-error,
+.legacy-assembly-collision,
+.legacy-incomplete-assembly {
+  border: 1px solid #c56c62;
+  background: #fff2ef;
+  padding: 12px 14px;
+  color: #7c2f29;
+}
+
+.legacy-incomplete-assembly {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.legacy-incomplete-assembly p {
+  margin: 4px 0 0;
+}
+
+.legacy-assembly-project-fields,
+.legacy-document-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.legacy-assembly-project-fields {
+  grid-template-columns: 2fr 1fr;
+}
+
+.legacy-assembly-project-fields label,
+.legacy-assembly-project-fields > div,
+.legacy-document-fields label {
+  display: grid;
+  gap: 6px;
+}
+
+.legacy-assembly-project-fields span,
+.legacy-document-fields span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.legacy-assembly-project-fields input,
+.legacy-document-fields input,
+.legacy-document-fields select {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 10px;
+}
+
+.legacy-order-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.legacy-assembly-review,
+.legacy-assembly-review-summary {
+  display: grid;
+  gap: 14px;
+}
+
+.legacy-review-documents {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legacy-review-documents li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, auto) 100px;
+  gap: 12px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  padding: 10px 0;
+}
+
+.legacy-review-documents li > div {
+  display: grid;
+  gap: 3px;
+}
+
+.legacy-review-documents code {
+  overflow-wrap: anywhere;
+}
+
+.legacy-assembly-source-promise {
+  border-left: 4px solid var(--accent);
+  background: var(--accent-soft);
+  padding: 12px 14px;
+  line-height: 1.5;
+}
+
+.legacy-assembly-progress {
+  margin: 0;
+  font-weight: 700;
+}
+
+.legacy-assembly-empty {
+  border: 1px dashed var(--border);
+  margin: 0;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.legacy-assembly-actions {
+  border-top: 1px solid var(--border);
+  padding: 14px 20px;
+}
+
+@media (max-width: 760px) {
+  .legacy-source-counts,
+  .legacy-document-fields,
+  .legacy-assembly-project-fields,
+  .legacy-review-documents li {
+    grid-template-columns: 1fr;
+  }
+
+  .legacy-source-card-header,
+  .legacy-configured-card > header,
+  .legacy-assembly-section-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+}
+
 .comment-export-dialog {
   display: flex;
   width: min(1120px, 100%);

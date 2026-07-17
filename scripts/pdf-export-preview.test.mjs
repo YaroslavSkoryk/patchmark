@@ -13,8 +13,10 @@ const cssSource = readFileSync("app/globals.css", "utf8");
 assert.match(actionsSource, /onExportPdf: \(\) => void/);
 assert.match(actionsSource, /Export PDF/);
 assert.match(editorSource, /import \{ PdfExportPreview \}/);
-assert.match(editorSource, /isPdfExportPreviewOpen/);
-assert.match(editorSource, /markdown=\{markdown\}/);
+assert.match(editorSource, /const \[pdfExportTarget, setPdfExportTarget\]/);
+assert.match(editorSource, /documentId:\s*projectHandle\?\.document\?\.document_id/);
+assert.match(editorSource, /fileName=\{pdfExportTarget\.fileName\}/);
+assert.match(editorSource, /markdown=\{pdfExportTarget\.markdown\}/);
 
 assert.match(previewSource, /createPortal/);
 assert.match(previewSource, /window\.print\(\)/);

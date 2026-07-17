@@ -98,6 +98,10 @@ export class NodeDirectoryHandle {
     }
     return relativePath.split(path.sep);
   }
+
+  async isSameEntry(other) {
+    return other?.kind === "directory" && other?.path === this.path;
+  }
 }
 
 class NodeFileHandle {
@@ -123,6 +127,13 @@ class NodeFileHandle {
       type: "",
       async text() {
         return fs.readFileSync(filePath, "utf8");
+      },
+      async arrayBuffer() {
+        const contents = fs.readFileSync(filePath);
+        return contents.buffer.slice(
+          contents.byteOffset,
+          contents.byteOffset + contents.byteLength
+        );
       }
     };
   }

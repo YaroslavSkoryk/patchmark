@@ -485,7 +485,8 @@ function createProjectPickerShim({
   baseUrl,
   directories,
   files,
-  projectName
+  projectName,
+  pickerPaths = [""]
 }) {
   return `(() => {
     const filePaths = new Set(${JSON.stringify(files)});
@@ -503,6 +504,8 @@ function createProjectPickerShim({
       maximumActiveWrites: 0,
       nextSequence: 1
     };
+    const pickerQueue = ${JSON.stringify(pickerPaths)};
+    let pickerIndex = 0;
 
     function normalizePath(path) {
       return String(path).split("/").filter(Boolean).join("/");
@@ -545,6 +548,12 @@ function createProjectPickerShim({
           async write(data) {
             if (data instanceof Blob) {
               chunks.push(await data.text());
+            } else if (data instanceof ArrayBuffer) {
+              chunks.push(new TextDecoder().decode(new Uint8Array(data)));
+            } else if (ArrayBuffer.isView(data)) {
+              chunks.push(new TextDecoder().decode(
+                new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+              ));
             } else {
               chunks.push(String(data));
             }
@@ -726,6 +735,25 @@ function createProjectPickerShim({
           ];
         }
       }
+
+      async isSameEntry(other) {
+        return other?.kind === "directory" && other?.path === this.path;
+      }
+
+      async resolve(possibleDescendant) {
+        if (!possibleDescendant || typeof possibleDescendant.path !== "string") {
+          return null;
+        }
+        if (possibleDescendant.path === this.path) {
+          return [];
+        }
+        const prefix = this.path ? this.path + "/" : "";
+        if (!possibleDescendant.path.startsWith(prefix)) {
+          return null;
+        }
+        const relativePath = possibleDescendant.path.slice(prefix.length);
+        return relativePath ? relativePath.split("/") : [];
+      }
     }
 
     try {
@@ -757,8 +785,14 @@ function createProjectPickerShim({
         return response.text();
       });
     };
-    window.showDirectoryPicker = async () =>
-      new PatchmarkFixtureDirectoryHandle("", ${JSON.stringify(projectName)});
+    window.showDirectoryPicker = async () => {
+      const selectedPath = normalizePath(
+        pickerQueue[Math.min(pickerIndex, pickerQueue.length - 1)] ?? ""
+      );
+      pickerIndex += 1;
+      const selectedName = selectedPath.split("/").pop() || ${JSON.stringify(projectName)};
+      return new PatchmarkFixtureDirectoryHandle(selectedPath, selectedName);
+    };
   })();`;
 }
 

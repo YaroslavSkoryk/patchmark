@@ -23,6 +23,8 @@
     "test:persistence-consistency-audit": "node scripts/persistence-consistency-audit.test.mjs",
     "test:persistence-safety": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/persistence-safety.test.mjs",
     "test:multi-document-project": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/multi-document-project.test.mjs",
+    "test:legacy-project-assembly": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/legacy-project-assembly.test.mjs",
+    "test:legacy-project-assembly-browser": "node scripts/legacy-project-assembly-browser.test.mjs",
     "test:multi-document-browser": "node scripts/multi-document-browser.test.mjs",
     "test:persistence-size-audit": "node scripts/persistence-size-audit.test.mjs",
     "test:concise-anchor-history": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/concise-anchor-history.test.mjs",

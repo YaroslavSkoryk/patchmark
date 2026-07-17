@@ -107,3 +107,10 @@ Project Folder/
 See [`docs/phase-a-core-multi-document.md`](docs/phase-a-core-multi-document.md)
 for the persistence model, conversion state machine, safety rules, and current
 Phase A non-goals.
+
+Phase A.1 also supports **Create Project From Existing Patchmark Projects** for
+copying two or more validated legacy projects into a new destination while
+preserving independent review stores. See
+[`docs/phase-a-1-legacy-project-assembly.md`](docs/phase-a-1-legacy-project-assembly.md)
+for source immutability, collision handling, manifest-last assembly, recovery,
+and provenance rules.

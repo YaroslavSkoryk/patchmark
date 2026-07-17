@@ -151,9 +151,10 @@ the same document store and identity.
 
 Prompt payloads identify the active project and document by title, role, relative
 path, and stable IDs. Context packs and imported responses are written through
-the active document store. PDF preview receives only the active document's
-Markdown. Version History reads only the active document's internal manifest and
-versions directory.
+the active document store. PDF preview captures the active document ID, filename,
+and Markdown when export begins, so a later switch cannot retarget that preview.
+Version History reads only the active document's internal manifest and versions
+directory.
 
 No project-wide prompt, PDF bundle, snapshot counter, or history list is created.
 
@@ -166,3 +167,8 @@ automatic Markdown discovery, role inference, detach/remove, or file deletion.
 
 Roles are labels only. A research conclusion cannot modify a decision document or
 create a patch for it automatically.
+
+Phase A.1 adds copy-based assembly from multiple legacy projects. Its source
+immutability, collision, provenance, transaction, and recovery rules are
+documented in
+[`phase-a-1-legacy-project-assembly.md`](phase-a-1-legacy-project-assembly.md).

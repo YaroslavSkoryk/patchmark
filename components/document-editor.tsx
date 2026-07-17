@@ -85,6 +85,7 @@ import {
 import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
+import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
 import { ProjectDocumentNavigator } from "@/components/project-document-navigator";
 import {
   MarkdownSourceEditor,
@@ -585,7 +586,13 @@ export function DocumentEditor() {
   );
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
-  const [isPdfExportPreviewOpen, setIsPdfExportPreviewOpen] = useState(false);
+  const [pdfExportTarget, setPdfExportTarget] = useState<{
+    documentId: string | null;
+    fileName: string;
+    markdown: string;
+  } | null>(null);
+  const [isLegacyProjectAssemblyOpen, setIsLegacyProjectAssemblyOpen] =
+    useState(false);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
   const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
@@ -1477,7 +1484,7 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
-    setIsPdfExportPreviewOpen(false);
+    setPdfExportTarget(null);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
@@ -1517,7 +1524,7 @@ export function DocumentEditor() {
     setSaveStatus("idle");
     setSaveFeedback(null);
     setSnapshotDialog(null);
-    setIsPdfExportPreviewOpen(false);
+    setPdfExportTarget(null);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
@@ -1875,6 +1882,35 @@ export function DocumentEditor() {
         message: getProjectErrorMessage(error)
       });
     }
+  }
+
+  function handleOpenLegacyProjectAssembly() {
+    if (isSaving) {
+      return;
+    }
+    if (!canOpenProjectFolder()) {
+      setSaveStatus("unavailable");
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Project assembly requires a browser with File System Access API support."
+      });
+      return;
+    }
+    setSaveFeedback(null);
+    setIsLegacyProjectAssemblyOpen(true);
+  }
+
+  function handleLegacyProjectAssemblyComplete(
+    loadedProject: LoadedPatchmarkProject
+  ) {
+    loadProjectIntoEditor(loadedProject);
+    setIsLegacyProjectAssemblyOpen(false);
+    setSaveFeedback({
+      kind: "success",
+      message:
+        "Created a new multi-document project. Source projects remain unchanged."
+    });
   }
 
   async function flushActiveDocumentForBoundary(
@@ -4483,7 +4519,7 @@ export function DocumentEditor() {
     setAvailableDraft(null);
     setSaveStatus("idle");
     setSnapshotDialog(null);
-    setIsPdfExportPreviewOpen(false);
+    setIsLegacyProjectAssemblyOpen(false);
     setMarkdownSelection(
       restoredUiState?.markdownSelection ?? { end: 0, start: 0 }
     );
@@ -4585,13 +4621,20 @@ export function DocumentEditor() {
               >
                 Open Project Folder
               </button>
-            <button
-              type="button"
-              disabled={!fileName || isProjectMode || isSaving || isReanchorMode}
-              onClick={handleCreateProjectFromCurrentDocument}
-            >
-              Create Project From Current Document
-            </button>
+              <button
+                type="button"
+                disabled={isSaving || isReanchorMode}
+                onClick={handleOpenLegacyProjectAssembly}
+              >
+                Create Project From Existing Patchmark Projects
+              </button>
+              <button
+                type="button"
+                disabled={!fileName || isProjectMode || isSaving || isReanchorMode}
+                onClick={handleCreateProjectFromCurrentDocument}
+              >
+                Create Project From Current Document
+              </button>
             <button
               type="button"
               disabled={isSaving || isCommentBusy || isReanchorMode}
@@ -4653,7 +4696,14 @@ export function DocumentEditor() {
                 markdown={markdown}
                 onCreateSnapshot={handleCreateSnapshot}
                 onDownload={handleDownload}
-                onExportPdf={() => setIsPdfExportPreviewOpen(true)}
+                onExportPdf={() =>
+                  setPdfExportTarget({
+                    documentId:
+                      projectHandle?.document?.document_id ?? null,
+                    fileName,
+                    markdown
+                  })
+                }
                 onSaveAs={handleSaveAs}
                 onSaveChanges={handleSaveChanges}
                 showCreateSnapshot={isProjectMode}
@@ -5021,11 +5071,18 @@ export function DocumentEditor() {
         />
       ) : null}
 
-      {isPdfExportPreviewOpen && fileName ? (
+      {isLegacyProjectAssemblyOpen ? (
+        <LegacyProjectAssemblyDialog
+          onClose={() => setIsLegacyProjectAssemblyOpen(false)}
+          onComplete={handleLegacyProjectAssemblyComplete}
+        />
+      ) : null}
+
+      {pdfExportTarget ? (
         <PdfExportPreview
-          fileName={fileName}
-          markdown={markdown}
-          onClose={() => setIsPdfExportPreviewOpen(false)}
+          fileName={pdfExportTarget.fileName}
+          markdown={pdfExportTarget.markdown}
+          onClose={() => setPdfExportTarget(null)}
         />
       ) : null}
 
