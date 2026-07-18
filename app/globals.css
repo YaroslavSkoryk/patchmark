@@ -1218,6 +1218,17 @@ button {
   color: #7c2f29;
 }
 
+.legacy-assembly-compatible-duplicates {
+  border: 1px solid #6b9b7c;
+  background: #eef8f1;
+  padding: 12px 14px;
+  color: #285f3d;
+}
+
+.legacy-assembly-compatible-duplicates p {
+  margin: 4px 0 0;
+}
+
 .legacy-incomplete-assembly {
   display: flex;
   gap: 14px;

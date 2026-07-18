@@ -99,6 +99,7 @@ Project Folder/
 - Markdown paths are relative to the project root; outside files, traversal, `.patchmark` paths, and symbolic links are rejected.
 - Documents are registered explicitly. Patchmark never scans and auto-registers every Markdown file.
 - Each document keeps independent comments, patches, anchors, generations, snapshots, recovery, imports, context packs, and exports.
+- `project_id` and `document_id` identify project-level owners. Review-object IDs are local to their owning document, so project-wide identity is `(document_id, local_id)`.
 - Display-title and role changes never rename or edit the Markdown file.
 - Archive is reversible metadata only; it does not delete Markdown or review history.
 - Missing registered files retain their document identity and review store and can be repaired with **Locate file**.
@@ -114,3 +115,8 @@ preserving independent review stores. See
 [`docs/phase-a-1-legacy-project-assembly.md`](docs/phase-a-1-legacy-project-assembly.md)
 for source immutability, collision handling, manifest-last assembly, recovery,
 and provenance rules.
+
+Phase A.2 preserves duplicate legacy comment, patch, reply, and version IDs when
+they belong to different documents. Project-level UI and asynchronous operations
+carry `document_id`, while document-bound stores may continue using local IDs.
+See [`docs/phase-a-2-document-scoped-identity.md`](docs/phase-a-2-document-scoped-identity.md).

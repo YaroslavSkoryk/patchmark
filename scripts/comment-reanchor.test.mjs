@@ -70,6 +70,7 @@ assert.deepEqual(
 
 const secondCandidate = candidates[1];
 const proposal = createHumanReanchorProposal({
+  documentId: "doc-action-plan",
   documentGeneration: 7,
   markdown: duplicateMarkdown,
   previousAnchor: originalComment.anchor,
@@ -91,6 +92,7 @@ const relatedPatches = [
 const patchesBefore = JSON.stringify(relatedPatches);
 const applied = applyHumanReanchor({
   comment: originalComment,
+  currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 7,
   currentSaveGeneration: 12,
   markdown: duplicateMarkdown,
@@ -127,6 +129,7 @@ assert.ok(
 
 const repeated = applyHumanReanchor({
   comment: applied.comment,
+  currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 7,
   currentSaveGeneration: 13,
   markdown: duplicateMarkdown,
@@ -141,6 +144,7 @@ assert.equal(repeated.kind, "no_op");
 
 const stale = applyHumanReanchor({
   comment: originalComment,
+  currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 8,
   currentSaveGeneration: 12,
   markdown: `${duplicateMarkdown}\nChanged`,
@@ -150,8 +154,21 @@ const stale = applyHumanReanchor({
 assert.equal(stale.kind, "stale");
 assert.match(stale.message, /document changed/i);
 
+const switchedDocument = applyHumanReanchor({
+  comment: originalComment,
+  currentDocumentId: "doc-ready-to-eat",
+  currentDocumentGeneration: 7,
+  currentSaveGeneration: 12,
+  markdown: duplicateMarkdown,
+  proposal,
+  timestamp: "2026-07-15T01:02:30.000Z"
+});
+assert.equal(switchedDocument.kind, "stale");
+assert.match(switchedDocument.message, /switched/i);
+
 const resolved = applyHumanReanchor({
   comment: { ...originalComment, status: "resolved" },
+  currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 7,
   currentSaveGeneration: 12,
   markdown: duplicateMarkdown,
@@ -192,6 +209,7 @@ assert.equal(
 );
 
 const linkProposal = createHumanReanchorProposal({
+  documentId: "doc-action-plan",
   documentGeneration: 1,
   markdown: linkMarkdown,
   previousAnchor: createComment({ selectedText: "missing" }).anchor,
@@ -206,6 +224,7 @@ assert.equal(linkProposal.anchor.anchor_context.table_cell_index, 1);
 
 const rowStart = linkMarkdown.indexOf("| PAUL");
 const rowProposal = createHumanReanchorProposal({
+  documentId: "doc-action-plan",
   documentGeneration: 1,
   markdown: linkMarkdown,
   previousAnchor: createComment({ selectedText: "missing" }).anchor,
@@ -231,6 +250,7 @@ const multiBlockMarkdown = [
 const multiStart = multiBlockMarkdown.indexOf("### Early");
 const multiEnd = multiBlockMarkdown.indexOf("\n\n## Next");
 const multiProposal = createHumanReanchorProposal({
+  documentId: "doc-action-plan",
   documentGeneration: 3,
   markdown: multiBlockMarkdown,
   previousAnchor: createComment({ selectedText: "missing" }).anchor,

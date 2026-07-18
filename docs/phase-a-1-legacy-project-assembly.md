@@ -91,7 +91,8 @@ versions, patch groups, imports, reply records, and identified anchor-history
 records. Reply and anchor-history identity is parent-scoped because the current
 legacy model permits the same reply/history ID under different comments.
 
-Cross-source preflight fails closed on collisions in these namespaces:
+Phase A.1 originally failed closed on cross-source duplicates in these
+namespaces:
 
 - comments;
 - parent-scoped replies;
@@ -101,21 +102,30 @@ Cross-source preflight fails closed on collisions in these namespaces:
 - patch groups;
 - source imports.
 
-No ID remapping is attempted. The error identifies the namespace, exact ID, and
-source labels. Destination paths are independently validated by the Phase A-Core
-portable path rules, including case-insensitive duplicate detection.
+That rule was too strict for the Phase A-Core storage model: every imported source
+becomes a different verified document store. Phase A.2 therefore classifies equal
+local IDs in different destination documents as **allowed document-local
+duplicates**. The assembly review reports these separately from unsafe
+same-document or project-scoped collisions. Local IDs are not remapped.
 
-The two currently inspected Crust Chant folders both preflight successfully as
-individual sources, but together report six comment-ID collisions:
-`PM-COMMENT-0005`, `0008`, `0011`, `0013`, `0014`, and `0015`. Phase A.1
-therefore blocks that exact pair as required. Automatic reference-safe remapping
-remains a non-goal.
+Same-document duplicates remain invalid. Missing ownership, genuinely
+project-scoped collisions, ambiguous project-level registries, and any semantic
+verification failure continue to block manifest commit. Destination paths remain
+subject to the Phase A-Core portable path rules, including case-insensitive
+duplicate detection.
+
+The baseline two-folder Crust Chant audit contained six duplicate comment IDs:
+`PM-COMMENT-0005`, `0008`, `0011`, `0013`, `0014`, and `0015`. Phase A.2
+classifies all six as safe document-local duplicates, reports zero unsafe
+collisions, and assembles the pair without changing either source. The executable
+real-project audit requires these six as a stable subset and reports any newer
+document-local duplicates separately. Automatic ID remapping remains a non-goal.
 
 ## Immutable Import Plan
 
 `createLegacyProjectAssemblyPlan` verifies source uniqueness, source/destination
 separation, containment, destination emptiness, portable paths, roles, and all
-identity collisions before returning a frozen plan. The plan contains new
+unsafe identity collisions before returning a frozen plan. The plan contains new
 project/document identities, source labels and hashes, destination paths,
 display titles, roles, and sparse positions.
 
@@ -186,11 +196,12 @@ the folder as a valid project.
 The existing project toolbar opens a three-step modal:
 
 1. **Sources** — add two or more folders and review validated counts, generation,
-   warnings, and collision status.
+   warnings, safe document-local duplicate counts, and unsafe collision status.
 2. **Configure** — choose project title and empty destination; set every display
    title, destination filename, optional role, and order.
 3. **Review** — confirm aggregate comments, replies, patches, versions, paths,
-   roles, zero collisions, and the source-immutability guarantee before commit.
+   roles, safe duplicate classification, zero unsafe collisions, and the
+   source-immutability guarantee before commit.
 
 Specific validation and collision errors remain in the modal. On success, the
 destination is handed to the normal Phase A-Core loader and navigator.

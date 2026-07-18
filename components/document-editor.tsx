@@ -163,6 +163,7 @@ import {
   getActiveProjectDocument,
   getProjectDocumentList,
   getProjectDocumentExportIdentity,
+  getProjectDocumentScopeId,
   getProjectTitle,
   isMultiDocumentProject,
   listProjectVersions,
@@ -171,6 +172,7 @@ import {
   openProjectFolder,
   openProjectDocument,
   readProjectVersionMarkdown,
+  readProjectVersionMarkdownByRef,
   readProjectComments,
   readProjectPatches,
   resolveDocumentPathFromFileHandle,
@@ -187,6 +189,12 @@ import {
   type PatchmarkProjectHandle,
   type PatchmarkProjectRecoveryState
 } from "@/lib/project/patchmark-project";
+import {
+  createCommentRef,
+  createDocumentScopedKey,
+  createVersionRef,
+  isDocumentScopeCurrent
+} from "@/lib/project/document-scoped-identity";
 import {
   type PatchmarkDocumentRole,
   type PatchmarkProjectDocumentView
@@ -265,6 +273,7 @@ type CommentContextMenuState = {
 type ReanchorSession = {
   candidates: HumanReanchorCandidate[];
   commentId: string;
+  documentId: string;
   documentHash: string;
   documentVersion: number;
   error: string | null;
@@ -275,6 +284,7 @@ type ReanchorSession = {
 type ChatGptPromptDialogState = {
   commentIds: string[];
   dedicatedDocumentReview: boolean;
+  documentId: string;
   exportId: string;
   exportedAt: string;
   payloadFileName: string;
@@ -311,6 +321,7 @@ type MarkCommentFocusGuardDialogState =
       targetCommentId: string;
     };
 type ChatGptImportDialogState = {
+  documentId: string;
   error: string | null;
   responseJson: string;
   sourceChatUrl: string;
@@ -449,6 +460,10 @@ type PatchDisplayState =
 type PatchGroupListDialogState = {
   commentId: string | null;
 };
+type DocumentScopedActiveCommentState = {
+  documentId: string;
+  state: ActiveCommentState;
+};
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
   container: HTMLElement | null;
@@ -538,6 +553,11 @@ export function DocumentEditor() {
     useState<MarkdownFileHandle | null>(null);
   const [projectHandle, setProjectHandle] =
     useState<PatchmarkProjectHandle | null>(null);
+  const activeDocumentId = projectHandle
+    ? getProjectDocumentScopeId(projectHandle)
+    : null;
+  const activeDocumentIdRef = useRef<string | null>(activeDocumentId);
+  activeDocumentIdRef.current = activeDocumentId;
   const [projectRecovery, setProjectRecovery] =
     useState<PatchmarkProjectRecoveryState | null>(null);
   const [projectDocuments, setProjectDocuments] = useState<
@@ -558,8 +578,42 @@ export function DocumentEditor() {
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
   const documentSwitchRequestRef = useRef(0);
-  const [activeCommentState, setActiveCommentState] =
-    useState<ActiveCommentState>({ kind: "none" });
+  const [documentActiveCommentState, setDocumentActiveCommentState] =
+    useState<DocumentScopedActiveCommentState | null>(null);
+  const activeCommentState = useMemo<ActiveCommentState>(
+    () =>
+      activeDocumentId &&
+      documentActiveCommentState?.documentId === activeDocumentId
+        ? documentActiveCommentState.state
+        : { kind: "none" },
+    [activeDocumentId, documentActiveCommentState]
+  );
+  const setActiveCommentState = useCallback(
+    (
+      nextState:
+        | ActiveCommentState
+        | ((currentState: ActiveCommentState) => ActiveCommentState)
+    ) => {
+      if (!activeDocumentId) {
+        setDocumentActiveCommentState(null);
+        return;
+      }
+      setDocumentActiveCommentState((current) => {
+        const currentState =
+          current?.documentId === activeDocumentId
+            ? current.state
+            : ({ kind: "none" } as ActiveCommentState);
+        return {
+          documentId: activeDocumentId,
+          state:
+            typeof nextState === "function"
+              ? nextState(currentState)
+              : nextState
+        };
+      });
+    },
+    [activeDocumentId]
+  );
   const lastScrolledActiveCommentKeyRef = useRef<string | null>(null);
   const [markdownSelection, setMarkdownSelection] =
     useState<MarkdownSelection>({
@@ -828,6 +882,7 @@ export function DocumentEditor() {
       setVersionEntries([]);
       setComments([]);
       setPatches([]);
+      setDocumentActiveCommentState(null);
       setSelectedPatchId(null);
       setSelectedPatchGroupId(null);
       setPatchGroupListDialog(null);
@@ -1046,7 +1101,7 @@ export function DocumentEditor() {
 
       return currentState;
     });
-  }, [comments]);
+  }, [comments, setActiveCommentState]);
 
   useEffect(() => {
     if (!fileName) {
@@ -1145,13 +1200,17 @@ export function DocumentEditor() {
         setMarkdownSelection({ end: 0, start: 0 });
         setMarkdownSelectionRequest(null);
         setVisualSelectionDraft(null);
-        setActiveCommentState(previousActiveCommentState);
+        if (
+          isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+        ) {
+          setActiveCommentState(previousActiveCommentState);
+        }
       }
     }
 
     window.addEventListener("keydown", handleReanchorEscape);
     return () => window.removeEventListener("keydown", handleReanchorEscape);
-  }, [reanchorConfirmation, reanchorSession]);
+  }, [reanchorConfirmation, reanchorSession, setActiveCommentState]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1328,7 +1387,15 @@ export function DocumentEditor() {
 
   useEffect(() => {
     const activeCommentIds = getActiveCommentIds(activeCommentState);
-    const activeCommentKey = activeCommentIds.join(",");
+    const activeCommentKey = activeDocumentId
+      ? activeCommentIds
+          .map((commentId) =>
+            createDocumentScopedKey(
+              createCommentRef(activeDocumentId, commentId)
+            )
+          )
+          .join(",")
+      : "";
 
     if (!activeCommentKey) {
       lastScrolledActiveCommentKeyRef.current = null;
@@ -1375,7 +1442,15 @@ export function DocumentEditor() {
     });
 
     return () => window.cancelAnimationFrame(animationFrameId);
-  }, [activeCommentState, comments, headings, markdown, mode, patches]);
+  }, [
+    activeCommentState,
+    activeDocumentId,
+    comments,
+    headings,
+    markdown,
+    mode,
+    patches
+  ]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving || isProjectDataLoading) {
@@ -1945,6 +2020,7 @@ export function DocumentEditor() {
     const requestId = documentSwitchRequestRef.current + 1;
     documentSwitchRequestRef.current = requestId;
     persistProjectDocumentUiState(projectHandle, {
+      activeCommentState,
       markdownSelection,
       mode,
       scrollY: window.scrollY
@@ -2140,6 +2216,7 @@ export function DocumentEditor() {
       }
       if (isActive) {
         persistProjectDocumentUiState(projectHandle, {
+          activeCommentState,
           markdownSelection,
           mode,
           scrollY: window.scrollY
@@ -2205,6 +2282,7 @@ export function DocumentEditor() {
       );
       setSaveStatus("saving");
       persistProjectDocumentUiState(projectHandle, {
+        activeCommentState,
         markdownSelection,
         mode,
         scrollY: window.scrollY
@@ -2355,6 +2433,7 @@ export function DocumentEditor() {
       return;
     }
 
+    const documentId = getProjectDocumentScopeId(projectHandle);
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
     const fileTimestamp = createFileSafeTimestamp(exportedAt);
@@ -2380,6 +2459,7 @@ export function DocumentEditor() {
     setChatGptPromptDialog({
       commentIds: focusedComments.map((comment) => comment.id),
       dedicatedDocumentReview,
+      documentId,
       exportedAt,
       exportId,
       payloadFileName: `${fileTimestamp}-${fileNamePrefix}-payload.json`,
@@ -2483,7 +2563,13 @@ export function DocumentEditor() {
   }
 
   async function handleCopyChatGptPrompt() {
-    if (!chatGptPromptDialog) {
+    if (
+      !chatGptPromptDialog ||
+      !isDocumentScopeCurrent(
+        chatGptPromptDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2511,7 +2597,14 @@ export function DocumentEditor() {
   }
 
   async function handleSaveChatGptPrompt() {
-    if (!projectHandle || !chatGptPromptDialog) {
+    if (
+      !projectHandle ||
+      !chatGptPromptDialog ||
+      !isDocumentScopeCurrent(
+        chatGptPromptDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2537,7 +2630,13 @@ export function DocumentEditor() {
   }
 
   async function handleCopyFocusedJsonPayload() {
-    if (!chatGptPromptDialog) {
+    if (
+      !chatGptPromptDialog ||
+      !isDocumentScopeCurrent(
+        chatGptPromptDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2565,7 +2664,14 @@ export function DocumentEditor() {
   }
 
   async function handleSaveFocusedJsonPayload() {
-    if (!projectHandle || !chatGptPromptDialog) {
+    if (
+      !projectHandle ||
+      !chatGptPromptDialog ||
+      !isDocumentScopeCurrent(
+        chatGptPromptDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2600,6 +2706,7 @@ export function DocumentEditor() {
     }
 
     setChatGptImportDialog({
+      documentId: getProjectDocumentScopeId(projectHandle),
       error: null,
       responseJson: "",
       sourceChatUrl: ""
@@ -2611,7 +2718,15 @@ export function DocumentEditor() {
   ) {
     event.preventDefault();
 
-    if (!projectHandle || !chatGptImportDialog || isCommentBusy) {
+    if (
+      !projectHandle ||
+      !chatGptImportDialog ||
+      isCommentBusy ||
+      !isDocumentScopeCurrent(
+        chatGptImportDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2686,6 +2801,7 @@ export function DocumentEditor() {
       const importWrapper = {
         import_id: importId,
         imported_at: importedAt,
+        target_document: getProjectDocumentExportIdentity(projectHandle),
         source_chat_url: sourceChatUrl,
         sources: parsedResponse.sources,
         raw_response: parsedResponse,
@@ -2706,6 +2822,15 @@ export function DocumentEditor() {
         project: projectHandle,
         reason: "import_chatgpt_response"
       });
+
+      if (
+        !isDocumentScopeCurrent(
+          chatGptImportDialog,
+          activeDocumentIdRef.current
+        )
+      ) {
+        return;
+      }
 
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
@@ -2740,6 +2865,13 @@ export function DocumentEditor() {
   async function markFocusedExportCommentsAsExported(
     exportDialog: ChatGptPromptDialogState
   ) {
+    if (
+      !isDocumentScopeCurrent(exportDialog, activeDocumentIdRef.current)
+    ) {
+      throw new Error(
+        "The target document changed before focused comments were updated."
+      );
+    }
     const exportedCommentIds = new Set(exportDialog.commentIds);
     const nextComments = comments.map((comment) =>
       exportedCommentIds.has(comment.id) && comment.status === "open"
@@ -2756,7 +2888,11 @@ export function DocumentEditor() {
         : comment
     );
 
-    await persistComments(nextComments, "Marked focused comments as exported.");
+    await persistComments(
+      nextComments,
+      "Marked focused comments as exported.",
+      exportDialog.documentId
+    );
   }
 
   async function handleViewSnapshot(
@@ -2767,12 +2903,21 @@ export function DocumentEditor() {
       return;
     }
 
+    const versionRef = createVersionRef(
+      getProjectDocumentScopeId(projectHandle),
+      version.id
+    );
     try {
-      const snapshotMarkdown = await readProjectVersionMarkdown(
+      const snapshotMarkdown = await readProjectVersionMarkdownByRef(
         projectHandle,
+        versionRef,
         version
       );
+      if (!isDocumentScopeCurrent(versionRef, activeDocumentIdRef.current)) {
+        return;
+      }
       setSnapshotDialog({
+        documentId: versionRef.documentId,
         displayTitle,
         kind: "view",
         snapshotMarkdown,
@@ -2794,13 +2939,22 @@ export function DocumentEditor() {
       return;
     }
 
+    const versionRef = createVersionRef(
+      getProjectDocumentScopeId(projectHandle),
+      version.id
+    );
     try {
-      const snapshotMarkdown = await readProjectVersionMarkdown(
+      const snapshotMarkdown = await readProjectVersionMarkdownByRef(
         projectHandle,
+        versionRef,
         version
       );
+      if (!isDocumentScopeCurrent(versionRef, activeDocumentIdRef.current)) {
+        return;
+      }
       setSnapshotDialog({
         currentMarkdown: markdown,
+        documentId: versionRef.documentId,
         displayTitle,
         kind: "compare",
         snapshotMarkdown,
@@ -3947,6 +4101,7 @@ export function DocumentEditor() {
     if (!projectHandle || reanchorSession) {
       return;
     }
+    const documentId = getProjectDocumentScopeId(projectHandle);
 
     const comment = comments.find((candidate) => candidate.id === commentId);
 
@@ -3984,6 +4139,7 @@ export function DocumentEditor() {
         resolution
       }),
       commentId,
+      documentId,
       documentHash: createDocumentHash(markdown),
       documentVersion,
       error: null,
@@ -4005,14 +4161,22 @@ export function DocumentEditor() {
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
-    setActiveCommentState(reanchorSession.previousActiveCommentState);
+    if (
+      isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+    ) {
+      setActiveCommentState(reanchorSession.previousActiveCommentState);
+    }
   }
 
   function createProposalForRange(
     range: { end: number; start: number },
     source: "candidate" | "markdown" | "visual"
   ): HumanReanchorProposal | null {
-    if (!reanchorSession || !projectHandle) {
+    if (
+      !reanchorSession ||
+      !projectHandle ||
+      !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+    ) {
       return null;
     }
 
@@ -4026,6 +4190,7 @@ export function DocumentEditor() {
 
     try {
       return createHumanReanchorProposal({
+        documentId: reanchorSession.documentId,
         documentGeneration: reanchorSession.documentVersion,
         headings,
         markdown,
@@ -4139,7 +4304,12 @@ export function DocumentEditor() {
       !reanchorSession ||
       !reanchorConfirmation ||
       !projectHandle ||
-      isCommentBusy
+      isCommentBusy ||
+      !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current) ||
+      !isDocumentScopeCurrent(
+        reanchorConfirmation,
+        activeDocumentIdRef.current
+      )
     ) {
       return;
     }
@@ -4159,6 +4329,7 @@ export function DocumentEditor() {
 
     const result = applyHumanReanchor({
       comment,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
       currentDocumentGeneration: documentVersion,
       currentSaveGeneration: projectHandle.manifest.save_generation ?? 0,
       markdown,
@@ -4212,6 +4383,11 @@ export function DocumentEditor() {
         project: projectHandle,
         reason: `human_reanchor:${comment.id}`
       });
+      if (
+        !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+      ) {
+        return;
+      }
       lastScrolledActiveCommentKeyRef.current = null;
       setComments(nextComments);
       setReanchorConfirmation(null);
@@ -4467,10 +4643,21 @@ export function DocumentEditor() {
 
   async function persistComments(
     nextComments: PatchmarkComment[],
-    successMessage: string
+    successMessage: string,
+    expectedDocumentId?: string
   ) {
     if (!projectHandle || isCommentBusy) {
       return;
+    }
+    const operationDocumentId =
+      expectedDocumentId ?? getProjectDocumentScopeId(projectHandle);
+    if (
+      getProjectDocumentScopeId(projectHandle) !== operationDocumentId ||
+      activeDocumentIdRef.current !== operationDocumentId
+    ) {
+      throw new Error(
+        "The target document changed before the comment operation began."
+      );
     }
 
     setIsCommentBusy(true);
@@ -4484,6 +4671,11 @@ export function DocumentEditor() {
         project: projectHandle,
         reason: "update_comment_state"
       });
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        throw new Error(
+          "The target document changed before the comment operation completed."
+        );
+      }
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
       setComments(nextComments);
@@ -4506,6 +4698,7 @@ export function DocumentEditor() {
 
   function loadProjectIntoEditor(loadedProject: LoadedPatchmarkProject) {
     const restoredUiState = readProjectDocumentUiState(loadedProject.project);
+    const loadedDocumentId = getProjectDocumentScopeId(loadedProject.project);
     setProjectHandle(loadedProject.project);
     setProjectRecovery(loadedProject.recovery ?? null);
     setFileName(
@@ -4528,9 +4721,17 @@ export function DocumentEditor() {
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
     setCommentContextMenu(null);
+    setReanchorSession(null);
+    setReanchorConfirmation(null);
+    setCommentPositions({});
+    setVersionEntries([]);
     setComments([]);
     setPatches([]);
-    setActiveCommentState({ kind: "none" });
+    setDocumentActiveCommentState({
+      documentId: loadedDocumentId,
+      state: restoredUiState?.activeCommentState ?? { kind: "none" }
+    });
+    lastScrolledActiveCommentKeyRef.current = null;
     setIsProjectDataLoading(true);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
@@ -4596,6 +4797,7 @@ export function DocumentEditor() {
         ) : null}
         <DocumentOutline headings={headings} />
         <VersionHistoryPanel
+          key={`version-history:${activeDocumentId ?? "none"}`}
           comments={comments}
           isProjectMode={isProjectMode}
           patches={patches}
@@ -4906,6 +5108,7 @@ export function DocumentEditor() {
 
       <aside className="comments-rail" aria-label="Document comments">
         <CommentsPanel
+          key={`comments:${activeDocumentId ?? "none"}`}
           addRequest={commentAddRequest}
           activeCommentState={activeCommentState}
           anchorSummaries={commentAnchorSummaries}
@@ -5064,7 +5267,7 @@ export function DocumentEditor() {
         </div>
       ) : null}
 
-      {snapshotDialog ? (
+      {snapshotDialog && snapshotDialog.documentId === activeDocumentId ? (
         <SnapshotDialog
           dialog={snapshotDialog}
           onClose={() => setSnapshotDialog(null)}
@@ -7285,6 +7488,7 @@ function getAcceptedOriginalSourceNote(
 }
 
 type ProjectDocumentUiState = {
+  activeCommentState: ActiveCommentState;
   markdownSelection: MarkdownSelection;
   mode: EditorMode;
   scrollY: number;
@@ -7332,6 +7536,9 @@ function readProjectDocumentUiState(
       return null;
     }
     return {
+      activeCommentState: parseStoredActiveCommentState(
+        "activeCommentState" in value ? value.activeCommentState : null
+      ),
       markdownSelection: {
         start: value.markdownSelection.start,
         end: value.markdownSelection.end
@@ -7342,6 +7549,31 @@ function readProjectDocumentUiState(
   } catch {
     return null;
   }
+}
+
+function parseStoredActiveCommentState(value: unknown): ActiveCommentState {
+  if (!value || typeof value !== "object" || !("kind" in value)) {
+    return { kind: "none" };
+  }
+  if (value.kind === "comment" && "commentId" in value) {
+    return typeof value.commentId === "string" && value.commentId.trim()
+      ? { kind: "comment", commentId: value.commentId }
+      : { kind: "none" };
+  }
+  if (
+    value.kind === "anchor_group" &&
+    "commentIds" in value &&
+    Array.isArray(value.commentIds) &&
+    value.commentIds.every(
+      (commentId): commentId is string =>
+        typeof commentId === "string" && Boolean(commentId.trim())
+    )
+  ) {
+    return value.commentIds.length > 0
+      ? { kind: "anchor_group", commentIds: value.commentIds }
+      : { kind: "none" };
+  }
+  return { kind: "none" };
 }
 
 function getProjectDocumentUiStateKey(

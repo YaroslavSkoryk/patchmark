@@ -4,6 +4,7 @@ import {
   mkdirSync,
   mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -31,12 +32,12 @@ const actionPath = join(fixtureRoot, "action-source");
 const researchPath = join(fixtureRoot, "research-source");
 const destinationPath = join(fixtureRoot, "destination");
 createLegacyFixture(actionPath, {
-  idPrefix: "ACTION-BROWSER",
+  idPrefix: "SHARED-BROWSER",
   marker: "ACTION_PLAN_UNIQUE_MARKER",
   title: "Action Plan"
 });
 createLegacyFixture(researchPath, {
-  idPrefix: "READY-BROWSER",
+  idPrefix: "SHARED-BROWSER",
   marker: "READY_TO_EAT_UNIQUE_MARKER",
   title: "Ready-to-Eat Investigation"
 });
@@ -128,6 +129,11 @@ try {
   assert.equal(sourceSummary[0].includes("Comments2"), true);
   assert.equal(sourceSummary[0].includes("Replies1"), true);
   assert.equal(sourceSummary[0].includes("Patches1"), true);
+  const compatibilityText = await evaluate(client, {
+    expression: `document.querySelector(".legacy-assembly-compatible-duplicates")?.textContent ?? ""`
+  });
+  assert.match(compatibilityText, /document-local duplicate/i);
+  assert.match(compatibilityText, /safely isolated/i);
 
   await clickButtonByText(client, "Configure Destination");
   await setConfiguration(client);
@@ -154,7 +160,8 @@ try {
   assert.match(reviewText, /4 comments/);
   assert.match(reviewText, /2 replies/);
   assert.match(reviewText, /2 patch proposals/);
-  assert.match(reviewText, /0 detected identity collisions/);
+  assert.match(reviewText, /0 unsafe collisions/);
+  assert.match(reviewText, /document-local duplicate comment IDs/);
   assert.match(reviewText, /source projects will remain unchanged/i);
 
   await clickButtonByText(client, "Create Project");
@@ -183,6 +190,25 @@ try {
     `document.querySelector(".patchmark-prose")?.textContent?.includes("ACTION_PLAN_UNIQUE_MARKER")`,
     "Action Plan document"
   );
+  await waitFor(
+    client,
+    `Boolean(document.querySelector("#patchmark-comment-card-PM-COMMENT-SHARED-BROWSER"))`,
+    "Action Plan duplicate comment"
+  );
+  await evaluate(client, {
+    expression: `(() => {
+      const card = document.querySelector("#patchmark-comment-card-PM-COMMENT-SHARED-BROWSER");
+      if (!card) throw new Error("Action Plan comment missing.");
+      card.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await waitFor(
+    client,
+    `document.querySelector("#patchmark-comment-card-PM-COMMENT-SHARED-BROWSER")?.getAttribute("data-active") === "true"`,
+    "Action Plan comment selection"
+  );
   await clickButtonByText(client, "Generate ChatGPT Prompt");
   await waitFor(
     client,
@@ -194,6 +220,10 @@ try {
   });
   assert.match(actionPrompt, /ACTION_PLAN_UNIQUE_MARKER/);
   assert.doesNotMatch(actionPrompt, /READY_TO_EAT_UNIQUE_MARKER/);
+  assert.match(
+    actionPrompt,
+    new RegExp(`"document_id"\\s*:\\s*"${manifest.documents[0].document_id}"`)
+  );
   await clickWithin(client, ".comment-export-dialog", "Close");
 
   await clickButtonByText(client, "Export PDF");
@@ -224,6 +254,12 @@ try {
     `document.querySelector(".patchmark-prose")?.textContent?.includes("READY_TO_EAT_UNIQUE_MARKER")`,
     "research document content"
   );
+  assert.equal(
+    await evaluate(client, {
+      expression: `document.querySelector("#patchmark-comment-card-PM-COMMENT-SHARED-BROWSER")?.getAttribute("data-active") ?? ""`
+    }),
+    ""
+  );
   await clickButtonByText(client, "Generate ChatGPT Prompt");
   await waitFor(
     client,
@@ -235,7 +271,102 @@ try {
   });
   assert.match(researchPrompt, /READY_TO_EAT_UNIQUE_MARKER/);
   assert.doesNotMatch(researchPrompt, /ACTION_PLAN_UNIQUE_MARKER/);
+  assert.match(
+    researchPrompt,
+    new RegExp(`"document_id"\\s*:\\s*"${manifest.documents[1].document_id}"`)
+  );
   await clickWithin(client, ".comment-export-dialog", "Close");
+
+  await clickButtonByText(client, "Import ChatGPT Response");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector(".comment-import-dialog"))`,
+    "document-bound response import"
+  );
+  const importResponse = {
+    protocol: "patchmark.comment_reply_import",
+    protocol_version: 1,
+    replies: [
+      {
+        comment_id: "PM-COMMENT-SHARED-BROWSER",
+        reply: "Research-only imported reply"
+      }
+    ],
+    patch_proposals: [
+      {
+        comment_id: "PM-COMMENT-SHARED-BROWSER",
+        original_text: "READY_TO_EAT_UNIQUE_MARKER",
+        suggested_text: "READY_TO_EAT_UNIQUE_MARKER_REVIEWED",
+        reason: "Research-only imported patch"
+      }
+    ],
+    open_questions: []
+  };
+  await evaluate(client, {
+    expression: `(() => {
+      const textarea = document.querySelector(".comment-import-fields textarea");
+      if (!textarea) throw new Error("Import response field missing.");
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, ${JSON.stringify(JSON.stringify(importResponse))});
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await clickWithin(client, ".comment-import-dialog", "Import");
+  await waitFor(
+    client,
+    `document.querySelector(".document-save-banner")?.textContent?.includes("Replies attached: 1")`,
+    "research-only response import"
+  );
+
+  const actionStore = join(
+    destinationPath,
+    ".patchmark",
+    "documents",
+    manifest.documents[0].document_id
+  );
+  const researchStore = join(
+    destinationPath,
+    ".patchmark",
+    "documents",
+    manifest.documents[1].document_id
+  );
+  const actionComments = JSON.parse(
+    readFileSync(join(actionStore, "comments.json"), "utf8")
+  );
+  const researchComments = JSON.parse(
+    readFileSync(join(researchStore, "comments.json"), "utf8")
+  );
+  const actionPatches = JSON.parse(
+    readFileSync(join(actionStore, "patches.json"), "utf8")
+  );
+  const researchPatches = JSON.parse(
+    readFileSync(join(researchStore, "patches.json"), "utf8")
+  );
+  assert.equal(actionComments[0].thread.length, 1);
+  assert.equal(researchComments[0].thread.length, 2);
+  assert.equal(
+    researchComments[0].thread.at(-1).content,
+    "Research-only imported reply"
+  );
+  assert.equal(actionPatches.length, 1);
+  assert.equal(researchPatches.length, 2);
+  assert.equal(
+    researchPatches.at(-1).comment_id,
+    "PM-COMMENT-SHARED-BROWSER"
+  );
+  const importFiles = readdirSync(join(researchStore, "imports")).filter(
+    (fileName) => fileName.endsWith("-comment-reply-import.json")
+  );
+  assert.equal(importFiles.length, 1);
+  const importEnvelope = JSON.parse(
+    readFileSync(join(researchStore, "imports", importFiles[0]), "utf8")
+  );
+  assert.equal(
+    importEnvelope.target_document.document_id,
+    manifest.documents[1].document_id
+  );
 
   for (const [filePath, expected] of sourceBytesBefore) {
     assert.equal(readFileSync(filePath).equals(expected), true);
@@ -247,7 +378,9 @@ try {
       destinationConfiguration: true,
       reviewScreen: true,
       normalLoaderHandoff: true,
+      duplicateIdentitySelectionIsolation: true,
       promptIsolation: true,
+      responseImportIsolation: true,
       pdfTargetCaptureDuringSwitch: true,
       sourceFilesUnchanged: true
     }, null, 2)}\n`

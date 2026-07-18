@@ -4,6 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
+  analyzeLegacyProjectIdentityCompatibility,
   cleanupIncompleteLegacyProjectAssembly,
   createLegacyProjectAssemblyPlan,
   executeLegacyProjectAssembly,
@@ -22,6 +23,7 @@ import {
   openProjectFolderHandle,
   readProjectComments,
   readProjectPatches,
+  readProjectVersionMarkdown,
   saveProjectState
 } from "../lib/project/patchmark-project.ts";
 import {
@@ -48,7 +50,8 @@ try {
       independentImportedReviewState: true,
       sourceImmutability: true,
       filenameCollisionResolution: true,
-      objectIdCollision: true,
+      documentLocalDuplicateIdentity: true,
+      sameDocumentDuplicateRejected: true,
       invalidSecondSource: true,
       sourceChangeDetection: true,
       failureInjection: true,
@@ -331,6 +334,20 @@ async function runPlanValidationScenarios() {
     marker: "COLLISION_B",
     title: "Collision B"
   });
+  const collisionBCommentsPath = path.join(
+    collisionBPath,
+    ".patchmark",
+    "comments.json"
+  );
+  const collisionBComments = JSON.parse(
+    fs.readFileSync(collisionBCommentsPath, "utf8")
+  );
+  collisionBComments[0].comment = "Collision B isolated comment";
+  collisionBComments[0].thread[0].content = "Collision B isolated reply";
+  fs.writeFileSync(
+    collisionBCommentsPath,
+    `${JSON.stringify(collisionBComments, null, 2)}\n`
+  );
   const collisionA = await inspectLegacyProjectAssemblySource(
     new NodeDirectoryHandle(collisionAPath),
     "Collision A"
@@ -343,8 +360,13 @@ async function runPlanValidationScenarios() {
     collisionA,
     collisionB
   ]);
+  assert.deepEqual(collisions, []);
+  const identityAnalysis = analyzeLegacyProjectIdentityCompatibility([
+    collisionA,
+    collisionB
+  ]);
   assert.ok(
-    collisions.some(
+    identityAnalysis.allowedDocumentLocalDuplicates.some(
       ({ namespace, id }) =>
         namespace === "comment" && id === "PM-COMMENT-COLLISION-OPEN"
     )
@@ -354,19 +376,119 @@ async function runPlanValidationScenarios() {
     "collision-destination"
   );
   fs.mkdirSync(collisionDestinationPath);
+  const collisionPlan = await createLegacyProjectAssemblyPlan({
+    destination: new NodeDirectoryHandle(collisionDestinationPath),
+    projectTitle: "Collision",
+    documents: [
+      createDocumentRequest(collisionA, "a.md"),
+      createDocumentRequest(collisionB, "b.md")
+    ]
+  });
+  const collisionResult = await executeLegacyProjectAssembly(collisionPlan);
+  const firstCollisionDocument = await openProjectDocument(
+    collisionResult.loaded.project,
+    collisionPlan.entries[0].document.document_id
+  );
+  const secondCollisionDocument = await openProjectDocument(
+    collisionResult.loaded.project,
+    collisionPlan.entries[1].document.document_id
+  );
+  const firstCollisionComments = await readProjectComments(
+    firstCollisionDocument.project
+  );
+  const secondCollisionComments = await readProjectComments(
+    secondCollisionDocument.project
+  );
+  assert.equal(firstCollisionComments[0].id, secondCollisionComments[0].id);
+  assert.notEqual(
+    firstCollisionComments[0].comment,
+    secondCollisionComments[0].comment
+  );
+  assert.equal(
+    firstCollisionComments[0].thread[0].id,
+    secondCollisionComments[0].thread[0].id
+  );
+  assert.notEqual(
+    firstCollisionComments[0].thread[0].content,
+    secondCollisionComments[0].thread[0].content
+  );
+  const firstCollisionPatches = await readProjectPatches(
+    firstCollisionDocument.project
+  );
+  const secondCollisionPatches = await readProjectPatches(
+    secondCollisionDocument.project
+  );
+  assert.equal(firstCollisionPatches[0].id, secondCollisionPatches[0].id);
+  assert.equal(
+    firstCollisionPatches[0].comment_id,
+    firstCollisionComments[0].id
+  );
+  assert.equal(
+    secondCollisionPatches[0].comment_id,
+    secondCollisionComments[0].id
+  );
+  await saveProjectState({
+    patches: firstCollisionPatches.map((patch, index) =>
+      index === 0 ? { ...patch, status: "rejected" } : patch
+    ),
+    project: firstCollisionDocument.project,
+    reason: "duplicate_patch_document_scope"
+  });
+  assert.equal(
+    (await readProjectPatches(firstCollisionDocument.project))[0].status,
+    "rejected"
+  );
+  assert.equal(
+    (await readProjectPatches(secondCollisionDocument.project))[0].status,
+    "pending"
+  );
+  const firstCollisionVersions = await listProjectVersions(
+    firstCollisionDocument.project
+  );
+  const secondCollisionVersions = await listProjectVersions(
+    secondCollisionDocument.project
+  );
+  assert.equal(firstCollisionVersions[0].id, secondCollisionVersions[0].id);
+  assert.notEqual(
+    await readProjectVersionMarkdown(
+      firstCollisionDocument.project,
+      firstCollisionVersions[0]
+    ),
+    await readProjectVersionMarkdown(
+      secondCollisionDocument.project,
+      secondCollisionVersions[0]
+    )
+  );
+
+  const sameDocumentDuplicatePath = path.join(
+    temporaryRoot,
+    "same-document-duplicate"
+  );
+  createLegacyFixture(sameDocumentDuplicatePath, {
+    idPrefix: "SAME-DOCUMENT",
+    marker: "SAME_DOCUMENT_DUPLICATE",
+    title: "Same-document duplicate"
+  });
+  const duplicateCommentsPath = path.join(
+    sameDocumentDuplicatePath,
+    ".patchmark",
+    "comments.json"
+  );
+  const duplicateComments = JSON.parse(
+    fs.readFileSync(duplicateCommentsPath, "utf8")
+  );
+  duplicateComments[1].id = duplicateComments[0].id;
+  fs.writeFileSync(
+    duplicateCommentsPath,
+    `${JSON.stringify(duplicateComments, null, 2)}\n`
+  );
   await assert.rejects(
     () =>
-      createLegacyProjectAssemblyPlan({
-        destination: new NodeDirectoryHandle(collisionDestinationPath),
-        projectTitle: "Collision",
-        documents: [
-          createDocumentRequest(collisionA, "a.md"),
-          createDocumentRequest(collisionB, "b.md")
-        ]
-      }),
-    /Comment ID collision PM-COMMENT-COLLISION-OPEN/
+      inspectLegacyProjectAssemblySource(
+        new NodeDirectoryHandle(sameDocumentDuplicatePath)
+      ),
+    /Duplicate legacy comment ID/
   );
-  assert.equal(await readProjectManifest(new NodeDirectoryHandle(collisionDestinationPath)), null);
 
   const filenameDestinationPath = path.join(temporaryRoot, "filename-destination");
   fs.mkdirSync(filenameDestinationPath);

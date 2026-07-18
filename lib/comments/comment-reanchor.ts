@@ -45,6 +45,7 @@ export type HumanReanchorCandidate = {
 
 export type HumanReanchorProposal = HumanReanchorCandidate & {
   anchor: SelectedTextAnchor;
+  documentId: string;
   documentGeneration: number;
   documentHash: string;
   saveGeneration: number;
@@ -101,6 +102,7 @@ export function createHumanReanchorCandidates({
 }
 
 export function createHumanReanchorProposal({
+  documentId,
   documentGeneration,
   saveGeneration,
   markdown,
@@ -109,6 +111,7 @@ export function createHumanReanchorProposal({
   range,
   source
 }: {
+  documentId: string;
   documentGeneration: number;
   saveGeneration: number;
   headings?: MarkdownHeading[];
@@ -119,6 +122,9 @@ export function createHumanReanchorProposal({
 }): HumanReanchorProposal {
   if (!isCurrentRange(markdown, range) || range.end <= range.start) {
     throw new Error("Choose a non-empty location in the current document.");
+  }
+  if (!documentId.trim()) {
+    throw new Error("Document identity is required for human re-anchor.");
   }
 
   const candidate = createHumanReanchorCandidate({ headings, markdown, range });
@@ -132,6 +138,7 @@ export function createHumanReanchorProposal({
       range,
       source
     }),
+    documentId,
     documentGeneration,
     documentHash: createDocumentHash(markdown),
     saveGeneration,
@@ -141,6 +148,7 @@ export function createHumanReanchorProposal({
 
 export function applyHumanReanchor({
   comment,
+  currentDocumentId,
   currentDocumentGeneration,
   currentSaveGeneration,
   markdown,
@@ -149,6 +157,7 @@ export function applyHumanReanchor({
   timestamp
 }: {
   comment: PatchmarkComment;
+  currentDocumentId: string;
   currentDocumentGeneration: number;
   currentSaveGeneration: number;
   markdown: string;
@@ -168,6 +177,7 @@ export function applyHumanReanchor({
   }
 
   if (
+    currentDocumentId !== proposal.documentId ||
     currentDocumentGeneration !== proposal.documentGeneration ||
     currentSaveGeneration !== proposal.saveGeneration ||
     createDocumentHash(markdown) !== proposal.documentHash ||
@@ -178,7 +188,7 @@ export function applyHumanReanchor({
     return {
       kind: "stale",
       message:
-        "The document changed while you were choosing an anchor. Please select the location again."
+        "The document changed or switched while you were choosing an anchor. Please select the location again."
     };
   }
 

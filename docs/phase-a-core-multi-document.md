@@ -15,6 +15,23 @@ Device-local editor state is stored in browser local storage under the immutable
 `project_id` and `document_id`. Switching documents or scrolling does not mutate
 portable project files.
 
+## Identity Boundaries
+
+`project_id`, `document_id`, assembly transaction IDs, and project manifest
+revisions are project-scoped. They remain globally constrained within their
+intended project boundary.
+
+Comments, patches, patch groups, versions/snapshots, source imports, save commits,
+review batches, and persistence generations are document-owned. Their project-wide
+identity is the owning `document_id` plus the unchanged local ID. Reply and
+anchor-history IDs are additionally nested under their parent comment because
+legacy projects legitimately reuse reply IDs in different comment threads.
+
+A bare local ID is permitted inside a verified document-store instance or an
+active-document collection. Project-level selection, caches, asynchronous work,
+imports, exports, and history operations carry explicit document identity. No
+operation searches all document stores for the first matching local ID.
+
 ## Project Registry
 
 `.patchmark/project.json` has format `patchmark-project`, schema version `1`, an
@@ -130,7 +147,7 @@ current document remains active and the target is not applied. A monotonically
 increasing request token prevents a stale asynchronous load from replacing a
 newer selection.
 
-Mode, Markdown selection, scroll position, and preferred active document are
+Mode, Markdown selection, active-comment selection, scroll position, and preferred active document are
 restored per `project_id` and `document_id` from device-local browser storage.
 Submitted comments and patches use normal document persistence. Temporary visual
 selection remains ephemeral. If a comment or reply composer is still open,
@@ -154,7 +171,9 @@ path, and stable IDs. Context packs and imported responses are written through
 the active document store. PDF preview captures the active document ID, filename,
 and Markdown when export begins, so a later switch cannot retarget that preview.
 Version History reads only the active document's internal manifest and versions
-directory.
+directory. Snapshot reads carry a document-scoped version reference and discard
+stale completion after a switch. Re-anchor previews and confirmations carry the
+originating `document_id`; switching documents cancels the session.
 
 No project-wide prompt, PDF bundle, snapshot counter, or history list is created.
 
@@ -172,3 +191,6 @@ Phase A.1 adds copy-based assembly from multiple legacy projects. Its source
 immutability, collision, provenance, transaction, and recovery rules are
 documented in
 [`phase-a-1-legacy-project-assembly.md`](phase-a-1-legacy-project-assembly.md).
+Document-scoped review identity and legacy duplicate-ID compatibility are
+documented in
+[`phase-a-2-document-scoped-identity.md`](phase-a-2-document-scoped-identity.md).

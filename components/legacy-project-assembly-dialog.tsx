@@ -2,11 +2,11 @@
 
 import { useMemo, useState } from "react";
 import {
+  analyzeLegacyProjectIdentityCompatibility,
   cleanupIncompleteLegacyProjectAssembly,
   createLegacyProjectAssemblyPlan,
   createSuggestedLegacyDocumentPath,
   executeLegacyProjectAssembly,
-  findLegacyProjectIdentityCollisions,
   inspectIncompleteLegacyProjectAssembly,
   pickLegacyProjectAssemblyDestination,
   pickLegacyProjectAssemblySource,
@@ -47,10 +47,15 @@ export function LegacyProjectAssemblyDialog({
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState<string | null>(null);
   const [isBusy, setIsBusy] = useState(false);
-  const collisions = useMemo(
-    () => findLegacyProjectIdentityCollisions(sources.map(({ source }) => source)),
+  const identityAnalysis = useMemo(
+    () =>
+      analyzeLegacyProjectIdentityCompatibility(
+        sources.map(({ source }) => source)
+      ),
     [sources]
   );
+  const allowedDuplicates = identityAnalysis.allowedDocumentLocalDuplicates;
+  const unsafeCollisions = identityAnalysis.unsafeCollisions;
   const totals = useMemo(
     () =>
       sources.reduce(
@@ -308,11 +313,24 @@ export function LegacyProjectAssemblyDialog({
                   ))
                 )}
               </div>
-              {collisions.length > 0 ? (
+              {allowedDuplicates.length > 0 ? (
+                <div className="legacy-assembly-compatible-duplicates" role="status">
+                  <strong>
+                    {allowedDuplicates.length} document-local duplicate ID
+                    {allowedDuplicates.length === 1 ? "" : "s"}
+                  </strong>
+                  <p>
+                    {formatAllowedDuplicateSummary(allowedDuplicates)}. The
+                    duplicate IDs belong to separate documents and are safely
+                    isolated.
+                  </p>
+                </div>
+              ) : null}
+              {unsafeCollisions.length > 0 ? (
                 <div className="legacy-assembly-collision" role="status">
-                  {collisions.length} identity collision
-                  {collisions.length === 1 ? "" : "s"} detected. Resolve source
-                  IDs outside this flow before assembly.
+                  {unsafeCollisions.length} unsafe identity collision
+                  {unsafeCollisions.length === 1 ? "" : "s"} detected. Resolve
+                  source IDs outside this flow before assembly.
                 </div>
               ) : null}
             </>
@@ -446,7 +464,16 @@ export function LegacyProjectAssemblyDialog({
                   {totals.replies} replies · {totals.patches} patch proposals ·{" "}
                   {totals.versions} versions
                 </p>
-                <strong>0 detected identity collisions</strong>
+                <strong>{unsafeCollisions.length} unsafe collisions</strong>
+                {allowedDuplicates.length > 0 ? (
+                  <p>
+                    {formatAllowedDuplicateSummary(allowedDuplicates)}. These
+                    local IDs remain unchanged and are isolated by destination
+                    document ownership.
+                  </p>
+                ) : (
+                  <p>No document-local duplicate IDs detected.</p>
+                )}
               </div>
               <ol className="legacy-review-documents">
                 {plan.entries.map((entry) => (
@@ -488,7 +515,9 @@ export function LegacyProjectAssemblyDialog({
             <button
               className="document-action-primary"
               type="button"
-              disabled={isBusy || sources.length < 2 || collisions.length > 0}
+              disabled={
+                isBusy || sources.length < 2 || unsafeCollisions.length > 0
+              }
               onClick={() => {
                 setError(null);
                 setStep("configure");
@@ -551,6 +580,25 @@ function getStageLabel(stage: string, sourceLabel?: string): string {
     default:
       return "Creating project…";
   }
+}
+
+function formatAllowedDuplicateSummary(
+  duplicates: readonly { namespace: string }[]
+): string {
+  const counts = new Map<string, number>();
+  for (const duplicate of duplicates) {
+    counts.set(
+      duplicate.namespace,
+      (counts.get(duplicate.namespace) ?? 0) + 1
+    );
+  }
+  return [...counts]
+    .map(([namespace, count]) =>
+      `${count} document-local duplicate ${namespace.replaceAll("_", " ")} ID${
+        count === 1 ? "" : "s"
+      }`
+    )
+    .join(", ");
 }
 
 function getErrorMessage(error: unknown): string {

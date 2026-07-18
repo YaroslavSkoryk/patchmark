@@ -1,5 +1,11 @@
 import { type MarkdownFileHandle } from "../files/file-system-access.ts";
 import {
+  assertDocumentScope,
+  assertUniqueDocumentLocalIds,
+  legacyDocumentScopeId,
+  type VersionRef
+} from "./document-scoped-identity.ts";
+import {
   addExistingProjectDocument as registerExistingProjectDocument,
   archiveRegisteredDocument,
   completePendingProjectMigration,
@@ -486,6 +492,12 @@ export function getActiveProjectDocument(
   return project.document ?? null;
 }
 
+export function getProjectDocumentScopeId(
+  project: PatchmarkProjectHandle
+): string {
+  return project.document?.document_id ?? legacyDocumentScopeId;
+}
+
 export function getProjectDocumentExportIdentity(
   project: PatchmarkProjectHandle
 ): {
@@ -940,7 +952,27 @@ function isSnapshotNotFoundError(error: unknown): boolean {
 export async function listProjectVersions(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkVersionEntry[]> {
-  return project.manifest.versions ?? [];
+  const versions = project.manifest.versions ?? [];
+  assertUniqueDocumentLocalIds({
+    documentId: getProjectDocumentScopeId(project),
+    ids: versions.map((version) => version.id),
+    kind: "version"
+  });
+  return versions;
+}
+
+export async function readProjectVersionMarkdownByRef(
+  project: PatchmarkProjectHandle,
+  reference: VersionRef,
+  version: PatchmarkVersionEntry
+): Promise<string> {
+  assertDocumentScope(reference, getProjectDocumentScopeId(project));
+  if (reference.id !== version.id) {
+    throw new Error(
+      `Version reference ${reference.id} does not match ${version.id}.`
+    );
+  }
+  return readProjectVersionMarkdown(project, version);
 }
 
 export async function readProjectVersionMarkdown(
@@ -1022,6 +1054,11 @@ export async function readProjectComments(
   }
 
   const comments = parsedComments.map(normalizeComment);
+  assertUniqueDocumentLocalIds({
+    documentId: getProjectDocumentScopeId(project),
+    ids: comments.map((comment) => comment.id),
+    kind: "comment"
+  });
   project.persistence.commentsReference = comments;
   project.persistence.commentsRaw = undefined;
   project.persistence.files.comments = await createPersistedFileCommit(
@@ -1119,6 +1156,11 @@ export async function readProjectPatches(
   }
 
   const patches = parsedPatches.map(normalizePatch);
+  assertUniqueDocumentLocalIds({
+    documentId: getProjectDocumentScopeId(project),
+    ids: patches.map((patch) => patch.id),
+    kind: "patch"
+  });
   project.persistence.patchesReference = patches;
   project.persistence.patchesRaw = undefined;
   project.persistence.files.patches = await createPersistedFileCommit(
@@ -1394,7 +1436,10 @@ async function executeProjectCommit({
     if (comments === persistence.commentsReference) {
       debug.lastFileResults.comments = "unchanged";
     } else {
-      const commentsText = serializeComments(comments);
+      const commentsText = serializeComments(
+        comments,
+        getProjectDocumentScopeId(project)
+      );
       serializedFiles.push("comments");
       debug.serializationCount += 1;
       const commentsCommit = await createPersistedFileCommit(
@@ -1420,7 +1465,10 @@ async function executeProjectCommit({
     if (patches === persistence.patchesReference) {
       debug.lastFileResults.patches = "unchanged";
     } else {
-      const patchesText = serializePatches(patches);
+      const patchesText = serializePatches(
+        patches,
+        getProjectDocumentScopeId(project)
+      );
       serializedFiles.push("patches");
       debug.serializationCount += 1;
       const patchesCommit = await createPersistedFileCommit(
@@ -1667,12 +1715,30 @@ function createEmptyPersistenceDebugState(): PatchmarkPersistenceDebugState {
   };
 }
 
-function serializeComments(comments: PatchmarkComment[]): string {
-  return `${JSON.stringify(comments.map(normalizeComment), null, 2)}\n`;
+function serializeComments(
+  comments: PatchmarkComment[],
+  documentId: string
+): string {
+  const normalized = comments.map(normalizeComment);
+  assertUniqueDocumentLocalIds({
+    documentId,
+    ids: normalized.map((comment) => comment.id),
+    kind: "comment"
+  });
+  return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
-function serializePatches(patches: PatchmarkPatch[]): string {
-  return `${JSON.stringify(patches.map(normalizePatch), null, 2)}\n`;
+function serializePatches(
+  patches: PatchmarkPatch[],
+  documentId: string
+): string {
+  const normalized = patches.map(normalizePatch);
+  assertUniqueDocumentLocalIds({
+    documentId,
+    ids: normalized.map((patch) => patch.id),
+    kind: "patch"
+  });
+  return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
 function serializeManifest(manifest: PatchmarkManifest): string {

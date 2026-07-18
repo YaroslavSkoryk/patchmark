@@ -125,9 +125,24 @@ export type LegacyProjectAssemblyPlan = {
 };
 
 export type LegacyProjectIdentityCollision = {
+  classification:
+    | "unsafe_same_document_collision"
+    | "project_scoped_identifier_collision";
   namespace: LegacyIdentifierNamespace;
   id: string;
   sourceLabels: readonly string[];
+};
+
+export type LegacyProjectDocumentLocalDuplicate = {
+  classification: "allowed_document_local_duplicate";
+  namespace: LegacyIdentifierNamespace;
+  id: string;
+  sourceLabels: readonly string[];
+};
+
+export type LegacyProjectIdentityAnalysis = {
+  allowedDocumentLocalDuplicates: readonly LegacyProjectDocumentLocalDuplicate[];
+  unsafeCollisions: readonly LegacyProjectIdentityCollision[];
 };
 
 export type LegacyProjectAssemblyStage =
@@ -491,7 +506,13 @@ export async function inspectLegacyProjectAssemblySource(
 export function findLegacyProjectIdentityCollisions(
   sources: readonly LegacyProjectAssemblySource[]
 ): LegacyProjectIdentityCollision[] {
-  const collisions: LegacyProjectIdentityCollision[] = [];
+  return [...analyzeLegacyProjectIdentityCompatibility(sources).unsafeCollisions];
+}
+
+export function analyzeLegacyProjectIdentityCompatibility(
+  sources: readonly LegacyProjectAssemblySource[]
+): LegacyProjectIdentityAnalysis {
+  const duplicates: LegacyProjectDocumentLocalDuplicate[] = [];
   for (const namespace of identifierNamespaces) {
     const owners = new Map<string, Set<string>>();
     for (const source of sources) {
@@ -503,7 +524,8 @@ export function findLegacyProjectIdentityCollisions(
     }
     for (const [id, labels] of owners) {
       if (labels.size > 1) {
-        collisions.push({
+        duplicates.push({
+          classification: "allowed_document_local_duplicate",
           namespace,
           id,
           sourceLabels: Object.freeze([...labels].sort())
@@ -511,12 +533,16 @@ export function findLegacyProjectIdentityCollisions(
       }
     }
   }
-  return collisions.sort(
+  duplicates.sort(
     (left, right) =>
       identifierNamespaces.indexOf(left.namespace) -
         identifierNamespaces.indexOf(right.namespace) ||
       left.id.localeCompare(right.id)
   );
+  return Object.freeze({
+    allowedDocumentLocalDuplicates: Object.freeze(duplicates),
+    unsafeCollisions: Object.freeze([])
+  });
 }
 
 export async function createLegacyProjectAssemblyPlan({
@@ -535,7 +561,7 @@ export async function createLegacyProjectAssemblyPlan({
   const sources = documents.map((document) => document.source);
   await assertDistinctNonOverlappingDirectories(sources, destination);
   await assertDirectoryEmpty(destination);
-  assertNoIdentityCollisions(sources);
+  assertNoUnsafeIdentityCollisions(sources);
 
   const createdAt = new Date().toISOString();
   const registeredDocuments = documents.map((request, index) => ({
@@ -602,7 +628,7 @@ export async function executeLegacyProjectAssembly(
   try {
     await assertDistinctNonOverlappingDirectories(sources, plan.destination);
     await assertDirectoryEmpty(plan.destination);
-    assertNoIdentityCollisions(sources);
+    assertNoUnsafeIdentityCollisions(sources);
     for (const source of sources) {
       await assertSourceUnchanged(source);
     }
@@ -970,10 +996,11 @@ function validateLegacyRelationships({
   return warnings;
 }
 
-function assertNoIdentityCollisions(
+function assertNoUnsafeIdentityCollisions(
   sources: readonly LegacyProjectAssemblySource[]
 ): void {
-  const collision = findLegacyProjectIdentityCollisions(sources)[0];
+  const collision = analyzeLegacyProjectIdentityCompatibility(sources)
+    .unsafeCollisions[0];
   if (!collision) {
     return;
   }
