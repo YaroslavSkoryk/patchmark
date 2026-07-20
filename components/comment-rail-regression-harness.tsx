@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   type ActiveCommentState,
+  type CommentAddRequest,
   CommentsPanel,
   type CommentAnchorSummary,
   type CommentFormValues
@@ -46,6 +47,7 @@ export function CommentRailRegressionHarness() {
   const [isHydrated, setIsHydrated] = useState(false);
   const [activeCommentState, setActiveCommentState] =
     useState<ActiveCommentState>({ kind: "none" });
+  const [addRequest, setAddRequest] = useState<CommentAddRequest | null>(null);
   const comments = useMemo(
     () =>
       regressionAnchors.map((anchor, index) =>
@@ -103,6 +105,19 @@ export function CommentRailRegressionHarness() {
           <code>CommentsPanel</code> so browser checks can verify rail movement
           without opening a user project.
         </p>
+        <button
+          data-regression-open-comment
+          onClick={() =>
+            setAddRequest({
+              nonce: Date.now(),
+              positionTop: regressionAnchors[2].offset,
+              scope: "selected_text"
+            })
+          }
+          type="button"
+        >
+          Open selected-text comment draft
+        </button>
       </div>
 
       <div className="document-workspace comment-rail-regression-workspace">
@@ -136,7 +151,7 @@ export function CommentRailRegressionHarness() {
 
         <aside className="comments-rail" aria-label="Document comments">
           <CommentsPanel
-            addRequest={null}
+            addRequest={addRequest}
             activeCommentState={activeCommentState}
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
@@ -165,8 +180,8 @@ export function CommentRailRegressionHarness() {
             pendingPatchGroupTotal={0}
             pendingPatchTotal={0}
             replyRequest={null}
-            selectedAnchorContextKind={null}
-            selectedTextPreview={null}
+            selectedAnchorContextKind="paragraph"
+            selectedTextPreview={regressionAnchors[2].text}
           />
         </aside>
       </div>

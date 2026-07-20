@@ -1434,6 +1434,31 @@ button {
   padding: 12px;
 }
 
+.comment-composer-backdrop {
+  position: fixed;
+  z-index: 80;
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  inset: 0;
+  padding: 12px;
+  background: rgba(22, 35, 29, 0.32);
+}
+
+.comment-composer-sheet {
+  width: min(520px, 100%);
+  max-height: calc(100dvh - 24px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 18px 50px rgba(22, 35, 29, 0.24);
+}
+
+.comment-composer-sheet .comment-form-popover {
+  margin-top: 0;
+  border: 0;
+}
+
 .comment-form label {
   display: grid;
   gap: 5px;

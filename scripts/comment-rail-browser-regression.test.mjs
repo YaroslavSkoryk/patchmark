@@ -100,6 +100,7 @@ async function runBrowserRegression() {
     );
 
     assertMeasurementSequence(measurements);
+    await assertCompactCommentComposer(pageClient);
     printCoordinateSummary(measurements);
     console.log("Comment rail browser regression tests passed.");
   } finally {
@@ -111,6 +112,87 @@ async function runBrowserRegression() {
     }
     rmSync(userDataDir, { force: true, recursive: true });
   }
+}
+
+async function assertCompactCommentComposer(client) {
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 720,
+    mobile: false,
+    width: 820
+  });
+  await client.call("Page.navigate", { url: fixtureUrl });
+  await waitForFixture(client);
+
+  const initialScrollTop = await evaluate(client, {
+    expression: `(() => {
+      window.scrollTo(0, 480);
+      return Math.round(window.scrollY);
+    })()`
+  });
+
+  await evaluate(client, {
+    expression: `(() => {
+      const button = document.querySelector("[data-regression-open-comment]");
+
+      if (!(button instanceof HTMLButtonElement)) {
+        throw new Error("Compact comment trigger not found.");
+      }
+
+      button.click();
+    })()`,
+    userGesture: true
+  });
+
+  let measurement = null;
+
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    measurement = await evaluate(client, {
+      expression: `(() => {
+        const dialog = document.querySelector("[role='dialog'][aria-label='Add comment']");
+        const dialogRect = dialog?.getBoundingClientRect();
+
+        return {
+          dialogBottom: dialogRect ? Math.round(dialogRect.bottom) : null,
+          dialogTop: dialogRect ? Math.round(dialogRect.top) : null,
+          draftInFloatingStage: document.querySelectorAll(
+            ".comment-floating-item-draft"
+          ).length,
+          scrollTop: Math.round(window.scrollY),
+          viewportHeight: window.innerHeight,
+          visible: dialog
+            ? getComputedStyle(dialog).visibility !== "hidden" &&
+              dialogRect !== undefined &&
+              dialogRect.height > 0
+            : false
+        };
+      })()`
+    });
+
+    if (measurement.visible) {
+      break;
+    }
+
+    await delay(50);
+  }
+
+  assert.equal(measurement?.visible, true, "Compact composer should be visible");
+  assert.equal(
+    measurement?.draftInFloatingStage,
+    0,
+    "Compact composer should not participate in the anchored rail layout"
+  );
+  assert.equal(
+    measurement?.scrollTop,
+    initialScrollTop,
+    "Opening the compact composer should not scroll the document"
+  );
+  assert.ok(
+    (measurement?.dialogTop ?? -1) >= 0 &&
+      (measurement?.dialogBottom ?? Number.POSITIVE_INFINITY) <=
+        (measurement?.viewportHeight ?? 0),
+    "Compact composer should remain within the viewport"
+  );
 }
 
 async function assertFixtureIsReachable(url) {

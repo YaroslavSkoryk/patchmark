@@ -8,6 +8,7 @@ import {
   useRef,
   useState
 } from "react";
+import { createPortal } from "react-dom";
 import { type MarkdownHeading } from "@/lib/markdown/parse-headings";
 import {
   createFloatingCommentLayout,
@@ -131,6 +132,7 @@ const COMMENT_ADD_FORM_FALLBACK_HEIGHT = 260;
 const COMMENT_FLOATING_DRAFT_ID = "PM-COMMENT-DRAFT-FORM";
 const COMMENT_FLOATING_STAGE_MIN_HEIGHT = 220;
 const COMMENT_LAYOUT_DEBUG_STORAGE_KEY = "patchmark:debug-comment-layout";
+const COMPACT_COMMENT_COMPOSER_QUERY = "(max-width: 900px)";
 
 type FloatingLayoutItem =
   | {
@@ -202,6 +204,7 @@ export function CommentsPanel({
   const [editReplyContent, setEditReplyContent] = useState("");
   const [replyEditError, setReplyEditError] = useState("");
   const [formError, setFormError] = useState("");
+  const isCompactCommentComposer = useCompactCommentComposer();
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
 
@@ -556,7 +559,7 @@ export function CommentsPanel({
           ) : null}
 
           <FloatingCommentList
-            addForm={addForm}
+            addForm={isCompactCommentComposer ? null : addForm}
             addPositionTop={addPositionTop}
             activeCommentState={activeCommentState}
             anchorSummaries={anchorSummaries}
@@ -599,10 +602,41 @@ export function CommentsPanel({
             replyingCommentId={replyingCommentId}
             replyComment={replyComment}
           />
+          {isCompactCommentComposer && addForm
+            ? createPortal(
+                <div className="comment-composer-backdrop">
+                  <div
+                    aria-label="Add comment"
+                    aria-modal="true"
+                    className="comment-composer-sheet"
+                    role="dialog"
+                  >
+                    {addForm}
+                  </div>
+                </div>,
+                document.body
+              )
+            : null}
         </>
       )}
     </section>
   );
+}
+
+function useCompactCommentComposer(): boolean {
+  const [isCompact, setIsCompact] = useState(false);
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia(COMPACT_COMMENT_COMPOSER_QUERY);
+    const syncMatch = () => setIsCompact(mediaQuery.matches);
+
+    syncMatch();
+    mediaQuery.addEventListener("change", syncMatch);
+
+    return () => mediaQuery.removeEventListener("change", syncMatch);
+  }, []);
+
+  return isCompact;
 }
 
 type CommentGroupProps = {
