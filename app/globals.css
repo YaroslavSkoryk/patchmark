@@ -68,6 +68,15 @@ button {
   text-decoration-thickness: 2px;
 }
 
+::highlight(patchmark-reading-bookmark-target) {
+  background: rgba(252, 220, 118, 0.42);
+  color: inherit;
+  text-decoration: underline;
+  text-decoration-color: #9b6a14;
+  text-decoration-style: double;
+  text-decoration-thickness: 2px;
+}
+
 .app-shell {
   min-height: 100vh;
   padding: 32px;
@@ -327,6 +336,36 @@ button {
   color: #ffffff;
 }
 
+.reading-bookmark-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.reading-bookmark-controls button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 12px;
+  font-weight: 700;
+}
+
+.reading-bookmark-controls button:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.reading-bookmark-controls button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
+}
+
+.reading-bookmark-controls span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
 .project-actions {
   display: flex;
   flex-wrap: wrap;
@@ -484,8 +523,32 @@ button {
 }
 
 .editor-body {
+  position: relative;
   min-height: 0;
   flex: 1;
+}
+
+.reading-bookmark-indicator {
+  position: absolute;
+  right: 10px;
+  z-index: 8;
+  display: grid;
+  width: 32px;
+  height: 32px;
+  place-items: center;
+  border: 1px solid #c79837;
+  border-radius: 4px;
+  background: #fff8dc;
+  box-shadow: 0 5px 14px rgba(22, 35, 29, 0.14);
+  color: var(--text);
+  line-height: 1;
+}
+
+.reading-bookmark-indicator:hover,
+.reading-bookmark-indicator:focus-visible {
+  border-color: #8b5d0c;
+  outline: 2px solid rgba(155, 106, 20, 0.25);
+  outline-offset: 2px;
 }
 
 .comment-context-menu {
@@ -2820,6 +2883,7 @@ button {
 
   .document-actions,
   .project-actions,
+  .reading-bookmark-controls,
   .draft-restore-actions {
     align-items: stretch;
     flex-direction: column;

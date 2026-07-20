@@ -1,5 +1,10 @@
 import { type MarkdownFileHandle } from "../files/file-system-access.ts";
 import {
+  createNewPatchmarkProjectId,
+  createPatchmarkDocumentIdentityKey,
+  getPatchmarkProjectId
+} from "./project-identity.ts";
+import {
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
   type PatchmarkCommentActionScope,
@@ -20,6 +25,7 @@ import {
   type PatchmarkPatchAnchorRecoveryMethod,
   type PatchmarkPatchStatus,
   type PatchmarkPersistedFileCommit,
+  type PatchmarkReadingBookmark,
   type PatchmarkSaveCommit,
   type PatchmarkSuggestedUserAction,
   type PatchmarkSourceReference,
@@ -294,6 +300,7 @@ export async function createProjectFromMarkdown({
   const now = new Date().toISOString();
   const manifest: PatchmarkManifest = {
     schema_version: 1,
+    project_id: createNewPatchmarkProjectId(),
     project_name: createProjectName(
       suggestedProjectName ?? directoryHandle.name,
       directoryHandle.name
@@ -2304,15 +2311,25 @@ function normalizeManifest(
   }
 
   const now = new Date().toISOString();
+  const projectName =
+    typeof manifest.project_name === "string"
+      ? manifest.project_name
+      : createProjectName(fallbackProjectName, fallbackProjectName);
+  const createdAt =
+    typeof manifest.created_at === "string" ? manifest.created_at : now;
+  const projectId = getPatchmarkProjectId({
+    created_at: createdAt,
+    document_file: documentFileName,
+    project_id:
+      typeof manifest.project_id === "string" ? manifest.project_id : undefined,
+    project_name: projectName
+  });
   return {
     schema_version: 1,
-    project_name:
-      typeof manifest.project_name === "string"
-        ? manifest.project_name
-        : createProjectName(fallbackProjectName, fallbackProjectName),
+    project_id: projectId,
+    project_name: projectName,
     document_file: documentFileName,
-    created_at:
-      typeof manifest.created_at === "string" ? manifest.created_at : now,
+    created_at: createdAt,
     updated_at:
       typeof manifest.updated_at === "string" ? manifest.updated_at : now,
     current_version:
@@ -2331,8 +2348,61 @@ function normalizeManifest(
         : undefined,
     versions: Array.isArray(manifest.versions)
       ? manifest.versions.filter(isPatchmarkVersionEntry)
-      : undefined
+      : undefined,
+    reading_bookmarks: normalizeReadingBookmarks(
+      manifest.reading_bookmarks,
+      projectId
+    )
   };
+}
+
+function normalizeReadingBookmarks(
+  value: unknown,
+  projectId: string
+): Record<string, PatchmarkReadingBookmark> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+
+  const bookmarks = Object.values(value)
+    .filter(isPatchmarkReadingBookmark)
+    .filter((bookmark) => bookmark.document.project_id === projectId)
+    .map((bookmark) => ({
+      format_version: 1 as const,
+      document: {
+        project_id: bookmark.document.project_id,
+        document_file: bookmark.document.document_file
+      },
+      anchor: normalizeKnownCommentAnchor(bookmark.anchor, "note") as
+        PatchmarkReadingBookmark["anchor"],
+      created_at: bookmark.created_at,
+      updated_at: bookmark.updated_at
+    }));
+
+  return bookmarks.length > 0
+    ? Object.fromEntries(
+        bookmarks.map((bookmark) => [
+          createPatchmarkDocumentIdentityKey(bookmark.document),
+          bookmark
+        ])
+      )
+    : undefined;
+}
+
+function isPatchmarkReadingBookmark(
+  value: unknown
+): value is PatchmarkReadingBookmark {
+  return (
+    isRecord(value) &&
+    value.format_version === 1 &&
+    isRecord(value.document) &&
+    typeof value.document.project_id === "string" &&
+    typeof value.document.document_file === "string" &&
+    isPatchmarkCommentAnchor(value.anchor) &&
+    value.anchor.kind !== "document" &&
+    typeof value.created_at === "string" &&
+    typeof value.updated_at === "string"
+  );
 }
 
 function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry {

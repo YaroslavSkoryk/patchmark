@@ -200,14 +200,34 @@ export type PatchCommentImpactKind =
 
 export type PatchmarkManifest = {
   schema_version: 1;
+  project_id?: string;
   project_name: string;
   document_file: "document.md";
   created_at: string;
   updated_at: string;
   current_version?: string;
   versions?: PatchmarkVersionEntry[];
+  reading_bookmarks?: Record<string, PatchmarkReadingBookmark>;
   save_generation?: number;
   save_commit_id?: string;
+};
+
+export type PatchmarkDocumentIdentity = {
+  project_id: string;
+  document_file: string;
+};
+
+export type PatchmarkReadingBookmarkAnchor = Extract<
+  PatchmarkCommentAnchor,
+  { kind: "section" | "selected_text" }
+>;
+
+export type PatchmarkReadingBookmark = {
+  format_version: 1;
+  document: PatchmarkDocumentIdentity;
+  anchor: PatchmarkReadingBookmarkAnchor;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PatchmarkLegacyCommentAnchorHistoryEntry = {

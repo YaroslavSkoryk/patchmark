@@ -110,6 +110,13 @@ import {
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import {
+  createReadingBookmarkAnchorAdapter,
+  getCurrentDocumentReadingBookmark,
+  removeDocumentReadingBookmark,
+  resolveReadingBookmark,
+  setDocumentReadingBookmark
+} from "@/lib/reading-bookmarks/reading-bookmark";
+import {
   createAppliedPatchReviewContent,
   createPatchReviewSnippetPreview,
   dedupePatchReviewTextMatches,
@@ -188,6 +195,7 @@ import {
   type PatchmarkPatch,
   type PatchmarkPatchAnchorRecoveryMethod,
   type PatchmarkPatchGroup,
+  type PatchmarkReadingBookmark,
   type PatchmarkSelectedTextAnchorContext,
   type PatchmarkSelectedTextAnchorContextKind,
   type PatchmarkSourceReference,
@@ -493,6 +501,7 @@ const COMMENT_RESOLVED_SELECTED_HIGHLIGHT_NAME =
   "patchmark-comment-resolved-selected-anchor";
 const COMMENT_REANCHOR_PREVIEW_HIGHLIGHT_NAME =
   "patchmark-comment-reanchor-preview";
+const READING_BOOKMARK_HIGHLIGHT_NAME = "patchmark-reading-bookmark-target";
 const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/i;
 const DOCUMENT_RAW_URL_PATTERN = /\bhttps?:\/\/\S+/i;
 const visualTextIndexCache = new WeakMap<HTMLElement, VisualTextIndex>();
@@ -531,6 +540,13 @@ export function DocumentEditor() {
   const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
+  const [isReadingBookmarkBusy, setIsReadingBookmarkBusy] = useState(false);
+  const [isReadingBookmarkEmphasized, setIsReadingBookmarkEmphasized] =
+    useState(false);
+  const [readingBookmarkPosition, setReadingBookmarkPosition] = useState<
+    number | null
+  >(null);
+  const readingBookmarkEmphasisTimeoutRef = useRef<number | null>(null);
   const [activeCommentState, setActiveCommentState] =
     useState<ActiveCommentState>({ kind: "none" });
   const lastScrolledActiveCommentKeyRef = useRef<string | null>(null);
@@ -780,6 +796,20 @@ export function DocumentEditor() {
     restoredMarkdown,
     saveStatus
   });
+  const readingBookmark = useMemo(
+    () =>
+      projectHandle
+        ? getCurrentDocumentReadingBookmark(projectHandle.manifest)
+        : null,
+    [projectHandle]
+  );
+  const readingBookmarkResolution = useMemo(
+    () =>
+      readingBookmark
+        ? resolveReadingBookmark({ bookmark: readingBookmark, markdown, patches })
+        : null,
+    [markdown, patches, readingBookmark]
+  );
 
   useEffect(() => {
     setAvailableDraft(readMostRecentDocumentDraft());
@@ -1135,6 +1165,19 @@ export function DocumentEditor() {
           ? currentCommentPositions
           : nextCommentPositions
       );
+      const nextReadingBookmarkPosition = measureReadingBookmarkPosition({
+        bookmark: readingBookmark,
+        container: editorDocumentRef.current,
+        headings,
+        markdown,
+        mode,
+        patches
+      });
+      setReadingBookmarkPosition((currentPosition) =>
+        currentPosition === nextReadingBookmarkPosition
+          ? currentPosition
+          : nextReadingBookmarkPosition
+      );
 
       updateVisualCommentHighlights({
         activeCommentState,
@@ -1149,6 +1192,15 @@ export function DocumentEditor() {
           proposal: reanchorSession?.previewProposal ?? null,
           targetCommentId: reanchorSession?.commentId ?? null
         })
+      });
+      updateVisualReadingBookmarkHighlight({
+        bookmark: readingBookmark,
+        container: editorDocumentRef.current,
+        emphasized: isReadingBookmarkEmphasized,
+        headings,
+        markdown,
+        mode,
+        patches
       });
       recordEditPerformanceDuration(
         operationId,
@@ -1231,17 +1283,29 @@ export function DocumentEditor() {
       mutationObserver?.disconnect();
       window.removeEventListener("resize", scheduleCommentAnchorSync);
       clearVisualCommentHighlights();
+      clearVisualReadingBookmarkHighlight();
     };
   }, [
     activeCommentState,
     comments,
     documentVersion,
     headings,
+    isReadingBookmarkEmphasized,
     markdown,
     mode,
     patches,
+    readingBookmark,
     reanchorSession
   ]);
+
+  useEffect(
+    () => () => {
+      if (readingBookmarkEmphasisTimeoutRef.current !== null) {
+        window.clearTimeout(readingBookmarkEmphasisTimeoutRef.current);
+      }
+    },
+    []
+  );
 
   useEffect(() => {
     const previewProposal = reanchorSession?.previewProposal;
@@ -3971,6 +4035,174 @@ export function DocumentEditor() {
     setCommentContextMenu(null);
   }
 
+  async function handleSetReadingBookmarkFromMenu() {
+    if (
+      !projectHandle ||
+      !commentContextMenu ||
+      isReadingBookmarkBusy ||
+      isProjectRecoveryReadOnly
+    ) {
+      return;
+    }
+
+    const scope: CommentAnchorScope = commentContextMenu.selectedDraft
+      ? "selected_text"
+      : "section";
+
+    if (scope === "section" && !commentContextMenu.defaultHeadingLine) {
+      setSaveFeedback({
+        kind: "info",
+        message: "Select text or open the menu inside a section to set a bookmark."
+      });
+      setCommentContextMenu(null);
+      return;
+    }
+
+    const anchor = createCommentAnchor({
+      headings,
+      markdown,
+      selection: markdownSelection,
+      selectedDraft: commentContextMenu.selectedDraft,
+      values: {
+        anchorScope: scope,
+        comment: "",
+        targetHeadingLine: commentContextMenu.defaultHeadingLine,
+        type: "note"
+      }
+    });
+
+    if (anchor.kind === "document") {
+      return;
+    }
+
+    const next = setDocumentReadingBookmark({
+      anchor,
+      manifest: projectHandle.manifest,
+      timestamp: new Date().toISOString()
+    });
+
+    setCommentContextMenu(null);
+    setIsReadingBookmarkBusy(true);
+
+    try {
+      await saveProjectState({
+        manifest: next.manifest,
+        project: projectHandle,
+        reason: "set_reading_bookmark"
+      });
+      setProjectHandle({
+        ...projectHandle,
+        manifest: { ...projectHandle.manifest }
+      });
+      setSaveFeedback({
+        kind: "success",
+        message: "Reading bookmark set."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    } finally {
+      setIsReadingBookmarkBusy(false);
+    }
+  }
+
+  async function handleRemoveReadingBookmark() {
+    if (!projectHandle || !readingBookmark || isReadingBookmarkBusy) {
+      return;
+    }
+
+    const nextManifest = removeDocumentReadingBookmark({
+      manifest: projectHandle.manifest
+    });
+    setIsReadingBookmarkBusy(true);
+
+    try {
+      await saveProjectState({
+        manifest: nextManifest,
+        project: projectHandle,
+        reason: "remove_reading_bookmark"
+      });
+      setProjectHandle({
+        ...projectHandle,
+        manifest: { ...projectHandle.manifest }
+      });
+      setIsReadingBookmarkEmphasized(false);
+      setSaveFeedback({
+        kind: "success",
+        message: "Reading bookmark removed."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    } finally {
+      setIsReadingBookmarkBusy(false);
+    }
+  }
+
+  function handleContinueReading() {
+    if (
+      !readingBookmark ||
+      readingBookmarkResolution?.state !== "available"
+    ) {
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "The reading bookmark cannot be located confidently. Replace or remove it."
+      });
+      return;
+    }
+
+    if (mode === "markdown") {
+      jumpToMarkdownSelection(
+        readingBookmarkResolution.start,
+        readingBookmarkResolution.end
+      );
+    } else {
+      const container = editorDocumentRef.current;
+      const range = container
+        ? getVisualProjectionPrimaryRange(
+            findVisualCommentAnchorProjection({
+              comment: createReadingBookmarkAnchorAdapter(readingBookmark),
+              container,
+              headings,
+              markdown,
+              patches
+            })
+          )
+        : null;
+
+      if (!range) {
+        setSaveFeedback({
+          kind: "info",
+          message:
+            "The reading bookmark is available in Markdown Mode but could not be shown visually."
+        });
+        return;
+      }
+
+      scrollRangeIntoViewportIfNeeded(range);
+      setIsReadingBookmarkEmphasized(true);
+
+      if (readingBookmarkEmphasisTimeoutRef.current !== null) {
+        window.clearTimeout(readingBookmarkEmphasisTimeoutRef.current);
+      }
+
+      readingBookmarkEmphasisTimeoutRef.current = window.setTimeout(() => {
+        readingBookmarkEmphasisTimeoutRef.current = null;
+        setIsReadingBookmarkEmphasized(false);
+      }, 1800);
+    }
+
+    setSaveFeedback({
+      kind: "success",
+      message: "Continued reading at the saved bookmark."
+    });
+  }
+
   function getCommentContextMenuPosition({
     container,
     event,
@@ -4235,6 +4467,33 @@ export function DocumentEditor() {
                 onSaveChanges={handleSaveChanges}
                 showCreateSnapshot={isProjectMode}
               />
+              {readingBookmark ? (
+                <div
+                  className="reading-bookmark-controls"
+                  aria-label="Reading bookmark controls"
+                >
+                  {readingBookmarkResolution?.state === "available" ? (
+                    <button
+                      type="button"
+                      disabled={isReadingBookmarkBusy || isReanchorMode}
+                      onClick={handleContinueReading}
+                    >
+                      Continue reading
+                    </button>
+                  ) : (
+                    <span role="status">Bookmark location unavailable</span>
+                  )}
+                  <button
+                    type="button"
+                    disabled={isReadingBookmarkBusy || isReanchorMode}
+                    onClick={() =>
+                      void handleRemoveReadingBookmark().catch(() => undefined)
+                    }
+                  >
+                    Remove bookmark
+                  </button>
+                </div>
+              ) : null}
               <div className="mode-switcher" aria-label="Editor mode">
                 <button
                   type="button"
@@ -4428,6 +4687,20 @@ export function DocumentEditor() {
               </div>
             </div>
           )}
+          {mode === "visual" &&
+          readingBookmark &&
+          readingBookmarkPosition !== null ? (
+            <button
+              type="button"
+              aria-label="Reading bookmark. Continue reading from here."
+              className="reading-bookmark-indicator"
+              onClick={handleContinueReading}
+              style={{ top: readingBookmarkPosition }}
+              title="Continue reading"
+            >
+              <span aria-hidden="true">🔖</span>
+            </button>
+          ) : null}
         </div>
       </div>
 
@@ -4472,7 +4745,7 @@ export function DocumentEditor() {
           className="comment-context-menu"
           style={{ left: commentContextMenu.x, top: commentContextMenu.y }}
           role="menu"
-          aria-label="Patchmark comment menu"
+          aria-label="Patchmark document menu"
           onClick={(event) => event.stopPropagation()}
         >
           {!isProjectMode ? (
@@ -4514,6 +4787,26 @@ export function DocumentEditor() {
           {isProjectMode && !commentContextMenu.defaultHeadingLine ? (
             <span className="comment-context-menu-note">
               No section detected here.
+            </span>
+          ) : null}
+          <button
+            type="button"
+            role="menuitem"
+            disabled={
+              !isProjectMode ||
+              isReadingBookmarkBusy ||
+              (!commentContextMenu.selectedDraft &&
+                !commentContextMenu.defaultHeadingLine)
+            }
+            onClick={() =>
+              void handleSetReadingBookmarkFromMenu().catch(() => undefined)
+            }
+          >
+            Set reading bookmark
+          </button>
+          {!isProjectMode ? (
+            <span className="comment-context-menu-note">
+              Reading bookmarks require Project Folder Mode.
             </span>
           ) : null}
         </div>
@@ -14930,6 +15223,41 @@ function getPrimaryRangeClientRect(range: Range): DOMRect | null {
   return boundingRect.width > 0 || boundingRect.height > 0 ? boundingRect : null;
 }
 
+function measureReadingBookmarkPosition({
+  bookmark,
+  container,
+  headings,
+  markdown,
+  mode,
+  patches = []
+}: {
+  bookmark: PatchmarkReadingBookmark | null;
+  container: HTMLElement | null;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  mode: EditorMode;
+  patches?: PatchmarkPatch[];
+}): number | null {
+  if (!bookmark || !container || mode !== "visual") {
+    return null;
+  }
+
+  const range = getVisualProjectionPrimaryRange(
+    findVisualCommentAnchorProjection({
+      comment: createReadingBookmarkAnchorAdapter(bookmark),
+      container,
+      headings,
+      markdown,
+      patches
+    })
+  );
+  const primaryRect = range ? getPrimaryRangeClientRect(range) : null;
+
+  return primaryRect
+    ? Math.max(8, Math.round(primaryRect.top - container.getBoundingClientRect().top))
+    : null;
+}
+
 function isPointInsideRangeClientRects(
   range: Range,
   clientX: number,
@@ -15043,6 +15371,54 @@ function clearVisualCommentHighlights(): void {
   if (highlightApi) {
     deleteVisualCommentHighlightRegistries(highlightApi.registry);
   }
+}
+
+function updateVisualReadingBookmarkHighlight({
+  bookmark,
+  container,
+  emphasized,
+  headings,
+  markdown,
+  mode,
+  patches = []
+}: {
+  bookmark: PatchmarkReadingBookmark | null;
+  container: HTMLElement | null;
+  emphasized: boolean;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  mode: EditorMode;
+  patches?: PatchmarkPatch[];
+}): void {
+  const highlightApi = getCssHighlightApi();
+
+  if (!highlightApi) {
+    return;
+  }
+
+  if (!bookmark || !container || !emphasized || mode !== "visual") {
+    highlightApi.registry.delete(READING_BOOKMARK_HIGHLIGHT_NAME);
+    return;
+  }
+
+  const projection = findVisualCommentAnchorProjection({
+    comment: createReadingBookmarkAnchorAdapter(bookmark),
+    container,
+    headings,
+    markdown,
+    patches
+  });
+
+  setVisualCommentHighlightRegistry({
+    Highlight: highlightApi.Highlight,
+    name: READING_BOOKMARK_HIGHLIGHT_NAME,
+    ranges: projection.state === "resolved" ? projection.textRanges : [],
+    registry: highlightApi.registry
+  });
+}
+
+function clearVisualReadingBookmarkHighlight(): void {
+  getCssHighlightApi()?.registry.delete(READING_BOOKMARK_HIGHLIGHT_NAME);
 }
 
 function getActiveCommentIds(activeCommentState: ActiveCommentState): string[] {
