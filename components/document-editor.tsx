@@ -543,9 +543,14 @@ export function DocumentEditor() {
   const [isReadingBookmarkBusy, setIsReadingBookmarkBusy] = useState(false);
   const [isReadingBookmarkEmphasized, setIsReadingBookmarkEmphasized] =
     useState(false);
+  const [isReadingBookmarkMenuOpen, setIsReadingBookmarkMenuOpen] =
+    useState(false);
   const [readingBookmarkPosition, setReadingBookmarkPosition] = useState<
     number | null
   >(null);
+  const readingBookmarkMarkerRef = useRef<HTMLButtonElement>(null);
+  const readingBookmarkMenuRef = useRef<HTMLDivElement>(null);
+  const readingBookmarkRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const readingBookmarkEmphasisTimeoutRef = useRef<number | null>(null);
   const [activeCommentState, setActiveCommentState] =
     useState<ActiveCommentState>({ kind: "none" });
@@ -1306,6 +1311,57 @@ export function DocumentEditor() {
     },
     []
   );
+
+  useEffect(() => {
+    if (!isReadingBookmarkMenuOpen) {
+      return;
+    }
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      readingBookmarkRemoveButtonRef.current?.focus();
+    });
+
+    function closeReadingBookmarkMenu(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        (readingBookmarkMenuRef.current?.contains(event.target) ||
+          readingBookmarkMarkerRef.current?.contains(event.target))
+      ) {
+        return;
+      }
+
+      setIsReadingBookmarkMenuOpen(false);
+    }
+
+    function handleReadingBookmarkMenuKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      setIsReadingBookmarkMenuOpen(false);
+      readingBookmarkMarkerRef.current?.focus();
+    }
+
+    window.addEventListener("pointerdown", closeReadingBookmarkMenu);
+    window.addEventListener("keydown", handleReadingBookmarkMenuKeyDown);
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("pointerdown", closeReadingBookmarkMenu);
+      window.removeEventListener("keydown", handleReadingBookmarkMenuKeyDown);
+    };
+  }, [isReadingBookmarkMenuOpen]);
+
+  useEffect(() => {
+    if (
+      !readingBookmark ||
+      readingBookmarkPosition === null ||
+      mode !== "visual"
+    ) {
+      setIsReadingBookmarkMenuOpen(false);
+    }
+  }, [mode, readingBookmark, readingBookmarkPosition]);
 
   useEffect(() => {
     const previewProposal = reanchorSession?.previewProposal;
@@ -4116,6 +4172,7 @@ export function DocumentEditor() {
     const nextManifest = removeDocumentReadingBookmark({
       manifest: projectHandle.manifest
     });
+    setIsReadingBookmarkMenuOpen(false);
     setIsReadingBookmarkBusy(true);
 
     try {
@@ -4481,17 +4538,21 @@ export function DocumentEditor() {
                       Continue reading
                     </button>
                   ) : (
-                    <span role="status">Bookmark location unavailable</span>
+                    <>
+                      <span role="status">Bookmark location unavailable</span>
+                      <button
+                        type="button"
+                        disabled={isReadingBookmarkBusy || isReanchorMode}
+                        onClick={() =>
+                          void handleRemoveReadingBookmark().catch(
+                            () => undefined
+                          )
+                        }
+                      >
+                        Remove unavailable bookmark
+                      </button>
+                    </>
                   )}
-                  <button
-                    type="button"
-                    disabled={isReadingBookmarkBusy || isReanchorMode}
-                    onClick={() =>
-                      void handleRemoveReadingBookmark().catch(() => undefined)
-                    }
-                  >
-                    Remove bookmark
-                  </button>
                 </div>
               ) : null}
               <div className="mode-switcher" aria-label="Editor mode">
@@ -4690,16 +4751,49 @@ export function DocumentEditor() {
           {mode === "visual" &&
           readingBookmark &&
           readingBookmarkPosition !== null ? (
-            <button
-              type="button"
-              aria-label="Reading bookmark. Continue reading from here."
-              className="reading-bookmark-indicator"
-              onClick={handleContinueReading}
+            <div
+              className="reading-bookmark-marker"
               style={{ top: readingBookmarkPosition }}
-              title="Continue reading"
             >
-              <span aria-hidden="true">🔖</span>
-            </button>
+              <button
+                ref={readingBookmarkMarkerRef}
+                type="button"
+                aria-controls="reading-bookmark-action-menu"
+                aria-expanded={isReadingBookmarkMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Current reading bookmark. Open bookmark actions."
+                className="reading-bookmark-indicator"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  setIsReadingBookmarkMenuOpen((isOpen) => !isOpen);
+                }}
+                title="Current reading bookmark"
+              >
+                <span aria-hidden="true">🔖</span>
+              </button>
+              {isReadingBookmarkMenuOpen ? (
+                <div
+                  ref={readingBookmarkMenuRef}
+                  id="reading-bookmark-action-menu"
+                  className="reading-bookmark-action-menu"
+                  role="menu"
+                  aria-label="Reading bookmark actions"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    ref={readingBookmarkRemoveButtonRef}
+                    type="button"
+                    role="menuitem"
+                    disabled={isReadingBookmarkBusy || isReanchorMode}
+                    onClick={() =>
+                      void handleRemoveReadingBookmark().catch(() => undefined)
+                    }
+                  >
+                    Remove bookmark
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </div>
