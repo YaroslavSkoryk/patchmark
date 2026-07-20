@@ -2,7 +2,10 @@ import { type MarkdownFileHandle } from "../files/file-system-access.ts";
 import {
   assertDocumentScope,
   assertUniqueDocumentLocalIds,
+  createProjectDocumentIdentity,
+  serializeProjectDocumentIdentity,
   legacyDocumentScopeId,
+  type ProjectDocumentIdentity,
   type VersionRef
 } from "./document-scoped-identity.ts";
 import {
@@ -10,6 +13,7 @@ import {
   archiveRegisteredDocument,
   completePendingProjectMigration,
   convertLegacyProject,
+  createProjectId,
   createDocumentScopedDirectoryHandle,
   createProjectDocument as registerCreatedProjectDocument,
   getRegisteredDocument,
@@ -52,6 +56,7 @@ import {
   type PatchmarkPatchAnchorRecoveryMethod,
   type PatchmarkPatchStatus,
   type PatchmarkPersistedFileCommit,
+  type PatchmarkReadingBookmark,
   type PatchmarkSaveCommit,
   type PatchmarkSuggestedUserAction,
   type PatchmarkSourceReference,
@@ -184,8 +189,13 @@ type ProjectCommitRequest = {
   comments?: PatchmarkComment[];
   patches?: PatchmarkPatch[];
   manifest?: PatchmarkManifest;
+  manifestUpdate?: (manifest: PatchmarkManifest) => PatchmarkManifest;
   reason: string;
   allowSupersede?: boolean;
+};
+
+export type PatchmarkProjectDocumentListItem = PatchmarkProjectDocumentView & {
+  hasReadingBookmark: boolean;
 };
 
 type ProjectWriteQueueState = {
@@ -447,6 +457,8 @@ export async function createProjectFromMarkdown({
   const now = new Date().toISOString();
   const manifest: PatchmarkManifest = {
     schema_version: 1,
+    project_id: createProjectId(),
+    document_id: legacyDocumentScopeId,
     project_name: createProjectName(
       suggestedProjectName ?? directoryHandle.name,
       directoryHandle.name
@@ -498,6 +510,19 @@ export function getProjectDocumentScopeId(
   return project.document?.document_id ?? legacyDocumentScopeId;
 }
 
+export function getProjectDocumentIdentity(
+  project: PatchmarkProjectHandle
+): ProjectDocumentIdentity {
+  return createProjectDocumentIdentity(
+    project.projectManifest?.project_id ??
+      project.manifest.project_id ??
+      createLegacyProjectId(project.manifest),
+    project.document?.document_id ??
+      project.manifest.document_id ??
+      legacyDocumentScopeId
+  );
+}
+
 export function getProjectDocumentExportIdentity(
   project: PatchmarkProjectHandle
 ): {
@@ -520,7 +545,7 @@ export function getProjectDocumentExportIdentity(
 
 export async function getProjectDocumentList(
   project: PatchmarkProjectHandle
-): Promise<PatchmarkProjectDocumentView[]> {
+): Promise<PatchmarkProjectDocumentListItem[]> {
   const root = getAuthoritativeProjectDirectory(project);
   if (!project.projectManifest) {
     return [
@@ -533,14 +558,61 @@ export async function getProjectDocumentList(
         position: 1000,
         added_at: project.manifest.created_at,
         archived_at: null,
-        availability: "available"
+        availability: "available",
+        hasReadingBookmark: Boolean(project.manifest.reading_bookmark)
       }
     ];
   }
-  return listProjectDocuments(
+  const documents = await listProjectDocuments(
     root as ProjectDirectoryHandle,
     project.projectManifest
   );
+  return Promise.all(
+    documents.map(async (document) => ({
+      ...document,
+      hasReadingBookmark: await hasStoredReadingBookmark({
+        document,
+        projectManifest: project.projectManifest!,
+        root
+      })
+    }))
+  );
+}
+
+async function hasStoredReadingBookmark({
+  document,
+  projectManifest,
+  root
+}: {
+  document: PatchmarkRegisteredDocument;
+  projectManifest: PatchmarkProjectManifestV1;
+  root: PatchmarkDirectoryHandle;
+}): Promise<boolean> {
+  try {
+    const scopedDirectory = (await createDocumentScopedDirectoryHandle(
+      root as ProjectDirectoryHandle,
+      document
+    )) as PatchmarkDirectoryHandle;
+    const metadata = await scopedDirectory.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    const manifestText = await readTextFile(
+      await metadata.getFileHandle(manifestFileName)
+    );
+    const details: string[] = [];
+    const manifest = parseManifestForValidation(
+      manifestText,
+      projectManifest.title,
+      details,
+      createProjectDocumentIdentity(
+        projectManifest.project_id,
+        document.document_id
+      )
+    );
+    return details.length === 0 && Boolean(manifest?.reading_bookmark);
+  } catch {
+    return false;
+  }
 }
 
 export async function convertProjectToMultiDocument(
@@ -810,6 +882,22 @@ export async function saveProjectState({
     manifest,
     markdown,
     patches,
+    project,
+    reason
+  });
+}
+
+export async function updateProjectManifestMetadata({
+  project,
+  reason,
+  update
+}: {
+  project: PatchmarkProjectHandle;
+  reason: string;
+  update: (manifest: PatchmarkManifest) => PatchmarkManifest;
+}): Promise<PatchmarkProjectCommitResult> {
+  return commitProjectState({
+    manifestUpdate: update,
     project,
     reason
   });
@@ -1230,7 +1318,10 @@ export function resetProjectPersistenceDebugState(
 export async function restoreProjectLastKnownGood(
   project: PatchmarkProjectHandle
 ): Promise<LoadedPatchmarkProject> {
-  const lkg = await readValidLastKnownGoodGeneration(project.directoryHandle);
+  const lkg = await readValidLastKnownGoodGeneration(
+    project.directoryHandle,
+    getProjectDocumentIdentity(project)
+  );
 
   if (!lkg) {
     throw new Error("The last complete project save is no longer available.");
@@ -1337,6 +1428,7 @@ async function commitProjectState({
   allowSupersede = false,
   comments,
   manifest,
+  manifestUpdate,
   markdown,
   patches,
   project,
@@ -1375,6 +1467,7 @@ async function commitProjectState({
         allowSupersede,
         comments,
         manifest,
+        manifestUpdate,
         markdown,
         patches,
         project,
@@ -1397,6 +1490,7 @@ async function executeProjectCommit({
   allowSupersede,
   comments,
   manifest,
+  manifestUpdate,
   markdown,
   patches,
   project,
@@ -1414,6 +1508,9 @@ async function executeProjectCommit({
   const changedFiles: ProjectCommitFileKey[] = [];
   const serializedFiles: ProjectCommitFileKey[] = [];
   const desiredTexts: Partial<Record<ProjectCommitFileKey, string>> = {};
+  const requestedManifest = manifestUpdate
+    ? manifestUpdate(project.manifest)
+    : manifest;
 
   debug.lastFileResults = {
     document: "skipped",
@@ -1491,14 +1588,14 @@ async function executeProjectCommit({
   }
 
   const manifestChanged =
-    manifest !== undefined &&
-    createManifestMeaningfulKey(manifest) !==
+    requestedManifest !== undefined &&
+    createManifestMeaningfulKey(requestedManifest) !==
       createManifestMeaningfulKey(project.manifest);
 
   if (manifestChanged) {
     changedFiles.push("manifest");
     debug.lastFileResults.manifest = "changed";
-  } else if (manifest !== undefined) {
+  } else if (requestedManifest !== undefined) {
     debug.lastFileResults.manifest = "unchanged";
   }
 
@@ -1539,7 +1636,7 @@ async function executeProjectCommit({
   const generation = Math.max(persistence.generation, currentCommit.generation) + 1;
   const commitId = createSaveCommitId(generation);
   const nextManifest: PatchmarkManifest = {
-    ...(manifest ?? project.manifest),
+    ...(requestedManifest ?? project.manifest),
     updated_at: createdAt,
     save_generation: generation,
     save_commit_id: commitId
@@ -1836,6 +1933,10 @@ async function openRegisteredProjectDocument(
   );
   const loaded = await createOpenedProjectHandle({
     directoryHandle: scopedDirectory,
+    documentIdentity: createProjectDocumentIdentity(
+      projectManifest.project_id,
+      document.document_id
+    ),
     manifestText: await readTextFile(documentManifestFile),
     markdown: await readTextFile(documentFile),
     readOnly: options.readOnly
@@ -1876,7 +1977,11 @@ async function createMissingDocumentProject({
   const manifest = parseManifestForValidation(
     manifestText,
     projectManifest.title,
-    details
+    details,
+    createProjectDocumentIdentity(
+      projectManifest.project_id,
+      document.document_id
+    )
   );
   if (!manifest || details.length > 0) {
     throw new Error(
@@ -2231,11 +2336,13 @@ async function updateLegacyAssemblyJournal(
 
 async function createOpenedProjectHandle({
   directoryHandle,
+  documentIdentity,
   manifestText,
   markdown,
   readOnly = false
 }: {
   directoryHandle: PatchmarkDirectoryHandle;
+  documentIdentity?: ProjectDocumentIdentity;
   manifestText: string;
   markdown: string;
   readOnly?: boolean;
@@ -2260,7 +2367,8 @@ async function createOpenedProjectHandle({
   const currentManifest = parseManifestForValidation(
     manifestText,
     directoryHandle.name,
-    currentDetails
+    currentDetails,
+    documentIdentity
   );
 
   if (commentsText === null) {
@@ -2352,7 +2460,10 @@ async function createOpenedProjectHandle({
     }
   }
 
-  const lkg = await readValidLastKnownGoodGeneration(directoryHandle);
+  const lkg = await readValidLastKnownGoodGeneration(
+    directoryHandle,
+    documentIdentity
+  );
 
   if (lkg) {
     const recovery: PatchmarkProjectRecoveryState = {
@@ -2801,7 +2912,8 @@ async function getProjectReadMetadataDirectory(
 }
 
 async function readValidLastKnownGoodGeneration(
-  directoryHandle: PatchmarkDirectoryHandle
+  directoryHandle: PatchmarkDirectoryHandle,
+  documentIdentity?: ProjectDocumentIdentity
 ): Promise<{
   commit: PatchmarkSaveCommit;
   manifest: PatchmarkManifest;
@@ -2835,7 +2947,8 @@ async function readValidLastKnownGoodGeneration(
     const normalizedManifest = parseManifestForValidation(
       manifest,
       directoryHandle.name,
-      details
+      details,
+      documentIdentity
     );
     const texts = { document, comments, patches, manifest };
 
@@ -2917,10 +3030,15 @@ function validatePersistedJson(
 function parseManifestForValidation(
   text: string,
   fallbackProjectName: string,
-  details: string[]
+  details: string[],
+  documentIdentity?: ProjectDocumentIdentity
 ): PatchmarkManifest | null {
   try {
-    return normalizeManifest(JSON.parse(text), fallbackProjectName);
+    return normalizeManifest(
+      JSON.parse(text),
+      fallbackProjectName,
+      documentIdentity
+    );
   } catch (error) {
     details.push(
       error instanceof Error
@@ -3269,7 +3387,8 @@ async function writeTextFile(
 
 function normalizeManifest(
   manifest: unknown,
-  fallbackProjectName: string
+  fallbackProjectName: string,
+  documentIdentity?: ProjectDocumentIdentity
 ): PatchmarkManifest {
   if (!isRecord(manifest)) {
     throw new Error(".patchmark/manifest.json is not valid JSON metadata.");
@@ -3284,15 +3403,34 @@ function normalizeManifest(
   }
 
   const now = new Date().toISOString();
+  const projectName =
+    typeof manifest.project_name === "string"
+      ? manifest.project_name
+      : createProjectName(fallbackProjectName, fallbackProjectName);
+  const createdAt =
+    typeof manifest.created_at === "string" ? manifest.created_at : now;
+  const projectId =
+    documentIdentity?.projectId ??
+    (typeof manifest.project_id === "string" && manifest.project_id.trim()
+      ? manifest.project_id
+      : createLegacyProjectId({
+          created_at: createdAt,
+          document_file: documentFileName,
+          project_name: projectName
+        }));
+  const documentId =
+    documentIdentity?.documentId ??
+    (typeof manifest.document_id === "string" && manifest.document_id.trim()
+      ? manifest.document_id
+      : legacyDocumentScopeId);
+  const identity = createProjectDocumentIdentity(projectId, documentId);
   return {
     schema_version: 1,
-    project_name:
-      typeof manifest.project_name === "string"
-        ? manifest.project_name
-        : createProjectName(fallbackProjectName, fallbackProjectName),
+    project_id: projectId,
+    document_id: documentId,
+    project_name: projectName,
     document_file: documentFileName,
-    created_at:
-      typeof manifest.created_at === "string" ? manifest.created_at : now,
+    created_at: createdAt,
     updated_at:
       typeof manifest.updated_at === "string" ? manifest.updated_at : now,
     current_version:
@@ -3311,8 +3449,76 @@ function normalizeManifest(
         : undefined,
     versions: Array.isArray(manifest.versions)
       ? manifest.versions.filter(isPatchmarkVersionEntry)
-      : undefined
+      : undefined,
+    reading_bookmark: normalizeReadingBookmark(manifest, identity)
   };
+}
+
+function normalizeReadingBookmark(
+  manifest: Record<string, unknown>,
+  identity: ProjectDocumentIdentity
+): PatchmarkReadingBookmark | undefined {
+  const candidates = [
+    manifest.reading_bookmark,
+    ...(isRecord(manifest.reading_bookmarks)
+      ? Object.values(manifest.reading_bookmarks)
+      : [])
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      !isRecord(candidate) ||
+      candidate.format_version !== 1 ||
+      !isRecord(candidate.document) ||
+      !isPatchmarkCommentAnchor(candidate.anchor) ||
+      candidate.anchor.kind === "document" ||
+      typeof candidate.created_at !== "string" ||
+      typeof candidate.updated_at !== "string" ||
+      !hasPersistedBookmarkDocumentIdentity(candidate.document)
+    ) {
+      continue;
+    }
+
+    return {
+      format_version: 1,
+      document: serializeProjectDocumentIdentity(identity),
+      anchor: normalizeKnownCommentAnchor(candidate.anchor, "note") as
+        PatchmarkReadingBookmark["anchor"],
+      created_at: candidate.created_at,
+      updated_at: candidate.updated_at
+    };
+  }
+
+  return undefined;
+}
+
+function hasPersistedBookmarkDocumentIdentity(
+  value: Record<string, unknown>
+): boolean {
+  return (
+    (typeof value.project_id === "string" &&
+      typeof value.document_id === "string") ||
+    (typeof value.project_id === "string" &&
+      typeof value.document_file === "string")
+  );
+}
+
+function createLegacyProjectId(
+  manifest: Pick<
+    PatchmarkManifest,
+    "created_at" | "document_file" | "project_name"
+  >
+): string {
+  const value = [
+    manifest.created_at,
+    manifest.project_name,
+    manifest.document_file
+  ].join("\u0000");
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return `prj_legacy_${hash.toString(16).padStart(8, "0")}`;
 }
 
 function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry {

@@ -1232,12 +1232,16 @@ function collectUnknownFieldWarnings(
     manifest,
     new Set([
       "schema_version",
+      "project_id",
+      "document_id",
       "project_name",
       "document_file",
       "created_at",
       "updated_at",
       "current_version",
       "versions",
+      "reading_bookmark",
+      "reading_bookmarks",
       "save_generation",
       "save_commit_id"
     ]),

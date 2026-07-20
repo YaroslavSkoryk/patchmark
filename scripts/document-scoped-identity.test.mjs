@@ -6,6 +6,8 @@ import {
   createCommentRef,
   createDocumentScopedKey,
   createPatchRef,
+  createProjectDocumentIdentity,
+  createProjectDocumentKey,
   createReplyRef,
   createVersionRef,
   documentScopedIdentifierKinds,
@@ -26,6 +28,18 @@ const researchComment = createCommentRef(
 assert.notEqual(
   createDocumentScopedKey(actionComment),
   createDocumentScopedKey(researchComment)
+);
+const firstProjectActionDocument = createProjectDocumentIdentity(
+  "prj-first",
+  "doc-action-plan"
+);
+const secondProjectActionDocument = createProjectDocumentIdentity(
+  "prj-second",
+  "doc-action-plan"
+);
+assert.notEqual(
+  createProjectDocumentKey(firstProjectActionDocument),
+  createProjectDocumentKey(secondProjectActionDocument)
 );
 assert.equal(isDocumentScopeCurrent(actionComment, "doc-action-plan"), true);
 assert.equal(isDocumentScopeCurrent(actionComment, "doc-ready-to-eat"), false);
@@ -191,6 +205,7 @@ process.stdout.write(
     anchorHistoryIsolation: true,
     sameDocumentDuplicateRejected: true,
     assemblyDuplicatesClassifiedSafe: true,
-    projectScopedIdentifiersRemainGlobal: true
+    projectScopedIdentifiersRemainGlobal: true,
+    fullProjectDocumentIdentity: true
   }, null, 2)}\n`
 );

@@ -1,3 +1,7 @@
+import type {
+  PersistedProjectDocumentIdentity
+} from "./document-scoped-identity.ts";
+
 export type PatchmarkVersionEntry = {
   id: string;
   file: string;
@@ -200,14 +204,30 @@ export type PatchCommentImpactKind =
 
 export type PatchmarkManifest = {
   schema_version: 1;
+  project_id?: string;
+  document_id?: string;
   project_name: string;
   document_file: "document.md";
   created_at: string;
   updated_at: string;
   current_version?: string;
   versions?: PatchmarkVersionEntry[];
+  reading_bookmark?: PatchmarkReadingBookmark;
   save_generation?: number;
   save_commit_id?: string;
+};
+
+export type PatchmarkReadingBookmarkAnchor = Extract<
+  PatchmarkCommentAnchor,
+  { kind: "section" | "selected_text" }
+>;
+
+export type PatchmarkReadingBookmark = {
+  format_version: 1;
+  document: PersistedProjectDocumentIdentity;
+  anchor: PatchmarkReadingBookmarkAnchor;
+  created_at: string;
+  updated_at: string;
 };
 
 export type PatchmarkLegacyCommentAnchorHistoryEntry = {

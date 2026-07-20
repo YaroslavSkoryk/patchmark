@@ -37,6 +37,16 @@ export type CommentRef = DocumentScopedId<"comment">;
 export type PatchRef = DocumentScopedId<"patch">;
 export type VersionRef = DocumentScopedId<"version">;
 
+export type ProjectDocumentIdentity = Readonly<{
+  projectId: string;
+  documentId: string;
+}>;
+
+export type PersistedProjectDocumentIdentity = Readonly<{
+  project_id: string;
+  document_id: string;
+}>;
+
 export type ReplyRef = Readonly<{
   documentId: string;
   commentId: string;
@@ -84,6 +94,60 @@ export function createVersionRef(
   versionId: string
 ): VersionRef {
   return createDocumentScopedId("version", documentId, versionId);
+}
+
+export function createProjectDocumentIdentity(
+  projectId: string,
+  documentId: string
+): ProjectDocumentIdentity {
+  return Object.freeze({
+    projectId: requireIdentityPart(projectId, "project_id"),
+    documentId: requireIdentityPart(documentId, "document_id")
+  });
+}
+
+export function createProjectDocumentKey(
+  identity: ProjectDocumentIdentity
+): string {
+  return JSON.stringify([
+    "project_document",
+    requireIdentityPart(identity.projectId, "project_id"),
+    requireIdentityPart(identity.documentId, "document_id")
+  ]);
+}
+
+export function serializeProjectDocumentIdentity(
+  identity: ProjectDocumentIdentity
+): PersistedProjectDocumentIdentity {
+  return Object.freeze({
+    project_id: requireIdentityPart(identity.projectId, "project_id"),
+    document_id: requireIdentityPart(identity.documentId, "document_id")
+  });
+}
+
+export function parsePersistedProjectDocumentIdentity(
+  identity: PersistedProjectDocumentIdentity
+): ProjectDocumentIdentity {
+  return createProjectDocumentIdentity(
+    identity.project_id,
+    identity.document_id
+  );
+}
+
+export function assertProjectDocumentScope(
+  actual: ProjectDocumentIdentity,
+  expected: ProjectDocumentIdentity
+): void {
+  if (
+    actual.projectId !== expected.projectId ||
+    actual.documentId !== expected.documentId
+  ) {
+    throw new Error(
+      `Project/document operation belongs to ${createProjectDocumentKey(
+        actual
+      )}, not ${createProjectDocumentKey(expected)}.`
+    );
+  }
 }
 
 export function createReplyRef(

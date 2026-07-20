@@ -18,6 +18,7 @@ import {
 } from "../lib/project/multi-document-project.ts";
 import {
   getProjectDocumentExportIdentity,
+  getProjectDocumentIdentity,
   listProjectVersions,
   openProjectDocument,
   openProjectFolderHandle,
@@ -26,6 +27,8 @@ import {
   readProjectVersionMarkdown,
   saveProjectState
 } from "../lib/project/patchmark-project.ts";
+import { getDocumentReadingBookmark } from "../lib/reading-bookmarks/reading-bookmark.ts";
+import { parsePersistedProjectDocumentIdentity } from "../lib/project/document-scoped-identity.ts";
 import {
   NodeDirectoryHandle,
   createNodeHandleController
@@ -58,7 +61,9 @@ try {
       destinationPortability: true,
       destinationOnlyDeletion: true,
       documentSpecificExports: true,
+      assembledBookmarkOwnershipRebound: true,
       legacyConversionRegression: true,
+      convertedBookmarkOwnershipRebound: true,
       manifestLastCommit: true,
       provenanceWithoutAbsolutePaths: true,
       interruptedTransactionRecovery: true,
@@ -79,6 +84,7 @@ async function runSuccessfulAssemblyScenario() {
     title: "Crust Chant Action Plan",
     newline: "\r\n"
   });
+  addLegacyReadingBookmark(actionPath, "ACTION_PLAN_UNIQUE_MARKER");
   createLegacyFixture(researchPath, {
     idPrefix: "READY",
     marker: "READY_TO_EAT_UNIQUE_MARKER",
@@ -234,6 +240,22 @@ async function runSuccessfulAssemblyScenario() {
   );
   assert.equal(loadedAction.project.persistence.generation, 0);
   assert.equal(loadedResearch.project.persistence.generation, 1);
+  const assembledBookmark = getDocumentReadingBookmark({
+    document: getProjectDocumentIdentity(loadedAction.project),
+    manifest: loadedAction.project.manifest
+  });
+  assert.ok(assembledBookmark);
+  assert.deepEqual(
+    parsePersistedProjectDocumentIdentity(assembledBookmark.document),
+    getProjectDocumentIdentity(loadedAction.project)
+  );
+  assert.equal(
+    getDocumentReadingBookmark({
+      document: getProjectDocumentIdentity(loadedResearch.project),
+      manifest: loadedResearch.project.manifest
+    }),
+    null
+  );
   assert.deepEqual(getProjectDocumentExportIdentity(loadedAction.project), {
     project_name: "Crust Chant",
     project_id: plan.manifest.project_id,
@@ -879,6 +901,7 @@ async function runLegacyConversionRegression() {
     marker: "CONVERSION_MARKER",
     title: "Conversion Regression"
   });
+  addLegacyReadingBookmark(sourcePath, "CONVERSION_MARKER");
   const before = snapshotTree(sourcePath);
   const root = new NodeDirectoryHandle(sourcePath);
   const stages = [];
@@ -899,6 +922,19 @@ async function runLegacyConversionRegression() {
   for (const [relativePath, hash] of before) {
     assert.equal(after.get(relativePath), hash);
   }
+  const reopened = await openProjectDocument(
+    (await openProjectFolderHandle(root)).project,
+    result.document.document_id
+  );
+  const convertedBookmark = getDocumentReadingBookmark({
+    document: getProjectDocumentIdentity(reopened.project),
+    manifest: reopened.project.manifest
+  });
+  assert.ok(convertedBookmark);
+  assert.deepEqual(
+    parsePersistedProjectDocumentIdentity(convertedBookmark.document),
+    getProjectDocumentIdentity(reopened.project)
+  );
 }
 
 async function createAssemblyFixture(name, writeFailure) {
@@ -1142,6 +1178,35 @@ function createLegacyFixture(
     `${JSON.stringify({ id: `PM-IMPORT-${idPrefix}`, marker })}\n`
   );
   return { markdown };
+}
+
+function addLegacyReadingBookmark(projectPath, selectedText) {
+  const manifestPath = path.join(projectPath, ".patchmark", "manifest.json");
+  const documentPath = path.join(projectPath, "document.md");
+  const manifest = JSON.parse(fs.readFileSync(manifestPath, "utf8"));
+  const markdown = fs.readFileSync(documentPath, "utf8");
+  const start = markdown.indexOf(selectedText);
+  assert.notEqual(start, -1);
+  manifest.project_id = `PM-PROJECT-${selectedText}`;
+  manifest.reading_bookmarks = {
+    [`${manifest.project_id}::document.md`]: {
+      format_version: 1,
+      document: {
+        project_id: manifest.project_id,
+        document_file: "document.md"
+      },
+      anchor: {
+        kind: "selected_text",
+        selected_text: selectedText,
+        markdown_start_offset: start,
+        markdown_end_offset: start + selectedText.length,
+        anchor_source: "markdown"
+      },
+      created_at: manifest.created_at,
+      updated_at: manifest.updated_at
+    }
+  };
+  fs.writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
 }
 
 async function commitLegacyFixture(projectPath) {

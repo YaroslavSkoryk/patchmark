@@ -1,10 +1,12 @@
 "use client";
 
 import { useState } from "react";
+import { type PatchmarkDocumentRole } from "@/lib/project/multi-document-project";
 import {
-  type PatchmarkDocumentRole,
-  type PatchmarkProjectDocumentView
-} from "@/lib/project/multi-document-project";
+  createProjectDocumentIdentity,
+  createProjectDocumentKey
+} from "@/lib/project/document-scoped-identity";
+import { type PatchmarkProjectDocumentListItem } from "@/lib/project/patchmark-project";
 
 type CreateDocumentRequest = {
   displayTitle: string;
@@ -15,12 +17,14 @@ type CreateDocumentRequest = {
 type ProjectDocumentNavigatorProps = {
   activeDocumentId: string | null;
   busy: boolean;
-  documents: PatchmarkProjectDocumentView[];
+  documents: PatchmarkProjectDocumentListItem[];
   legacy: boolean;
+  projectId: string;
   projectTitle: string;
   onAddExisting: () => void;
   onArchive: (documentId: string) => void;
   onCreate: (request: CreateDocumentRequest) => void;
+  onContinueReading: (documentId: string) => void;
   onLocate: (documentId: string) => void;
   onMove: (documentId: string, direction: "up" | "down") => void;
   onRename: (documentId: string, displayTitle: string) => void;
@@ -45,12 +49,14 @@ export function ProjectDocumentNavigator({
   onAddExisting,
   onArchive,
   onCreate,
+  onContinueReading,
   onLocate,
   onMove,
   onRename,
   onRestore,
   onRoleChange,
   onSelect,
+  projectId,
   projectTitle
 }: ProjectDocumentNavigatorProps) {
   const [displayTitle, setDisplayTitle] = useState("");
@@ -99,6 +105,24 @@ export function ProjectDocumentNavigator({
             </button>
             <div className="project-document-badges">
               {document.role ? <span>{formatRole(document.role)}</span> : null}
+              {document.hasReadingBookmark ? (
+                <button
+                  key={`bookmark:${createProjectDocumentKey(
+                    createProjectDocumentIdentity(
+                      projectId,
+                      document.document_id
+                    )
+                  )}`}
+                  className="project-document-bookmark"
+                  type="button"
+                  disabled={busy}
+                  aria-label={`Continue reading in ${document.display_title}`}
+                  onClick={() => onContinueReading(document.document_id)}
+                  title={`Continue reading in ${document.display_title}`}
+                >
+                  <span aria-hidden="true">🔖</span> Bookmark
+                </button>
+              ) : null}
               {document.availability === "missing" ? (
                 <span className="project-document-missing">Missing file</span>
               ) : null}
@@ -181,6 +205,13 @@ export function ProjectDocumentNavigator({
           {archivedDocuments.map((document) => (
             <div key={document.document_id}>
               <span>{document.display_title}</span>
+              {document.hasReadingBookmark ? (
+                <span
+                  aria-label={`${document.display_title} has a reading bookmark`}
+                >
+                  🔖 Bookmark
+                </span>
+              ) : null}
               <button
                 type="button"
                 disabled={busy}
