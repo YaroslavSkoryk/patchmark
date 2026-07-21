@@ -94,7 +94,12 @@ import {
 } from "@/components/markdown-source-editor";
 import { DocumentOutline } from "@/components/document-outline";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
-import { DraftRestoreBanner } from "@/components/draft-restore-banner";
+import {
+  DocumentRecoveryBanner,
+  type DocumentRecoveryPresentation
+} from "@/components/document-recovery-banner";
+import { LegacyRecoveryPanel } from "@/components/legacy-recovery-panel";
+import { ProjectResumeBanner } from "@/components/project-resume-banner";
 import { PdfExportPreview } from "@/components/pdf-export-preview";
 import {
   SnapshotDialog,
@@ -183,6 +188,7 @@ import {
   moveProjectDocumentGroup,
   moveProjectDocumentToGroup,
   openProjectFolder,
+  openProjectFolderHandle,
   openProjectDocument,
   readProjectVersionMarkdown,
   readProjectVersionMarkdownByRef,
@@ -201,6 +207,7 @@ import {
   writeProjectPatches,
   updateProjectDocumentMetadata,
   type LoadedPatchmarkProject,
+  type PatchmarkDirectoryHandle,
   type PatchmarkProjectDocumentListItem,
   type PatchmarkProjectHandle,
   type PatchmarkProjectRecoveryState
@@ -245,11 +252,40 @@ import {
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 import {
-  deleteDocumentDraft,
-  readMostRecentDocumentDraft,
-  saveDocumentDraft,
-  type DocumentDraft
+  deleteLegacyUnscopedDocumentDraft,
+  readLegacyUnscopedDocumentDrafts,
+  type LegacyUnscopedDocumentDraft
 } from "@/lib/storage/document-draft-storage";
+import {
+  compareEntryIdentity,
+  createLocalProjectInstanceId,
+  createLocalStandaloneFileId,
+  deleteDocumentRecovery,
+  deleteProjectInstanceRecoveryData,
+  evaluateRecoveryContent,
+  findProjectInstanceForDirectory,
+  findStandaloneInstanceForFile,
+  getDirectoryPermission,
+  getProjectDocumentRecoveryId,
+  getStandaloneDocumentRecoveryId,
+  isUsableStoredDirectoryHandle,
+  listProjectDocumentRecoveries,
+  readMostRecentProjectInstance,
+  readProjectInstance,
+  readRecovery,
+  rememberProjectInstance,
+  rememberStandaloneFileInstance,
+  requestDirectoryPermission,
+  saveProjectDocumentRecovery,
+  saveStandaloneDocumentRecovery,
+  type FileSystemPermissionState,
+  type DocumentRecoveryRecord,
+  type LocalProjectInstanceRecord,
+  type LocalStandaloneFileRecord,
+  type ProjectDocumentRecoveryRecord,
+  type StoredDirectoryHandle,
+  type StoredFileHandle
+} from "@/lib/storage/document-recovery-storage";
 import {
   incrementEditPerformanceCounter,
   markEditPerformanceOperation,
@@ -272,6 +308,11 @@ type SaveStatus = "idle" | "saving" | "failed" | "unavailable";
 type SaveFeedback = {
   kind: "success" | "error" | "info";
   message: string;
+};
+type PreparedDocumentRecovery = {
+  clearedRecoveryId?: string;
+  markdown: string;
+  presentation: DocumentRecoveryPresentation | null;
 };
 type SelectedTextAnchor = Extract<
   PatchmarkCommentAnchor,
@@ -605,7 +646,35 @@ export function DocumentEditor() {
     PatchmarkProjectDocumentListItem[]
   >([]);
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
-  const [availableDraft, setAvailableDraft] = useState<DocumentDraft | null>(null);
+  const [legacyUnscopedDrafts, setLegacyUnscopedDrafts] = useState<
+    LegacyUnscopedDocumentDraft[]
+  >([]);
+  const [localProjectInstanceId, setLocalProjectInstanceId] = useState<
+    string | null
+  >(null);
+  const [standaloneFileInstance, setStandaloneFileInstance] = useState<
+    LocalStandaloneFileRecord | null
+  >(null);
+  const [recentProject, setRecentProject] = useState<
+    LocalProjectInstanceRecord | null
+  >(null);
+  const [recentProjectPermission, setRecentProjectPermission] = useState<
+    FileSystemPermissionState | "unavailable"
+  >("unavailable");
+  const [recentProjectRecoveryCount, setRecentProjectRecoveryCount] =
+    useState(0);
+  const [isResumingProject, setIsResumingProject] = useState(false);
+  const [resumeProjectError, setResumeProjectError] = useState<string | null>(
+    null
+  );
+  const [deviceRecoveryWarning, setDeviceRecoveryWarning] = useState<
+    string | null
+  >(null);
+  const [documentRecoveryPresentation, setDocumentRecoveryPresentation] =
+    useState<DocumentRecoveryPresentation | null>(null);
+  const [projectRecoveryDocumentIds, setProjectRecoveryDocumentIds] = useState<
+    string[]
+  >([]);
   const [mode, setMode] = useState<EditorMode>("visual");
   const modeRef = useRef<EditorMode>(mode);
   modeRef.current = mode;
@@ -637,6 +706,7 @@ export function DocumentEditor() {
   const readingBookmarkRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const readingBookmarkEmphasisTimeoutRef = useRef<number | null>(null);
   const pendingReadingBookmarkNavigationRef = useRef<string | null>(null);
+  const deviceRecoveryLoadRequestRef = useRef(0);
   const continueReadingAtBookmarkRef = useRef<
     ((request: ReadingBookmarkNavigationRequest) => Promise<void>) | null
   >(null);
@@ -970,9 +1040,93 @@ export function DocumentEditor() {
     : null;
   continueReadingAtBookmarkRef.current = continueReadingAtBookmark;
 
+  const persistActiveRecoveryNow = useCallback(async () => {
+    if (
+      !fileName ||
+      baselineMarkdown === null ||
+      markdown === baselineMarkdown ||
+      documentRecoveryPresentation?.kind === "conflict"
+    ) {
+      return null;
+    }
+
+    if (
+      projectHandle?.projectManifest &&
+      projectHandle.document &&
+      localProjectInstanceId
+    ) {
+      const groupTitle = projectHandle.document.group_id
+        ? getProjectDocumentGroups(projectHandle).find(
+            (group) => group.group_id === projectHandle.document?.group_id
+          )?.title ?? null
+        : null;
+      const record = await saveProjectDocumentRecovery({
+        baseDocumentGeneration:
+          projectHandle.manifest.save_generation ??
+          projectHandle.persistence.generation,
+        baseMarkdown: baselineMarkdown,
+        documentId: projectHandle.document.document_id,
+        documentTitle: projectHandle.document.display_title,
+        groupTitle,
+        localInstanceId: localProjectInstanceId,
+        markdown,
+        projectId: projectHandle.projectManifest.project_id,
+        projectTitle: projectHandle.projectManifest.title
+      });
+      setProjectRecoveryDocumentIds((current) =>
+        current.includes(record.document_id)
+          ? current
+          : [...current, record.document_id]
+      );
+      return record.recovery_id;
+    }
+
+    if (!projectHandle && standaloneFileInstance) {
+      const record = await saveStandaloneDocumentRecovery({
+        baseMarkdown: baselineMarkdown,
+        fileName,
+        localFileId: standaloneFileInstance.local_file_id,
+        markdown
+      });
+      return record.recovery_id;
+    }
+
+    return null;
+  }, [
+    baselineMarkdown,
+    documentRecoveryPresentation?.kind,
+    fileName,
+    localProjectInstanceId,
+    markdown,
+    projectHandle,
+    standaloneFileInstance
+  ]);
+
   useEffect(() => {
-    setAvailableDraft(readMostRecentDocumentDraft());
+    setLegacyUnscopedDrafts(readLegacyUnscopedDocumentDrafts());
+    void refreshRecentProjectState();
   }, []);
+
+  useEffect(() => {
+    if (!projectHandle || !localProjectInstanceId) {
+      return;
+    }
+    const identity = getProjectDocumentIdentity(projectHandle);
+    const directoryHandle =
+      projectHandle.projectDirectoryHandle ?? projectHandle.directoryHandle;
+    void rememberProjectInstance({
+      directoryHandle: directoryHandle as StoredDirectoryHandle,
+      documentId: identity.documentId,
+      documentTitle:
+        projectHandle.document?.display_title ?? projectHandle.manifest.project_name,
+      groupId: projectHandle.document?.group_id ?? null,
+      localInstanceId: localProjectInstanceId,
+      projectId: identity.projectId,
+      projectTitle: getProjectTitle(projectHandle)
+    })
+      .then(setRecentProject)
+      .catch(() => undefined);
+  }, [localProjectInstanceId, projectDocuments, projectHandle]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1317,24 +1471,78 @@ export function DocumentEditor() {
   }, [comments, setActiveCommentState]);
 
   useEffect(() => {
-    if (!fileName) {
+    if (
+      !fileName ||
+      baselineMarkdown === null ||
+      markdown === baselineMarkdown ||
+      documentRecoveryPresentation?.kind === "conflict"
+    ) {
       return;
     }
 
     const operationId = pendingEditPerformanceOperationIdRef.current;
-    const persistenceStartedAt = performance.now();
-    saveDocumentDraft({
-      fileName,
-      markdown,
-      updatedAt: new Date().toISOString()
-    });
-    recordEditPerformanceDuration(
-      operationId,
-      "draft_persistence",
-      performance.now() - persistenceStartedAt
-    );
-    markEditPerformanceOperation(operationId, "persistence_settled");
-  }, [fileName, markdown]);
+    const timeoutId = window.setTimeout(() => {
+      const persistenceStartedAt = performance.now();
+      void persistActiveRecoveryNow()
+        .catch(() => {
+          setDeviceRecoveryWarning(
+            "Device-local recovery could not be updated. Save changes to the project or file before closing Patchmark."
+          );
+        })
+        .finally(() => {
+          recordEditPerformanceDuration(
+            operationId,
+            "draft_persistence",
+            performance.now() - persistenceStartedAt
+          );
+          markEditPerformanceOperation(operationId, "persistence_settled");
+        });
+    }, 500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    baselineMarkdown,
+    documentRecoveryPresentation?.kind,
+    fileName,
+    markdown,
+    persistActiveRecoveryNow
+  ]);
+
+  useEffect(() => {
+    function preserveRecoveryBeforeSuspension() {
+      if (projectHandle) {
+        persistProjectDocumentUiState(
+          projectHandle,
+          {
+            activeCommentState,
+            markdownSelection,
+            mode,
+            scrollY: window.scrollY
+          },
+          localProjectInstanceId
+        );
+      }
+      void persistActiveRecoveryNow();
+    }
+    function preserveRecoveryWhenHidden() {
+      if (document.visibilityState === "hidden") {
+        preserveRecoveryBeforeSuspension();
+      }
+    }
+    window.addEventListener("pagehide", preserveRecoveryBeforeSuspension);
+    document.addEventListener("visibilitychange", preserveRecoveryWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", preserveRecoveryBeforeSuspension);
+      document.removeEventListener("visibilitychange", preserveRecoveryWhenHidden);
+    };
+  }, [
+    activeCommentState,
+    localProjectInstanceId,
+    markdownSelection,
+    mode,
+    persistActiveRecoveryNow,
+    projectHandle
+  ]);
 
   useLayoutEffect(() => {
     const operationId = pendingEditPerformanceOperationIdRef.current;
@@ -1714,6 +1922,19 @@ export function DocumentEditor() {
       setSaveFeedback(null);
 
       try {
+        try {
+          await persistActiveRecoveryNow();
+        } catch {}
+        const recoveryId =
+          projectHandle.projectManifest &&
+          projectHandle.document &&
+          localProjectInstanceId
+            ? getProjectDocumentRecoveryId({
+                documentId: projectHandle.document.document_id,
+                localInstanceId: localProjectInstanceId,
+                projectId: projectHandle.projectManifest.project_id
+              })
+            : null;
         const result = await saveProjectState({
           comments,
           markdown,
@@ -1724,6 +1945,19 @@ export function DocumentEditor() {
         setProjectHandle(projectHandle);
         setBaselineMarkdown(markdown);
         setRestoredMarkdown(null);
+        if (recoveryId) {
+          try {
+            await deleteDocumentRecovery(recoveryId);
+            setDocumentRecoveryPresentation(null);
+            setProjectRecoveryDocumentIds((current) =>
+              current.filter(
+                (documentId) =>
+                  documentId !== projectHandle.document?.document_id
+              )
+            );
+          } catch {}
+        }
+        setDeviceRecoveryWarning(null);
         setSaveStatus("idle");
         setSaveFeedback({
           kind: "success",
@@ -1757,9 +1991,24 @@ export function DocumentEditor() {
     setSaveFeedback(null);
 
     try {
+      try {
+        await persistActiveRecoveryNow();
+      } catch {}
+      const recoveryId = standaloneFileInstance
+        ? getStandaloneDocumentRecoveryId(
+            standaloneFileInstance.local_file_id
+          )
+        : null;
       await saveMarkdownToFileHandle(activeFileHandle, markdown);
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      if (recoveryId) {
+        try {
+          await deleteDocumentRecovery(recoveryId);
+          setDocumentRecoveryPresentation(null);
+        } catch {}
+      }
+      setDeviceRecoveryWarning(null);
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -1772,7 +2021,7 @@ export function DocumentEditor() {
         message: getSaveErrorMessage(error)
       });
     }
-  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, markdown, patches, projectHandle]);
+  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, localProjectInstanceId, markdown, patches, persistActiveRecoveryNow, projectHandle, standaloneFileInstance]);
 
   useEffect(() => {
     if (!fileName) {
@@ -1790,17 +2039,67 @@ export function DocumentEditor() {
     return () => window.removeEventListener("keydown", handleSaveShortcut);
   }, [fileName, handleSaveChanges]);
 
-  function handleFileLoaded(loadedFile: LoadedMarkdownFile) {
+  async function handleFileLoaded(loadedFile: LoadedMarkdownFile) {
+    const requestId = deviceRecoveryLoadRequestRef.current + 1;
+    deviceRecoveryLoadRequestRef.current = requestId;
+    let standaloneInstance: LocalStandaloneFileRecord | null = null;
+    let preparedRecovery: PreparedDocumentRecovery | null = null;
+    let recoveryStorageError: string | null = null;
+
+    if (loadedFile.fileHandle) {
+      try {
+        const matched = await findStandaloneInstanceForFile(
+          loadedFile.fileHandle as StoredFileHandle
+        );
+        standaloneInstance = await rememberStandaloneFileInstance({
+          fileHandle: loadedFile.fileHandle as StoredFileHandle,
+          fileName: loadedFile.fileName,
+          localFileId: matched?.local_file_id ?? createLocalStandaloneFileId()
+        });
+        const recovery = await readRecovery(
+          getStandaloneDocumentRecoveryId(standaloneInstance.local_file_id)
+        );
+        if (
+          recovery?.owner_type === "standalone_file" &&
+          recovery.local_file_id === standaloneInstance.local_file_id
+        ) {
+          preparedRecovery = await prepareDocumentRecovery({
+            recovery,
+            savedMarkdown: loadedFile.markdown
+          });
+        }
+      } catch (error) {
+        recoveryStorageError = getDeviceRecoveryErrorMessage(error);
+      }
+    }
+
+    if (requestId !== deviceRecoveryLoadRequestRef.current) {
+      return;
+    }
     setFileName(loadedFile.fileName);
-    setMarkdown(loadedFile.markdown);
+    setMarkdown(preparedRecovery?.markdown ?? loadedFile.markdown);
     setBaselineMarkdown(loadedFile.markdown);
     setActiveFileHandle(loadedFile.fileHandle);
     setProjectHandle(null);
+    setLocalProjectInstanceId(null);
+    setStandaloneFileInstance(standaloneInstance);
     setProjectRecovery(null);
-    setRestoredMarkdown(null);
-    setAvailableDraft(null);
+    setRestoredMarkdown(
+      preparedRecovery?.presentation?.kind === "recovered"
+        ? preparedRecovery.markdown
+        : null
+    );
+    setDocumentRecoveryPresentation(
+      preparedRecovery?.presentation ?? null
+    );
+    setProjectRecoveryDocumentIds([]);
     setSaveStatus("idle");
-    setSaveFeedback(null);
+    if (recoveryStorageError) {
+      setDeviceRecoveryWarning(recoveryStorageError);
+    } else if (!preparedRecovery && loadedFile.fileHandle) {
+      setDeviceRecoveryWarning(null);
+      setSaveFeedback(null);
+    }
     setSnapshotDialog(null);
     setPdfExportTarget(null);
     setMarkdownSelection({ end: 0, start: 0 });
@@ -1824,55 +2123,6 @@ export function DocumentEditor() {
     setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
-  }
-
-  function handleRestoreDraft() {
-    if (!availableDraft) {
-      return;
-    }
-
-    setFileName(availableDraft.fileName);
-    setMarkdown(availableDraft.markdown);
-    setBaselineMarkdown(null);
-    setActiveFileHandle(null);
-    setProjectHandle(null);
-    setProjectRecovery(null);
-    setRestoredMarkdown(availableDraft.markdown);
-    setAvailableDraft(null);
-    setSaveStatus("idle");
-    setSaveFeedback(null);
-    setSnapshotDialog(null);
-    setPdfExportTarget(null);
-    setMarkdownSelection({ end: 0, start: 0 });
-    setMarkdownSelectionRequest(null);
-    setVisualSelectionDraft(null);
-    setCommentAddRequest(null);
-    setCommentReplyRequest(null);
-    setCommentContextMenu(null);
-    setComments([]);
-    setPatches([]);
-    setSelectedPatchId(null);
-    setSelectedPatchGroupId(null);
-    setPatchGroupListDialog(null);
-    setPatchReviewCommentScopeId(null);
-    setPatchReviewGroupScopeId(null);
-    setRecentlyAppliedPatchId(null);
-    setCommentsError(null);
-    setChatGptPromptDialog(null);
-    setDocumentLevelExportGuardDialog(null);
-    setMarkCommentFocusGuardDialog(null);
-    setChatGptImportDialog(null);
-    setMode("visual");
-    setDocumentVersion((currentVersion) => currentVersion + 1);
-  }
-
-  function handleDiscardDraft() {
-    if (!availableDraft) {
-      return;
-    }
-
-    deleteDocumentDraft(availableDraft.fileName);
-    setAvailableDraft(null);
   }
 
   function handleMarkdownChange(
@@ -2058,7 +2308,29 @@ export function DocumentEditor() {
         return;
       }
 
+      const matchedInstance = await findStandaloneInstanceForFile(
+        fileHandle as StoredFileHandle
+      );
+      const nextStandaloneInstance = await rememberStandaloneFileInstance({
+        fileHandle: fileHandle as StoredFileHandle,
+        fileName: fileHandle.name,
+        localFileId:
+          matchedInstance?.local_file_id ?? createLocalStandaloneFileId()
+      });
+      if (
+        standaloneFileInstance?.local_file_id ===
+        nextStandaloneInstance.local_file_id
+      ) {
+        await clearRecoveryRecordAfterSave(
+          getStandaloneDocumentRecoveryId(
+            nextStandaloneInstance.local_file_id
+          )
+        );
+      } else {
+        setDocumentRecoveryPresentation(null);
+      }
       setActiveFileHandle(fileHandle);
+      setStandaloneFileInstance(nextStandaloneInstance);
       setFileName(fileHandle.name);
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
@@ -2109,7 +2381,7 @@ export function DocumentEditor() {
         return;
       }
 
-      loadProjectIntoEditor(loadedProject);
+      await loadProjectIntoEditor(loadedProject);
       setSaveFeedback({
         kind: loadedProject.recovery ? "info" : "success",
         message: loadedProject.recovery
@@ -2125,6 +2397,345 @@ export function DocumentEditor() {
     }
   }
 
+  async function refreshRecentProjectState(): Promise<void> {
+    try {
+      const recent = await readMostRecentProjectInstance();
+      setRecentProject(recent);
+      if (!recent) {
+        setRecentProjectPermission("unavailable");
+        setRecentProjectRecoveryCount(0);
+        return;
+      }
+      const [permission, recoveries] = await Promise.all([
+        getDirectoryPermission(recent.directory_handle),
+        listProjectDocumentRecoveries({
+          localInstanceId: recent.local_instance_id,
+          projectId: recent.project_id
+        })
+      ]);
+      setRecentProjectPermission(permission);
+      setRecentProjectRecoveryCount(recoveries.length);
+    } catch {
+      setRecentProject(null);
+      setRecentProjectPermission("unavailable");
+      setRecentProjectRecoveryCount(0);
+    }
+  }
+
+  async function handleResumeProject(): Promise<void> {
+    if (!recentProject || isResumingProject || isSaving) {
+      return;
+    }
+    setIsResumingProject(true);
+    setResumeProjectError(null);
+    try {
+      let loadedProject: LoadedPatchmarkProject | null = null;
+      let selectedDirectory: StoredDirectoryHandle | null = null;
+      const storedDirectory = recentProject.directory_handle;
+
+      if (isUsableStoredDirectoryHandle(storedDirectory)) {
+        let permission = await getDirectoryPermission(storedDirectory);
+        if (permission === "prompt") {
+          permission = await requestDirectoryPermission(storedDirectory);
+          setRecentProjectPermission(permission);
+        }
+        if (permission === "granted" || permission === "unavailable") {
+          try {
+            loadedProject = await openProjectFolderHandle(
+              storedDirectory as unknown as PatchmarkDirectoryHandle
+            );
+            selectedDirectory = storedDirectory;
+          } catch (error) {
+            if (permission === "granted") {
+              throw error;
+            }
+          }
+        }
+      }
+
+      if (!loadedProject) {
+        loadedProject = await openProjectFolder();
+        if (!loadedProject) {
+          return;
+        }
+        selectedDirectory = (loadedProject.project.projectDirectoryHandle ??
+          loadedProject.project.directoryHandle) as StoredDirectoryHandle;
+      }
+
+      const openedIdentity = getProjectDocumentIdentity(loadedProject.project);
+      if (openedIdentity.projectId !== recentProject.project_id) {
+        throw new Error(
+          `This folder is a different Patchmark project. Expected ${recentProject.project_title_snapshot}.`
+        );
+      }
+
+      if (
+        selectedDirectory &&
+        storedDirectory &&
+        selectedDirectory !== storedDirectory
+      ) {
+        const entryIdentity = await compareEntryIdentity(
+          storedDirectory,
+          selectedDirectory
+        );
+        if (
+          entryIdentity !== "same" &&
+          !window.confirm(
+            "Patchmark could not prove that this is the same local folder instance. The portable project identity matches, but this may be a copied project. Continue with this folder? Recovery content will still be validated against the saved document before use."
+          )
+        ) {
+          return;
+        }
+      }
+      if (
+        selectedDirectory &&
+        !storedDirectory &&
+        recentProjectRecoveryCount > 0 &&
+        !window.confirm(
+          "Patchmark no longer has the original directory handle, so it cannot prove that this is the same local folder instance rather than a copy. The portable project identity matches. Continue with content-fingerprint validation for each recovered document?"
+        )
+      ) {
+        return;
+      }
+
+      const documents = await getProjectDocumentList(loadedProject.project);
+      const preferred = documents.find(
+        (document) =>
+          document.document_id === recentProject.last_document_id &&
+          document.status === "active" &&
+          document.availability === "available"
+      );
+      if (
+        preferred &&
+        preferred.document_id !==
+          getProjectDocumentIdentity(loadedProject.project).documentId
+      ) {
+        loadedProject = await openProjectDocument(
+          loadedProject.project,
+          preferred.document_id
+        );
+      }
+      await loadProjectIntoEditor(loadedProject, {
+        localInstanceId: recentProject.local_instance_id
+      });
+      setSaveFeedback({
+        kind: "success",
+        message: `Resumed ${getProjectTitle(loadedProject.project)} from its authoritative local folder.`
+      });
+    } catch (error) {
+      setResumeProjectError(getProjectErrorMessage(error));
+    } finally {
+      setIsResumingProject(false);
+    }
+  }
+
+  async function handleDeleteRecentDeviceData(): Promise<void> {
+    if (
+      !recentProject ||
+      !window.confirm(
+        `Delete device-local resume and unsaved recovery data for ${recentProject.project_title_snapshot}? Project files will not be changed.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteProjectInstanceRecoveryData(recentProject.local_instance_id);
+      setRecentProject(null);
+      setRecentProjectRecoveryCount(0);
+      setRecentProjectPermission("unavailable");
+      setResumeProjectError(null);
+    } catch (error) {
+      setResumeProjectError(getDeviceRecoveryErrorMessage(error));
+    }
+  }
+
+  function handleDeleteLegacyRecovery(storageKey: string): void {
+    if (
+      !window.confirm(
+        "Delete this quarantined browser recovery record? No project or Markdown file will be changed."
+      )
+    ) {
+      return;
+    }
+    deleteLegacyUnscopedDocumentDraft(storageKey);
+    setLegacyUnscopedDrafts(readLegacyUnscopedDocumentDrafts());
+  }
+
+  function handleToggleRecoveryReview(): void {
+    setDocumentRecoveryPresentation((current) =>
+      current ? { ...current, reviewOpen: !current.reviewOpen } : current
+    );
+  }
+
+  async function handleDiscardRecoveredChanges(): Promise<void> {
+    const presentation = documentRecoveryPresentation;
+    if (
+      !presentation ||
+      presentation.kind === "missing" ||
+      !window.confirm(
+        "Discard the recovered unsaved Markdown for this exact document? Saved files and review history will not be changed."
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteDocumentRecovery(presentation.record.recovery_id);
+      setMarkdown(presentation.savedMarkdown);
+      setBaselineMarkdown(presentation.savedMarkdown);
+      setRestoredMarkdown(null);
+      setDocumentRecoveryPresentation(null);
+      removeRecoveryDocumentId(presentation.record);
+      await reloadActiveReviewStoresAfterRecoveryDiscard();
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Discarded only the device-local recovery buffer. Saved Markdown and project review stores were not changed."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getDeviceRecoveryErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleKeepSavedDocument(): Promise<void> {
+    const presentation = documentRecoveryPresentation;
+    if (
+      !presentation ||
+      presentation.kind !== "conflict" ||
+      !window.confirm(
+        "Keep the current saved Markdown and delete only this device-local recovery buffer?"
+      )
+    ) {
+      return;
+    }
+    await handleDiscardRecoveredChangesWithoutConfirmation(presentation);
+  }
+
+  function handleUseRecoveredWorkingCopy(): void {
+    const presentation = documentRecoveryPresentation;
+    if (
+      !presentation ||
+      presentation.kind !== "conflict" ||
+      !window.confirm(
+        "Use the recovered Markdown as the current dirty working copy? This will not write the file until you use Save Changes."
+      )
+    ) {
+      return;
+    }
+    setMarkdown(presentation.record.markdown);
+    setRestoredMarkdown(presentation.record.markdown);
+    setDocumentRecoveryPresentation({
+      ...presentation,
+      kind: "recovered",
+      reviewOpen: false
+    });
+    setSaveFeedback({
+      kind: "info",
+      message:
+        "Recovered changes are now the dirty working copy. The saved file has not been changed."
+    });
+  }
+
+  async function handleDiscardRecoveredChangesWithoutConfirmation(
+    presentation: DocumentRecoveryPresentation
+  ): Promise<void> {
+    try {
+      await deleteDocumentRecovery(presentation.record.recovery_id);
+      setMarkdown(presentation.savedMarkdown);
+      setBaselineMarkdown(presentation.savedMarkdown);
+      setRestoredMarkdown(null);
+      setDocumentRecoveryPresentation(null);
+      removeRecoveryDocumentId(presentation.record);
+      await reloadActiveReviewStoresAfterRecoveryDiscard();
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Kept the saved document and deleted only its device-local recovery buffer."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getDeviceRecoveryErrorMessage(error)
+      });
+    }
+  }
+
+  function removeRecoveryDocumentId(record: DocumentRecoveryRecord): void {
+    if (record.owner_type !== "project_document") {
+      return;
+    }
+    setProjectRecoveryDocumentIds((current) =>
+      current.filter((documentId) => documentId !== record.document_id)
+    );
+    setRecentProjectRecoveryCount((current) => Math.max(0, current - 1));
+  }
+
+  async function reloadActiveReviewStoresAfterRecoveryDiscard(): Promise<void> {
+    if (!projectHandle || projectHandle.documentAvailability === "missing") {
+      return;
+    }
+    const [savedComments, savedPatches] = await Promise.all([
+      readProjectComments(projectHandle),
+      readProjectPatches(projectHandle)
+    ]);
+    setComments(savedComments);
+    setPatches(savedPatches);
+  }
+
+  async function persistActiveRecoveryBestEffort(): Promise<string | null> {
+    try {
+      return await persistActiveRecoveryNow();
+    } catch {
+      return null;
+    }
+  }
+
+  function getActiveRecoveryId(): string | null {
+    if (
+      projectHandle?.projectManifest &&
+      projectHandle.document &&
+      localProjectInstanceId
+    ) {
+      return getProjectDocumentRecoveryId({
+        documentId: projectHandle.document.document_id,
+        localInstanceId: localProjectInstanceId,
+        projectId: projectHandle.projectManifest.project_id
+      });
+    }
+    if (!projectHandle && standaloneFileInstance) {
+      return getStandaloneDocumentRecoveryId(
+        standaloneFileInstance.local_file_id
+      );
+    }
+    return null;
+  }
+
+  async function clearRecoveryRecordAfterSave(
+    recoveryId: string | null
+  ): Promise<void> {
+    if (!recoveryId) {
+      return;
+    }
+    try {
+      await deleteDocumentRecovery(recoveryId);
+      setDocumentRecoveryPresentation((current) =>
+        current?.record.recovery_id === recoveryId ? null : current
+      );
+      if (projectHandle?.document) {
+        setProjectRecoveryDocumentIds((current) =>
+          current.filter(
+            (documentId) => documentId !== projectHandle.document?.document_id
+          )
+        );
+        void refreshRecentProjectState();
+      }
+    } catch {
+      return;
+    }
+  }
+
   async function handleRestoreProjectRecovery() {
     if (!projectHandle || !projectRecovery?.canRestore || isSaving) {
       return;
@@ -2134,7 +2745,9 @@ export function DocumentEditor() {
     setSaveFeedback(null);
     try {
       const restoredProject = await restoreProjectLastKnownGood(projectHandle);
-      loadProjectIntoEditor(restoredProject);
+      await loadProjectIntoEditor(restoredProject, {
+        localInstanceId: localProjectInstanceId
+      });
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -2188,7 +2801,7 @@ export function DocumentEditor() {
         return;
       }
 
-      loadProjectIntoEditor(loadedProject);
+      await loadProjectIntoEditor(loadedProject);
       setSaveFeedback({
         kind: "success",
         message: "Created Patchmark project from the current document."
@@ -2222,12 +2835,13 @@ export function DocumentEditor() {
   function handleLegacyProjectAssemblyComplete(
     loadedProject: LoadedPatchmarkProject
   ) {
-    loadProjectIntoEditor(loadedProject);
-    setIsLegacyProjectAssemblyOpen(false);
-    setSaveFeedback({
-      kind: "success",
-      message:
-        "Created a new multi-document project. Source projects remain unchanged."
+    void loadProjectIntoEditor(loadedProject).then(() => {
+      setIsLegacyProjectAssemblyOpen(false);
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Created a new multi-document project. Source projects remain unchanged."
+      });
     });
   }
 
@@ -2238,6 +2852,8 @@ export function DocumentEditor() {
     if (project.documentAvailability === "missing") {
       return;
     }
+    await persistActiveRecoveryBestEffort();
+    const recoveryId = getActiveRecoveryId();
     await saveProjectState({
       comments,
       markdown,
@@ -2247,6 +2863,7 @@ export function DocumentEditor() {
     });
     setBaselineMarkdown(markdown);
     setRestoredMarkdown(null);
+    await clearRecoveryRecordAfterSave(recoveryId);
   }
 
   async function handleSelectProjectDocument(
@@ -2265,15 +2882,21 @@ export function DocumentEditor() {
     }
     const requestId = documentSwitchRequestRef.current + 1;
     documentSwitchRequestRef.current = requestId;
-    persistProjectDocumentUiState(projectHandle, {
-      activeCommentState,
-      markdownSelection,
-      mode,
-      scrollY: window.scrollY
-    });
+    persistProjectDocumentUiState(
+      projectHandle,
+      {
+        activeCommentState,
+        markdownSelection,
+        mode,
+        scrollY: window.scrollY
+      },
+      localProjectInstanceId
+    );
     setSaveStatus("saving");
     setSaveFeedback(null);
     try {
+      await persistActiveRecoveryBestEffort();
+      const sourceRecoveryId = getActiveRecoveryId();
       const loaded = await switchProjectDocument({
         comments,
         documentId,
@@ -2283,6 +2906,7 @@ export function DocumentEditor() {
       });
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      await clearRecoveryRecordAfterSave(sourceRecoveryId);
       if (requestId !== documentSwitchRequestRef.current) {
         return;
       }
@@ -2292,7 +2916,8 @@ export function DocumentEditor() {
           documentId
         )
       );
-      loadProjectIntoEditor(loaded, {
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId,
         pendingBookmarkDocumentKey: options.continueReading
           ? targetDocumentKey
           : null
@@ -2352,7 +2977,9 @@ export function DocumentEditor() {
       if (!isMultiDocumentProject(activeProject)) {
         const converted = await convertProjectToMultiDocument(activeProject);
         activeProject = converted.project;
-        loadProjectIntoEditor(converted);
+        await loadProjectIntoEditor(converted, {
+          localInstanceId: localProjectInstanceId
+        });
       }
       const loaded = await createNewProjectDocument({
         displayTitle,
@@ -2361,7 +2988,9 @@ export function DocumentEditor() {
         project: activeProject,
         role
       });
-      loadProjectIntoEditor(loaded);
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId
+      });
       setSaveFeedback({
         kind: "success",
         message: `Created ${loaded.project.document?.display_title}.`
@@ -2408,7 +3037,9 @@ export function DocumentEditor() {
       if (!isMultiDocumentProject(activeProject)) {
         const converted = await convertProjectToMultiDocument(activeProject);
         activeProject = converted.project;
-        loadProjectIntoEditor(converted);
+        await loadProjectIntoEditor(converted, {
+          localInstanceId: localProjectInstanceId
+        });
       }
       const loaded = await addExistingDocumentToProject({
         groupId,
@@ -2416,7 +3047,9 @@ export function DocumentEditor() {
         project: activeProject,
         role: null
       });
-      loadProjectIntoEditor(loaded);
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId
+      });
       setSaveFeedback({
         kind: "success",
         message: `Added ${loaded.project.document?.display_title} without changing its Markdown.`
@@ -2583,12 +3216,16 @@ export function DocumentEditor() {
         return;
       }
       if (isActive) {
-        persistProjectDocumentUiState(projectHandle, {
-          activeCommentState,
-          markdownSelection,
-          mode,
-          scrollY: window.scrollY
-        });
+        persistProjectDocumentUiState(
+          projectHandle,
+          {
+            activeCommentState,
+            markdownSelection,
+            mode,
+            scrollY: window.scrollY
+          },
+          localProjectInstanceId
+        );
         await flushActiveDocumentForBoundary(projectHandle, "before_archive_document");
       }
       await archiveProjectDocument({ documentId, project: projectHandle });
@@ -2603,8 +3240,9 @@ export function DocumentEditor() {
         if (!nextDocument) {
           throw new Error("No active document remains after archive.");
         }
-        loadProjectIntoEditor(
-          await openProjectDocument(projectHandle, nextDocument.document_id)
+        await loadProjectIntoEditor(
+          await openProjectDocument(projectHandle, nextDocument.document_id),
+          { localInstanceId: localProjectInstanceId }
         );
       } else {
         setSaveStatus("idle");
@@ -2649,12 +3287,16 @@ export function DocumentEditor() {
         selected.fileHandle
       );
       setSaveStatus("saving");
-      persistProjectDocumentUiState(projectHandle, {
-        activeCommentState,
-        markdownSelection,
-        mode,
-        scrollY: window.scrollY
-      });
+      persistProjectDocumentUiState(
+        projectHandle,
+        {
+          activeCommentState,
+          markdownSelection,
+          mode,
+          scrollY: window.scrollY
+        },
+        localProjectInstanceId
+      );
       await flushActiveDocumentForBoundary(
         projectHandle,
         "before_locate_document"
@@ -2664,7 +3306,9 @@ export function DocumentEditor() {
         path,
         project: projectHandle
       });
-      loadProjectIntoEditor(loaded);
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId
+      });
       setSaveFeedback({
         kind: "success",
         message: `Located ${loaded.project.document?.display_title}.`
@@ -5300,25 +5944,140 @@ export function DocumentEditor() {
     }
   }
 
-  function loadProjectIntoEditor(
+  async function loadProjectIntoEditor(
     loadedProject: LoadedPatchmarkProject,
-    options: { pendingBookmarkDocumentKey?: string | null } = {}
-  ) {
-    const restoredUiState = readProjectDocumentUiState(loadedProject.project);
+    options: {
+      localInstanceId?: string | null;
+      pendingBookmarkDocumentKey?: string | null;
+    } = {}
+  ): Promise<void> {
+    const requestId = deviceRecoveryLoadRequestRef.current + 1;
+    deviceRecoveryLoadRequestRef.current = requestId;
+    const identity = getProjectDocumentIdentity(loadedProject.project);
+    const projectDirectory =
+      loadedProject.project.projectDirectoryHandle ??
+      loadedProject.project.directoryHandle;
+    const loadedDocumentTitle =
+      loadedProject.project.document?.display_title ??
+      loadedProject.project.manifest.project_name;
+    let instanceId =
+      options.localInstanceId ?? createLocalProjectInstanceId();
+    let instance: LocalProjectInstanceRecord | null = null;
+    let recoveries: ProjectDocumentRecoveryRecord[] = [];
+    try {
+      const existingInstance = options.localInstanceId
+        ? await readProjectInstance(options.localInstanceId)
+        : await findProjectInstanceForDirectory({
+            directoryHandle: projectDirectory as StoredDirectoryHandle,
+            projectId: identity.projectId
+          });
+      if (
+        existingInstance &&
+        existingInstance.project_id !== identity.projectId
+      ) {
+        throw new Error(
+          "The selected local project instance does not match this project identity."
+        );
+      }
+      instanceId =
+        options.localInstanceId ??
+        existingInstance?.local_instance_id ??
+        instanceId;
+      instance = await rememberProjectInstance({
+        directoryHandle: projectDirectory as StoredDirectoryHandle,
+        documentId: identity.documentId,
+        documentTitle: loadedDocumentTitle,
+        groupId: loadedProject.project.document?.group_id ?? null,
+        localInstanceId: instanceId,
+        projectId: identity.projectId,
+        projectTitle: getProjectTitle(loadedProject.project)
+      });
+      recoveries = await listProjectDocumentRecoveries({
+        localInstanceId: instanceId,
+        projectId: identity.projectId
+      });
+      setDeviceRecoveryWarning(null);
+    } catch (error) {
+      setDeviceRecoveryWarning(getDeviceRecoveryErrorMessage(error));
+    }
+    const activeRecovery = recoveries.find(
+      (recovery) => recovery.document_id === identity.documentId
+    );
+    const currentGroupTitle = loadedProject.project.document?.group_id
+      ? getProjectDocumentGroups(loadedProject.project).find(
+          (group) =>
+            group.group_id === loadedProject.project.document?.group_id
+        )?.title ?? null
+      : null;
+    const activeRecoveryForPresentation = activeRecovery
+      ? {
+          ...activeRecovery,
+          project_title_snapshot: getProjectTitle(loadedProject.project),
+          document_title_snapshot: loadedDocumentTitle,
+          group_title_snapshot: currentGroupTitle
+        }
+      : null;
+    const preparedRecovery = activeRecovery
+      ? loadedProject.project.documentAvailability === "missing"
+        ? {
+            markdown: loadedProject.markdown,
+            presentation: {
+              kind: "missing" as const,
+              record: activeRecoveryForPresentation!,
+              reviewOpen: false,
+              savedMarkdown: loadedProject.markdown
+            }
+          }
+        : await prepareDocumentRecovery({
+            recovery: activeRecoveryForPresentation!,
+            savedMarkdown: loadedProject.markdown
+          })
+      : null;
+    const clearedRecoveryId = preparedRecovery?.clearedRecoveryId;
+    const recoveryDocumentIds = recoveries
+      .filter(
+        (recovery) =>
+          !clearedRecoveryId || recovery.recovery_id !== clearedRecoveryId
+      )
+      .map((recovery) => recovery.document_id);
+    const restoredUiState = readProjectDocumentUiState(
+      loadedProject.project,
+      instanceId
+    );
     const loadedDocumentId = getProjectDocumentScopeId(loadedProject.project);
+    if (requestId !== deviceRecoveryLoadRequestRef.current) {
+      return;
+    }
     pendingReadingBookmarkNavigationRef.current =
       options.pendingBookmarkDocumentKey ?? null;
     setProjectHandle(loadedProject.project);
+    setLocalProjectInstanceId(instanceId);
+    setStandaloneFileInstance(null);
     setProjectRecovery(loadedProject.recovery ?? null);
     setFileName(
       loadedProject.project.document?.path ??
         loadedProject.project.manifest.document_file
     );
-    setMarkdown(loadedProject.markdown);
+    setMarkdown(preparedRecovery?.markdown ?? loadedProject.markdown);
     setBaselineMarkdown(loadedProject.markdown);
     setActiveFileHandle(null);
-    setRestoredMarkdown(null);
-    setAvailableDraft(null);
+    setRestoredMarkdown(
+      preparedRecovery?.presentation?.kind === "recovered"
+        ? preparedRecovery.markdown
+        : null
+    );
+    setDocumentRecoveryPresentation(
+      preparedRecovery?.presentation ?? null
+    );
+    setProjectRecoveryDocumentIds(recoveryDocumentIds);
+    if (instance) {
+      setRecentProject(instance);
+      setRecentProjectRecoveryCount(recoveryDocumentIds.length);
+      setRecentProjectPermission(
+        await getDirectoryPermission(instance.directory_handle)
+      );
+    }
+    setResumeProjectError(null);
     setSaveStatus("idle");
     setSnapshotDialog(null);
     setIsLegacyProjectAssemblyOpen(false);
@@ -5389,6 +6148,7 @@ export function DocumentEditor() {
             legacy={!isMultiDocumentProject(projectHandle)}
             projectId={getProjectDocumentIdentity(projectHandle).projectId}
             projectTitle={getProjectTitle(projectHandle)}
+            recoveryDocumentIds={projectRecoveryDocumentIds}
             onAddExisting={(groupId) =>
               void handleAddExistingProjectDocument(groupId)
             }
@@ -5635,6 +6395,12 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
+        {deviceRecoveryWarning ? (
+          <div className="document-save-banner document-save-banner-error" role="alert">
+            {deviceRecoveryWarning}
+          </div>
+        ) : null}
+
         {saveFeedback ? (
           <div
             className={`document-save-banner document-save-banner-${saveFeedback.kind}`}
@@ -5730,11 +6496,32 @@ export function DocumentEditor() {
           </section>
         ) : null}
 
-        {!fileName && availableDraft ? (
-          <DraftRestoreBanner
-            draft={availableDraft}
-            onRestore={handleRestoreDraft}
-            onDiscard={handleDiscardDraft}
+        {!fileName && recentProject ? (
+          <ProjectResumeBanner
+            busy={isResumingProject || isSaving}
+            error={resumeProjectError}
+            permission={recentProjectPermission}
+            project={recentProject}
+            recoveryCount={recentProjectRecoveryCount}
+            onDeleteDeviceData={() => void handleDeleteRecentDeviceData()}
+            onResume={() => void handleResumeProject()}
+          />
+        ) : null}
+
+        {!fileName ? (
+          <LegacyRecoveryPanel
+            drafts={legacyUnscopedDrafts}
+            onDelete={handleDeleteLegacyRecovery}
+          />
+        ) : null}
+
+        {fileName && documentRecoveryPresentation ? (
+          <DocumentRecoveryBanner
+            presentation={documentRecoveryPresentation}
+            onDiscard={() => void handleDiscardRecoveredChanges()}
+            onKeepSaved={() => void handleKeepSavedDocument()}
+            onToggleReview={handleToggleRecoveryReview}
+            onUseRecovered={handleUseRecoveredWorkingCopy}
           />
         ) : null}
 
@@ -8239,9 +9026,10 @@ type ProjectDocumentUiState = {
 
 function persistProjectDocumentUiState(
   project: PatchmarkProjectHandle,
-  state: ProjectDocumentUiState
+  state: ProjectDocumentUiState,
+  localInstanceId: string | null
 ): void {
-  const key = getProjectDocumentUiStateKey(project);
+  const key = getProjectDocumentUiStateKey(project, localInstanceId);
   if (!key) {
     return;
   }
@@ -8253,14 +9041,22 @@ function persistProjectDocumentUiState(
 }
 
 function readProjectDocumentUiState(
-  project: PatchmarkProjectHandle
+  project: PatchmarkProjectHandle,
+  localInstanceId: string | null
 ): ProjectDocumentUiState | null {
-  const key = getProjectDocumentUiStateKey(project);
+  const key = getProjectDocumentUiStateKey(project, localInstanceId);
   if (!key) {
     return null;
   }
   try {
-    const value = JSON.parse(window.localStorage.getItem(key) ?? "null") as unknown;
+    const legacyKey = getProjectDocumentUiStateKey(project, null);
+    const value = JSON.parse(
+      window.localStorage.getItem(key) ??
+        (legacyKey && legacyKey !== key
+          ? window.localStorage.getItem(legacyKey)
+          : null) ??
+        "null"
+    ) as unknown;
     if (
       !value ||
       typeof value !== "object" ||
@@ -8320,12 +9116,59 @@ function parseStoredActiveCommentState(value: unknown): ActiveCommentState {
 }
 
 function getProjectDocumentUiStateKey(
-  project: PatchmarkProjectHandle
+  project: PatchmarkProjectHandle,
+  localInstanceId: string | null
 ): string | null {
   if (!project.projectManifest || !project.document) {
     return null;
   }
-  return `patchmark:document-ui:${project.projectManifest.project_id}:${project.document.document_id}`;
+  const instanceScope = localInstanceId
+    ? `${localInstanceId}:`
+    : "";
+  return `patchmark:document-ui:${instanceScope}${project.projectManifest.project_id}:${project.document.document_id}`;
+}
+
+async function prepareDocumentRecovery({
+  recovery,
+  savedMarkdown
+}: {
+  recovery: DocumentRecoveryRecord;
+  savedMarkdown: string;
+}): Promise<PreparedDocumentRecovery> {
+  const decision = await evaluateRecoveryContent(recovery, savedMarkdown);
+  if (decision.kind === "already_saved") {
+    await deleteDocumentRecovery(recovery.recovery_id);
+    return {
+      clearedRecoveryId: recovery.recovery_id,
+      markdown: savedMarkdown,
+      presentation: null
+    };
+  }
+  if (decision.kind === "safe_recovery") {
+    return {
+      markdown: recovery.markdown,
+      presentation: {
+        kind: "recovered",
+        record: recovery,
+        reviewOpen: false,
+        savedMarkdown
+      }
+    };
+  }
+  return {
+    markdown: savedMarkdown,
+    presentation: {
+      kind: "conflict",
+      record: recovery,
+      reviewOpen: false,
+      savedMarkdown
+    }
+  };
+}
+
+function getDeviceRecoveryErrorMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return `Device-local recovery is unavailable. ${detail}`;
 }
 
 function getDocumentStatus({

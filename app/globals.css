@@ -617,8 +617,7 @@ button {
   justify-content: flex-end;
 }
 
-.document-actions button,
-.draft-restore-actions button {
+.document-actions button {
   border: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
@@ -626,8 +625,7 @@ button {
   font-weight: 700;
 }
 
-.document-actions button:hover,
-.draft-restore-actions button:hover {
+.document-actions button:hover {
   border-color: var(--accent);
 }
 
@@ -781,32 +779,199 @@ button {
   font-size: 0.9rem;
 }
 
-.draft-restore-banner {
-  display: flex;
-  gap: 16px;
-  align-items: center;
-  justify-content: space-between;
+.project-resume-banner,
+.document-recovery-banner,
+.legacy-recovery-panel {
   border-bottom: 1px solid #c7d3e6;
   background: #edf3fb;
   padding: 14px 16px;
 }
 
-.draft-restore-banner strong,
-.draft-restore-banner span {
+.project-resume-banner,
+.document-recovery-banner {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.project-resume-banner > div:first-child,
+.document-recovery-summary {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.project-resume-banner strong,
+.project-resume-banner span,
+.project-resume-banner small {
   display: block;
 }
 
-.draft-restore-banner span {
-  margin-top: 4px;
+.project-resume-banner span,
+.project-resume-banner small,
+.document-recovery-summary p,
+.document-recovery-summary dt {
   color: #2f4b73;
+}
+
+.project-resume-banner small {
+  max-width: 720px;
+}
+
+.project-resume-banner p {
+  margin: 4px 0 0;
+  color: #8d2f18;
+  font-weight: 700;
+}
+
+.project-resume-actions,
+.document-recovery-actions,
+.legacy-recovery-panel li > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.project-resume-actions button,
+.document-recovery-actions button,
+.legacy-recovery-panel button {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 9px 12px;
+  font-weight: 700;
+}
+
+.project-resume-actions button:first-child,
+.document-recovery-actions button:last-child {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #ffffff;
+}
+
+.project-resume-actions button:disabled {
+  opacity: 0.65;
+}
+
+.document-recovery-banner-conflict {
+  border-color: #efb7a9;
+  background: #fff0ea;
+}
+
+.document-recovery-banner-missing {
+  background: #fff8e7;
+}
+
+.document-recovery-summary dl {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 18px;
+  margin: 4px 0;
+}
+
+.document-recovery-summary dl > div {
+  display: grid;
+  gap: 2px;
+}
+
+.document-recovery-summary dt {
+  font-size: 0.72rem;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.document-recovery-summary dd {
+  margin: 0;
+  font-weight: 700;
+}
+
+.document-recovery-summary p {
+  max-width: 760px;
+  margin: 0;
+}
+
+.document-recovery-comparison {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  flex-basis: 100%;
+}
+
+.document-recovery-comparison section {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px;
+}
+
+.document-recovery-comparison h3 {
+  margin: 0 0 8px;
   font-size: 0.9rem;
 }
 
-.draft-restore-actions {
-  display: flex;
+.document-recovery-comparison pre {
+  max-height: 320px;
+  margin: 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.78rem/1.45 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    monospace;
+}
+
+.legacy-recovery-panel summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.legacy-recovery-panel > p {
+  max-width: 760px;
+  color: #2f4b73;
+}
+
+.legacy-recovery-panel ul {
+  display: grid;
+  gap: 10px;
+  margin: 12px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legacy-recovery-panel li {
+  display: grid;
   gap: 8px;
-  align-items: center;
-  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 12px;
+}
+
+.legacy-recovery-panel li strong,
+.legacy-recovery-panel li span {
+  display: block;
+}
+
+.legacy-recovery-panel li span {
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.project-document-recovery {
+  border-color: #c7d3e6 !important;
+  background: #edf3fb !important;
+  color: #2f4b73 !important;
+}
+
+@media (max-width: 760px) {
+  .project-resume-actions,
+  .document-recovery-actions {
+    width: 100%;
+  }
+
+  .document-recovery-comparison {
+    grid-template-columns: 1fr;
+  }
 }
 
 .empty-state {
@@ -3473,19 +3638,13 @@ button {
 
   .document-actions,
   .project-actions,
-  .reading-bookmark-controls,
-  .draft-restore-actions {
+  .reading-bookmark-controls {
     align-items: stretch;
     flex-direction: column;
   }
 
   .copy-status {
     min-height: 1.2em;
-  }
-
-  .draft-restore-banner {
-    align-items: stretch;
-    flex-direction: column;
   }
 
   .visual-editor-fallback-toolbar {

@@ -27,6 +27,7 @@ type ProjectDocumentNavigatorProps = {
   legacy: boolean;
   projectId: string;
   projectTitle: string;
+  recoveryDocumentIds: string[];
   onAddExisting: (groupId?: string | null) => void;
   onArchive: (documentId: string) => void;
   onCreate: (request: CreateDocumentRequest) => void;
@@ -74,7 +75,8 @@ export function ProjectDocumentNavigator({
   onRoleChange,
   onSelect,
   projectId,
-  projectTitle
+  projectTitle,
+  recoveryDocumentIds
 }: ProjectDocumentNavigatorProps) {
   const [displayTitle, setDisplayTitle] = useState("");
   const [path, setPath] = useState("");
@@ -201,6 +203,9 @@ export function ProjectDocumentNavigator({
           ) : null}
           {document.availability === "missing" ? (
             <span className="project-document-missing">Missing file</span>
+          ) : null}
+          {recoveryDocumentIds.includes(document.document_id) ? (
+            <span className="project-document-recovery">Unsaved recovery</span>
           ) : null}
         </div>
         {!legacy ? (
@@ -468,6 +473,11 @@ export function ProjectDocumentNavigator({
                 {document.hasReadingBookmark ? (
                   <span aria-label={`${document.display_title} has a reading bookmark`}>
                     🔖 Bookmark
+                  </span>
+                ) : null}
+                {recoveryDocumentIds.includes(document.document_id) ? (
+                  <span aria-label={`${document.display_title} has unsaved recovery`}>
+                    Unsaved recovery
                   </span>
                 ) : null}
                 <button

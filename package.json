@@ -26,6 +26,8 @@
     "test:legacy-project-assembly": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/legacy-project-assembly.test.mjs",
     "test:document-scoped-identity": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/document-scoped-identity.test.mjs",
     "test:document-groups": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/document-groups.test.mjs",
+    "test:project-resume-recovery": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/project-resume-recovery.test.mjs",
+    "test:project-resume-recovery-browser": "node scripts/project-resume-recovery-browser.test.mjs",
     "test:real-legacy-project-assembly": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/real-legacy-project-assembly.test.mjs",
     "test:legacy-project-assembly-browser": "node scripts/legacy-project-assembly-browser.test.mjs",
     "test:multi-document-browser": "node scripts/multi-document-browser.test.mjs",

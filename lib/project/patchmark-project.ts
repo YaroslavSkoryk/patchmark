@@ -94,6 +94,14 @@ type DirectoryHandleOptions = {
 
 export type PatchmarkDirectoryHandle = {
   name: string;
+  kind?: "directory";
+  isSameEntry?: (other: PatchmarkDirectoryHandle) => Promise<boolean>;
+  queryPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<
+    "denied" | "granted" | "prompt"
+  >;
+  requestPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<
+    "denied" | "granted" | "prompt"
+  >;
   getFileHandle: (
     name: string,
     options?: DirectoryHandleOptions

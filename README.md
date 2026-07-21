@@ -125,3 +125,8 @@ Phase A.3 adds flat, metadata-only document groups to the existing navigator.
 Groups never move files or own document review state, and schema-v1 projects
 remain flat until the first group mutation. See
 [`docs/phase-a-3-document-groups.md`](docs/phase-a-3-document-groups.md).
+
+Project resume and document-scoped crash recovery reopen the authoritative local
+project and bind unsaved Markdown only to a verified local project instance,
+`project_id`, and `document_id`. Legacy filename-only drafts are quarantined. See
+[`docs/project-resume-and-document-recovery.md`](docs/project-resume-and-document-recovery.md).

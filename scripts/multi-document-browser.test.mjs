@@ -350,6 +350,16 @@ async function clickProjectDocument(pageClient, title) {
 }
 
 async function renameDocument(pageClient, currentTitle, nextTitle) {
+  await waitFor(
+    pageClient,
+    `(() => {
+      const article = Array.from(document.querySelectorAll(".project-document-item"))
+        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(currentTitle)});
+      return Array.from(article?.querySelectorAll("button") ?? [])
+        .some((candidate) => candidate.textContent?.trim() === "Rename" && !candidate.disabled);
+    })()`,
+    `enabled rename action for ${currentTitle}`
+  );
   await evaluate(pageClient, {
     expression: `(() => {
       window.prompt = () => ${JSON.stringify(nextTitle)};
@@ -366,6 +376,16 @@ async function renameDocument(pageClient, currentTitle, nextTitle) {
 }
 
 async function archiveDocument(pageClient, title) {
+  await waitFor(
+    pageClient,
+    `(() => {
+      const article = Array.from(document.querySelectorAll(".project-document-item"))
+        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(title)});
+      return Array.from(article?.querySelectorAll("button") ?? [])
+        .some((candidate) => candidate.textContent?.trim() === "Archive" && !candidate.disabled);
+    })()`,
+    `enabled archive action for ${title}`
+  );
   await evaluate(pageClient, {
     expression: `(() => {
       const article = Array.from(document.querySelectorAll(".project-document-item"))
@@ -465,6 +485,16 @@ async function clickNavigatorBookmark(pageClient, title) {
 }
 
 async function renameGroup(pageClient, currentTitle, nextTitle) {
+  await waitFor(
+    pageClient,
+    `(() => {
+      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
+        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(currentTitle)});
+      return Array.from(header?.querySelectorAll(":scope > div button") ?? [])
+        .some((candidate) => candidate.textContent?.trim() === "Rename" && !candidate.disabled);
+    })()`,
+    `enabled group rename action for ${currentTitle}`
+  );
   await evaluate(pageClient, {
     expression: `(() => {
       window.prompt = () => ${JSON.stringify(nextTitle)};
@@ -481,6 +511,11 @@ async function renameGroup(pageClient, currentTitle, nextTitle) {
 }
 
 async function moveDocumentWithinGroup(pageClient, title, direction) {
+  await waitFor(
+    pageClient,
+    `Boolean(document.querySelector(${JSON.stringify(`button[aria-label="Move ${title} ${direction}"]:not(:disabled)`) }))`,
+    `enabled ${direction} move action for ${title}`
+  );
   await evaluate(pageClient, {
     expression: `(() => {
       const article = Array.from(document.querySelectorAll(".project-document-item"))
@@ -495,6 +530,11 @@ async function moveDocumentWithinGroup(pageClient, title, direction) {
 }
 
 async function moveGroup(pageClient, title, direction) {
+  await waitFor(
+    pageClient,
+    `Boolean(document.querySelector(${JSON.stringify(`button[aria-label="Move ${title} group ${direction}"]:not(:disabled)`) }))`,
+    `enabled ${direction} group move action for ${title}`
+  );
   await evaluate(pageClient, {
     expression: `(() => {
       const header = Array.from(document.querySelectorAll(".project-document-group-header"))
