@@ -27,6 +27,8 @@ import {
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
 const targetText = "Resume reading from this equivalent durable sentence.";
+const unavailableReplacementText =
+  "The saved reading target was removed from this unsaved draft.";
 
 await run();
 
@@ -88,24 +90,16 @@ async function run() {
     await waitForEditorShell(pageClient);
     await openFixture(pageClient);
     await waitForActiveDocument(pageClient, "First chapter");
-    await clickButtonByText(pageClient, "Markdown Mode");
-    await waitForElement(pageClient, ".markdown-source-editor");
-
-    await selectTargetAndOpenMenu(pageClient);
-    await clickButtonByText(pageClient, "Set reading bookmark");
-    await waitForPersistedBookmark(fixtureDir, "doc_first", true);
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_first");
     await waitForNavigatorBookmarks(pageClient, 1);
     assertStoredIdentity(fixtureDir, "doc_first");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
     await clickButtonByText(pageClient, "Visual Mode");
     await waitForVisualBookmark(pageClient, "FIRST DOCUMENT ONLY");
 
     await selectNavigatorDocument(pageClient, "Second chapter");
     await waitForActiveDocument(pageClient, "Second chapter");
-    await clickButtonByText(pageClient, "Markdown Mode");
-    await waitForElement(pageClient, ".markdown-source-editor");
-    await selectTargetAndOpenMenu(pageClient);
-    await clickButtonByText(pageClient, "Set reading bookmark");
-    await waitForPersistedBookmark(fixtureDir, "doc_second", true);
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_second");
     await waitForNavigatorBookmarks(pageClient, 2);
     assertStoredIdentity(fixtureDir, "doc_second");
     assertUnrelatedFilesUnchanged(fixtureDir, originals);
@@ -132,12 +126,77 @@ async function run() {
     assert.ok(secondContinuation.highlightRectCount > 0);
     assert.equal(secondContinuation.editorCount, 1);
 
+    await waitForButton(pageClient, "Continue reading");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
+    await clickBookmarkMarker(pageClient);
+    await waitForButton(pageClient, "Remove bookmark");
+    await assertBookmarkMenuMatchesActiveDocument(pageClient, "doc_second");
+    await pressKey(pageClient, "Escape");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
+    await waitForPersistedBookmark(fixtureDir, "doc_first", true);
+    await waitForPersistedBookmark(fixtureDir, "doc_second", true);
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
+
+    await clickBookmarkMarker(pageClient);
+    await waitForButton(pageClient, "Remove bookmark");
+    await clickButtonByText(pageClient, "Remove bookmark");
+    await waitForPersistedBookmark(fixtureDir, "doc_second", false);
+    await waitForButtonMissing(pageClient, "Continue reading");
+    await waitForElementMissing(pageClient, ".reading-bookmark-marker");
+    await waitForNavigatorBookmarks(pageClient, 1);
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
+    assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);
+    assertUnrelatedFilesUnchanged(fixtureDir, originals);
+
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_second");
+    await waitForNavigatorBookmarks(pageClient, 2);
+    await clickButtonByText(pageClient, "Visual Mode");
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
+    await focusElement(pageClient, ".reading-bookmark-indicator");
+    await pressKey(pageClient, "Enter");
+    await waitForButton(pageClient, "Remove bookmark");
+    assert.equal(await getActiveElementText(pageClient), "Remove bookmark");
+
+    await selectNavigatorDocument(pageClient, "First chapter");
+    await waitForActiveDocument(pageClient, "First chapter");
+    await waitForElementMissing(pageClient, ".reading-bookmark-action-menu");
+    await waitForVisualBookmark(pageClient, "FIRST DOCUMENT ONLY");
+    await waitForPersistedBookmark(fixtureDir, "doc_second", true);
+
+    await selectNavigatorDocument(pageClient, "Second chapter");
+    await waitForActiveDocument(pageClient, "Second chapter");
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
+    await focusElement(pageClient, ".reading-bookmark-indicator");
+    await pressKey(pageClient, "Enter");
+    await waitForButton(pageClient, "Remove bookmark");
+    await assertBookmarkMenuMatchesActiveDocument(pageClient, "doc_second");
+    assert.equal(await getActiveElementText(pageClient), "Remove bookmark");
+    await pressKey(pageClient, "Enter");
+    await waitForPersistedBookmark(fixtureDir, "doc_second", false);
+    await waitForButtonMissing(pageClient, "Continue reading");
+    await waitForElementMissing(pageClient, ".reading-bookmark-marker");
+    await waitForNavigatorBookmarks(pageClient, 1);
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
+
+    await pageClient.call("Page.reload", { ignoreCache: true });
+    await waitForEditorShell(pageClient);
+    await openFixture(pageClient);
+    await waitForActiveDocument(pageClient, "Second chapter");
+    await waitForNavigatorBookmarks(pageClient, 1);
+    await waitForButtonMissing(pageClient, "Continue reading");
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
+    assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);
+
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_second");
+    await waitForNavigatorBookmarks(pageClient, 2);
+
     await pageClient.call("Page.reload", { ignoreCache: true });
     await waitForEditorShell(pageClient);
     await openFixture(pageClient);
     await waitForActiveDocument(pageClient, "Second chapter");
     await waitForNavigatorBookmarks(pageClient, 2);
     await waitForButton(pageClient, "Continue reading");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
     await clickButtonByText(pageClient, "Markdown Mode");
     await waitForElement(pageClient, ".markdown-source-editor");
     await resetMarkdownSelection(pageClient);
@@ -146,12 +205,20 @@ async function run() {
     assert.equal(sourceResult.selectedText, targetText);
     assert.ok(sourceResult.scrollTop > 0);
 
-    await clickButtonByText(pageClient, "Remove bookmark");
+    await makeBookmarkUnavailableInMemory(pageClient);
+    await waitForText(pageClient, "Bookmark location unavailable");
+    await waitForButtonMissing(pageClient, "Continue reading");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
+    await waitForButton(pageClient, "Remove unavailable bookmark");
+    await clickButtonByText(pageClient, "Remove unavailable bookmark");
     await waitForPersistedBookmark(fixtureDir, "doc_second", false);
+    await waitForTextMissing(pageClient, "Bookmark location unavailable");
     await waitForNavigatorBookmarks(pageClient, 1);
     assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
     assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);
     assertUnrelatedFilesUnchanged(fixtureDir, originals);
+    await restoreOriginalMarkdownInMemory(pageClient);
+    await waitForElement(pageClient, ".document-status-saved");
 
     console.log("Multi-document reading bookmark browser test passed.");
   } finally {
@@ -298,6 +365,127 @@ async function openFixture(pageClient) {
     const status = document.querySelector("[aria-label='Workspace status']");
     return Boolean(status?.textContent?.includes("Reading bookmark browser fixture"));
   })()`);
+}
+
+async function setBookmarkForActiveDocument(pageClient, fixtureDir, documentId) {
+  await clickButtonByText(pageClient, "Markdown Mode");
+  await waitForElement(pageClient, ".markdown-source-editor");
+  await selectTargetAndOpenMenu(pageClient);
+  await clickButtonByText(pageClient, "Set reading bookmark");
+  await waitForButton(pageClient, "Continue reading");
+  await waitForButtonMissing(pageClient, "Remove bookmark");
+  await waitForPersistedBookmark(fixtureDir, documentId, true);
+}
+
+async function clickBookmarkMarker(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const marker = document.querySelector(".reading-bookmark-indicator");
+      if (!marker) throw new Error("Reading bookmark marker was not found.");
+      marker.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function assertBookmarkMenuMatchesActiveDocument(pageClient, documentId) {
+  const state = await evaluate(pageClient, {
+    expression: `(() => {
+      const editor = document.querySelector(".editor-body");
+      const marker = document.querySelector(".reading-bookmark-indicator");
+      const menu = document.querySelector(".reading-bookmark-action-menu");
+      return {
+        activeDocumentKey: editor?.dataset.documentKey ?? "",
+        controls: marker?.getAttribute("aria-controls") ?? "",
+        expanded: marker?.getAttribute("aria-expanded") ?? "",
+        menuId: menu?.id ?? "",
+        markerCount: document.querySelectorAll(".reading-bookmark-indicator").length
+      };
+    })()`
+  });
+  assert.ok(state.activeDocumentKey.includes(documentId));
+  assert.equal(state.controls, state.menuId);
+  assert.ok(state.menuId.includes(encodeURIComponent(state.activeDocumentKey)));
+  assert.equal(state.expanded, "true");
+  assert.equal(state.markerCount, 1);
+}
+
+async function focusElement(pageClient, selector) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) throw new Error("Element was not found: ${selector}");
+      element.focus();
+      return true;
+    })()`
+  });
+}
+
+async function getActiveElementText(pageClient) {
+  return evaluate(pageClient, {
+    expression: "document.activeElement?.textContent?.trim() ?? ''"
+  });
+}
+
+async function pressKey(pageClient, key) {
+  const virtualKeyCode = key === "Enter" ? 13 : key === "Escape" ? 27 : 0;
+  await pageClient.call("Input.dispatchKeyEvent", {
+    code: key,
+    key,
+    nativeVirtualKeyCode: virtualKeyCode,
+    text: key === "Enter" ? "\r" : undefined,
+    type: "keyDown",
+    unmodifiedText: key === "Enter" ? "\r" : undefined,
+    windowsVirtualKeyCode: virtualKeyCode
+  });
+  await pageClient.call("Input.dispatchKeyEvent", {
+    code: key,
+    key,
+    nativeVirtualKeyCode: virtualKeyCode,
+    type: "keyUp",
+    windowsVirtualKeyCode: virtualKeyCode
+  });
+}
+
+async function makeBookmarkUnavailableInMemory(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const textarea = document.querySelector(".markdown-source-editor");
+      const nextValue = textarea.value.replace(
+        ${JSON.stringify(targetText)},
+        ${JSON.stringify(unavailableReplacementText)}
+      );
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      ).set;
+      valueSetter.call(textarea, nextValue);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function restoreOriginalMarkdownInMemory(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const textarea = document.querySelector(".markdown-source-editor");
+      const nextValue = textarea.value.replace(
+        ${JSON.stringify(unavailableReplacementText)},
+        ${JSON.stringify(targetText)}
+      );
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      ).set;
+      valueSetter.call(textarea, nextValue);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
 }
 
 async function selectTargetAndOpenMenu(pageClient) {
@@ -472,11 +660,40 @@ async function waitForButton(pageClient, text) {
     .some((button) => button.textContent?.trim() === ${JSON.stringify(text)} && !button.disabled)`);
 }
 
+async function waitForButtonMissing(pageClient, text) {
+  await waitFor(pageClient, `button removal ${text}`, `!Array.from(document.querySelectorAll("button"))
+    .some((button) => button.textContent?.trim() === ${JSON.stringify(text)})`);
+}
+
 async function waitForElement(pageClient, selector) {
   await waitFor(
     pageClient,
     `element ${selector}`,
     `Boolean(document.querySelector(${JSON.stringify(selector)}))`
+  );
+}
+
+async function waitForElementMissing(pageClient, selector) {
+  await waitFor(
+    pageClient,
+    `element removal ${selector}`,
+    `!document.querySelector(${JSON.stringify(selector)})`
+  );
+}
+
+async function waitForText(pageClient, text) {
+  await waitFor(
+    pageClient,
+    `text ${text}`,
+    `document.body.textContent?.includes(${JSON.stringify(text)}) === true`
+  );
+}
+
+async function waitForTextMissing(pageClient, text) {
+  await waitFor(
+    pageClient,
+    `text removal ${text}`,
+    `document.body.textContent?.includes(${JSON.stringify(text)}) !== true`
   );
 }
 

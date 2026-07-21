@@ -585,6 +585,10 @@ export function DocumentEditor() {
     : null;
   const activeDocumentKeyRef = useRef<string | null>(activeDocumentKey);
   activeDocumentKeyRef.current = activeDocumentKey;
+  const activeProjectIdRef = useRef<string | null>(
+    activeDocumentIdentity?.projectId ?? null
+  );
+  activeProjectIdRef.current = activeDocumentIdentity?.projectId ?? null;
   const [projectRecovery, setProjectRecovery] =
     useState<PatchmarkProjectRecoveryState | null>(null);
   const [projectDocuments, setProjectDocuments] = useState<
@@ -616,6 +620,11 @@ export function DocumentEditor() {
     documentKey: string;
     top: number;
   } | null>(null);
+  const [readingBookmarkMenuDocumentKey, setReadingBookmarkMenuDocumentKey] =
+    useState<string | null>(null);
+  const readingBookmarkMarkerRef = useRef<HTMLButtonElement>(null);
+  const readingBookmarkMenuRef = useRef<HTMLDivElement>(null);
+  const readingBookmarkRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const readingBookmarkEmphasisTimeoutRef = useRef<number | null>(null);
   const pendingReadingBookmarkNavigationRef = useRef<string | null>(null);
   const continueReadingAtBookmarkRef = useRef<
@@ -935,6 +944,12 @@ export function DocumentEditor() {
   const isReadingBookmarkEmphasized =
     activeDocumentKey !== null &&
     readingBookmarkEmphasizedDocumentKey === activeDocumentKey;
+  const isReadingBookmarkMenuOpen =
+    activeDocumentKey !== null &&
+    readingBookmarkMenuDocumentKey === activeDocumentKey;
+  const readingBookmarkMenuId = activeDocumentKey
+    ? `reading-bookmark-action-menu-${encodeURIComponent(activeDocumentKey)}`
+    : undefined;
   continueReadingAtBookmarkRef.current = continueReadingAtBookmark;
 
   useEffect(() => {
@@ -1042,6 +1057,77 @@ export function DocumentEditor() {
     },
     []
   );
+
+  useEffect(() => {
+    const menuDocumentKey = readingBookmarkMenuDocumentKey;
+
+    if (!menuDocumentKey || menuDocumentKey !== activeDocumentKey) {
+      return;
+    }
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      if (activeDocumentKeyRef.current === menuDocumentKey) {
+        readingBookmarkRemoveButtonRef.current?.focus();
+      }
+    });
+
+    function closeReadingBookmarkMenu(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        (readingBookmarkMenuRef.current?.contains(event.target) ||
+          readingBookmarkMarkerRef.current?.contains(event.target))
+      ) {
+        return;
+      }
+
+      setReadingBookmarkMenuDocumentKey((currentKey) =>
+        currentKey === menuDocumentKey ? null : currentKey
+      );
+    }
+
+    function handleReadingBookmarkMenuKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      setReadingBookmarkMenuDocumentKey((currentKey) =>
+        currentKey === menuDocumentKey ? null : currentKey
+      );
+      if (activeDocumentKeyRef.current === menuDocumentKey) {
+        readingBookmarkMarkerRef.current?.focus();
+      }
+    }
+
+    window.addEventListener("pointerdown", closeReadingBookmarkMenu);
+    window.addEventListener("keydown", handleReadingBookmarkMenuKeyDown);
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("pointerdown", closeReadingBookmarkMenu);
+      window.removeEventListener("keydown", handleReadingBookmarkMenuKeyDown);
+    };
+  }, [activeDocumentKey, readingBookmarkMenuDocumentKey]);
+
+  useEffect(() => {
+    if (
+      !activeDocumentKey ||
+      readingBookmarkMenuDocumentKey !== activeDocumentKey ||
+      !readingBookmark ||
+      readingBookmarkPosition?.documentKey !== activeDocumentKey ||
+      mode !== "visual"
+    ) {
+      setReadingBookmarkMenuDocumentKey((currentKey) =>
+        currentKey === readingBookmarkMenuDocumentKey ? null : currentKey
+      );
+    }
+  }, [
+    activeDocumentKey,
+    mode,
+    readingBookmark,
+    readingBookmarkMenuDocumentKey,
+    readingBookmarkPosition
+  ]);
 
   useEffect(() => {
     if (selectedPatchId && !patches.some((patch) => patch.id === selectedPatchId)) {
@@ -4816,6 +4902,9 @@ export function DocumentEditor() {
 
     const operationDocument = activeDocumentIdentity;
     const operationDocumentKey = activeDocumentKey;
+    setReadingBookmarkMenuDocumentKey((currentKey) =>
+      currentKey === operationDocumentKey ? null : currentKey
+    );
     setReadingBookmarkBusyDocumentKey(operationDocumentKey);
 
     try {
@@ -4828,13 +4917,15 @@ export function DocumentEditor() {
             manifest: currentManifest
           })
       });
-      setProjectDocuments((currentDocuments) =>
-        currentDocuments.map((document) =>
-          document.document_id === operationDocument.documentId
-            ? { ...document, hasReadingBookmark: false }
-            : document
-        )
-      );
+      if (activeProjectIdRef.current === operationDocument.projectId) {
+        setProjectDocuments((currentDocuments) =>
+          currentDocuments.map((document) =>
+            document.document_id === operationDocument.documentId
+              ? { ...document, hasReadingBookmark: false }
+              : document
+          )
+        );
+      }
       if (activeDocumentKeyRef.current === operationDocumentKey) {
         setProjectHandle((currentProject) =>
           currentProject === projectHandle
@@ -5125,6 +5216,7 @@ export function DocumentEditor() {
     setCommentPositions({});
     setReadingBookmarkPosition(null);
     setReadingBookmarkEmphasizedDocumentKey(null);
+    setReadingBookmarkMenuDocumentKey(null);
     setVersionEntries([]);
     setComments([]);
     setPatches([]);
@@ -5335,15 +5427,17 @@ export function DocumentEditor() {
                       Continue reading
                     </button>
                   ) : (
-                    <span role="status">Bookmark location unavailable</span>
+                    <>
+                      <span role="status">Bookmark location unavailable</span>
+                      <button
+                        type="button"
+                        disabled={isReadingBookmarkBusy || isReanchorMode}
+                        onClick={() => void handleRemoveReadingBookmark()}
+                      >
+                        Remove unavailable bookmark
+                      </button>
+                    </>
                   )}
-                  <button
-                    type="button"
-                    disabled={isReadingBookmarkBusy || isReanchorMode}
-                    onClick={() => void handleRemoveReadingBookmark()}
-                  >
-                    Remove bookmark
-                  </button>
                 </div>
               ) : null}
               <div className="mode-switcher" aria-label="Editor mode">
@@ -5543,17 +5637,52 @@ export function DocumentEditor() {
           {mode === "visual" &&
           readingBookmark &&
           readingBookmarkPosition?.documentKey === activeDocumentKey ? (
-            <button
+            <div
               key={`marker:${activeDocumentKey}`}
-              type="button"
-              aria-label="Reading bookmark. Continue reading from here."
-              className="reading-bookmark-indicator"
-              onClick={() => void handleContinueReading()}
+              className="reading-bookmark-marker"
               style={{ top: readingBookmarkPosition.top }}
-              title="Continue reading"
             >
-              <span aria-hidden="true">🔖</span>
-            </button>
+              <button
+                ref={readingBookmarkMarkerRef}
+                type="button"
+                aria-controls={readingBookmarkMenuId}
+                aria-expanded={isReadingBookmarkMenuOpen}
+                aria-haspopup="menu"
+                aria-label="Current reading bookmark. Open bookmark actions."
+                className="reading-bookmark-indicator"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  const markerDocumentKey = activeDocumentKey;
+                  setReadingBookmarkMenuDocumentKey((currentKey) =>
+                    currentKey === markerDocumentKey ? null : markerDocumentKey
+                  );
+                }}
+                title="Current reading bookmark"
+              >
+                <span aria-hidden="true">🔖</span>
+              </button>
+              {isReadingBookmarkMenuOpen ? (
+                <div
+                  ref={readingBookmarkMenuRef}
+                  id={readingBookmarkMenuId}
+                  className="reading-bookmark-action-menu"
+                  role="menu"
+                  aria-label="Reading bookmark actions"
+                  key={`menu:${activeDocumentKey}`}
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <button
+                    ref={readingBookmarkRemoveButtonRef}
+                    type="button"
+                    role="menuitem"
+                    disabled={isReadingBookmarkBusy || isReanchorMode}
+                    onClick={() => void handleRemoveReadingBookmark()}
+                  >
+                    Remove bookmark
+                  </button>
+                </div>
+              ) : null}
+            </div>
           ) : null}
         </div>
       </div>

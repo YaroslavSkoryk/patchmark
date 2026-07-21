@@ -704,10 +704,13 @@ button {
   flex: 1;
 }
 
-.reading-bookmark-indicator {
+.reading-bookmark-marker {
   position: absolute;
   right: 10px;
   z-index: 8;
+}
+
+.reading-bookmark-indicator {
   display: grid;
   width: 32px;
   height: 32px;
@@ -725,6 +728,38 @@ button {
   border-color: #8b5d0c;
   outline: 2px solid rgba(155, 106, 20, 0.25);
   outline-offset: 2px;
+}
+
+.reading-bookmark-action-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  min-width: 170px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 12px 28px rgba(22, 35, 29, 0.18);
+}
+
+.reading-bookmark-action-menu button {
+  width: 100%;
+  border: 0;
+  background: var(--surface);
+  color: var(--text);
+  padding: 10px 12px;
+  text-align: left;
+  font-weight: 700;
+}
+
+.reading-bookmark-action-menu button:hover:not(:disabled),
+.reading-bookmark-action-menu button:focus-visible {
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  outline: none;
+}
+
+.reading-bookmark-action-menu button:disabled {
+  cursor: not-allowed;
+  opacity: 0.65;
 }
 
 .comment-context-menu {
