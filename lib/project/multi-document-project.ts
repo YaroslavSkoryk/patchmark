@@ -7,10 +7,18 @@ export type PatchmarkDocumentRole =
 
 export type PatchmarkDocumentStatus = "active" | "archived";
 
+export type PatchmarkDocumentGroup = {
+  group_id: string;
+  title: string;
+  position: number;
+  created_at: string;
+};
+
 export type PatchmarkRegisteredDocument = {
   document_id: string;
   path: string;
   display_title: string;
+  group_id?: string | null;
   role: PatchmarkDocumentRole;
   status: PatchmarkDocumentStatus;
   position: number;
@@ -20,11 +28,12 @@ export type PatchmarkRegisteredDocument = {
 
 export type PatchmarkProjectManifestV1 = {
   format: "patchmark-project";
-  schema_version: 1;
+  schema_version: 1 | 2;
   project_id: string;
   title: string;
   created_at: string;
   manifest_revision: number;
+  groups?: PatchmarkDocumentGroup[];
   documents: PatchmarkRegisteredDocument[];
 };
 
@@ -127,6 +136,10 @@ export function createDocumentId(): string {
   return createStableId("doc");
 }
 
+export function createGroupId(): string {
+  return createStableId("grp");
+}
+
 export function validateRegisteredDocumentPath(path: string): string {
   if (typeof path !== "string") {
     throw new Error("Document path must be a string.");
@@ -175,8 +188,14 @@ export function parseProjectManifest(
   if (!isRecord(value)) {
     throw new Error(".patchmark/project.json must contain a JSON object.");
   }
-  if (value.format !== "patchmark-project" || value.schema_version !== 1) {
+  if (
+    value.format !== "patchmark-project" ||
+    (value.schema_version !== 1 && value.schema_version !== 2)
+  ) {
     throw new Error("Unsupported Patchmark project manifest format.");
+  }
+  if (value.schema_version === 1 && value.groups !== undefined) {
+    throw new Error("Document groups require project schema version 2.");
   }
   if (!isNonEmptyString(value.project_id)) {
     throw new Error("Project manifest is missing project_id.");
@@ -198,6 +217,10 @@ export function parseProjectManifest(
     throw new Error("Project manifest must register at least one document.");
   }
 
+  const groups = value.schema_version === 2
+    ? parseDocumentGroups(value.groups)
+    : [];
+  const groupIds = new Set(groups.map((group) => group.group_id));
   const documentIds = new Set<string>();
   const exactPaths = new Set<string>();
   const portablePaths = new Set<string>();
@@ -213,6 +236,18 @@ export function parseProjectManifest(
     documentIds.add(document.document_id);
     exactPaths.add(document.path);
     portablePaths.add(portablePath);
+    if (value.schema_version === 2) {
+      const groupId = document.group_id ?? null;
+      if (groupId !== null && !groupIds.has(groupId)) {
+        throw new Error(
+          `Document ${document.document_id} references missing group ${groupId}.`
+        );
+      }
+      return { ...document, group_id: groupId };
+    }
+    if (document.group_id !== undefined) {
+      throw new Error("Document group membership requires project schema version 2.");
+    }
     return document;
   });
   if (!documents.some((document) => document.status === "active")) {
@@ -222,11 +257,12 @@ export function parseProjectManifest(
   return {
     ...value,
     format: "patchmark-project",
-    schema_version: 1,
+    schema_version: value.schema_version,
     project_id: value.project_id,
     title: value.title.trim(),
     created_at: value.created_at,
     manifest_revision: value.manifest_revision,
+    ...(value.schema_version === 2 ? { groups } : {}),
     documents
   } as PatchmarkProjectManifestV1;
 }
@@ -290,7 +326,11 @@ export function reorderRegisteredDocument(
 ): PatchmarkProjectManifestV1 {
   const target = getRegisteredDocument(manifest, documentId);
   const ordered = manifest.documents
-    .filter((document) => document.status === target.status)
+    .filter(
+      (document) =>
+        document.status === target.status &&
+        (document.group_id ?? null) === (target.group_id ?? null)
+    )
     .sort(compareRegisteredDocuments);
   const index = ordered.findIndex((document) => document.document_id === documentId);
   const destinationIndex = direction === "up" ? index - 1 : index + 1;
@@ -317,6 +357,147 @@ export function reorderRegisteredDocument(
     ...document,
     position
   }));
+}
+
+export function createDocumentGroup(
+  manifest: PatchmarkProjectManifestV1,
+  title: string,
+  now = new Date().toISOString()
+): PatchmarkProjectManifestV1 {
+  const upgraded = upgradeProjectManifestForGroups(manifest);
+  const validatedTitle = validateGroupTitle(title);
+  assertUniqueGroupTitle(upgraded.groups ?? [], validatedTitle);
+  const group: PatchmarkDocumentGroup = {
+    group_id: createGroupId(),
+    title: validatedTitle,
+    position: Math.max(0, ...(upgraded.groups ?? []).map(({ position }) => position)) + 1000,
+    created_at: now
+  };
+  return mutateGroupManifest(upgraded, {
+    groups: [...(upgraded.groups ?? []), group]
+  });
+}
+
+export function renameDocumentGroup(
+  manifest: PatchmarkProjectManifestV1,
+  groupId: string,
+  title: string
+): PatchmarkProjectManifestV1 {
+  const upgraded = upgradeProjectManifestForGroups(manifest);
+  const current = getDocumentGroup(upgraded, groupId);
+  const validatedTitle = validateGroupTitle(title);
+  if (current.title === validatedTitle) {
+    return manifest;
+  }
+  assertUniqueGroupTitle(upgraded.groups ?? [], validatedTitle, groupId);
+  return mutateGroupManifest(upgraded, {
+    groups: (upgraded.groups ?? []).map((group) =>
+      group.group_id === groupId ? { ...group, title: validatedTitle } : group
+    )
+  });
+}
+
+export function reorderDocumentGroup(
+  manifest: PatchmarkProjectManifestV1,
+  groupId: string,
+  direction: "up" | "down"
+): PatchmarkProjectManifestV1 {
+  const upgraded = upgradeProjectManifestForGroups(manifest);
+  const ordered = [...(upgraded.groups ?? [])].sort(compareDocumentGroups);
+  const index = ordered.findIndex((group) => group.group_id === groupId);
+  if (index < 0) {
+    throw new Error(`Group ${groupId} is not registered in this project.`);
+  }
+  const destinationIndex = direction === "up" ? index - 1 : index + 1;
+  if (destinationIndex < 0 || destinationIndex >= ordered.length) {
+    return manifest;
+  }
+  const destination = ordered[destinationIndex];
+  const outside = ordered[direction === "up" ? destinationIndex - 1 : destinationIndex + 1];
+  const position = direction === "up"
+    ? outside ? midpoint(outside.position, destination.position) : destination.position - 1000
+    : outside ? midpoint(destination.position, outside.position) : destination.position + 1000;
+  return mutateGroupManifest(upgraded, {
+    groups: (upgraded.groups ?? []).map((group) =>
+      group.group_id === groupId ? { ...group, position } : group
+    )
+  });
+}
+
+export function assignDocumentToGroup(
+  manifest: PatchmarkProjectManifestV1,
+  documentId: string,
+  groupId: string | null
+): PatchmarkProjectManifestV1 {
+  const upgraded = upgradeProjectManifestForGroups(manifest);
+  if (groupId !== null) {
+    getDocumentGroup(upgraded, groupId);
+  }
+  const current = getRegisteredDocument(upgraded, documentId);
+  if ((current.group_id ?? null) === groupId) {
+    return manifest;
+  }
+  const destinationPosition = Math.max(
+    0,
+    ...upgraded.documents
+      .filter((document) => (document.group_id ?? null) === groupId)
+      .map(({ position }) => position)
+  ) + 1000;
+  return mutateManifestDocument(upgraded, documentId, (document) => ({
+    ...document,
+    group_id: groupId,
+    position: destinationPosition
+  }));
+}
+
+export function removeDocumentGroup(
+  manifest: PatchmarkProjectManifestV1,
+  groupId: string
+): PatchmarkProjectManifestV1 {
+  const upgraded = upgradeProjectManifestForGroups(manifest);
+  getDocumentGroup(upgraded, groupId);
+  const members = upgraded.documents
+    .filter((document) => document.group_id === groupId)
+    .sort(compareRegisteredDocuments);
+  const firstPosition = Math.max(
+    0,
+    ...upgraded.documents
+      .filter((document) => (document.group_id ?? null) === null)
+      .map(({ position }) => position)
+  ) + 1000;
+  const positions = new Map(
+    members.map((document, index) => [document.document_id, firstPosition + index * 1000])
+  );
+  return mutateGroupManifest(upgraded, {
+    groups: (upgraded.groups ?? []).filter((group) => group.group_id !== groupId),
+    documents: upgraded.documents.map((document) =>
+      document.group_id === groupId
+        ? {
+            ...document,
+            group_id: null,
+            position: positions.get(document.document_id) ?? document.position
+          }
+        : document
+    )
+  });
+}
+
+export function getDocumentGroup(
+  manifest: PatchmarkProjectManifestV1,
+  groupId: string
+): PatchmarkDocumentGroup {
+  const group = manifest.groups?.find((candidate) => candidate.group_id === groupId);
+  if (!group) {
+    throw new Error(`Group ${groupId} is not registered in this project.`);
+  }
+  return group;
+}
+
+export function compareDocumentGroups(
+  left: PatchmarkDocumentGroup,
+  right: PatchmarkDocumentGroup
+): number {
+  return left.position - right.position || left.created_at.localeCompare(right.created_at);
 }
 
 export function archiveRegisteredDocument(
@@ -712,6 +893,7 @@ export async function rollbackPendingProjectMigration(
 
 export async function createProjectDocument({
   displayTitle,
+  groupId,
   manifest,
   markdown,
   path,
@@ -719,6 +901,7 @@ export async function createProjectDocument({
   root
 }: {
   displayTitle: string;
+  groupId?: string | null;
   manifest: PatchmarkProjectManifestV1;
   markdown?: string;
   path: string;
@@ -732,29 +915,35 @@ export async function createProjectDocument({
   }
 
   const now = new Date().toISOString();
+  const targetManifest = groupId !== undefined
+    ? upgradeProjectManifestForGroups(manifest)
+    : manifest;
   const document = createRegisteredDocument({
     displayTitle,
-    manifest,
+    groupId,
+    manifest: targetManifest,
     now,
     path: safePath,
     role
   });
   const file = await getFileHandleAtPath(root, safePath, { create: true });
   await writeText(file, markdown ?? `# ${document.display_title}\n`);
-  await createEmptyDocumentStore(root, manifest.title, document, "created", now);
-  const nextManifest = addRegisteredDocument(manifest, document);
+  await createEmptyDocumentStore(root, targetManifest.title, document, "created", now);
+  const nextManifest = addRegisteredDocument(targetManifest, document);
   await writeProjectManifestAtomic(root, nextManifest);
   return { document, manifest: nextManifest };
 }
 
 export async function addExistingProjectDocument({
   displayTitle,
+  groupId,
   manifest,
   path,
   role,
   root
 }: {
   displayTitle?: string;
+  groupId?: string | null;
   manifest: PatchmarkProjectManifestV1;
   path: string;
   role: PatchmarkDocumentRole;
@@ -766,18 +955,22 @@ export async function addExistingProjectDocument({
   await assertRegularNonSymlinkFile(file);
   const original = await readText(file);
   const now = new Date().toISOString();
+  const targetManifest = groupId !== undefined
+    ? upgradeProjectManifestForGroups(manifest)
+    : manifest;
   const document = createRegisteredDocument({
     displayTitle: displayTitle ?? deriveDocumentDisplayTitle(original, safePath),
-    manifest,
+    groupId,
+    manifest: targetManifest,
     now,
     path: safePath,
     role
   });
-  await createEmptyDocumentStore(root, manifest.title, document, "existing", now);
+  await createEmptyDocumentStore(root, targetManifest.title, document, "existing", now);
   if ((await readText(file)) !== original) {
     throw new Error("The existing Markdown file changed while it was being registered.");
   }
-  const nextManifest = addRegisteredDocument(manifest, document);
+  const nextManifest = addRegisteredDocument(targetManifest, document);
   await writeProjectManifestAtomic(root, nextManifest);
   return { document, manifest: nextManifest };
 }
@@ -842,6 +1035,44 @@ export function compareRegisteredDocuments(
   return left.position - right.position || left.added_at.localeCompare(right.added_at);
 }
 
+function parseDocumentGroups(value: unknown): PatchmarkDocumentGroup[] {
+  if (!Array.isArray(value)) {
+    throw new Error("Project schema version 2 requires a groups array.");
+  }
+  const groupIds = new Set<string>();
+  const titles = new Set<string>();
+  return value.map((candidate, index) => {
+    if (!isRecord(candidate)) {
+      throw new Error(`Project group ${index + 1} must be an object.`);
+    }
+    if (!isNonEmptyString(candidate.group_id)) {
+      throw new Error(`Project group ${index + 1} is missing group_id.`);
+    }
+    const title = validateGroupTitle(candidate.title);
+    const normalizedTitle = normalizeGroupTitle(title);
+    if (groupIds.has(candidate.group_id)) {
+      throw new Error(`Duplicate group_id: ${candidate.group_id}.`);
+    }
+    if (titles.has(normalizedTitle)) {
+      throw new Error(`Duplicate group title: ${title}.`);
+    }
+    if (typeof candidate.position !== "number" || !Number.isFinite(candidate.position)) {
+      throw new Error(`Project group ${candidate.group_id} has an invalid position.`);
+    }
+    if (!isIsoDate(candidate.created_at)) {
+      throw new Error(`Project group ${candidate.group_id} has invalid created_at.`);
+    }
+    groupIds.add(candidate.group_id);
+    titles.add(normalizedTitle);
+    return {
+      group_id: candidate.group_id,
+      title,
+      position: candidate.position,
+      created_at: candidate.created_at
+    };
+  });
+}
+
 function parseRegisteredDocument(
   value: unknown,
   index: number
@@ -855,6 +1086,16 @@ function parseRegisteredDocument(
   const path = validateRegisteredDocumentPath(String(value.path ?? ""));
   const displayTitle = validateDisplayTitle(value.display_title);
   const role = validateRole(value.role);
+  const hasGroupId = Object.prototype.hasOwnProperty.call(value, "group_id");
+  const groupId = value.group_id;
+  if (hasGroupId && groupId !== null && !isNonEmptyString(groupId)) {
+    throw new Error(`Project document ${value.document_id} has an invalid group_id.`);
+  }
+  const normalizedGroupId = groupId === null
+    ? null
+    : typeof groupId === "string"
+      ? groupId.trim()
+      : undefined;
   if (value.status !== "active" && value.status !== "archived") {
     throw new Error(`Project document ${value.document_id} has an invalid status.`);
   }
@@ -880,6 +1121,7 @@ function parseRegisteredDocument(
     document_id: value.document_id,
     path,
     display_title: displayTitle,
+    ...(hasGroupId ? { group_id: normalizedGroupId } : {}),
     role,
     status: value.status,
     position: value.position,
@@ -903,6 +1145,39 @@ function mutateManifestDocument(
   });
 }
 
+function upgradeProjectManifestForGroups(
+  manifest: PatchmarkProjectManifestV1
+): PatchmarkProjectManifestV1 {
+  if (manifest.schema_version === 2) {
+    return manifest;
+  }
+  return parseProjectManifest({
+    ...manifest,
+    schema_version: 2,
+    groups: [],
+    documents: manifest.documents.map((document) => ({
+      ...document,
+      group_id: null
+    }))
+  });
+}
+
+function mutateGroupManifest(
+  manifest: PatchmarkProjectManifestV1,
+  changes: {
+    groups?: PatchmarkDocumentGroup[];
+    documents?: PatchmarkRegisteredDocument[];
+  }
+): PatchmarkProjectManifestV1 {
+  return parseProjectManifest({
+    ...manifest,
+    schema_version: 2,
+    manifest_revision: manifest.manifest_revision + 1,
+    groups: changes.groups ?? manifest.groups ?? [],
+    documents: changes.documents ?? manifest.documents
+  });
+}
+
 function addRegisteredDocument(
   manifest: PatchmarkProjectManifestV1,
   document: PatchmarkRegisteredDocument
@@ -916,25 +1191,42 @@ function addRegisteredDocument(
 
 function createRegisteredDocument({
   displayTitle,
+  groupId,
   manifest,
   now,
   path,
   role
 }: {
   displayTitle: string;
+  groupId?: string | null;
   manifest: PatchmarkProjectManifestV1;
   now: string;
   path: string;
   role: PatchmarkDocumentRole;
 }): PatchmarkRegisteredDocument {
+  if (groupId !== undefined && groupId !== null) {
+    getDocumentGroup(manifest, groupId);
+  }
+  const normalizedGroupId = groupId ?? null;
+  const upgraded = groupId !== undefined
+    ? upgradeProjectManifestForGroups(manifest)
+    : manifest;
   return {
     document_id: createDocumentId(),
     path,
     display_title: validateDisplayTitle(displayTitle),
+    ...(groupId !== undefined ? { group_id: normalizedGroupId } : {}),
     role: validateRole(role),
     status: "active",
     position:
-      Math.max(0, ...manifest.documents.map((document) => document.position)) + 1000,
+      Math.max(
+        0,
+        ...upgraded.documents
+          .filter((document) =>
+            groupId === undefined || (document.group_id ?? null) === normalizedGroupId
+          )
+          .map((document) => document.position)
+      ) + 1000,
     added_at: now,
     archived_at: null
   };
@@ -1398,6 +1690,38 @@ function validateDisplayTitle(value: unknown): string {
     throw new Error("Document title must be 240 characters or fewer.");
   }
   return title;
+}
+
+function validateGroupTitle(value: unknown): string {
+  if (!isNonEmptyString(value)) {
+    throw new Error("Group title is required.");
+  }
+  const title = value.trim();
+  if (title.length > 240) {
+    throw new Error("Group title must be 240 characters or fewer.");
+  }
+  return title;
+}
+
+function normalizeGroupTitle(title: string): string {
+  return title.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function assertUniqueGroupTitle(
+  groups: readonly PatchmarkDocumentGroup[],
+  title: string,
+  exceptGroupId?: string
+): void {
+  const normalized = normalizeGroupTitle(title);
+  if (
+    groups.some(
+      (group) =>
+        group.group_id !== exceptGroupId &&
+        normalizeGroupTitle(group.title) === normalized
+    )
+  ) {
+    throw new Error(`A group named ${title} already exists.`);
+  }
 }
 
 function validateRole(value: unknown): PatchmarkDocumentRole {

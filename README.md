@@ -120,3 +120,8 @@ Phase A.2 preserves duplicate legacy comment, patch, reply, and version IDs when
 they belong to different documents. Project-level UI and asynchronous operations
 carry `document_id`, while document-bound stores may continue using local IDs.
 See [`docs/phase-a-2-document-scoped-identity.md`](docs/phase-a-2-document-scoped-identity.md).
+
+Phase A.3 adds flat, metadata-only document groups to the existing navigator.
+Groups never move files or own document review state, and schema-v1 projects
+remain flat until the first group mutation. See
+[`docs/phase-a-3-document-groups.md`](docs/phase-a-3-document-groups.md).

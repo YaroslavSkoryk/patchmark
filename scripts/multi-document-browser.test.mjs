@@ -169,6 +169,117 @@ try {
     `document.querySelector(".project-document-item[data-active='true'] .project-document-select span")?.textContent === "Evidence Summary"`,
     "latest rapid document selection"
   );
+
+  const documentDataBeforeGroups = captureDocumentData(projectDir);
+  await createGroup(client, "Shared Research");
+  await waitForGroup(client, "Shared Research");
+  await createGroup(client, "Crust Chant");
+  await waitForGroup(client, "Crust Chant");
+  let groupedManifest = readProjectManifest(projectDir);
+  assert.equal(groupedManifest.schema_version, 2);
+  const sharedGroupId = groupedManifest.groups.find(
+    ({ title }) => title === "Shared Research"
+  ).group_id;
+  const crustGroupId = groupedManifest.groups.find(
+    ({ title }) => title === "Crust Chant"
+  ).group_id;
+
+  await moveDocumentToGroup(client, "Action Plan", crustGroupId);
+  await waitForDocumentGroup(projectDir, "doc_action", crustGroupId);
+  await moveDocumentToGroup(client, "RTE Investigation", crustGroupId);
+  await waitForDocumentGroup(projectDir, "doc_research", crustGroupId);
+  await moveDocumentToGroup(client, "Evidence Summary", sharedGroupId);
+  await waitForDocumentGroup(projectDir, "doc_summary", sharedGroupId);
+  await waitFor(
+    client,
+    `document.querySelector(".document-meta strong")?.textContent === "Crust Chant / Shared Research / Evidence Summary"`,
+    "group-aware breadcrumb"
+  );
+
+  await clickProjectDocument(client, "Action Plan");
+  await waitFor(
+    client,
+    `document.querySelector(".project-document-item[data-active='true'] .project-document-select span")?.textContent === "Action Plan"`,
+    "grouped action document active"
+  );
+  const revisionBeforeCollapse = readProjectManifest(projectDir).manifest_revision;
+  await toggleGroup(client, "Shared Research");
+  await waitForGroupExpanded(client, "Shared Research", false);
+  assert.equal(readProjectManifest(projectDir).manifest_revision, revisionBeforeCollapse);
+  await clickNavigatorBookmark(client, "Evidence Summary");
+  await waitFor(
+    client,
+    `document.querySelector(".project-document-item[data-active='true'] .project-document-select span")?.textContent === "Evidence Summary"`,
+    "bookmark-owned grouped document active"
+  );
+  await waitForGroupExpanded(client, "Shared Research", true);
+
+  await toggleGroup(client, "Crust Chant");
+  await waitForGroupExpanded(client, "Crust Chant", false);
+  await renameGroup(client, "Crust Chant", "Crust Chant Business");
+  await waitForGroup(client, "Crust Chant Business");
+  await waitForGroupExpanded(client, "Crust Chant Business", false);
+  groupedManifest = readProjectManifest(projectDir);
+  assert.equal(
+    groupedManifest.groups.find(({ title }) => title === "Crust Chant Business")
+      .group_id,
+    crustGroupId
+  );
+  const revisionBeforeReopen = groupedManifest.manifest_revision;
+  await client.call("Page.reload", { ignoreCache: true });
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitForGroup(client, "Crust Chant Business");
+  await waitForGroupExpanded(client, "Crust Chant Business", false);
+  assert.equal(readProjectManifest(projectDir).manifest_revision, revisionBeforeReopen);
+  await toggleGroup(client, "Crust Chant Business");
+  await waitForGroupExpanded(client, "Crust Chant Business", true);
+
+  await moveDocumentWithinGroup(client, "RTE Investigation", "up");
+  await waitFor(
+    client,
+    `(() => {
+      const section = document.querySelector('[data-group-id="${crustGroupId}"]');
+      return Array.from(section?.querySelectorAll('.project-document-select span') ?? [])
+        .map((element) => element.textContent)[0] === "RTE Investigation";
+    })()`,
+    "document order within group"
+  );
+  await moveGroup(client, "Crust Chant Business", "up");
+  await waitFor(
+    client,
+    `document.querySelector(".project-document-group-header strong")?.textContent === "Crust Chant Business"`,
+    "group order"
+  );
+
+  await archiveDocument(client, "RTE Investigation");
+  await waitFor(
+    client,
+    `document.querySelector(".project-archived-documents")?.textContent?.includes("Crust Chant Business")`,
+    "archived group label"
+  );
+  await clickButtonByText(client, "Restore");
+  await waitFor(
+    client,
+    `Array.from(document.querySelectorAll("select[aria-label='Group for RTE Investigation'] option:checked")).some((option) => option.value === "${crustGroupId}")`,
+    "restored group membership"
+  );
+
+  await removeGroup(client, "Crust Chant Business");
+  await waitFor(
+    client,
+    `!Array.from(document.querySelectorAll(".project-document-group-header strong")).some((element) => element.textContent === "Crust Chant Business")`,
+    "removed document group"
+  );
+  groupedManifest = readProjectManifest(projectDir);
+  assert.equal(
+    groupedManifest.documents
+      .filter(({ document_id }) => ["doc_action", "doc_research"].includes(document_id))
+      .every(({ group_id }) => group_id === null),
+    true
+  );
+  assert.deepEqual(captureDocumentData(projectDir), documentDataBeforeGroups);
+
   process.stdout.write(
     `${JSON.stringify({
       navigator: true,
@@ -176,7 +287,13 @@ try {
       documentUiStateRestore: true,
       displayTitleMetadataOnly: true,
       archiveRestore: true,
-      staleSwitchProtection: true
+      staleSwitchProtection: true,
+      groupLifecycle: true,
+      groupBreadcrumb: true,
+      localCollapseState: true,
+      bookmarkGroupReveal: true,
+      archiveGroupPreservation: true,
+      groupRemovalPreservesDocumentData: true
     }, null, 2)}\n`
   );
 } finally {
@@ -192,7 +309,7 @@ async function readNavigatorState(pageClient) {
   return evaluate(pageClient, {
     expression: `(() => ({
       activeTitle: document.querySelector(".project-document-item[data-active='true'] .project-document-select span")?.textContent ?? null,
-      roles: Array.from(document.querySelectorAll(".project-document-item .project-document-badges span:first-child")).map((element) => element.textContent?.trim()),
+      roles: Array.from(document.querySelectorAll(".project-document-item .project-document-badges > span:first-child")).map((element) => element.textContent?.trim()),
       titles: Array.from(document.querySelectorAll(".project-document-select span")).map((element) => element.textContent?.trim())
     }))()`
   });
@@ -261,6 +378,184 @@ async function archiveDocument(pageClient, title) {
     })()`,
     userGesture: true
   });
+}
+
+async function createGroup(pageClient, title) {
+  await waitFor(
+    pageClient,
+    `Boolean(document.querySelector(".project-create-group:not(:disabled)"))`,
+    "enabled create-group action"
+  );
+  await evaluate(pageClient, {
+    expression: `(() => {
+      window.prompt = () => ${JSON.stringify(title)};
+      document.querySelector(".project-create-group")?.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForGroup(pageClient, title) {
+  await waitFor(
+    pageClient,
+    `Array.from(document.querySelectorAll(".project-document-group-header strong")).some((element) => element.textContent === ${JSON.stringify(title)})`,
+    `group ${title}`
+  );
+}
+
+async function moveDocumentToGroup(pageClient, title, groupId) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const select = document.querySelector(${JSON.stringify(`select[aria-label="Group for ${title}"]`)});
+      if (!select) throw new Error("Group selector not found for ${title}.");
+      select.value = ${JSON.stringify(groupId)};
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForDocumentGroup(projectDir, documentId, groupId) {
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    const document = readProjectManifest(projectDir).documents.find(
+      (candidate) => candidate.document_id === documentId
+    );
+    if (document?.group_id === groupId) return;
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${documentId} group ${groupId}.`);
+}
+
+async function toggleGroup(pageClient, title) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
+        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(title)});
+      const button = header?.querySelector(":scope > button");
+      if (!button) throw new Error("Group toggle not found: ${title}");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForGroupExpanded(pageClient, title, expanded) {
+  await waitFor(
+    pageClient,
+    `Array.from(document.querySelectorAll(".project-document-group-header"))
+      .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(title)})
+      ?.querySelector(":scope > button")?.getAttribute("aria-expanded") === ${JSON.stringify(String(expanded))}`,
+    `${title} expanded ${String(expanded)}`
+  );
+}
+
+async function clickNavigatorBookmark(pageClient, title) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = document.querySelector(${JSON.stringify(`button[aria-label="Continue reading in ${title}"]`)});
+      if (!button) throw new Error("Bookmark button not found for ${title}.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function renameGroup(pageClient, currentTitle, nextTitle) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      window.prompt = () => ${JSON.stringify(nextTitle)};
+      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
+        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(currentTitle)});
+      const button = Array.from(header?.querySelectorAll(":scope > div button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === "Rename");
+      if (!button) throw new Error("Group rename button not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function moveDocumentWithinGroup(pageClient, title, direction) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const article = Array.from(document.querySelectorAll(".project-document-item"))
+        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(title)});
+      const button = article?.querySelector(${JSON.stringify(`button[aria-label="Move ${title} ${direction}"]`)});
+      if (!button) throw new Error("Document move button not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function moveGroup(pageClient, title, direction) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
+        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(title)});
+      const button = header?.querySelector(${JSON.stringify(`button[aria-label="Move ${title} group ${direction}"]`)});
+      if (!button) throw new Error("Group move button not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function removeGroup(pageClient, title) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      window.confirm = () => true;
+      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
+        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(title)});
+      const button = Array.from(header?.querySelectorAll(":scope > div button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === "Remove");
+      if (!button) throw new Error("Group remove button not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+function readProjectManifest(projectDir) {
+  return JSON.parse(readFileSync(join(projectDir, ".patchmark", "project.json"), "utf8"));
+}
+
+function captureDocumentData(projectDir) {
+  const manifest = readProjectManifest(projectDir);
+  return Object.fromEntries(
+    manifest.documents.flatMap((document) => [
+      [document.path, readFileSync(join(projectDir, document.path), "utf8")],
+      [
+        `${document.document_id}:comments`,
+        readFileSync(
+          join(projectDir, ".patchmark", "documents", document.document_id, "comments.json"),
+          "utf8"
+        )
+      ],
+      [
+        `${document.document_id}:patches`,
+        readFileSync(
+          join(projectDir, ".patchmark", "documents", document.document_id, "patches.json"),
+          "utf8"
+        )
+      ],
+      [
+        `${document.document_id}:manifest`,
+        readFileSync(
+          join(projectDir, ".patchmark", "documents", document.document_id, "manifest.json"),
+          "utf8"
+        )
+      ]
+    ])
+  );
 }
 
 async function waitFor(pageClient, expression, label) {
@@ -346,10 +641,33 @@ function createDocumentFixture({
     join(store, "manifest.json"),
     `${JSON.stringify({
       schema_version: 1,
+      project_id: "prj_browser",
+      document_id: documentId,
       project_name: "Crust Chant",
       document_file: "document.md",
       created_at: now,
-      updated_at: now
+      updated_at: now,
+      ...(documentId === "doc_summary"
+        ? {
+            reading_bookmark: {
+              format_version: 1,
+              document: {
+                project_id: "prj_browser",
+                document_id: documentId
+              },
+              anchor: {
+                kind: "selected_text",
+                selected_text: "Summary body.",
+                markdown_start_offset: markdown.indexOf("Summary body."),
+                markdown_end_offset:
+                  markdown.indexOf("Summary body.") + "Summary body.".length,
+                anchor_source: "markdown"
+              },
+              created_at: now,
+              updated_at: now
+            }
+          }
+        : {})
     }, null, 2)}\n`
   );
   writeFileSync(join(store, "comments.json"), "[]\n");

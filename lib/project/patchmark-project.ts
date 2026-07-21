@@ -10,10 +10,12 @@ import {
 } from "./document-scoped-identity.ts";
 import {
   addExistingProjectDocument as registerExistingProjectDocument,
+  assignDocumentToGroup,
   archiveRegisteredDocument,
   completePendingProjectMigration,
   convertLegacyProject,
   createProjectId,
+  createDocumentGroup,
   createDocumentScopedDirectoryHandle,
   createProjectDocument as registerCreatedProjectDocument,
   getRegisteredDocument,
@@ -21,6 +23,9 @@ import {
   locateProjectDocument as repairProjectDocumentPath,
   markLegacyConversionReopened,
   readProjectManifest,
+  removeDocumentGroup,
+  renameDocumentGroup,
+  reorderDocumentGroup,
   reorderRegisteredDocument,
   resolveProjectFilePath,
   rollbackPendingProjectMigration,
@@ -28,6 +33,7 @@ import {
   updateDocumentRegistration,
   writeProjectManifestAtomic,
   type PatchmarkDocumentAvailability,
+  type PatchmarkDocumentGroup,
   type PatchmarkDocumentRole,
   type PatchmarkProjectDocumentView,
   type PatchmarkProjectManifestV1,
@@ -631,12 +637,14 @@ export async function convertProjectToMultiDocument(
 
 export async function createNewProjectDocument({
   displayTitle,
+  groupId,
   markdown,
   path,
   project,
   role
 }: {
   displayTitle: string;
+  groupId?: string | null;
   markdown?: string;
   path: string;
   project: PatchmarkProjectHandle;
@@ -648,6 +656,7 @@ export async function createNewProjectDocument({
   const registry = requireProjectManifest(activeProject);
   const result = await registerCreatedProjectDocument({
     displayTitle,
+    groupId,
     manifest: registry,
     markdown,
     path,
@@ -672,11 +681,13 @@ export async function createNewProjectDocument({
 
 export async function addExistingDocumentToProject({
   displayTitle,
+  groupId,
   path,
   project,
   role
 }: {
   displayTitle?: string;
+  groupId?: string | null;
   path: string;
   project: PatchmarkProjectHandle;
   role: PatchmarkDocumentRole;
@@ -687,6 +698,7 @@ export async function addExistingDocumentToProject({
   const registry = requireProjectManifest(activeProject);
   const result = await registerExistingProjectDocument({
     displayTitle,
+    groupId,
     manifest: registry,
     path,
     role,
@@ -794,6 +806,92 @@ export async function moveProjectDocument({
     await commitProjectRegistry(project, next);
   }
   return next;
+}
+
+export async function createProjectDocumentGroup({
+  project,
+  title
+}: {
+  project: PatchmarkProjectHandle;
+  title: string;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = createDocumentGroup(current, title);
+  await commitProjectRegistry(project, next);
+  return next;
+}
+
+export async function renameProjectDocumentGroup({
+  groupId,
+  project,
+  title
+}: {
+  groupId: string;
+  project: PatchmarkProjectHandle;
+  title: string;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = renameDocumentGroup(current, groupId, title);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function moveProjectDocumentGroup({
+  direction,
+  groupId,
+  project
+}: {
+  direction: "up" | "down";
+  groupId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = reorderDocumentGroup(current, groupId, direction);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function moveProjectDocumentToGroup({
+  documentId,
+  groupId,
+  project
+}: {
+  documentId: string;
+  groupId: string | null;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = assignDocumentToGroup(current, documentId, groupId);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function deleteProjectDocumentGroup({
+  groupId,
+  project
+}: {
+  groupId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = removeDocumentGroup(current, groupId);
+  await commitProjectRegistry(project, next);
+  return next;
+}
+
+export function getProjectDocumentGroups(
+  project: PatchmarkProjectHandle
+): PatchmarkDocumentGroup[] {
+  return [...(project.projectManifest?.groups ?? [])].sort(
+    (left, right) =>
+      left.position - right.position || left.created_at.localeCompare(right.created_at)
+  );
 }
 
 export async function archiveProjectDocument({

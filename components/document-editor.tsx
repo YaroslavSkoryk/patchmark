@@ -164,12 +164,15 @@ import {
   archiveProjectDocument,
   canOpenProjectFolder,
   convertProjectToMultiDocument,
+  createProjectDocumentGroup,
   createProjectFromMarkdown,
   createNewProjectDocument,
   createProjectSnapshot,
+  deleteProjectDocumentGroup,
   getActiveProjectDocument,
   getProjectDocumentIdentity,
   getProjectDocumentList,
+  getProjectDocumentGroups,
   getProjectDocumentExportIdentity,
   getProjectDocumentScopeId,
   getProjectTitle,
@@ -177,6 +180,8 @@ import {
   listProjectVersions,
   locateProjectDocument,
   moveProjectDocument,
+  moveProjectDocumentGroup,
+  moveProjectDocumentToGroup,
   openProjectFolder,
   openProjectDocument,
   readProjectVersionMarkdown,
@@ -184,6 +189,7 @@ import {
   readProjectComments,
   readProjectPatches,
   resolveDocumentPathFromFileHandle,
+  renameProjectDocumentGroup,
   restoreProjectDocument,
   restoreProjectLastKnownGood,
   saveProjectState,
@@ -207,7 +213,10 @@ import {
   createVersionRef,
   isDocumentScopeCurrent
 } from "@/lib/project/document-scoped-identity";
-import { type PatchmarkDocumentRole } from "@/lib/project/multi-document-project";
+import {
+  type PatchmarkDocumentGroup,
+  type PatchmarkDocumentRole
+} from "@/lib/project/multi-document-project";
 import {
   CHATGPT_IMPORT_REPAIR_PROMPT,
   CHATGPT_INTERNAL_CITATION_PROMPT_RULES,
@@ -559,6 +568,7 @@ let cachedDocumentLineStartOffsets:
     }
   | undefined;
 const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
+const EMPTY_DOCUMENT_GROUPS: PatchmarkDocumentGroup[] = [];
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -950,6 +960,14 @@ export function DocumentEditor() {
   const readingBookmarkMenuId = activeDocumentKey
     ? `reading-bookmark-action-menu-${encodeURIComponent(activeDocumentKey)}`
     : undefined;
+  const projectGroups = projectHandle
+    ? getProjectDocumentGroups(projectHandle)
+    : EMPTY_DOCUMENT_GROUPS;
+  const activeDocumentGroup = projectHandle?.document?.group_id
+    ? projectGroups.find(
+        (group) => group.group_id === projectHandle.document?.group_id
+      ) ?? null
+    : null;
   continueReadingAtBookmarkRef.current = continueReadingAtBookmark;
 
   useEffect(() => {
@@ -2311,10 +2329,12 @@ export function DocumentEditor() {
 
   async function handleCreateProjectDocument({
     displayTitle,
+    groupId,
     path,
     role
   }: {
     displayTitle: string;
+    groupId?: string | null;
     path: string;
     role: PatchmarkDocumentRole;
   }) {
@@ -2336,6 +2356,7 @@ export function DocumentEditor() {
       }
       const loaded = await createNewProjectDocument({
         displayTitle,
+        groupId,
         path,
         project: activeProject,
         role
@@ -2354,7 +2375,9 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleAddExistingProjectDocument() {
+  async function handleAddExistingProjectDocument(
+    groupId?: string | null
+  ) {
     if (!projectHandle || isSaving) {
       return;
     }
@@ -2388,6 +2411,7 @@ export function DocumentEditor() {
         loadProjectIntoEditor(converted);
       }
       const loaded = await addExistingDocumentToProject({
+        groupId,
         path,
         project: activeProject,
         role: null
@@ -2445,6 +2469,101 @@ export function DocumentEditor() {
       await moveProjectDocument({ direction, documentId, project: projectHandle });
       setProjectDocuments(await getProjectDocumentList(projectHandle));
       setSaveStatus("idle");
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleCreateProjectDocumentGroup(title: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await createProjectDocumentGroup({ project: projectHandle, title });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: `Created ${title} group.` });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleRenameProjectDocumentGroup(
+    groupId: string,
+    title: string
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await renameProjectDocumentGroup({ groupId, project: projectHandle, title });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Renamed document group." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleMoveProjectDocumentGroup(
+    groupId: string,
+    direction: "up" | "down"
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    try {
+      await moveProjectDocumentGroup({ direction, groupId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleMoveProjectDocumentToGroup(
+    documentId: string,
+    groupId: string | null
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await moveProjectDocumentToGroup({ documentId, groupId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Moved document metadata only." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleRemoveProjectDocumentGroup(groupId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await deleteProjectDocumentGroup({ groupId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Removed group. Its documents are now ungrouped."
+      });
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
@@ -5266,14 +5385,20 @@ export function DocumentEditor() {
               isReadingBookmarkBusy
             }
             documents={projectDocuments}
+            groups={projectGroups}
             legacy={!isMultiDocumentProject(projectHandle)}
             projectId={getProjectDocumentIdentity(projectHandle).projectId}
             projectTitle={getProjectTitle(projectHandle)}
-            onAddExisting={() => void handleAddExistingProjectDocument()}
+            onAddExisting={(groupId) =>
+              void handleAddExistingProjectDocument(groupId)
+            }
             onArchive={(documentId) =>
               void handleArchiveProjectDocument(documentId)
             }
             onCreate={(request) => void handleCreateProjectDocument(request)}
+            onCreateGroup={(title) =>
+              void handleCreateProjectDocumentGroup(title)
+            }
             onContinueReading={(documentId) =>
               void handleContinueReadingFromNavigator(documentId)
             }
@@ -5283,8 +5408,20 @@ export function DocumentEditor() {
             onMove={(documentId, direction) =>
               void handleMoveProjectDocument(documentId, direction)
             }
+            onMoveGroup={(groupId, direction) =>
+              void handleMoveProjectDocumentGroup(groupId, direction)
+            }
+            onMoveToGroup={(documentId, groupId) =>
+              void handleMoveProjectDocumentToGroup(documentId, groupId)
+            }
+            onRemoveGroup={(groupId) =>
+              void handleRemoveProjectDocumentGroup(groupId)
+            }
             onRename={(documentId, displayTitle) =>
               void handleUpdateProjectDocument(documentId, { displayTitle })
+            }
+            onRenameGroup={(groupId, title) =>
+              void handleRenameProjectDocumentGroup(groupId, title)
             }
             onRestore={(documentId) =>
               void handleRestoreProjectDocument(documentId)
@@ -5363,6 +5500,9 @@ export function DocumentEditor() {
               {projectHandle ? (
                 <>
                   <span>Project: {getProjectTitle(projectHandle)}</span>
+                  {activeDocumentGroup ? (
+                    <span>Group: {activeDocumentGroup.title}</span>
+                  ) : null}
                   <span>
                     Document:{" "}
                     {projectHandle.document?.display_title ??
@@ -5377,9 +5517,13 @@ export function DocumentEditor() {
                 <span>{isProjectMode ? "Project / document" : "Loaded file"}</span>
                 <strong title={fileName}>
                   {projectHandle
-                    ? `${getProjectTitle(projectHandle)} / ${
+                    ? [
+                        getProjectTitle(projectHandle),
+                        activeDocumentGroup?.title,
                         projectHandle.document?.display_title ?? fileName
-                      }`
+                      ]
+                        .filter(Boolean)
+                        .join(" / ")
                     : fileName}
                 </strong>
                 <DocumentStatus status={documentStatus} />

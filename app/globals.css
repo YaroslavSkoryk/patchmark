@@ -164,6 +164,111 @@ button {
   gap: 8px;
 }
 
+.project-create-group {
+  justify-self: start;
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent-strong);
+  padding: 6px 8px;
+  font: inherit;
+  font-size: 0.76rem;
+  font-weight: 800;
+}
+
+.project-document-group {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+}
+
+.project-document-group + .project-document-group {
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.project-document-group-header {
+  display: grid;
+  gap: 5px;
+}
+
+.project-document-group-header > button {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 5px;
+  align-items: center;
+  width: 100%;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 2px 0;
+  text-align: left;
+}
+
+.project-document-group-header > button strong {
+  overflow: hidden;
+  font-size: 0.76rem;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.project-document-group-header > button small,
+.project-document-group-empty {
+  color: var(--muted);
+  font-size: 0.7rem;
+}
+
+.project-document-group-header > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.project-document-group-header > div button {
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 4px 6px;
+  font: inherit;
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.project-document-group-header .project-document-group-bookmarks {
+  display: grid;
+}
+
+.project-document-group-header .project-document-group-bookmarks button {
+  overflow: hidden;
+  border-color: #c79837;
+  background: #fff8dc;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-document-group-list {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding-left: 8px;
+}
+
+.project-document-group-label {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.project-document-group-empty {
+  margin: 0;
+  padding: 5px 8px;
+}
+
 .project-document-item {
   display: grid;
   gap: 7px;
@@ -243,10 +348,12 @@ button {
 
 .project-document-controls button,
 .project-document-controls select,
+.project-create-group,
 .project-add-existing,
 .project-create-document button,
 .project-create-document input,
 .project-create-document select,
+.project-group-selector select,
 .project-archived-documents button {
   min-width: 0;
   border: 1px solid var(--border);
@@ -266,6 +373,7 @@ button {
 
 .project-document-controls button:disabled,
 .project-document-controls select:disabled,
+.project-create-group:disabled,
 .project-add-existing:disabled,
 .project-create-document button:disabled,
 .project-archived-documents button:disabled {
@@ -299,6 +407,18 @@ button {
   font-weight: 700;
 }
 
+.project-group-selector {
+  display: grid;
+  gap: 4px;
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 700;
+}
+
+.project-group-selector select {
+  width: 100%;
+}
+
 .project-archived-documents > div {
   display: flex;
   gap: 8px;
@@ -306,6 +426,16 @@ button {
   justify-content: space-between;
   margin-top: 8px;
   font-size: 0.8rem;
+}
+
+.project-archived-documents > div > span:first-child {
+  display: grid;
+  min-width: 0;
+}
+
+.project-archived-documents > div small {
+  color: var(--muted);
+  font-size: 0.68rem;
 }
 
 .comments-rail {
