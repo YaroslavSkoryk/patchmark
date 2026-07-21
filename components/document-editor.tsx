@@ -86,6 +86,7 @@ import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
+import { GuidedReviewPreview } from "@/components/guided-review-preview";
 import { ProjectDocumentNavigator } from "@/components/project-document-navigator";
 import {
   MarkdownSourceEditor,
@@ -117,6 +118,7 @@ import {
   type MarkdownFileHandle
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
+import { deriveReviewQueue } from "@/lib/review-queue/review-queue-engine";
 import {
   createReadingBookmarkAnchorAdapter,
   getDocumentReadingBookmark,
@@ -618,6 +620,8 @@ let cachedDocumentLineStartOffsets:
   | undefined;
 const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
 const EMPTY_DOCUMENT_GROUPS: PatchmarkDocumentGroup[] = [];
+const REVIEW_QUEUE_PREVIEW_EXPORTED_AT = "2000-01-01T00:00:00.000Z";
+const REVIEW_QUEUE_PREVIEW_EXPORT_ID = "comment-export-20000101-000000-000";
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -803,6 +807,8 @@ export function DocumentEditor() {
     useState(false);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
+  const [isGuidedReviewPreviewOpen, setIsGuidedReviewPreviewOpen] =
+    useState(false);
   const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
     useState<DocumentLevelExportGuardDialogState | null>(null);
   const [markCommentFocusGuardDialog, setMarkCommentFocusGuardDialog] =
@@ -1081,6 +1087,53 @@ export function DocumentEditor() {
         (group) => group.group_id === projectHandle.document?.group_id
       ) ?? null
     : null;
+  const guidedReviewQueue = useMemo(() => {
+    if (
+      !isGuidedReviewPreviewOpen ||
+      !projectHandle ||
+      !activeDocumentIdentity
+    ) {
+      return null;
+    }
+
+    return deriveReviewQueue({
+      buildPromptPreview: ({ batchType, selectedCommentIds }) => {
+        const commentsById = new Map(
+          comments.map((comment) => [comment.id, comment])
+        );
+        const selectedComments = selectedCommentIds.flatMap((commentId) => {
+          const comment = commentsById.get(commentId);
+          return comment ? [comment] : [];
+        });
+        return buildFocusedCommentsPromptPreview({
+          comments: selectedComments,
+          dedicatedDocumentReview: batchType === "document_level",
+          exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
+          exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
+          headings,
+          markdown,
+          patches,
+          project: projectHandle
+        }).promptText;
+      },
+      comments,
+      documentGeneration:
+        projectHandle.manifest.save_generation ??
+        projectHandle.persistence.generation,
+      documentId: activeDocumentIdentity.documentId,
+      markdown,
+      patches,
+      projectId: activeDocumentIdentity.projectId
+    });
+  }, [
+    activeDocumentIdentity,
+    comments,
+    headings,
+    isGuidedReviewPreviewOpen,
+    markdown,
+    patches,
+    projectHandle
+  ]);
   continueReadingAtBookmarkRef.current = continueReadingAtBookmark;
 
   const persistActiveRecoveryNow = useCallback(async () => {
@@ -2127,6 +2180,7 @@ export function DocumentEditor() {
     setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setIsGuidedReviewPreviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
@@ -3488,7 +3542,7 @@ export function DocumentEditor() {
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
     const fileTimestamp = createFileSafeTimestamp(exportedAt);
-    const exportPayload = createFocusedCommentsExportPayload({
+    const { jsonText, promptText } = buildFocusedCommentsPromptPreview({
       comments: focusedComments,
       dedicatedDocumentReview,
       exportedAt,
@@ -3497,11 +3551,6 @@ export function DocumentEditor() {
       markdown,
       patches,
       project: projectHandle
-    });
-    const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
-    const promptText = createFocusedCommentsChatGptPrompt(jsonText, {
-      dedicatedDocumentReview,
-      observedAt: exportedAt.slice(0, 10)
     });
     const fileNamePrefix = dedicatedDocumentReview
       ? "document-comment"
@@ -6245,6 +6294,7 @@ export function DocumentEditor() {
     setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setIsGuidedReviewPreviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
@@ -6441,6 +6491,21 @@ export function DocumentEditor() {
               onClick={handleOpenChatGptImportDialog}
             >
               Import ChatGPT Response
+            </button>
+            <button
+              type="button"
+              disabled={
+                !projectHandle ||
+                isSaving ||
+                isCommentBusy ||
+                isProjectDataLoading ||
+                isProjectRecoveryReadOnly ||
+                isReanchorMode ||
+                projectHandle.documentAvailability === "missing"
+              }
+              onClick={() => setIsGuidedReviewPreviewOpen(true)}
+            >
+              Guided Review Preview
             </button>
           </div>
 
@@ -7244,6 +7309,18 @@ export function DocumentEditor() {
             </div>
           </section>
         </div>
+      ) : null}
+
+      {isGuidedReviewPreviewOpen && guidedReviewQueue && projectHandle ? (
+        <GuidedReviewPreview
+          comments={comments}
+          documentTitle={
+            projectHandle.document?.display_title ??
+            projectHandle.manifest.project_name
+          }
+          onClose={() => setIsGuidedReviewPreviewOpen(false)}
+          queue={guidedReviewQueue}
+        />
       ) : null}
 
       {chatGptPromptDialog ? (
@@ -14916,6 +14993,45 @@ function createChatGptImportSummaryMessage({
   }
 
   return summary.join(" ");
+}
+
+function buildFocusedCommentsPromptPreview({
+  comments,
+  dedicatedDocumentReview,
+  exportedAt,
+  exportId,
+  headings,
+  markdown,
+  patches,
+  project
+}: {
+  comments: PatchmarkComment[];
+  dedicatedDocumentReview: boolean;
+  exportedAt: string;
+  exportId: string;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+}): { jsonText: string; promptText: string } {
+  const exportPayload = createFocusedCommentsExportPayload({
+    comments,
+    dedicatedDocumentReview,
+    exportedAt,
+    exportId,
+    headings,
+    markdown,
+    patches,
+    project
+  });
+  const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
+  return {
+    jsonText,
+    promptText: createFocusedCommentsChatGptPrompt(jsonText, {
+      dedicatedDocumentReview,
+      observedAt: exportedAt.slice(0, 10)
+    })
+  };
 }
 
 function createFocusedCommentsExportPayload({

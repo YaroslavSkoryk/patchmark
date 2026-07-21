@@ -135,3 +135,9 @@ Multi-document switching uses a measured save-before-switch critical path,
 target-only loading, batched editor initialization, and development-only phase
 diagnostics. See
 [`docs/multi-document-switching-performance.md`](docs/multi-document-switching-performance.md).
+
+Guided Review Phase 1 adds a deterministic, document-scoped review queue and a
+read-only dry-run preview. It proposes the next follow-up, whole-document, or
+same-H2 comment batch without marking, exporting, persisting, deferring, or
+resolving anything. See
+[`docs/guided-review-phase-1-review-queue.md`](docs/guided-review-phase-1-review-queue.md).
