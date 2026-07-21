@@ -77,6 +77,8 @@ import {
   type CommentAffordanceDirection,
   type CommentAffordanceRect
 } from "@/lib/comments/comment-selection-affordance";
+import { getWorkspaceRelativePreferredTop } from "@/lib/comments/floating-comment-layout";
+import { findUniqueScopedVisualSelectionMatch } from "@/lib/comments/visual-selection-anchor";
 import {
   createVisualAnchorSearchTextCandidates,
   createVisualTableAnchorProjection,
@@ -243,6 +245,7 @@ type SelectedCommentAnchorDraftResult = {
 type CommentContextMenuState = {
   defaultHeadingLine: number | null;
   selectedDraft: SelectedCommentAnchorDraft | null;
+  selectedTextPositionTop: number | null;
   selectionHelp: string | null;
   x: number;
   y: number;
@@ -4029,13 +4032,13 @@ export function DocumentEditor() {
             container: editorDocumentRef.current,
             markdown
           });
-    const selectedDraft = selectionResult.draft;
+    const initialSelectedDraft = selectionResult.draft;
     const headingForSelection =
-      typeof selectedDraft?.markdownStartOffset === "number"
+      typeof initialSelectedDraft?.markdownStartOffset === "number"
         ? getHeadingContainingOffset(
             markdown,
             headings,
-            selectedDraft.markdownStartOffset
+            initialSelectedDraft.markdownStartOffset
           )
         : mode === "visual"
           ? findVisualHeadingForPoint({
@@ -4044,6 +4047,26 @@ export function DocumentEditor() {
               pointY: event.clientY
             }) ?? defaultCommentHeading
           : defaultCommentHeading;
+    const selectedDraft =
+      mode === "visual" && headingForSelection
+        ? scopeVisualSelectionDraftToHeading({
+            draft: initialSelectedDraft,
+            heading: headingForSelection,
+            headings,
+            markdown
+          })
+        : initialSelectedDraft;
+    const workspaceRect = documentWorkspaceRef.current?.getBoundingClientRect();
+    const selectedTextPositionTop =
+      mode === "visual" &&
+      selectedDraft &&
+      selectionResult.affordanceRect &&
+      workspaceRect
+        ? getWorkspaceRelativePreferredTop(
+            selectionResult.affordanceRect.top,
+            workspaceRect.top
+          )
+        : null;
 
     if (mode === "visual") {
       setVisualSelectionDraft(selectedDraft);
@@ -4059,6 +4082,7 @@ export function DocumentEditor() {
       defaultHeadingLine: headingForSelection?.line ?? null,
       selectionHelp: selectionResult.help,
       selectedDraft,
+      selectedTextPositionTop,
       x: menuPosition.x,
       y: menuPosition.y
     });
@@ -4073,11 +4097,15 @@ export function DocumentEditor() {
       commentContextMenu.selectedDraft?.anchorSource === "visual"
         ? commentContextMenu.selectedDraft
         : null;
-    const positionTop = measurePendingCommentTop({
-      scope,
-      selectedDraft: commentContextMenu.selectedDraft,
-      targetHeadingLine: commentContextMenu.defaultHeadingLine
-    });
+    const positionTop =
+      scope === "selected_text" &&
+      commentContextMenu.selectedTextPositionTop !== null
+        ? commentContextMenu.selectedTextPositionTop
+        : measurePendingCommentTop({
+            scope,
+            selectedDraft: commentContextMenu.selectedDraft,
+            targetHeadingLine: commentContextMenu.defaultHeadingLine
+          });
 
     setVisualSelectionDraft(
       selectedDraft
@@ -13308,6 +13336,70 @@ function createVisualSelectionDraftResult({
         : snapshot.selectedText
     },
     help: null
+  };
+}
+
+function scopeVisualSelectionDraftToHeading({
+  draft,
+  heading,
+  headings,
+  markdown
+}: {
+  draft: SelectedCommentAnchorDraft | null;
+  heading: ReturnType<typeof parseMarkdownHeadings>[number];
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+}): SelectedCommentAnchorDraft | null {
+  if (
+    !draft ||
+    draft.anchorSource !== "visual" ||
+    typeof draft.anchorContext.markdown_start_offset === "number"
+  ) {
+    return draft;
+  }
+
+  const contextMatches = dedupeTextMatches([
+    ...findExactTextMatches(markdown, draft.anchorContext.plain_text),
+    ...findMarkdownPlainTextMatches(markdown, draft.anchorContext.plain_text)
+  ]);
+  const scopedContextMatch = findUniqueScopedVisualSelectionMatch(
+    contextMatches,
+    getSectionRange(markdown, headings, heading)
+  );
+
+  if (!scopedContextMatch) {
+    return draft;
+  }
+
+  const anchorContext: PatchmarkSelectedTextAnchorContext = {
+    ...draft.anchorContext,
+    markdown_text: markdown.slice(
+      scopedContextMatch.start,
+      scopedContextMatch.end
+    ),
+    markdown_start_offset: scopedContextMatch.start,
+    markdown_end_offset: scopedContextMatch.end
+  };
+  const selectedOffsets = findSelectedMarkdownOffsetsFromAnchorContext(
+    anchorContext,
+    draft.selectedText
+  );
+  const markdownSelectionRange = selectedOffsets
+    ? expandMarkdownRangeForVisibleSelection({
+        markdown,
+        range: selectedOffsets,
+        selectedVisibleText: draft.selectedText
+      })
+    : null;
+
+  return {
+    ...draft,
+    anchorContext,
+    markdownEndOffset: markdownSelectionRange?.end,
+    markdownStartOffset: markdownSelectionRange?.start,
+    selectedText: markdownSelectionRange
+      ? markdown.slice(markdownSelectionRange.start, markdownSelectionRange.end)
+      : draft.selectedText
   };
 }
 

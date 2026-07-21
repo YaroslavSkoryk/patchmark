@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import {
   createFloatingCommentLayout,
-  getStageRelativePreferredTop
+  getStageRelativePreferredTop,
+  getWorkspaceRelativePreferredTop
 } from "../lib/comments/floating-comment-layout.ts";
 
 const baseItems = [
@@ -132,6 +133,8 @@ function assertPositionsEqual(actual, expected) {
   assert.equal(getStageRelativePreferredTop(720, 96), 624);
   assert.equal(getStageRelativePreferredTop(40, 96), -56);
   assert.equal(getStageRelativePreferredTop(-120, 96), -216);
+  assert.equal(getWorkspaceRelativePreferredTop(463, -20833), 21296);
+  assert.equal(getWorkspaceRelativePreferredTop(-120, 40), 0);
 }
 
 {

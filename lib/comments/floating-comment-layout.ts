@@ -75,6 +75,16 @@ export function getStageRelativePreferredTop(
   return roundLayoutValue(workspaceRelativeTop - floatingStageOffsetTop);
 }
 
+export function getWorkspaceRelativePreferredTop(
+  anchorViewportTop: number,
+  workspaceViewportTop: number
+): number {
+  return Math.max(
+    0,
+    roundLayoutValue(anchorViewportTop - workspaceViewportTop)
+  );
+}
+
 function roundLayoutValue(value: number): number {
   return Math.round(value * 100) / 100;
 }
