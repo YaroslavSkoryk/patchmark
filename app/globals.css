@@ -578,6 +578,30 @@ button {
   font-weight: 700;
 }
 
+.document-switch-loading {
+  align-items: center;
+  background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--accent) 34%, var(--border));
+  border-radius: 10px;
+  color: var(--text);
+  display: flex;
+  font-size: 0.9rem;
+  font-weight: 650;
+  margin: 0 1rem 0.75rem;
+  min-height: 2.5rem;
+  padding: 0.65rem 0.85rem;
+}
+
+.project-document-item[data-requested="true"] {
+  outline: 2px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+.project-document-opening {
+  color: var(--accent);
+  font-weight: 700;
+}
+
 .document-save-banner-error {
   background: #fff0ea;
   color: #8d2f18;

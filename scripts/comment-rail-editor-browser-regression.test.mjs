@@ -492,6 +492,8 @@ function createProjectPickerShim({
     const filePaths = new Set(${JSON.stringify(files)});
     const directoryPaths = new Set(${JSON.stringify(directories)});
     const overrides = new Map();
+    const readLog = [];
+    const lastModifiedByPath = new Map();
     const writeLog = [];
     const writeControls = {
       delayByPath: {},
@@ -527,6 +529,7 @@ function createProjectPickerShim({
       }
 
       async getFile() {
+        const startedAt = performance.now();
         const text = overrides.has(this.path)
           ? overrides.get(this.path)
           : await fetch(${JSON.stringify(baseUrl)} + "/file?path=" + encodeURIComponent(this.path)).then((response) => {
@@ -537,7 +540,16 @@ function createProjectPickerShim({
               return response.text();
             });
 
-        return new File([text], this.name, { type: this.name.endsWith(".json") ? "application/json" : "text/markdown" });
+        readLog.push({
+          path: this.path,
+          bytes: new TextEncoder().encode(text).byteLength,
+          startedAt,
+          completedAt: performance.now()
+        });
+        return new File([text], this.name, {
+          lastModified: lastModifiedByPath.get(this.path) ?? 1,
+          type: this.name.endsWith(".json") ? "application/json" : "text/markdown"
+        });
       }
 
       async createWritable() {
@@ -616,6 +628,7 @@ function createProjectPickerShim({
                 }
               });
               overrides.set(path, nextContent);
+              lastModifiedByPath.set(path, Date.now() + sequence);
               filePaths.add(path);
               const parent = path.split("/").slice(0, -1).join("/");
 
@@ -761,6 +774,7 @@ function createProjectPickerShim({
     } catch {}
 
     window.__patchmarkFixtureWrites = overrides;
+    window.__patchmarkFixtureReadLog = readLog;
     window.__patchmarkFixtureWriteLog = writeLog;
     window.__patchmarkFixtureWriteControls = writeControls;
     window.__patchmarkFixtureWriteStats = writeStats;
@@ -773,6 +787,7 @@ function createProjectPickerShim({
         if (!response.ok) throw new Error("Could not set fixture file: " + normalizedPath);
       });
       overrides.set(normalizedPath, String(content));
+      lastModifiedByPath.set(normalizedPath, Date.now());
       filePaths.add(normalizedPath);
       return true;
     };

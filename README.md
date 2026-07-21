@@ -130,3 +130,8 @@ Project resume and document-scoped crash recovery reopen the authoritative local
 project and bind unsaved Markdown only to a verified local project instance,
 `project_id`, and `document_id`. Legacy filename-only drafts are quarantined. See
 [`docs/project-resume-and-document-recovery.md`](docs/project-resume-and-document-recovery.md).
+
+Multi-document switching uses a measured save-before-switch critical path,
+target-only loading, batched editor initialization, and development-only phase
+diagnostics. See
+[`docs/multi-document-switching-performance.md`](docs/multi-document-switching-performance.md).

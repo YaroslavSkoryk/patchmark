@@ -68,6 +68,12 @@ import {
   type PatchmarkSourceReference,
   type PatchmarkVersionEntry
 } from "./project-types.ts";
+import {
+  incrementDocumentSwitchPerformanceCounter,
+  markDocumentSwitchPerformance,
+  recordDocumentSwitchPerformanceDuration,
+  updateDocumentSwitchPerformanceMetadata
+} from "../performance/document-switch-performance.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
@@ -740,12 +746,14 @@ export async function resolveDocumentPathFromFileHandle(
 
 export async function openProjectDocument(
   project: PatchmarkProjectHandle,
-  documentId: string
+  documentId: string,
+  options: { performanceOperationId?: string | null } = {}
 ): Promise<LoadedPatchmarkProject> {
   return openRegisteredProjectDocument(
     getAuthoritativeProjectDirectory(project),
     requireProjectManifest(project),
-    documentId
+    documentId,
+    { performanceOperationId: options.performanceOperationId }
   );
 }
 
@@ -754,24 +762,50 @@ export async function switchProjectDocument({
   documentId,
   markdown,
   patches,
-  project
+  project,
+  performanceOperationId
 }: {
   comments: PatchmarkComment[];
   documentId: string;
   markdown: string;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  performanceOperationId?: string | null;
 }): Promise<LoadedPatchmarkProject> {
   if (project.documentAvailability !== "missing") {
-    await saveProjectState({
+    const persistenceStartedAt = performance.now();
+    const result = await saveProjectState({
       comments,
       markdown,
       patches,
       project,
       reason: "switch_document"
     });
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "persist_current_authoritative_state",
+      performance.now() - persistenceStartedAt
+    );
+    updateDocumentSwitchPerformanceMetadata(performanceOperationId, {
+      changedFiles: result.changedFiles,
+      saveStatus: result.status
+    });
+    incrementDocumentSwitchPerformanceCounter(
+      performanceOperationId,
+      "authoritative_bytes_written",
+      result.bytesWritten
+    );
+    incrementDocumentSwitchPerformanceCounter(
+      performanceOperationId,
+      "serialized_files",
+      result.serializedFiles.length
+    );
   }
-  return openProjectDocument(project, documentId);
+  markDocumentSwitchPerformance(
+    performanceOperationId,
+    "current_authoritative_state_persisted"
+  );
+  return openProjectDocument(project, documentId, { performanceOperationId });
 }
 
 export async function updateProjectDocumentMetadata({
@@ -1201,6 +1235,9 @@ export async function readProjectVersionMarkdown(
 export async function readProjectComments(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkComment[]> {
+  if (project.persistence.commentsReference) {
+    return project.persistence.commentsReference;
+  }
   const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
 
   let commentsFileHandle: MarkdownFileHandle;
@@ -1255,10 +1292,12 @@ export async function readProjectComments(
   });
   project.persistence.commentsReference = comments;
   project.persistence.commentsRaw = undefined;
-  project.persistence.files.comments = await createPersistedFileCommit(
-    ".patchmark/comments.json",
-    rawComments
-  );
+  if (!project.persistence.files.comments) {
+    project.persistence.files.comments = await createPersistedFileCommit(
+      ".patchmark/comments.json",
+      rawComments
+    );
+  }
   return comments;
 }
 
@@ -1305,6 +1344,9 @@ export async function writeProjectContextPack({
 export async function readProjectPatches(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkPatch[]> {
+  if (project.persistence.patchesReference) {
+    return project.persistence.patchesReference;
+  }
   const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
 
   let patchesFileHandle: MarkdownFileHandle;
@@ -1357,10 +1399,12 @@ export async function readProjectPatches(
   });
   project.persistence.patchesReference = patches;
   project.persistence.patchesRaw = undefined;
-  project.persistence.files.patches = await createPersistedFileCommit(
-    ".patchmark/patches.json",
-    rawPatches
-  );
+  if (!project.persistence.files.patches) {
+    project.persistence.files.patches = await createPersistedFileCommit(
+      ".patchmark/patches.json",
+      rawPatches
+    );
+  }
   return patches;
 }
 
@@ -2002,22 +2046,33 @@ async function openRegisteredProjectDocument(
   root: PatchmarkDirectoryHandle,
   projectManifest: PatchmarkProjectManifestV1,
   documentId: string,
-  options: { readOnly?: boolean } = {}
+  options: {
+    performanceOperationId?: string | null;
+    readOnly?: boolean;
+  } = {}
 ): Promise<LoadedPatchmarkProject> {
+  const operationId = options.performanceOperationId;
+  markDocumentSwitchPerformance(operationId, "target_open_started");
   const document = getRegisteredDocument(projectManifest, documentId);
-  const documentView = (await listProjectDocuments(
-    root as ProjectDirectoryHandle,
-    projectManifest
-  )).find((candidate) => candidate.document_id === documentId);
-  if (!documentView) {
-    throw new Error(`Document ${documentId} is not registered in this project.`);
-  }
+  const ownershipStartedAt = performance.now();
   const scopedDirectory = (await createDocumentScopedDirectoryHandle(
     root as ProjectDirectoryHandle,
     document
   )) as PatchmarkDirectoryHandle;
+  recordDocumentSwitchPerformanceDuration(
+    operationId,
+    "validate_target_ownership",
+    performance.now() - ownershipStartedAt
+  );
+  markDocumentSwitchPerformance(operationId, "target_ownership_validated");
 
-  if (documentView.availability === "missing") {
+  let documentFile: MarkdownFileHandle;
+  try {
+    documentFile = await scopedDirectory.getFileHandle(documentFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
     const missing = await createMissingDocumentProject({
       document,
       projectManifest,
@@ -2028,7 +2083,6 @@ async function openRegisteredProjectDocument(
     return missing;
   }
 
-  const documentFile = await scopedDirectory.getFileHandle(documentFileName);
   const metadataDirectory = await scopedDirectory.getDirectoryHandle(
     metadataDirectoryName
   );
@@ -2037,14 +2091,36 @@ async function openRegisteredProjectDocument(
     manifestFileName,
     `Document store ${documentId} is missing manifest.json.`
   );
+  const manifestReadStartedAt = performance.now();
+  const targetManifestText = await readTextFile(documentManifestFile);
+  recordDocumentSwitchPerformanceDuration(
+    operationId,
+    "read_target_manifest",
+    performance.now() - manifestReadStartedAt
+  );
+  const markdownReadStartedAt = performance.now();
+  const targetMarkdown = await readTextFile(documentFile);
+  recordDocumentSwitchPerformanceDuration(
+    operationId,
+    "read_target_markdown",
+    performance.now() - markdownReadStartedAt
+  );
+  incrementDocumentSwitchPerformanceCounter(
+    operationId,
+    "bytes_read",
+    new TextEncoder().encode(targetManifestText).byteLength +
+      new TextEncoder().encode(targetMarkdown).byteLength
+  );
+  markDocumentSwitchPerformance(operationId, "target_markdown_read");
   const loaded = await createOpenedProjectHandle({
     directoryHandle: scopedDirectory,
     documentIdentity: createProjectDocumentIdentity(
       projectManifest.project_id,
       document.document_id
     ),
-    manifestText: await readTextFile(documentManifestFile),
-    markdown: await readTextFile(documentFile),
+    manifestText: targetManifestText,
+    markdown: targetMarkdown,
+    performanceOperationId: operationId,
     readOnly: options.readOnly
   });
   applyMultiDocumentContext({
@@ -2445,14 +2521,17 @@ async function createOpenedProjectHandle({
   documentIdentity,
   manifestText,
   markdown,
+  performanceOperationId,
   readOnly = false
 }: {
   directoryHandle: PatchmarkDirectoryHandle;
   documentIdentity?: ProjectDocumentIdentity;
   manifestText: string;
   markdown: string;
+  performanceOperationId?: string | null;
   readOnly?: boolean;
 }): Promise<LoadedPatchmarkProject> {
+  const currentStoreStartedAt = performance.now();
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
   );
@@ -2468,6 +2547,25 @@ async function createOpenedProjectHandle({
   const commitText = await readOptionalTextFile(
     metadataDirectoryHandle,
     saveCommitFileName
+  );
+  const currentStoreReadDuration = performance.now() - currentStoreStartedAt;
+  recordDocumentSwitchPerformanceDuration(
+    performanceOperationId,
+    "read_target_current_store",
+    currentStoreReadDuration
+  );
+  const reviewBytes =
+    new TextEncoder().encode(commentsText ?? "").byteLength +
+    new TextEncoder().encode(patchesText ?? "").byteLength +
+    new TextEncoder().encode(commitText ?? "").byteLength;
+  incrementDocumentSwitchPerformanceCounter(
+    performanceOperationId,
+    "bytes_read",
+    reviewBytes
+  );
+  markDocumentSwitchPerformance(
+    performanceOperationId,
+    "target_current_store_read"
   );
   const currentDetails: string[] = [];
   const currentManifest = parseManifestForValidation(
@@ -2532,6 +2630,7 @@ async function createOpenedProjectHandle({
   }
 
   if (currentManifest && currentTexts && currentCommit) {
+    const validationStartedAt = performance.now();
     await validateCommittedProjectTexts(
       currentTexts,
       currentCommit,
@@ -2541,6 +2640,20 @@ async function createOpenedProjectHandle({
       currentManifest,
       currentCommit,
       currentDetails
+    );
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "validate_target_integrity",
+      performance.now() - validationStartedAt
+    );
+    incrementDocumentSwitchPerformanceCounter(
+      performanceOperationId,
+      "content_hashes_computed",
+      4
+    );
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "target_integrity_validated"
     );
 
     if (currentDetails.length === 0) {

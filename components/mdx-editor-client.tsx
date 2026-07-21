@@ -26,35 +26,68 @@ import {
   listsPlugin,
   markdownShortcutPlugin,
   quotePlugin,
+  realmPlugin,
+  rootEditor$,
+  setMarkdown$,
   tablePlugin,
   thematicBreakPlugin,
   toolbarPlugin
 } from "@mdxeditor/editor";
+import { CLEAR_HISTORY_COMMAND } from "lexical";
 import { normalizeMarkdownForVisualEditor } from "@/lib/markdown/normalize-for-visual-editor";
 import {
   getLatestEditPerformanceOperationId,
   incrementEditPerformanceCounter,
   markEditPerformanceOperation
 } from "@/lib/performance/edit-performance";
+import {
+  getLatestDocumentSwitchPerformanceOperationId,
+  incrementDocumentSwitchPerformanceCounter,
+  markDocumentSwitchPerformance,
+  recordDocumentSwitchPerformanceDuration
+} from "@/lib/performance/document-switch-performance";
 
 type MdxEditorClientProps = {
   markdown: string;
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
+  resetKey: number;
 };
+
+const clearHistoryAfterDocumentResetPlugin = realmPlugin({
+  init(realm) {
+    realm.sub(setMarkdown$, () => {
+      const editor = realm.getValue(rootEditor$);
+      queueMicrotask(() => {
+        editor?.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+      });
+    });
+  }
+});
 
 export function MdxEditorClient({
   markdown,
   onMarkdownChange,
-  readOnly = false
+  readOnly = false,
+  resetKey
 }: MdxEditorClientProps) {
   const visualMarkdown = useMemo(
-    () => normalizeMarkdownForVisualEditor(markdown),
+    () => {
+      const startedAt = performance.now();
+      const normalized = normalizeMarkdownForVisualEditor(markdown);
+      recordDocumentSwitchPerformanceDuration(
+        getLatestDocumentSwitchPerformanceOperationId(),
+        "parse_and_normalize_visual_markdown",
+        performance.now() - startedAt
+      );
+      return normalized;
+    },
     [markdown]
   );
   const editorRef = useRef<MDXEditorMethods>(null);
   const editorShellRef = useRef<HTMLDivElement>(null);
   const lastSyncedMarkdownRef = useRef(visualMarkdown);
+  const lastResetKeyRef = useRef(resetKey);
   const renderErrorTimerRef = useRef<number | null>(null);
   const renderVerificationTimerRef = useRef<number | null>(null);
   const isMountedRef = useRef(false);
@@ -82,7 +115,8 @@ export function MdxEditorClient({
   useEffect(() => {
     if (
       !editorRef.current ||
-      visualMarkdown === lastSyncedMarkdownRef.current
+      (visualMarkdown === lastSyncedMarkdownRef.current &&
+        resetKey === lastResetKeyRef.current)
     ) {
       return;
     }
@@ -90,16 +124,24 @@ export function MdxEditorClient({
     try {
       editorRef.current.setMarkdown(visualMarkdown);
       lastSyncedMarkdownRef.current = visualMarkdown;
+      lastResetKeyRef.current = resetKey;
       setRenderError(null);
     } catch (error) {
       setRenderError(normalizeVisualModeError(error));
     }
-  }, [visualMarkdown]);
+  }, [resetKey, visualMarkdown]);
 
   useEffect(() => {
     const operationId = getLatestEditPerformanceOperationId();
     incrementEditPerformanceCounter(operationId, "mdx_editor_effect_count");
     markEditPerformanceOperation(operationId, "mdx_editor_settled");
+    const switchOperationId =
+      getLatestDocumentSwitchPerformanceOperationId();
+    incrementDocumentSwitchPerformanceCounter(
+      switchOperationId,
+      "mdx_editor_effect_count"
+    );
+    markDocumentSwitchPerformance(switchOperationId, "editor_initialized");
   }, [visualMarkdown]);
 
   useEffect(() => {
@@ -196,6 +238,11 @@ export function MdxEditorClient({
       return;
     }
 
+    if (initialMarkdownNormalize) {
+      lastSyncedMarkdownRef.current = visualMarkdown;
+      return;
+    }
+
     lastSyncedMarkdownRef.current = nextMarkdown;
     queuedRenderErrorRef.current = null;
     setRenderError(null);
@@ -241,6 +288,7 @@ export function MdxEditorClient({
             headingsPlugin(),
             listsPlugin(),
             quotePlugin(),
+            clearHistoryAfterDocumentResetPlugin(),
             thematicBreakPlugin(),
             frontmatterPlugin(),
             tablePlugin(),

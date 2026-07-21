@@ -294,6 +294,14 @@ import {
   startEditPerformanceOperation,
   updateEditPerformanceMetadata
 } from "@/lib/performance/edit-performance";
+import {
+  finishDocumentSwitchPerformanceOperation,
+  incrementDocumentSwitchPerformanceCounter,
+  markDocumentSwitchPerformance,
+  recordDocumentSwitchPerformanceDuration,
+  startDocumentSwitchPerformanceOperation,
+  updateDocumentSwitchPerformanceMetadata
+} from "@/lib/performance/document-switch-performance";
 
 type EditorMode = "visual" | "markdown";
 type ReadingBookmarkNavigationRequest = {
@@ -645,6 +653,8 @@ export function DocumentEditor() {
   const [projectDocuments, setProjectDocuments] = useState<
     PatchmarkProjectDocumentListItem[]
   >([]);
+  const projectDocumentsRef = useRef(projectDocuments);
+  projectDocumentsRef.current = projectDocuments;
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
   const [legacyUnscopedDrafts, setLegacyUnscopedDrafts] = useState<
     LegacyUnscopedDocumentDraft[]
@@ -675,6 +685,8 @@ export function DocumentEditor() {
   const [projectRecoveryDocumentIds, setProjectRecoveryDocumentIds] = useState<
     string[]
   >([]);
+  const projectRecoveryDocumentIdsRef = useRef(projectRecoveryDocumentIds);
+  projectRecoveryDocumentIdsRef.current = projectRecoveryDocumentIds;
   const [mode, setMode] = useState<EditorMode>("visual");
   const modeRef = useRef<EditorMode>(mode);
   modeRef.current = mode;
@@ -687,6 +699,8 @@ export function DocumentEditor() {
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
   const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
+  const isProjectDataLoadingRef = useRef(isProjectDataLoading);
+  isProjectDataLoadingRef.current = isProjectDataLoading;
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
   const [readingBookmarkBusyDocumentKey, setReadingBookmarkBusyDocumentKey] =
@@ -711,6 +725,13 @@ export function DocumentEditor() {
     ((request: ReadingBookmarkNavigationRequest) => Promise<void>) | null
   >(null);
   const documentSwitchRequestRef = useRef(0);
+  const [requestedProjectDocumentId, setRequestedProjectDocumentId] = useState<
+    string | null
+  >(null);
+  const pendingDocumentSwitchPerformanceRef = useRef<{
+    operationId: string | null;
+    targetDocumentId: string;
+  } | null>(null);
   const [documentActiveCommentState, setDocumentActiveCommentState] =
     useState<DocumentScopedActiveCommentState | null>(null);
   const activeCommentState = useMemo<ActiveCommentState>(
@@ -803,7 +824,24 @@ export function DocumentEditor() {
   >(null);
   const pendingEditPerformanceOperationIdRef = useRef<string | null>(null);
 
-  const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
+  incrementDocumentSwitchPerformanceCounter(
+    pendingDocumentSwitchPerformanceRef.current?.operationId,
+    "react_render_count"
+  );
+  const headings = useMemo(() => {
+    const startedAt = performance.now();
+    const parsedHeadings = parseMarkdownHeadings(markdown);
+    recordDocumentSwitchPerformanceDuration(
+      pendingDocumentSwitchPerformanceRef.current?.operationId,
+      "build_document_outline",
+      performance.now() - startedAt
+    );
+    markDocumentSwitchPerformance(
+      pendingDocumentSwitchPerformanceRef.current?.operationId,
+      "document_outline_built"
+    );
+    return parsedHeadings;
+  }, [markdown]);
   const deferredPatchReviewMarkdown = useDeferredValue(markdown);
   const markdownSelectionDraft = useMemo(
     () => createMarkdownSelectionDraft(markdown, markdownSelection),
@@ -845,6 +883,11 @@ export function DocumentEditor() {
       recordEditPerformanceDuration(
         pendingEditPerformanceOperationIdRef.current,
         "comment_anchor_summaries",
+        performance.now() - startedAt
+      );
+      recordDocumentSwitchPerformanceDuration(
+        pendingDocumentSwitchPerformanceRef.current?.operationId,
+        "resolve_comment_anchors",
         performance.now() - startedAt
       );
       return summaries;
@@ -1127,99 +1170,6 @@ export function DocumentEditor() {
       .then(setRecentProject)
       .catch(() => undefined);
   }, [localProjectInstanceId, projectDocuments, projectHandle]);
-
-  useEffect(() => {
-    let isCancelled = false;
-    let firstNavigationFrameId: number | null = null;
-    let secondNavigationFrameId: number | null = null;
-
-    if (!projectHandle) {
-      setIsProjectDataLoading(false);
-      setProjectDocuments([]);
-      setVersionEntries([]);
-      setComments([]);
-      setPatches([]);
-      setDocumentActiveCommentState(null);
-      setSelectedPatchId(null);
-      setSelectedPatchGroupId(null);
-      setPatchGroupListDialog(null);
-      setPatchReviewCommentScopeId(null);
-      setPatchReviewGroupScopeId(null);
-      setCommentsError(null);
-      return;
-    }
-
-    setIsProjectDataLoading(true);
-    const documentDataPromise =
-      projectHandle.documentAvailability === "missing"
-        ? Promise.resolve([
-            [],
-            [],
-            []
-          ] as [PatchmarkVersionEntry[], PatchmarkComment[], PatchmarkPatch[]])
-        : Promise.all([
-            listProjectVersions(projectHandle),
-            readProjectComments(projectHandle),
-            readProjectPatches(projectHandle)
-          ]);
-    void Promise.all([
-      getProjectDocumentList(projectHandle),
-      documentDataPromise
-    ])
-      .then(([documents, [versions, projectComments, projectPatches]]) => {
-        if (!isCancelled) {
-          setProjectDocuments(documents);
-          setVersionEntries(versions);
-          setComments(projectComments);
-          setPatches(projectPatches);
-          setCommentsError(null);
-          setIsProjectDataLoading(false);
-          const loadedIdentity = getProjectDocumentIdentity(projectHandle);
-          const loadedDocumentKey = createProjectDocumentKey(loadedIdentity);
-          if (
-            pendingReadingBookmarkNavigationRef.current === loadedDocumentKey
-          ) {
-            pendingReadingBookmarkNavigationRef.current = null;
-            const loadedBookmark = getDocumentReadingBookmark({
-              document: loadedIdentity,
-              manifest: projectHandle.manifest
-            });
-            firstNavigationFrameId = window.requestAnimationFrame(() => {
-              firstNavigationFrameId = null;
-              secondNavigationFrameId = window.requestAnimationFrame(() => {
-                secondNavigationFrameId = null;
-                void continueReadingAtBookmarkRef.current?.({
-                  bookmark: loadedBookmark,
-                  documentKey: loadedDocumentKey,
-                  markdown: projectHandle.persistence.documentText,
-                  mode: modeRef.current,
-                  patches: projectPatches
-                });
-              });
-            });
-          }
-        }
-      })
-      .catch((error) => {
-        if (!isCancelled) {
-          setProjectDocuments([]);
-          setComments([]);
-          setPatches([]);
-          setCommentsError(getProjectErrorMessage(error));
-          setIsProjectDataLoading(false);
-        }
-      });
-
-    return () => {
-      isCancelled = true;
-      if (firstNavigationFrameId !== null) {
-        window.cancelAnimationFrame(firstNavigationFrameId);
-      }
-      if (secondNavigationFrameId !== null) {
-        window.cancelAnimationFrame(secondNavigationFrameId);
-      }
-    };
-  }, [projectHandle]);
 
   useEffect(
     () => () => {
@@ -1561,6 +1511,45 @@ export function DocumentEditor() {
     return () => window.cancelAnimationFrame(animationFrameId);
   }, [comments, markdown]);
 
+  useLayoutEffect(() => {
+    const pendingSwitch = pendingDocumentSwitchPerformanceRef.current;
+
+    if (
+      !pendingSwitch ||
+      !projectHandle ||
+      getProjectDocumentScopeId(projectHandle) !==
+        pendingSwitch.targetDocumentId
+    ) {
+      return;
+    }
+
+    incrementDocumentSwitchPerformanceCounter(
+      pendingSwitch.operationId,
+      "react_commit_count"
+    );
+    markDocumentSwitchPerformance(
+      pendingSwitch.operationId,
+      "first_target_render"
+    );
+
+    if (isProjectDataLoading) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      if (
+        pendingDocumentSwitchPerformanceRef.current?.operationId !==
+        pendingSwitch.operationId
+      ) {
+        return;
+      }
+      markDocumentSwitchPerformance(
+        pendingSwitch.operationId,
+        "first_usable_editor"
+      );
+    });
+  }, [comments, isProjectDataLoading, markdown, projectHandle]);
+
   useEffect(() => {
     if (!isDirty) {
       return;
@@ -1639,6 +1628,13 @@ export function DocumentEditor() {
     let settledTimeoutId: number | null = null;
     const editorContainer = editorDocumentRef.current;
     const workspace = documentWorkspaceRef.current;
+    const pendingSwitch = pendingDocumentSwitchPerformanceRef.current;
+    const switchOperationId =
+      pendingSwitch &&
+      projectHandle &&
+      getProjectDocumentScopeId(projectHandle) === pendingSwitch.targetDocumentId
+        ? pendingSwitch.operationId
+        : null;
 
     function syncCommentAnchors() {
       if (isCancelled) {
@@ -1709,6 +1705,15 @@ export function DocumentEditor() {
         "visual_projection_and_rail",
         performance.now() - projectionStartedAt
       );
+      recordDocumentSwitchPerformanceDuration(
+        switchOperationId,
+        "measure_and_position_comment_rail",
+        performance.now() - projectionStartedAt
+      );
+      incrementDocumentSwitchPerformanceCounter(
+        switchOperationId,
+        "comment_projection_pass_count"
+      );
       incrementEditPerformanceCounter(operationId, "projection_pass_count");
       markEditPerformanceOperation(operationId, "visual_projection_end");
 
@@ -1722,6 +1727,19 @@ export function DocumentEditor() {
           operationId,
           "all_async_effects_settled"
         );
+        if (
+          isProjectDataLoadingRef.current ||
+          pendingDocumentSwitchPerformanceRef.current?.operationId !==
+            switchOperationId
+        ) {
+          return;
+        }
+        markDocumentSwitchPerformance(
+          switchOperationId,
+          "comment_rail_positioned",
+          { latest: true }
+        );
+        finishDocumentSwitchPerformanceOperation(switchOperationId);
       }, 120);
     }
 
@@ -1797,6 +1815,7 @@ export function DocumentEditor() {
     markdown,
     mode,
     patches,
+    projectHandle,
     readingBookmark,
     reanchorSession
   ]);
@@ -1922,19 +1941,10 @@ export function DocumentEditor() {
       setSaveFeedback(null);
 
       try {
+        let recoveryId: string | null = null;
         try {
-          await persistActiveRecoveryNow();
+          recoveryId = await persistActiveRecoveryNow();
         } catch {}
-        const recoveryId =
-          projectHandle.projectManifest &&
-          projectHandle.document &&
-          localProjectInstanceId
-            ? getProjectDocumentRecoveryId({
-                documentId: projectHandle.document.document_id,
-                localInstanceId: localProjectInstanceId,
-                projectId: projectHandle.projectManifest.project_id
-              })
-            : null;
         const result = await saveProjectState({
           comments,
           markdown,
@@ -1991,14 +2001,10 @@ export function DocumentEditor() {
     setSaveFeedback(null);
 
     try {
+      let recoveryId: string | null = null;
       try {
-        await persistActiveRecoveryNow();
+        recoveryId = await persistActiveRecoveryNow();
       } catch {}
-      const recoveryId = standaloneFileInstance
-        ? getStandaloneDocumentRecoveryId(
-            standaloneFileInstance.local_file_id
-          )
-        : null;
       await saveMarkdownToFileHandle(activeFileHandle, markdown);
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
@@ -2021,7 +2027,7 @@ export function DocumentEditor() {
         message: getSaveErrorMessage(error)
       });
     }
-  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, localProjectInstanceId, markdown, patches, persistActiveRecoveryNow, projectHandle, standaloneFileInstance]);
+  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, markdown, patches, persistActiveRecoveryNow, projectHandle]);
 
   useEffect(() => {
     if (!fileName) {
@@ -2081,6 +2087,9 @@ export function DocumentEditor() {
     setBaselineMarkdown(loadedFile.markdown);
     setActiveFileHandle(loadedFile.fileHandle);
     setProjectHandle(null);
+    setProjectDocuments([]);
+    setVersionEntries([]);
+    setIsProjectDataLoading(false);
     setLocalProjectInstanceId(null);
     setStandaloneFileInstance(standaloneInstance);
     setProjectRecovery(null);
@@ -2692,26 +2701,6 @@ export function DocumentEditor() {
     }
   }
 
-  function getActiveRecoveryId(): string | null {
-    if (
-      projectHandle?.projectManifest &&
-      projectHandle.document &&
-      localProjectInstanceId
-    ) {
-      return getProjectDocumentRecoveryId({
-        documentId: projectHandle.document.document_id,
-        localInstanceId: localProjectInstanceId,
-        projectId: projectHandle.projectManifest.project_id
-      });
-    }
-    if (!projectHandle && standaloneFileInstance) {
-      return getStandaloneDocumentRecoveryId(
-        standaloneFileInstance.local_file_id
-      );
-    }
-    return null;
-  }
-
   async function clearRecoveryRecordAfterSave(
     recoveryId: string | null
   ): Promise<void> {
@@ -2852,8 +2841,7 @@ export function DocumentEditor() {
     if (project.documentAvailability === "missing") {
       return;
     }
-    await persistActiveRecoveryBestEffort();
-    const recoveryId = getActiveRecoveryId();
+    const recoveryId = await persistActiveRecoveryBestEffort();
     await saveProjectState({
       comments,
       markdown,
@@ -2882,6 +2870,19 @@ export function DocumentEditor() {
     }
     const requestId = documentSwitchRequestRef.current + 1;
     documentSwitchRequestRef.current = requestId;
+    setRequestedProjectDocumentId(documentId);
+    const performanceOperationId = startDocumentSwitchPerformanceOperation({
+      cache: "not_used",
+      documentBytes: new TextEncoder().encode(markdown).byteLength,
+      projectId: getProjectDocumentIdentity(projectHandle).projectId,
+      sourceDocumentId: getProjectDocumentScopeId(projectHandle),
+      targetDocumentId: documentId,
+      trigger: options.continueReading ? "bookmark" : "navigator"
+    });
+    pendingDocumentSwitchPerformanceRef.current = {
+      operationId: performanceOperationId,
+      targetDocumentId: documentId
+    };
     persistProjectDocumentUiState(
       projectHandle,
       {
@@ -2892,21 +2893,53 @@ export function DocumentEditor() {
       },
       localProjectInstanceId
     );
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "current_editor_flushed"
+    );
     setSaveStatus("saving");
     setSaveFeedback(null);
     try {
-      await persistActiveRecoveryBestEffort();
-      const sourceRecoveryId = getActiveRecoveryId();
+      const recoveryStartedAt = performance.now();
+      const sourceRecoveryId = await persistActiveRecoveryBestEffort();
+      if (sourceRecoveryId) {
+        incrementDocumentSwitchPerformanceCounter(
+          performanceOperationId,
+          "recovery_records_written"
+        );
+      }
+      recordDocumentSwitchPerformanceDuration(
+        performanceOperationId,
+        "persist_or_clear_recovery_state",
+        performance.now() - recoveryStartedAt
+      );
+      markDocumentSwitchPerformance(
+        performanceOperationId,
+        "source_recovery_persisted"
+      );
       const loaded = await switchProjectDocument({
         comments,
         documentId,
         markdown,
         patches,
-        project: projectHandle
+        project: projectHandle,
+        performanceOperationId
       });
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      const recoveryCleanupStartedAt = performance.now();
       await clearRecoveryRecordAfterSave(sourceRecoveryId);
+      if (sourceRecoveryId) {
+        incrementDocumentSwitchPerformanceCounter(
+          performanceOperationId,
+          "recovery_records_cleared"
+        );
+      }
+      recordDocumentSwitchPerformanceDuration(
+        performanceOperationId,
+        "persist_or_clear_recovery_state",
+        performance.now() - recoveryCleanupStartedAt
+      );
       if (requestId !== documentSwitchRequestRef.current) {
         return;
       }
@@ -2918,10 +2951,14 @@ export function DocumentEditor() {
       );
       await loadProjectIntoEditor(loaded, {
         localInstanceId: localProjectInstanceId,
+        performanceOperationId,
         pendingBookmarkDocumentKey: options.continueReading
           ? targetDocumentKey
           : null
       });
+      if (requestId === documentSwitchRequestRef.current) {
+        setRequestedProjectDocumentId(null);
+      }
       setSaveFeedback({
         kind: loaded.project.documentAvailability === "missing" ? "info" : "success",
         message:
@@ -2933,6 +2970,7 @@ export function DocumentEditor() {
       if (requestId !== documentSwitchRequestRef.current) {
         return;
       }
+      setRequestedProjectDocumentId(null);
       setSaveStatus("failed");
       setSaveFeedback({
         kind: "error",
@@ -3352,6 +3390,7 @@ export function DocumentEditor() {
       }
 
       setProjectHandle(snapshotResult.project);
+      setVersionEntries(snapshotResult.project.manifest.versions ?? []);
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -5949,8 +5988,11 @@ export function DocumentEditor() {
     options: {
       localInstanceId?: string | null;
       pendingBookmarkDocumentKey?: string | null;
+      performanceOperationId?: string | null;
     } = {}
   ): Promise<void> {
+    const performanceOperationId = options.performanceOperationId;
+    const recoveryStartedAt = performance.now();
     const requestId = deviceRecoveryLoadRequestRef.current + 1;
     deviceRecoveryLoadRequestRef.current = requestId;
     const identity = getProjectDocumentIdentity(loadedProject.project);
@@ -5960,17 +6002,60 @@ export function DocumentEditor() {
     const loadedDocumentTitle =
       loadedProject.project.document?.display_title ??
       loadedProject.project.manifest.project_name;
+    const reviewStateStartedAt = performance.now();
+    const reviewStatePromise =
+      loadedProject.project.documentAvailability === "missing"
+        ? Promise.resolve([
+            [],
+            [],
+            []
+          ] as [PatchmarkVersionEntry[], PatchmarkComment[], PatchmarkPatch[]])
+        : Promise.all([
+            listProjectVersions(loadedProject.project),
+            readProjectComments(loadedProject.project),
+            readProjectPatches(loadedProject.project)
+          ]);
+    const canReuseNavigatorState = Boolean(
+      projectHandle?.projectManifest &&
+        loadedProject.project.projectManifest &&
+        projectHandle.projectManifest.project_id ===
+          loadedProject.project.projectManifest.project_id &&
+        projectHandle.projectManifest.manifest_revision ===
+          loadedProject.project.projectManifest.manifest_revision &&
+        projectDocumentsRef.current.length > 0
+    );
+    const navigatorStartedAt = performance.now();
+    const navigatorPromise = canReuseNavigatorState
+      ? Promise.resolve(
+          projectDocumentsRef.current.map((document) =>
+            document.document_id === identity.documentId
+              ? {
+                  ...document,
+                  availability:
+                    loadedProject.project.documentAvailability ?? "available"
+                }
+              : document
+          )
+        )
+      : getProjectDocumentList(loadedProject.project);
     let instanceId =
       options.localInstanceId ?? createLocalProjectInstanceId();
     let instance: LocalProjectInstanceRecord | null = null;
     let recoveries: ProjectDocumentRecoveryRecord[] = [];
+    const isKnownSessionInstance = Boolean(
+      options.localInstanceId &&
+        localProjectInstanceId === options.localInstanceId &&
+        activeProjectIdRef.current === identity.projectId
+    );
     try {
-      const existingInstance = options.localInstanceId
-        ? await readProjectInstance(options.localInstanceId)
-        : await findProjectInstanceForDirectory({
-            directoryHandle: projectDirectory as StoredDirectoryHandle,
-            projectId: identity.projectId
-          });
+      const existingInstance = isKnownSessionInstance
+        ? recentProject
+        : options.localInstanceId
+          ? await readProjectInstance(options.localInstanceId)
+          : await findProjectInstanceForDirectory({
+              directoryHandle: projectDirectory as StoredDirectoryHandle,
+              projectId: identity.projectId
+            });
       if (
         existingInstance &&
         existingInstance.project_id !== identity.projectId
@@ -5983,19 +6068,32 @@ export function DocumentEditor() {
         options.localInstanceId ??
         existingInstance?.local_instance_id ??
         instanceId;
-      instance = await rememberProjectInstance({
-        directoryHandle: projectDirectory as StoredDirectoryHandle,
-        documentId: identity.documentId,
-        documentTitle: loadedDocumentTitle,
-        groupId: loadedProject.project.document?.group_id ?? null,
-        localInstanceId: instanceId,
-        projectId: identity.projectId,
-        projectTitle: getProjectTitle(loadedProject.project)
-      });
-      recoveries = await listProjectDocumentRecoveries({
-        localInstanceId: instanceId,
-        projectId: identity.projectId
-      });
+      if (isKnownSessionInstance) {
+        const recovery = await readRecovery(
+          getProjectDocumentRecoveryId({
+            documentId: identity.documentId,
+            localInstanceId: instanceId,
+            projectId: identity.projectId
+          })
+        );
+        recoveries =
+          recovery?.owner_type === "project_document" ? [recovery] : [];
+        instance = existingInstance;
+      } else {
+        instance = await rememberProjectInstance({
+          directoryHandle: projectDirectory as StoredDirectoryHandle,
+          documentId: identity.documentId,
+          documentTitle: loadedDocumentTitle,
+          groupId: loadedProject.project.document?.group_id ?? null,
+          localInstanceId: instanceId,
+          projectId: identity.projectId,
+          projectTitle: getProjectTitle(loadedProject.project)
+        });
+        recoveries = await listProjectDocumentRecoveries({
+          localInstanceId: instanceId,
+          projectId: identity.projectId
+        });
+      }
       setDeviceRecoveryWarning(null);
     } catch (error) {
       setDeviceRecoveryWarning(getDeviceRecoveryErrorMessage(error));
@@ -6034,23 +6132,58 @@ export function DocumentEditor() {
           })
       : null;
     const clearedRecoveryId = preparedRecovery?.clearedRecoveryId;
-    const recoveryDocumentIds = recoveries
-      .filter(
-        (recovery) =>
-          !clearedRecoveryId || recovery.recovery_id !== clearedRecoveryId
-      )
-      .map((recovery) => recovery.document_id);
+    const recoveryDocumentIds = isKnownSessionInstance
+      ? Array.from(
+          new Set([
+            ...projectRecoveryDocumentIdsRef.current.filter(
+              (documentId) =>
+                documentId !== identity.documentId || Boolean(activeRecovery)
+            ),
+            ...(activeRecovery ? [activeRecovery.document_id] : [])
+          ])
+        ).filter(
+          (documentId) =>
+            !clearedRecoveryId || documentId !== identity.documentId
+        )
+      : recoveries
+          .filter(
+            (recovery) =>
+              !clearedRecoveryId || recovery.recovery_id !== clearedRecoveryId
+          )
+          .map((recovery) => recovery.document_id);
     const restoredUiState = readProjectDocumentUiState(
       loadedProject.project,
       instanceId
     );
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "load_target_recovery_and_ui_state",
+      performance.now() - recoveryStartedAt
+    );
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "target_recovery_decision_ready"
+    );
     const loadedDocumentId = getProjectDocumentScopeId(loadedProject.project);
+    const [documents, [versions, projectComments, projectPatches]] =
+      await Promise.all([navigatorPromise, reviewStatePromise]);
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "deserialize_current_review_state",
+      performance.now() - reviewStateStartedAt
+    );
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "load_project_navigator_state",
+      performance.now() - navigatorStartedAt
+    );
     if (requestId !== deviceRecoveryLoadRequestRef.current) {
       return;
     }
     pendingReadingBookmarkNavigationRef.current =
       options.pendingBookmarkDocumentKey ?? null;
     setProjectHandle(loadedProject.project);
+    setProjectDocuments(documents);
     setLocalProjectInstanceId(instanceId);
     setStandaloneFileInstance(null);
     setProjectRecovery(loadedProject.recovery ?? null);
@@ -6070,7 +6203,7 @@ export function DocumentEditor() {
       preparedRecovery?.presentation ?? null
     );
     setProjectRecoveryDocumentIds(recoveryDocumentIds);
-    if (instance) {
+    if (instance && !isKnownSessionInstance) {
       setRecentProject(instance);
       setRecentProjectRecoveryCount(recoveryDocumentIds.length);
       setRecentProjectPermission(
@@ -6095,15 +6228,15 @@ export function DocumentEditor() {
     setReadingBookmarkPosition(null);
     setReadingBookmarkEmphasizedDocumentKey(null);
     setReadingBookmarkMenuDocumentKey(null);
-    setVersionEntries([]);
-    setComments([]);
-    setPatches([]);
+    setVersionEntries(versions);
+    setComments(projectComments);
+    setPatches(projectPatches);
     setDocumentActiveCommentState({
       documentId: loadedDocumentId,
       state: restoredUiState?.activeCommentState ?? { kind: "none" }
     });
     lastScrolledActiveCommentKeyRef.current = null;
-    setIsProjectDataLoading(true);
+    setIsProjectDataLoading(false);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
     setPatchGroupListDialog(null);
@@ -6117,10 +6250,62 @@ export function DocumentEditor() {
     setChatGptImportDialog(null);
     setMode(restoredUiState?.mode ?? "visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
+    updateDocumentSwitchPerformanceMetadata(performanceOperationId, {
+      comments: projectComments.length,
+      patches: projectPatches.length,
+      versions: versions.length
+    });
+    markDocumentSwitchPerformance(performanceOperationId, "review_state_ready");
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "target_state_update_requested"
+    );
     if (restoredUiState) {
       window.requestAnimationFrame(() => {
         window.scrollTo({ top: restoredUiState.scrollY });
       });
+    }
+    const loadedDocumentKey = createProjectDocumentKey(identity);
+    if (pendingReadingBookmarkNavigationRef.current === loadedDocumentKey) {
+      const loadedBookmark = getDocumentReadingBookmark({
+        document: identity,
+        manifest: loadedProject.project.manifest
+      });
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (
+            requestId !== deviceRecoveryLoadRequestRef.current ||
+            pendingReadingBookmarkNavigationRef.current !== loadedDocumentKey
+          ) {
+            return;
+          }
+          pendingReadingBookmarkNavigationRef.current = null;
+          void continueReadingAtBookmarkRef.current?.({
+            bookmark: loadedBookmark,
+            documentKey: loadedDocumentKey,
+            markdown: preparedRecovery?.markdown ?? loadedProject.markdown,
+            mode: modeRef.current,
+            patches: projectPatches
+          });
+        });
+      });
+    }
+    if (isKnownSessionInstance) {
+      void rememberProjectInstance({
+        directoryHandle: projectDirectory as StoredDirectoryHandle,
+        documentId: identity.documentId,
+        documentTitle: loadedDocumentTitle,
+        groupId: loadedProject.project.document?.group_id ?? null,
+        localInstanceId: instanceId,
+        projectId: identity.projectId,
+        projectTitle: getProjectTitle(loadedProject.project)
+      })
+        .then((record) => {
+          if (activeDocumentIdRef.current === identity.documentId) {
+            setRecentProject(record);
+          }
+        })
+        .catch(() => undefined);
     }
   }
 
@@ -6142,6 +6327,13 @@ export function DocumentEditor() {
               isProjectDataLoading ||
               isCommentBusy ||
               isReadingBookmarkBusy
+            }
+            requestedDocumentId={requestedProjectDocumentId}
+            selectionBusy={
+              isProjectDataLoading ||
+              isCommentBusy ||
+              isReadingBookmarkBusy ||
+              (isSaving && requestedProjectDocumentId === null)
             }
             documents={projectDocuments}
             groups={projectGroups}
@@ -6410,6 +6602,15 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
+        {requestedProjectDocumentId ? (
+          <div className="document-switch-loading" role="status">
+            Opening {projectDocuments.find(
+              (document) =>
+                document.document_id === requestedProjectDocumentId
+            )?.display_title ?? "document"}…
+          </div>
+        ) : null}
+
         {reanchorSession ? (
           <section className="reanchor-mode-panel" aria-label="Re-anchor comment">
             <div className="reanchor-mode-header">
@@ -6536,12 +6737,16 @@ export function DocumentEditor() {
           {fileName ? (
             mode === "visual" ? (
               <VisualMarkdownEditor
-                key={documentVersion}
                 markdown={markdown}
                 onMarkdownChange={(nextMarkdown) =>
                   handleMarkdownChange(nextMarkdown, "manual_visual")
                 }
-                readOnly={isProjectRecoveryReadOnly || isReanchorMode}
+                readOnly={
+                  isProjectRecoveryReadOnly ||
+                  isReanchorMode ||
+                  requestedProjectDocumentId !== null
+                }
+                resetKey={documentVersion}
               />
             ) : (
               <MarkdownSourceEditor
@@ -6550,7 +6755,11 @@ export function DocumentEditor() {
                   handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
                 onSelectionChange={setMarkdownSelection}
-                readOnly={isProjectRecoveryReadOnly || isReanchorMode}
+                readOnly={
+                  isProjectRecoveryReadOnly ||
+                  isReanchorMode ||
+                  requestedProjectDocumentId !== null
+                }
                 selectionRequest={markdownSelectionRequest}
               />
             )

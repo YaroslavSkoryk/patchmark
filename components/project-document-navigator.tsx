@@ -28,6 +28,8 @@ type ProjectDocumentNavigatorProps = {
   projectId: string;
   projectTitle: string;
   recoveryDocumentIds: string[];
+  requestedDocumentId: string | null;
+  selectionBusy: boolean;
   onAddExisting: (groupId?: string | null) => void;
   onArchive: (documentId: string) => void;
   onCreate: (request: CreateDocumentRequest) => void;
@@ -76,7 +78,9 @@ export function ProjectDocumentNavigator({
   onSelect,
   projectId,
   projectTitle,
-  recoveryDocumentIds
+  recoveryDocumentIds,
+  requestedDocumentId,
+  selectionBusy
 }: ProjectDocumentNavigatorProps) {
   const [displayTitle, setDisplayTitle] = useState("");
   const [path, setPath] = useState("");
@@ -100,6 +104,9 @@ export function ProjectDocumentNavigator({
     (document) => document.document_id === activeDocumentId
   );
   const activeGroupId = activeDocument?.group_id ?? null;
+  const requestedGroupId = documents.find(
+    (document) => document.document_id === requestedDocumentId
+  )?.group_id ?? null;
   const hasGroups = orderedGroups.length > 0;
 
   useEffect(() => {
@@ -126,6 +133,21 @@ export function ProjectDocumentNavigator({
       return next;
     });
   }, [activeDocumentId, activeGroupId, projectId]);
+
+  useEffect(() => {
+    if (!requestedGroupId) {
+      return;
+    }
+    setCollapsedGroupIds((current) => {
+      if (!current.has(requestedGroupId)) {
+        return current;
+      }
+      const next = new Set(current);
+      next.delete(requestedGroupId);
+      writeGroupCollapseState(projectId, requestedGroupId, false);
+      return next;
+    });
+  }, [projectId, requestedDocumentId, requestedGroupId]);
 
   useEffect(() => {
     const groupIds = new Set(orderedGroups.map((group) => group.group_id));
@@ -172,13 +194,20 @@ export function ProjectDocumentNavigator({
       <article
         className="project-document-item"
         data-active={document.document_id === activeDocumentId ? "true" : undefined}
+        data-requested={
+          document.document_id === requestedDocumentId ? "true" : undefined
+        }
         data-missing={document.availability === "missing" ? "true" : undefined}
         key={document.document_id}
       >
         <button
           className="project-document-select"
           type="button"
-          disabled={busy || document.document_id === activeDocumentId}
+          disabled={
+            selectionBusy ||
+            document.document_id === activeDocumentId ||
+            document.document_id === requestedDocumentId
+          }
           onClick={() => onSelect(document.document_id)}
         >
           <span>{document.display_title}</span>
@@ -206,6 +235,9 @@ export function ProjectDocumentNavigator({
           ) : null}
           {recoveryDocumentIds.includes(document.document_id) ? (
             <span className="project-document-recovery">Unsaved recovery</span>
+          ) : null}
+          {document.document_id === requestedDocumentId ? (
+            <span className="project-document-opening">Opening…</span>
           ) : null}
         </div>
         {!legacy ? (

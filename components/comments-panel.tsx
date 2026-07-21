@@ -13,6 +13,11 @@ import {
   createFloatingCommentLayout,
   getStageRelativePreferredTop
 } from "@/lib/comments/floating-comment-layout";
+import {
+  getLatestDocumentSwitchPerformanceOperationId,
+  incrementDocumentSwitchPerformanceCounter,
+  recordDocumentSwitchPerformanceDuration
+} from "@/lib/performance/document-switch-performance";
 import { sortCommentsByLastKnownAnchorPosition } from "@/lib/comments/comment-anchor-position";
 import {
   getVisibleAnchorStatus,
@@ -781,6 +786,7 @@ function FloatingCommentList({
     }
 
     function measureFloatingItems() {
+      const measurementStartedAt = performance.now();
       const nextMeasuredItemHeights: Record<string, number> = {};
       const nextFloatingStageOffsetTop = getFloatingStageOffsetTop(
         floatingStageRef.current
@@ -820,6 +826,21 @@ function FloatingCommentList({
         )
           ? currentMeasuredItemHeights
           : nextMeasuredItemHeights
+      );
+      const operationId = getLatestDocumentSwitchPerformanceOperationId();
+      recordDocumentSwitchPerformanceDuration(
+        operationId,
+        "comment_rail_dom_measurement",
+        performance.now() - measurementStartedAt
+      );
+      incrementDocumentSwitchPerformanceCounter(
+        operationId,
+        "comment_rail_layout_pass_count"
+      );
+      incrementDocumentSwitchPerformanceCounter(
+        operationId,
+        "comment_cards_measured",
+        itemIds.size
       );
     }
 

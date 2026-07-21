@@ -17,6 +17,8 @@
     "test:comment-layout": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-floating-layout.test.mjs",
     "test:comment-edit-performance-browser": "node scripts/comment-edit-performance-browser.test.mjs",
     "test:comment-edit-performance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-edit-performance.test.mjs",
+    "test:document-switch-performance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/document-switch-performance.test.mjs",
+    "test:document-switch-performance-browser": "node scripts/document-switch-performance-browser.test.mjs",
     "audit:persistence": "node scripts/persistence-size-audit.mjs",
     "compact:comment-history": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compact-comment-history.mjs",
     "test:persistence-browser-audit": "node scripts/persistence-browser-audit.mjs",
@@ -64,6 +66,7 @@
   },
   "dependencies": {
     "@mdxeditor/editor": "^3.39.1",
+    "lexical": "0.35.0",
     "next": "^15.3.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
