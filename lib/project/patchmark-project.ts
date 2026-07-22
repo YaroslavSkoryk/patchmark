@@ -74,12 +74,18 @@ import {
   recordDocumentSwitchPerformanceDuration,
   updateDocumentSwitchPerformanceMetadata
 } from "../performance/document-switch-performance.ts";
+import {
+  parseReviewBatchRecords,
+  serializeReviewBatchRecords
+} from "../review-batches/review-batch-schema.ts";
+import type { PatchmarkReviewBatch } from "../review-batches/review-batch-types.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
 const manifestFileName = "manifest.json";
 const commentsFileName = "comments.json";
 const patchesFileName = "patches.json";
+const reviewBatchesFileName = "review-batches.json";
 const saveCommitFileName = "save-commit.json";
 const recoveryDirectoryName = "recovery";
 const saveCommitFormatVersion = 1;
@@ -141,8 +147,10 @@ type PatchmarkProjectPersistenceState = {
   manifestText: string;
   commentsReference?: PatchmarkComment[];
   patchesReference?: PatchmarkPatch[];
+  reviewBatchesReference?: PatchmarkReviewBatch[];
   commentsRaw?: string;
   patchesRaw?: string;
+  reviewBatchesRaw?: string;
   readSource: "current" | "current_readonly" | "lkg";
   recovery?: PatchmarkProjectRecoveryState;
   debug: PatchmarkPersistenceDebugState;
@@ -193,6 +201,7 @@ export type ProjectCommitFileKey =
   | "document"
   | "comments"
   | "patches"
+  | "review_batches"
   | "manifest";
 
 type PreparedProjectFile = {
@@ -208,6 +217,10 @@ type ProjectCommitRequest = {
   markdown?: string;
   comments?: PatchmarkComment[];
   patches?: PatchmarkPatch[];
+  reviewBatches?: PatchmarkReviewBatch[];
+  reviewBatchesUpdate?: (
+    batches: PatchmarkReviewBatch[]
+  ) => PatchmarkReviewBatch[];
   manifest?: PatchmarkManifest;
   manifestUpdate?: (manifest: PatchmarkManifest) => PatchmarkManifest;
   reason: string;
@@ -1004,6 +1017,7 @@ export async function saveProjectState({
   manifest,
   markdown,
   patches,
+  reviewBatches,
   project,
   reason,
   allowSupersede = false
@@ -1012,6 +1026,7 @@ export async function saveProjectState({
   manifest?: PatchmarkManifest;
   markdown?: string;
   patches?: PatchmarkPatch[];
+  reviewBatches?: PatchmarkReviewBatch[];
   project: PatchmarkProjectHandle;
   reason: string;
   allowSupersede?: boolean;
@@ -1022,6 +1037,7 @@ export async function saveProjectState({
     manifest,
     markdown,
     patches,
+    reviewBatches,
     project,
     reason
   });
@@ -1338,7 +1354,103 @@ export async function writeProjectContextPack({
 
   await writeTextFile(contextPackFileHandle, contents);
 
+  const writtenContents = await readTextFile(contextPackFileHandle);
+  if (writtenContents !== contents) {
+    throw new Error(`Could not verify context pack ${fileName}.`);
+  }
+
   return `${metadataDirectoryName}/context-packs/${fileName}`;
+}
+
+export async function readProjectContextPack({
+  project,
+  relativePath
+}: {
+  project: PatchmarkProjectHandle;
+  relativePath: string;
+}): Promise<string> {
+  const fileName = getContextPackFileName(relativePath);
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const contextPacksDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("context-packs");
+  return readTextFile(await contextPacksDirectoryHandle.getFileHandle(fileName));
+}
+
+export async function removeProjectContextPack({
+  project,
+  relativePath
+}: {
+  project: PatchmarkProjectHandle;
+  relativePath: string;
+}): Promise<boolean> {
+  const fileName = getContextPackFileName(relativePath);
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const contextPacksDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("context-packs");
+  if (!contextPacksDirectoryHandle.removeEntry) {
+    return false;
+  }
+  try {
+    await contextPacksDirectoryHandle.removeEntry(fileName);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+export async function readProjectReviewBatchRecords(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkReviewBatch[]> {
+  if (project.persistence.reviewBatchesReference) {
+    return project.persistence.reviewBatchesReference;
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const hasCommittedRecords = Boolean(project.persistence.files.review_batches);
+  let text = project.persistence.reviewBatchesRaw;
+  if (text === undefined && hasCommittedRecords) {
+    const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
+    text = await readTextFile(
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? `${reviewBatchesFileName}.lkg`
+          : reviewBatchesFileName
+      )
+    );
+  }
+  const records = parseReviewBatchRecords({
+    identity,
+    text: hasCommittedRecords ? text ?? "[]\n" : "[]\n"
+  });
+  project.persistence.reviewBatchesReference = records;
+  project.persistence.reviewBatchesRaw = undefined;
+  return records;
+}
+
+export async function commitProjectReviewBatchUpdate({
+  project,
+  reason,
+  update
+}: {
+  project: PatchmarkProjectHandle;
+  reason: string;
+  update: (batches: PatchmarkReviewBatch[]) => PatchmarkReviewBatch[];
+}): Promise<PatchmarkReviewBatch[]> {
+  if (!project.persistence.reviewBatchesReference) {
+    await readProjectReviewBatchRecords(project);
+  }
+  await commitProjectState({
+    project,
+    reason,
+    reviewBatchesUpdate: update
+  });
+  return project.persistence.reviewBatchesReference ?? [];
 }
 
 export async function readProjectPatches(
@@ -1482,7 +1594,7 @@ export async function restoreProjectLastKnownGood(
   const preparedFiles: PreparedProjectFile[] = [];
 
   try {
-    for (const key of ["document", "comments", "patches", "manifest"] as const) {
+    for (const key of getCommittedProjectFileKeys(lkg.commit)) {
       preparedFiles.push(
         await prepareProjectTemporaryFile({
           commitId: restoreId,
@@ -1525,6 +1637,9 @@ export async function restoreProjectLastKnownGood(
     await installPreparedProjectFile(commitPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+    if (!lkg.commit.files.review_batches) {
+      await removeReviewBatchFileIfPresent(project.directoryHandle);
+    }
   } finally {
     await cleanupPreparedFiles(preparedFiles);
   }
@@ -1545,6 +1660,9 @@ export async function restoreProjectLastKnownGood(
       manifestText: lkg.texts.manifest,
       commentsRaw: lkg.texts.comments,
       patchesRaw: lkg.texts.patches,
+      reviewBatchesRaw: lkg.commit.files.review_batches
+        ? lkg.texts.review_batches
+        : undefined,
       readSource: "current",
       debug: createEmptyPersistenceDebugState()
     }
@@ -1581,6 +1699,8 @@ async function commitProjectState({
   manifestUpdate,
   markdown,
   patches,
+  reviewBatches,
+  reviewBatchesUpdate,
   project,
   reason
 }: ProjectCommitRequest & {
@@ -1620,6 +1740,8 @@ async function commitProjectState({
         manifestUpdate,
         markdown,
         patches,
+        reviewBatches,
+        reviewBatchesUpdate,
         project,
         queue,
         reason,
@@ -1643,6 +1765,8 @@ async function executeProjectCommit({
   manifestUpdate,
   markdown,
   patches,
+  reviewBatches,
+  reviewBatchesUpdate,
   project,
   queue,
   reason,
@@ -1666,6 +1790,7 @@ async function executeProjectCommit({
     document: "skipped",
     comments: "skipped",
     patches: "skipped",
+    review_batches: "skipped",
     manifest: "skipped"
   };
 
@@ -1737,6 +1862,48 @@ async function executeProjectCommit({
     }
   }
 
+  const currentReviewBatches =
+    persistence.reviewBatchesReference ??
+    parseReviewBatchRecords({
+      identity: getProjectDocumentIdentity(project),
+      text: persistence.files.review_batches
+        ? persistence.reviewBatchesRaw ?? "[]\n"
+        : "[]\n"
+    });
+  const requestedReviewBatches = reviewBatchesUpdate
+    ? reviewBatchesUpdate(currentReviewBatches)
+    : reviewBatches;
+  if (requestedReviewBatches !== undefined) {
+    if (requestedReviewBatches === persistence.reviewBatchesReference) {
+      debug.lastFileResults.review_batches = "unchanged";
+    } else {
+      const reviewBatchesText = serializeReviewBatchRecords({
+        identity: getProjectDocumentIdentity(project),
+        records: requestedReviewBatches
+      });
+      serializedFiles.push("review_batches");
+      debug.serializationCount += 1;
+      const reviewBatchesCommit = await createPersistedFileCommit(
+        `${metadataDirectoryName}/${reviewBatchesFileName}`,
+        reviewBatchesText
+      );
+      const currentReviewBatchesCommit =
+        persistence.files.review_batches ??
+        (await createPersistedFileCommit(
+          `${metadataDirectoryName}/${reviewBatchesFileName}`,
+          "[]\n"
+        ));
+      if (reviewBatchesCommit.sha256 === currentReviewBatchesCommit.sha256) {
+        persistence.reviewBatchesReference = requestedReviewBatches;
+        debug.lastFileResults.review_batches = "unchanged";
+      } else {
+        changedFiles.push("review_batches");
+        desiredTexts.review_batches = reviewBatchesText;
+        debug.lastFileResults.review_batches = "changed";
+      }
+    }
+  }
+
   const manifestChanged =
     requestedManifest !== undefined &&
     createManifestMeaningfulKey(requestedManifest) !==
@@ -1766,8 +1933,17 @@ async function executeProjectCommit({
     return recordSupersededCommit(project, serializedFiles);
   }
 
-  const currentTexts = await readCurrentProjectTexts(project.directoryHandle);
-  const currentDescriptors = await createProjectFileDescriptors(currentTexts);
+  const includeCurrentReviewBatches = Boolean(
+    persistence.files.review_batches
+  );
+  const currentTexts = await readCurrentProjectTexts(
+    project.directoryHandle,
+    includeCurrentReviewBatches
+  );
+  const currentDescriptors = await createProjectFileDescriptors(
+    currentTexts,
+    includeCurrentReviewBatches
+  );
   const currentCommit =
     persistence.commit ??
     createLegacyBaselineCommit({
@@ -1800,7 +1976,12 @@ async function executeProjectCommit({
     ...currentTexts,
     ...desiredTexts
   } satisfies Record<ProjectCommitFileKey, string>;
-  const nextDescriptors = await createProjectFileDescriptors(nextTexts);
+  const includeNextReviewBatches =
+    includeCurrentReviewBatches || changedFiles.includes("review_batches");
+  const nextDescriptors = await createProjectFileDescriptors(
+    nextTexts,
+    includeNextReviewBatches
+  );
   const saveCommit: PatchmarkSaveCommit = {
     format_version: saveCommitFormatVersion,
     generation,
@@ -1888,6 +2069,11 @@ async function executeProjectCommit({
 
   if (patches !== undefined) {
     persistence.patchesReference = patches;
+  }
+
+  if (requestedReviewBatches !== undefined) {
+    persistence.reviewBatchesReference = requestedReviewBatches;
+    persistence.reviewBatchesRaw = undefined;
   }
 
   const bytesWritten = debug.bytesWritten - bytesWrittenBeforeCommit;
@@ -2544,6 +2730,10 @@ async function createOpenedProjectHandle({
     metadataDirectoryHandle,
     patchesFileName
   );
+  const reviewBatchesText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    reviewBatchesFileName
+  );
   const commitText = await readOptionalTextFile(
     metadataDirectoryHandle,
     saveCommitFileName
@@ -2557,6 +2747,7 @@ async function createOpenedProjectHandle({
   const reviewBytes =
     new TextEncoder().encode(commentsText ?? "").byteLength +
     new TextEncoder().encode(patchesText ?? "").byteLength +
+    new TextEncoder().encode(reviewBatchesText ?? "").byteLength +
     new TextEncoder().encode(commitText ?? "").byteLength;
   incrementDocumentSwitchPerformanceCounter(
     performanceOperationId,
@@ -2583,18 +2774,26 @@ async function createOpenedProjectHandle({
     currentDetails.push("Missing .patchmark/patches.json.");
   }
 
+  const currentCommit = commitText
+    ? parseSaveCommitForValidation(commitText, currentDetails)
+    : null;
+  const committedReviewBatches = Boolean(currentCommit?.files.review_batches);
+  if (committedReviewBatches && reviewBatchesText === null) {
+    currentDetails.push("Missing .patchmark/review-batches.json.");
+  }
+
   const currentTexts =
     commentsText !== null && patchesText !== null
       ? {
           document: markdown,
           comments: commentsText,
           patches: patchesText,
+          review_batches: committedReviewBatches
+            ? reviewBatchesText ?? "[]\n"
+            : "[]\n",
           manifest: manifestText
         }
       : null;
-  const currentCommit = commitText
-    ? parseSaveCommitForValidation(commitText, currentDetails)
-    : null;
 
   if (!commitText && currentManifest && currentTexts) {
     validatePersistedJson(currentTexts, currentDetails);
@@ -2641,6 +2840,12 @@ async function createOpenedProjectHandle({
       currentCommit,
       currentDetails
     );
+    validateReviewBatchTextForIdentity({
+      commit: currentCommit,
+      details: currentDetails,
+      identity: getManifestDocumentIdentity(currentManifest),
+      text: currentTexts.review_batches
+    });
     recordDocumentSwitchPerformanceDuration(
       performanceOperationId,
       "validate_target_integrity",
@@ -2649,7 +2854,7 @@ async function createOpenedProjectHandle({
     incrementDocumentSwitchPerformanceCounter(
       performanceOperationId,
       "content_hashes_computed",
-      4
+      committedReviewBatches ? 5 : 4
     );
     markDocumentSwitchPerformance(
       performanceOperationId,
@@ -2671,6 +2876,9 @@ async function createOpenedProjectHandle({
           manifestText,
           commentsRaw: currentTexts.comments,
           patchesRaw: currentTexts.patches,
+          reviewBatchesRaw: committedReviewBatches
+            ? currentTexts.review_batches
+            : undefined,
           readSource: "current",
           debug: createEmptyPersistenceDebugState()
         }
@@ -2706,6 +2914,9 @@ async function createOpenedProjectHandle({
         manifestText: lkg.texts.manifest,
         commentsRaw: lkg.texts.comments,
         patchesRaw: lkg.texts.patches,
+        reviewBatchesRaw: lkg.commit.files.review_batches
+          ? lkg.texts.review_batches
+          : undefined,
         readSource: "lkg",
         recovery,
         debug: createEmptyPersistenceDebugState()
@@ -2732,7 +2943,10 @@ async function createOpenedProjectHandle({
     technicalDetails: currentDetails,
     temporaryFiles
   };
-  const descriptors = await createProjectFileDescriptors(currentTexts);
+  const descriptors = await createProjectFileDescriptors(
+    currentTexts,
+    committedReviewBatches
+  );
   const project: PatchmarkProjectHandle = {
     directoryHandle,
     manifest: currentManifest,
@@ -2744,6 +2958,9 @@ async function createOpenedProjectHandle({
       manifestText,
       commentsRaw: commentsText ?? undefined,
       patchesRaw: patchesText ?? undefined,
+      reviewBatchesRaw: committedReviewBatches
+        ? reviewBatchesText ?? undefined
+        : undefined,
       readSource: "current_readonly",
       recovery,
       debug: createEmptyPersistenceDebugState()
@@ -2780,13 +2997,14 @@ async function createLegacyPersistenceState({
     document: documentText,
     comments: resolvedCommentsText,
     patches: resolvedPatchesText,
+    review_batches: "[]\n",
     manifest: manifestText
   };
 
   return {
     generation: 0,
     commit: null,
-    files: await createProjectFileDescriptors(texts),
+    files: await createProjectFileDescriptors(texts, false),
     documentText,
     manifestText,
     commentsRaw: resolvedCommentsText,
@@ -2797,37 +3015,65 @@ async function createLegacyPersistenceState({
 }
 
 async function readCurrentProjectTexts(
-  directoryHandle: PatchmarkDirectoryHandle
+  directoryHandle: PatchmarkDirectoryHandle,
+  includeReviewBatches: boolean
 ): Promise<Record<ProjectCommitFileKey, string>> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
   );
-  const [document, comments, patches, manifest] = await Promise.all([
+  const [document, comments, patches, manifest, reviewBatches] = await Promise.all([
     readTextFile(await directoryHandle.getFileHandle(documentFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(commentsFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(patchesFileName)),
-    readTextFile(await metadataDirectoryHandle.getFileHandle(manifestFileName))
+    readTextFile(await metadataDirectoryHandle.getFileHandle(manifestFileName)),
+    includeReviewBatches
+      ? readTextFile(
+          await metadataDirectoryHandle.getFileHandle(reviewBatchesFileName)
+        )
+      : Promise.resolve("[]\n")
   ]);
-  return { document, comments, patches, manifest };
+  return {
+    document,
+    comments,
+    patches,
+    review_batches: reviewBatches,
+    manifest
+  };
 }
 
 async function readCurrentFileCommit(
   project: PatchmarkProjectHandle,
   key: ProjectCommitFileKey
 ): Promise<PatchmarkPersistedFileCommit> {
-  const texts = await readCurrentProjectTexts(project.directoryHandle);
+  const texts = await readCurrentProjectTexts(
+    project.directoryHandle,
+    Boolean(project.persistence.files.review_batches)
+  );
   return createPersistedFileCommit(getProjectFilePath(key), texts[key]);
 }
 
 async function createProjectFileDescriptors(
-  texts: Record<ProjectCommitFileKey, string>
+  texts: Record<ProjectCommitFileKey, string>,
+  includeReviewBatches: boolean
 ): Promise<PatchmarkSaveCommit["files"]> {
   const [document, comments, patches, manifest] = await Promise.all(
     (["document", "comments", "patches", "manifest"] as const).map((key) =>
       createPersistedFileCommit(getProjectFilePath(key), texts[key])
     )
   );
-  return { document, comments, patches, manifest };
+  const reviewBatches = includeReviewBatches
+    ? await createPersistedFileCommit(
+        getProjectFilePath("review_batches"),
+        texts.review_batches
+      )
+    : undefined;
+  return {
+    document,
+    comments,
+    patches,
+    manifest,
+    ...(reviewBatches ? { review_batches: reviewBatches } : {})
+  };
 }
 
 async function createPersistedFileCommit(
@@ -2875,6 +3121,9 @@ function getProjectFilePath(key: ProjectCommitFileKey): string {
   if (key === "patches") {
     return `${metadataDirectoryName}/${patchesFileName}`;
   }
+  if (key === "review_batches") {
+    return `${metadataDirectoryName}/${reviewBatchesFileName}`;
+  }
   return `${metadataDirectoryName}/${manifestFileName}`;
 }
 
@@ -2888,7 +3137,55 @@ function getProjectFileName(key: ProjectCommitFileKey): string {
   if (key === "patches") {
     return patchesFileName;
   }
+  if (key === "review_batches") {
+    return reviewBatchesFileName;
+  }
   return manifestFileName;
+}
+
+function getCommittedProjectFileKeys(
+  commit: PatchmarkSaveCommit
+): ProjectCommitFileKey[] {
+  return [
+    "document",
+    "comments",
+    "patches",
+    ...(commit.files.review_batches
+      ? (["review_batches"] as ProjectCommitFileKey[])
+      : []),
+    "manifest"
+  ];
+}
+
+function getContextPackFileName(relativePath: string): string {
+  const prefix = `${metadataDirectoryName}/context-packs/`;
+  if (
+    !relativePath.startsWith(prefix) ||
+    relativePath.slice(prefix.length).length === 0 ||
+    relativePath.slice(prefix.length).includes("/") ||
+    relativePath.includes("..")
+  ) {
+    throw new Error("Invalid document-scoped context-pack path.");
+  }
+  return relativePath.slice(prefix.length);
+}
+
+async function removeReviewBatchFileIfPresent(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    if (!metadataDirectoryHandle.removeEntry) {
+      return;
+    }
+    await metadataDirectoryHandle.removeEntry(reviewBatchesFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
 }
 
 function createLegacyBaselineCommit({
@@ -2902,8 +3199,10 @@ function createLegacyBaselineCommit({
     descriptors.document.sha256,
     descriptors.comments.sha256,
     descriptors.patches.sha256,
-    descriptors.manifest.sha256
+    descriptors.manifest.sha256,
+    descriptors.review_batches?.sha256
   ]
+    .filter((hash): hash is string => Boolean(hash))
     .map((hash) => hash.slice(0, 8))
     .join("-");
   return {
@@ -2935,7 +3234,7 @@ async function writeLastKnownGoodGeneration({
       create: true
     });
 
-  for (const key of ["document", "comments", "patches", "manifest"] as const) {
+  for (const key of getCommittedProjectFileKeys(commit)) {
     const text = texts[key];
     const fileHandle = await recoveryDirectoryHandle.getFileHandle(
       `${getProjectFileName(key)}.lkg`,
@@ -3169,14 +3468,32 @@ async function readValidLastKnownGoodGeneration(
       details,
       documentIdentity
     );
-    const texts = { document, comments, patches, manifest };
-
     if (!commit || !normalizedManifest) {
       return null;
     }
+    const reviewBatches = commit.files.review_batches
+      ? await readTextFile(
+          await recoveryDirectoryHandle.getFileHandle(
+            `${reviewBatchesFileName}.lkg`
+          )
+        )
+      : "[]\n";
+    const texts = {
+      document,
+      comments,
+      patches,
+      review_batches: reviewBatches,
+      manifest
+    };
 
     await validateCommittedProjectTexts(texts, commit, details);
     validateManifestCommitIdentity(normalizedManifest, commit, details);
+    validateReviewBatchTextForIdentity({
+      commit,
+      details,
+      identity: getManifestDocumentIdentity(normalizedManifest),
+      text: texts.review_batches
+    });
     return details.length === 0
       ? { commit, manifest: normalizedManifest, texts }
       : null;
@@ -3204,17 +3521,61 @@ function validateManifestCommitIdentity(
   }
 }
 
+function validateReviewBatchTextForIdentity({
+  commit,
+  details,
+  identity,
+  text
+}: {
+  commit: PatchmarkSaveCommit;
+  details: string[];
+  identity: ProjectDocumentIdentity;
+  text: string;
+}): void {
+  if (!commit.files.review_batches) {
+    return;
+  }
+  try {
+    parseReviewBatchRecords({ identity, text });
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/review-batches.json is invalid."
+    );
+  }
+}
+
+function getManifestDocumentIdentity(
+  manifest: PatchmarkManifest
+): ProjectDocumentIdentity {
+  if (!manifest.project_id || !manifest.document_id) {
+    throw new Error("Patchmark document identity is incomplete.");
+  }
+  return createProjectDocumentIdentity(
+    manifest.project_id,
+    manifest.document_id
+  );
+}
+
 async function validateCommittedProjectTexts(
   texts: Record<ProjectCommitFileKey, string>,
   commit: PatchmarkSaveCommit,
   details: string[]
 ): Promise<void> {
   validatePersistedJson(texts, details);
-  const descriptors = await createProjectFileDescriptors(texts);
+  const descriptors = await createProjectFileDescriptors(
+    texts,
+    Boolean(commit.files.review_batches)
+  );
 
-  for (const key of ["document", "comments", "patches", "manifest"] as const) {
+  for (const key of getCommittedProjectFileKeys(commit)) {
     const expected = commit.files[key];
     const actual = descriptors[key];
+    if (!expected || !actual) {
+      details.push(`${getProjectFilePath(key)} is missing from save metadata.`);
+      continue;
+    }
     if (
       expected.path !== actual.path ||
       expected.bytes !== actual.bytes ||
@@ -3229,7 +3590,7 @@ function validatePersistedJson(
   texts: Record<ProjectCommitFileKey, string>,
   details: string[]
 ): void {
-  for (const key of ["comments", "patches"] as const) {
+  for (const key of ["comments", "patches", "review_batches"] as const) {
     try {
       if (!Array.isArray(JSON.parse(texts[key]))) {
         details.push(`${getProjectFilePath(key)} must contain a JSON array.`);
@@ -3300,8 +3661,15 @@ function isPatchmarkSaveCommit(value: unknown): value is PatchmarkSaveCommit {
   }
 
   const files = value.files;
-  return (["document", "comments", "patches", "manifest"] as const).every(
-    (key) => isPersistedFileCommit(files[key], getProjectFilePath(key))
+  return (
+    (["document", "comments", "patches", "manifest"] as const).every(
+      (key) => isPersistedFileCommit(files[key], getProjectFilePath(key))
+    ) &&
+    (files.review_batches === undefined ||
+      isPersistedFileCommit(
+        files.review_batches,
+        getProjectFilePath("review_batches")
+      ))
   );
 }
 
@@ -3422,6 +3790,7 @@ async function preserveQuestionableCurrentProjectFiles(
     ...[
       commentsFileName,
       patchesFileName,
+      reviewBatchesFileName,
       manifestFileName,
       saveCommitFileName
     ].map((fileName) => ({

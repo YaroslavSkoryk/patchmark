@@ -93,6 +93,9 @@ export type PatchmarkSourceReference = {
 export type PatchmarkCommentReplyImport = {
   protocol: "patchmark.comment_reply_import";
   protocol_version: 1;
+  review_batch_id?: string;
+  project_id?: string;
+  document_id?: string;
   summary?: string;
   sources?: PatchmarkSourceReference[];
   replies: Array<{
@@ -302,6 +305,7 @@ export type PatchmarkSaveCommit = {
     comments: PatchmarkPersistedFileCommit;
     patches: PatchmarkPersistedFileCommit;
     manifest: PatchmarkPersistedFileCommit;
+    review_batches?: PatchmarkPersistedFileCommit;
   };
 };
 

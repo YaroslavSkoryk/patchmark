@@ -119,6 +119,23 @@ import {
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import { deriveReviewQueue } from "@/lib/review-queue/review-queue-engine";
+import { createReviewBatchActiveExportEvidence } from "@/lib/review-batches/review-batch-active-evidence";
+import {
+  createTrackedReviewBatchExport,
+  readExactReviewBatchPrompt
+} from "@/lib/review-batches/review-batch-export";
+import {
+  cancelReviewBatch,
+  getActiveReviewBatch,
+  listReviewBatches,
+  recordReviewBatchResponseReceipt
+} from "@/lib/review-batches/review-batch-repository";
+import { classifyReviewBatchResponseAssociation } from "@/lib/review-batches/review-batch-response-receipt";
+import type {
+  PatchmarkReviewBatch,
+  ReviewBatchPromptEnvelope,
+  ReviewBatchSectionSnapshot
+} from "@/lib/review-batches/review-batch-types";
 import {
   createReadingBookmarkAnchorAdapter,
   getDocumentReadingBookmark,
@@ -203,7 +220,6 @@ import {
   saveProjectState,
   switchProjectDocument,
   updateProjectManifestMetadata,
-  writeProjectContextPack,
   writeProjectComments,
   writeProjectImport,
   writeProjectPatches,
@@ -359,15 +375,16 @@ type ReanchorSession = {
   previewProposal: HumanReanchorProposal | null;
 };
 type ChatGptPromptDialogState = {
-  commentIds: string[];
+  batchId: string;
   dedicatedDocumentReview: boolean;
   documentId: string;
-  exportId: string;
-  exportedAt: string;
-  payloadFileName: string;
   promptFileName: string;
-  jsonText: string;
+  jsonText?: string;
   promptText: string;
+};
+type ReviewBatchCancelDialogState = {
+  batchId: string;
+  documentId: string;
 };
 type DocumentLevelExportGuardDialogState =
   | {
@@ -622,6 +639,8 @@ const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
 const EMPTY_DOCUMENT_GROUPS: PatchmarkDocumentGroup[] = [];
 const REVIEW_QUEUE_PREVIEW_EXPORTED_AT = "2000-01-01T00:00:00.000Z";
 const REVIEW_QUEUE_PREVIEW_EXPORT_ID = "comment-export-20000101-000000-000";
+const REVIEW_QUEUE_PREVIEW_BATCH_ID =
+  "review_batch_00000000-0000-4000-8000-000000000000";
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
@@ -702,6 +721,13 @@ export function DocumentEditor() {
   );
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
+  const [reviewBatches, setReviewBatches] = useState<PatchmarkReviewBatch[]>([]);
+  const markdownRef = useRef(markdown);
+  markdownRef.current = markdown;
+  const commentsRef = useRef(comments);
+  commentsRef.current = comments;
+  const patchesRef = useRef(patches);
+  patchesRef.current = patches;
   const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
   const isProjectDataLoadingRef = useRef(isProjectDataLoading);
   isProjectDataLoadingRef.current = isProjectDataLoading;
@@ -807,6 +833,8 @@ export function DocumentEditor() {
     useState(false);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
+  const [reviewBatchCancelDialog, setReviewBatchCancelDialog] =
+    useState<ReviewBatchCancelDialogState | null>(null);
   const [isGuidedReviewPreviewOpen, setIsGuidedReviewPreviewOpen] =
     useState(false);
   const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
@@ -1087,6 +1115,10 @@ export function DocumentEditor() {
         (group) => group.group_id === projectHandle.document?.group_id
       ) ?? null
     : null;
+  const activeReviewBatch = useMemo(
+    () => getActiveReviewBatch(reviewBatches),
+    [reviewBatches]
+  );
   const guidedReviewQueue = useMemo(() => {
     if (
       !isGuidedReviewPreviewOpen ||
@@ -1113,9 +1145,17 @@ export function DocumentEditor() {
           headings,
           markdown,
           patches,
-          project: projectHandle
+          project: projectHandle,
+          reviewBatchEnvelope: {
+            review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
+            project_id: activeDocumentIdentity.projectId,
+            document_id: activeDocumentIdentity.documentId,
+            ordered_comment_ids: selectedCommentIds
+          }
         }).promptText;
       },
+      activeExportEvidence:
+        createReviewBatchActiveExportEvidence(activeReviewBatch),
       comments,
       documentGeneration:
         projectHandle.manifest.save_generation ??
@@ -1127,6 +1167,7 @@ export function DocumentEditor() {
     });
   }, [
     activeDocumentIdentity,
+    activeReviewBatch,
     comments,
     headings,
     isGuidedReviewPreviewOpen,
@@ -2172,6 +2213,7 @@ export function DocumentEditor() {
     setCommentContextMenu(null);
     setComments([]);
     setPatches([]);
+    setReviewBatches([]);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
     setPatchGroupListDialog(null);
@@ -2180,6 +2222,7 @@ export function DocumentEditor() {
     setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setReviewBatchCancelDialog(null);
     setIsGuidedReviewPreviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
@@ -3468,6 +3511,15 @@ export function DocumentEditor() {
       return;
     }
 
+    if (activeReviewBatch) {
+      setIsGuidedReviewPreviewOpen(true);
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${activeReviewBatch.batch_id} is already awaiting a response for this document.`
+      });
+      return;
+    }
+
     const focusedComments = getFocusedCommentsForExport(comments);
 
     if (focusedComments.length === 0) {
@@ -3521,60 +3573,101 @@ export function DocumentEditor() {
       return;
     }
 
-    openChatGptPromptDialog({
+    void createManualReviewBatch({
       dedicatedDocumentReview: documentLevelFocusedComments.length === 1,
       focusedComments
     });
   }
 
-  function openChatGptPromptDialog({
+  async function createManualReviewBatch({
     dedicatedDocumentReview,
     focusedComments
   }: {
     dedicatedDocumentReview: boolean;
     focusedComments: PatchmarkComment[];
   }) {
-    if (!projectHandle) {
+    if (!projectHandle || isCommentBusy) {
       return;
     }
-
-    const documentId = getProjectDocumentScopeId(projectHandle);
+    const operationProject = projectHandle;
+    const operationDocumentId = getProjectDocumentScopeId(operationProject);
+    const operationGeneration = operationProject.persistence.generation;
+    const operationMarkdown = markdown;
+    const operationComments = comments;
+    const operationPatches = patches;
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
-    const fileTimestamp = createFileSafeTimestamp(exportedAt);
-    const { jsonText, promptText } = buildFocusedCommentsPromptPreview({
-      comments: focusedComments,
-      dedicatedDocumentReview,
-      exportedAt,
-      exportId,
-      headings,
-      markdown,
-      patches,
-      project: projectHandle
-    });
-    const fileNamePrefix = dedicatedDocumentReview
-      ? "document-comment"
-      : "focused-comments";
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    setSaveFeedback(null);
 
-    setChatGptPromptDialog({
-      commentIds: focusedComments.map((comment) => comment.id),
-      dedicatedDocumentReview,
-      documentId,
-      exportedAt,
-      exportId,
-      payloadFileName: `${fileTimestamp}-${fileNamePrefix}-payload.json`,
-      promptFileName: `${fileTimestamp}-${fileNamePrefix}-prompt.md`,
-      jsonText,
-      promptText
-    });
-    setSaveFeedback({
-      kind: "info",
-      message: dedicatedDocumentReview
-        ? "Generated a dedicated ChatGPT prompt for one document-level comment."
-        : `Generated a ChatGPT prompt for ${focusedComments.length} focused comment${
-            focusedComments.length === 1 ? "" : "s"
-          }.`
-    });
+    try {
+      const result = await createTrackedReviewBatchExport({
+        algorithmVersion: null,
+        batchType: "manual",
+        buildPrompt: (reviewBatchEnvelope) =>
+          buildFocusedCommentsPromptPreview({
+            comments: focusedComments,
+            dedicatedDocumentReview,
+            exportedAt,
+            exportId,
+            headings: parseMarkdownHeadings(operationMarkdown),
+            markdown: operationMarkdown,
+            patches: operationPatches,
+            project: operationProject,
+            reviewBatchEnvelope
+          }),
+        comments: focusedComments,
+        documentGeneration: operationGeneration,
+        documentTitle:
+          operationProject.document?.display_title ??
+          operationProject.manifest.project_name,
+        markdown: operationMarkdown,
+        now: exportedAt,
+        overLimitWarning: false,
+        patches: operationPatches,
+        project: operationProject,
+        section: null,
+        source: "manual",
+        validateBeforeCommit: () => {
+          if (
+            activeDocumentIdRef.current === operationDocumentId &&
+            (markdownRef.current !== operationMarkdown ||
+              commentsRef.current !== operationComments ||
+              patchesRef.current !== operationPatches)
+          ) {
+            throw new Error(
+              "The document or comments changed during export. Generate a fresh prompt and try again."
+            );
+          }
+        }
+      });
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        return;
+      }
+      setReviewBatches(result.batches);
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: result.batch,
+          jsonText: result.jsonText,
+          promptText: result.promptText
+        })
+      );
+      setSaveFeedback({
+        kind: "success",
+        message: dedicatedDocumentReview
+          ? "Generated and saved a tracked prompt for one document-level comment."
+          : `Generated and saved a tracked prompt for ${focusedComments.length} focused comment${
+              focusedComments.length === 1 ? "" : "s"
+            }. Focus marks were left unchanged.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
   }
 
   function handleGenerateDedicatedDocumentPromptFromGuard() {
@@ -3601,7 +3694,7 @@ export function DocumentEditor() {
     }
 
     setDocumentLevelExportGuardDialog(null);
-    openChatGptPromptDialog({
+    void createManualReviewBatch({
       dedicatedDocumentReview: true,
       focusedComments: [documentComment]
     });
@@ -3653,7 +3746,7 @@ export function DocumentEditor() {
         "Unmarked other comments for this dedicated ChatGPT round."
       );
       setDocumentLevelExportGuardDialog(null);
-      openChatGptPromptDialog({
+      await createManualReviewBatch({
         dedicatedDocumentReview: true,
         focusedComments: [documentComment]
       });
@@ -3681,12 +3774,26 @@ export function DocumentEditor() {
       return;
     }
 
+    const batch = reviewBatches.find(
+      (candidate) => candidate.batch_id === chatGptPromptDialog.batchId
+    );
+    if (!projectHandle || !batch) {
+      setSaveFeedback({
+        kind: "error",
+        message: "The saved Review Batch is no longer available."
+      });
+      return;
+    }
+
     try {
-      await navigator.clipboard.writeText(chatGptPromptDialog.promptText);
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
+      const promptText = await readExactReviewBatchPrompt({
+        batch,
+        project: projectHandle
+      });
+      await navigator.clipboard.writeText(promptText);
       setSaveFeedback({
         kind: "success",
-        message: "Prompt copied. Focused comments marked as exported."
+        message: "Copied the exact saved Review Batch prompt."
       });
     } catch (error) {
       setSaveFeedback({
@@ -3696,42 +3803,9 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleSaveChatGptPrompt() {
-    if (
-      !projectHandle ||
-      !chatGptPromptDialog ||
-      !isDocumentScopeCurrent(
-        chatGptPromptDialog,
-        activeDocumentIdRef.current
-      )
-    ) {
-      return;
-    }
-
-    try {
-      const filePath = await writeProjectContextPack({
-        contents: chatGptPromptDialog.promptText,
-        fileName: chatGptPromptDialog.promptFileName,
-        project: projectHandle
-      });
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
-      setSaveFeedback({
-        kind: "success",
-        message: `Prompt saved to ${filePath}. Focused comments marked as exported.`
-      });
-    } catch (error) {
-      const message = getProjectErrorMessage(error);
-      setCommentsError(message);
-      setSaveFeedback({
-        kind: "error",
-        message
-      });
-    }
-  }
-
   async function handleCopyFocusedJsonPayload() {
     if (
-      !chatGptPromptDialog ||
+      !chatGptPromptDialog?.jsonText ||
       !isDocumentScopeCurrent(
         chatGptPromptDialog,
         activeDocumentIdRef.current
@@ -3750,10 +3824,9 @@ export function DocumentEditor() {
 
     try {
       await navigator.clipboard.writeText(chatGptPromptDialog.jsonText);
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
       setSaveFeedback({
         kind: "success",
-        message: "JSON payload copied. Focused comments marked as exported."
+        message: "JSON payload copied."
       });
     } catch (error) {
       setSaveFeedback({
@@ -3763,36 +3836,275 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleSaveFocusedJsonPayload() {
+  async function handleGenerateGuidedReviewBatch() {
     if (
       !projectHandle ||
-      !chatGptPromptDialog ||
-      !isDocumentScopeCurrent(
-        chatGptPromptDialog,
-        activeDocumentIdRef.current
-      )
+      !guidedReviewQueue?.proposal ||
+      !activeDocumentIdentity ||
+      isCommentBusy
     ) {
       return;
     }
+    if (activeReviewBatch) {
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${activeReviewBatch.batch_id} is already awaiting a response for this document.`
+      });
+      return;
+    }
+
+    const operationProject = projectHandle;
+    const operationIdentity = activeDocumentIdentity;
+    const operationDocumentId = operationIdentity.documentId;
+    const operationMarkdown = markdown;
+    const operationComments = comments;
+    const operationPatches = patches;
+    const previewProposal = guidedReviewQueue.proposal;
+    const freshQueue = deriveReviewQueue({
+      activeExportEvidence: [],
+      buildPromptPreview: ({ batchType, selectedCommentIds }) => {
+        const commentsById = new Map(
+          operationComments.map((comment) => [comment.id, comment])
+        );
+        const selectedComments = selectedCommentIds.flatMap((commentId) => {
+          const comment = commentsById.get(commentId);
+          return comment ? [comment] : [];
+        });
+        return buildFocusedCommentsPromptPreview({
+          comments: selectedComments,
+          dedicatedDocumentReview: batchType === "document_level",
+          exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
+          exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
+          headings: parseMarkdownHeadings(operationMarkdown),
+          markdown: operationMarkdown,
+          patches: operationPatches,
+          project: operationProject,
+          reviewBatchEnvelope: {
+            review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
+            project_id: operationIdentity.projectId,
+            document_id: operationIdentity.documentId,
+            ordered_comment_ids: selectedCommentIds
+          }
+        }).promptText;
+      },
+      comments: operationComments,
+      documentGeneration: operationProject.persistence.generation,
+      documentId: operationIdentity.documentId,
+      markdown: operationMarkdown,
+      patches: operationPatches,
+      projectId: operationIdentity.projectId
+    });
+    if (
+      !freshQueue.proposal ||
+      JSON.stringify(freshQueue.proposal) !== JSON.stringify(previewProposal)
+    ) {
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "The document or comments changed after this preview. Review the refreshed proposal before exporting."
+      });
+      return;
+    }
+
+    const commentsById = new Map(
+      operationComments.map((comment) => [comment.id, comment])
+    );
+    const selectedComments = previewProposal.commentIds.flatMap((commentId) => {
+      const comment = commentsById.get(commentId);
+      return comment ? [comment] : [];
+    });
+    const section: ReviewBatchSectionSnapshot | null =
+      previewProposal.batchType === "section"
+        ? {
+            section_key_snapshot: previewProposal.sectionKey!,
+            heading_snapshot: previewProposal.sectionHeadingSnapshot
+          }
+        : null;
+    const exportedAt = new Date().toISOString();
+    const exportId = createCommentExportId(exportedAt);
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    setSaveFeedback(null);
 
     try {
-      const filePath = await writeProjectContextPack({
-        contents: chatGptPromptDialog.jsonText,
-        fileName: chatGptPromptDialog.payloadFileName,
-        project: projectHandle
+      const result = await createTrackedReviewBatchExport({
+        algorithmVersion: freshQueue.algorithmVersion,
+        batchType: previewProposal.batchType,
+        buildPrompt: (reviewBatchEnvelope) =>
+          buildFocusedCommentsPromptPreview({
+            comments: selectedComments,
+            dedicatedDocumentReview:
+              previewProposal.batchType === "document_level",
+            exportedAt,
+            exportId,
+            headings: parseMarkdownHeadings(operationMarkdown),
+            markdown: operationMarkdown,
+            patches: operationPatches,
+            project: operationProject,
+            reviewBatchEnvelope
+          }),
+        comments: selectedComments,
+        documentGeneration: operationProject.persistence.generation,
+        documentTitle:
+          operationProject.document?.display_title ??
+          operationProject.manifest.project_name,
+        markdown: operationMarkdown,
+        now: exportedAt,
+        overLimitWarning: previewProposal.overLimitWarning,
+        patches: operationPatches,
+        project: operationProject,
+        section,
+        source: "guided_review",
+        validateBeforeCommit: () => {
+          if (
+            activeDocumentIdRef.current === operationDocumentId &&
+            (markdownRef.current !== operationMarkdown ||
+              commentsRef.current !== operationComments ||
+              patchesRef.current !== operationPatches)
+          ) {
+            throw new Error(
+              "The document or comments changed during export. Review the refreshed proposal and try again."
+            );
+          }
+        }
       });
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        return;
+      }
+      setReviewBatches(result.batches);
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: result.batch,
+          jsonText: result.jsonText,
+          promptText: result.promptText
+        })
+      );
       setSaveFeedback({
         kind: "success",
-        message: `JSON payload saved to ${filePath}. Focused comments marked as exported.`
+        message: `Generated and saved tracked Review Batch ${result.batch.batch_id}.`
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
       setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleOpenActiveReviewBatchPrompt() {
+    if (!projectHandle || !activeReviewBatch || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationBatch = activeReviewBatch;
+    const operationDocumentId = operationBatch.document_id;
+    setIsCommentBusy(true);
+    try {
+      const promptText = await readExactReviewBatchPrompt({
+        batch: operationBatch,
+        project: operationProject
+      });
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        return;
+      }
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: operationBatch,
+          promptText
+        })
+      );
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleCopyActiveReviewBatchPrompt() {
+    if (!projectHandle || !activeReviewBatch || isCommentBusy) {
+      return;
+    }
+    if (!navigator.clipboard) {
       setSaveFeedback({
         kind: "error",
-        message
+        message: "Clipboard copy is not available in this browser."
       });
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationBatch = activeReviewBatch;
+    const operationDocumentId = operationBatch.document_id;
+    setIsCommentBusy(true);
+    try {
+      const promptText = await readExactReviewBatchPrompt({
+        batch: operationBatch,
+        project: operationProject
+      });
+      await navigator.clipboard.writeText(promptText);
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        return;
+      }
+      setSaveFeedback({
+        kind: "success",
+        message: "Copied the exact saved Review Batch prompt."
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  function handleRequestCancelActiveReviewBatch() {
+    if (!activeReviewBatch) {
+      return;
+    }
+    setReviewBatchCancelDialog({
+      batchId: activeReviewBatch.batch_id,
+      documentId: activeReviewBatch.document_id
+    });
+  }
+
+  async function handleConfirmCancelReviewBatch() {
+    if (!projectHandle || !reviewBatchCancelDialog || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operation = reviewBatchCancelDialog;
+    if (getProjectDocumentScopeId(operationProject) !== operation.documentId) {
+      setReviewBatchCancelDialog(null);
+      return;
+    }
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const batches = await cancelReviewBatch({
+        batchId: operation.batchId,
+        cancelledAt: new Date().toISOString(),
+        project: operationProject
+      });
+      if (activeDocumentIdRef.current !== operation.documentId) {
+        return;
+      }
+      setReviewBatches(batches);
+      setReviewBatchCancelDialog(null);
+      setChatGptPromptDialog(null);
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Review Batch cancelled. Its saved context pack was kept and no review or document data was deleted."
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
     }
   }
 
@@ -3832,11 +4144,19 @@ export function DocumentEditor() {
 
     let parsedResponse: PatchmarkCommentReplyImport;
     let sourceChatUrl: string | undefined;
+    let responseAssociation: ReturnType<
+      typeof classifyReviewBatchResponseAssociation
+    >;
 
     try {
       parsedResponse = parsePatchmarkCommentReplyImport(
         chatGptImportDialog.responseJson
       );
+      responseAssociation = classifyReviewBatchResponseAssociation({
+        activeBatch: activeReviewBatch,
+        response: parsedResponse,
+        target: getProjectDocumentIdentity(projectHandle)
+      });
       validateAtomicTablePatchImport({
         markdown,
         patchProposals: parsedResponse.patch_proposals
@@ -3898,6 +4218,13 @@ export function DocumentEditor() {
         (commentId) =>
           `Response referenced a comment that was not found: ${commentId}`
       );
+      if (activeReviewBatch && responseAssociation.kind !== "exact") {
+        importWarnings.push(
+          responseAssociation.kind === "legacy_missing_identity"
+            ? "The response did not include exact Review Batch identity. The active batch remains awaiting an associated response."
+            : `${responseAssociation.message} The active batch remains awaiting an associated response.`
+        );
+      }
       const importWrapper = {
         import_id: importId,
         imported_at: importedAt,
@@ -3923,6 +4250,37 @@ export function DocumentEditor() {
         reason: "import_chatgpt_response"
       });
 
+      let nextReviewBatches = reviewBatches;
+      if (responseAssociation.kind === "exact") {
+        try {
+          nextReviewBatches = await recordReviewBatchResponseReceipt({
+            batchId: responseAssociation.batchId,
+            importId,
+            project: projectHandle,
+            responseReceivedAt: importedAt
+          });
+        } catch (error) {
+          if (
+            isDocumentScopeCurrent(
+              chatGptImportDialog,
+              activeDocumentIdRef.current
+            )
+          ) {
+            const message = `The response imported, but its Review Batch receipt could not be recorded: ${getProjectErrorMessage(error)}`;
+            setBaselineMarkdown(markdown);
+            setRestoredMarkdown(null);
+            commentsRef.current = nextComments;
+            patchesRef.current = nextPatches;
+            setComments(nextComments);
+            setPatches(nextPatches);
+            setChatGptImportDialog(null);
+            setCommentsError(message);
+            setSaveFeedback({ kind: "error", message });
+          }
+          return;
+        }
+      }
+
       if (
         !isDocumentScopeCurrent(
           chatGptImportDialog,
@@ -3934,8 +4292,11 @@ export function DocumentEditor() {
 
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      commentsRef.current = nextComments;
+      patchesRef.current = nextPatches;
       setComments(nextComments);
       setPatches(nextPatches);
+      setReviewBatches(nextReviewBatches);
       setChatGptImportDialog(null);
       setSaveFeedback({
         kind: importWarnings.length > 0 ? "info" : "success",
@@ -3960,39 +4321,6 @@ export function DocumentEditor() {
     } finally {
       setIsCommentBusy(false);
     }
-  }
-
-  async function markFocusedExportCommentsAsExported(
-    exportDialog: ChatGptPromptDialogState
-  ) {
-    if (
-      !isDocumentScopeCurrent(exportDialog, activeDocumentIdRef.current)
-    ) {
-      throw new Error(
-        "The target document changed before focused comments were updated."
-      );
-    }
-    const exportedCommentIds = new Set(exportDialog.commentIds);
-    const nextComments = comments.map((comment) =>
-      exportedCommentIds.has(comment.id) && comment.status === "open"
-        ? {
-            ...comment,
-            export_state: {
-              ...comment.export_state,
-              focus_state: "exported" as const,
-              last_exported_at: exportDialog.exportedAt,
-              last_export_id: exportDialog.exportId
-            },
-            updated_at: exportDialog.exportedAt
-          }
-        : comment
-    );
-
-    await persistComments(
-      nextComments,
-      "Marked focused comments as exported.",
-      exportDialog.documentId
-    );
   }
 
   async function handleViewSnapshot(
@@ -6014,6 +6342,7 @@ export function DocumentEditor() {
       }
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      commentsRef.current = nextComments;
       setComments(nextComments);
       setSaveFeedback({
         kind: "success",
@@ -6057,12 +6386,19 @@ export function DocumentEditor() {
         ? Promise.resolve([
             [],
             [],
+            [],
             []
-          ] as [PatchmarkVersionEntry[], PatchmarkComment[], PatchmarkPatch[]])
+          ] as [
+            PatchmarkVersionEntry[],
+            PatchmarkComment[],
+            PatchmarkPatch[],
+            PatchmarkReviewBatch[]
+          ])
         : Promise.all([
             listProjectVersions(loadedProject.project),
             readProjectComments(loadedProject.project),
-            readProjectPatches(loadedProject.project)
+            readProjectPatches(loadedProject.project),
+            listReviewBatches(loadedProject.project)
           ]);
     const canReuseNavigatorState = Boolean(
       projectHandle?.projectManifest &&
@@ -6214,7 +6550,10 @@ export function DocumentEditor() {
       "target_recovery_decision_ready"
     );
     const loadedDocumentId = getProjectDocumentScopeId(loadedProject.project);
-    const [documents, [versions, projectComments, projectPatches]] =
+    const [
+      documents,
+      [versions, projectComments, projectPatches, projectReviewBatches]
+    ] =
       await Promise.all([navigatorPromise, reviewStatePromise]);
     recordDocumentSwitchPerformanceDuration(
       performanceOperationId,
@@ -6280,6 +6619,7 @@ export function DocumentEditor() {
     setVersionEntries(versions);
     setComments(projectComments);
     setPatches(projectPatches);
+    setReviewBatches(projectReviewBatches);
     setDocumentActiveCommentState({
       documentId: loadedDocumentId,
       state: restoredUiState?.activeCommentState ?? { kind: "none" }
@@ -6294,6 +6634,7 @@ export function DocumentEditor() {
     setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setReviewBatchCancelDialog(null);
     setIsGuidedReviewPreviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
@@ -7313,12 +7654,23 @@ export function DocumentEditor() {
 
       {isGuidedReviewPreviewOpen && guidedReviewQueue && projectHandle ? (
         <GuidedReviewPreview
+          activeBatch={activeReviewBatch}
           comments={comments}
           documentTitle={
             projectHandle.document?.display_title ??
             projectHandle.manifest.project_name
           }
+          isBusy={isCommentBusy}
+          onCancelBatch={handleRequestCancelActiveReviewBatch}
           onClose={() => setIsGuidedReviewPreviewOpen(false)}
+          onCopyPrompt={() => void handleCopyActiveReviewBatchPrompt()}
+          onGenerateTrackedPrompt={() =>
+            void handleGenerateGuidedReviewBatch()
+          }
+          onImportResponse={handleOpenChatGptImportDialog}
+          onOpenContextPack={() =>
+            void handleOpenActiveReviewBatchPrompt()
+          }
           queue={guidedReviewQueue}
         />
       ) : null}
@@ -7342,9 +7694,9 @@ export function DocumentEditor() {
                     : "Generate ChatGPT Prompt"}
                 </h2>
                 <p>
-                  {chatGptPromptDialog.dedicatedDocumentReview
-                    ? "This Markdown prompt is dedicated to one whole-document comment. Copying or saving marks only that comment as exported."
-                    : "This Markdown prompt is ready to paste into ChatGPT. Copying or saving marks focused comments as exported, but does not resolve them."}
+                  This is the exact historical prompt saved for Review Batch{" "}
+                  {chatGptPromptDialog.batchId}. Copying reads the committed
+                  context pack and never regenerates current content.
                 </p>
               </div>
               <button type="button" onClick={() => setChatGptPromptDialog(null)}>
@@ -7359,37 +7711,64 @@ export function DocumentEditor() {
               >
                 Copy Prompt
               </button>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={handleSaveChatGptPrompt}
-              >
-                Save Prompt
-              </button>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={handleCopyFocusedJsonPayload}
-              >
-                Copy JSON Payload
-              </button>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={handleSaveFocusedJsonPayload}
-              >
-                Save JSON Payload
-              </button>
+              {chatGptPromptDialog.jsonText ? (
+                <button
+                  type="button"
+                  disabled={isCommentBusy}
+                  onClick={handleCopyFocusedJsonPayload}
+                >
+                  Copy JSON Payload
+                </button>
+              ) : null}
               <span>{chatGptPromptDialog.promptFileName}</span>
             </div>
             <label className="comment-export-json">
               <span>Generated prompt</span>
               <textarea readOnly value={chatGptPromptDialog.promptText} />
             </label>
-            <details className="comment-export-payload-details">
-              <summary>JSON Payload</summary>
-              <textarea readOnly value={chatGptPromptDialog.jsonText} />
-            </details>
+            {chatGptPromptDialog.jsonText ? (
+              <details className="comment-export-payload-details">
+                <summary>JSON Payload</summary>
+                <textarea readOnly value={chatGptPromptDialog.jsonText} />
+              </details>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+
+      {reviewBatchCancelDialog ? (
+        <div className="snapshot-dialog-backdrop">
+          <section
+            aria-label="Cancel Review Batch"
+            className="comment-export-dialog"
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Review Batch</span>
+                <h2>Cancel this exported batch?</h2>
+                <p>
+                  Its comments may return to the Guided Review queue. The saved
+                  context pack will be kept. No comments, replies, patches, or
+                  document content will be deleted.
+                </p>
+              </div>
+            </header>
+            <div className="comment-export-actions">
+              <button
+                disabled={isCommentBusy}
+                onClick={() => void handleConfirmCancelReviewBatch()}
+                type="button"
+              >
+                Cancel exported batch
+              </button>
+              <button
+                disabled={isCommentBusy}
+                onClick={() => setReviewBatchCancelDialog(null)}
+                type="button"
+              >
+                Keep batch
+              </button>
+            </div>
           </section>
         </div>
       ) : null}
@@ -9564,14 +9943,37 @@ function createFileSafeTimestamp(exportedAt: string): string {
     .replace("Z", "");
 }
 
+function createReviewBatchPromptDialogState({
+  batch,
+  jsonText,
+  promptText
+}: {
+  batch: PatchmarkReviewBatch;
+  jsonText?: string;
+  promptText: string;
+}): ChatGptPromptDialogState {
+  return {
+    batchId: batch.batch_id,
+    dedicatedDocumentReview: batch.batch_type === "document_level",
+    documentId: batch.document_id,
+    promptFileName:
+      batch.context_pack.relative_path.split("/").at(-1) ??
+      batch.context_pack.relative_path,
+    ...(jsonText ? { jsonText } : {}),
+    promptText
+  };
+}
+
 function createFocusedCommentsChatGptPrompt(
   jsonText: string,
   {
     dedicatedDocumentReview,
-    observedAt
+    observedAt,
+    reviewBatchEnvelope
   }: {
     dedicatedDocumentReview: boolean;
     observedAt: string;
+    reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
   }
 ): string {
   const dedicatedDocumentReviewNote = dedicatedDocumentReview
@@ -9593,6 +9995,18 @@ For reference-cleanup tasks, preserve necessary references in the actual Markdow
 Prefer small exact patches over rewriting the whole document, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 `
     : "";
+  const reviewBatchResponseRules = reviewBatchEnvelope
+    ? `
+- Preserve and return the exact \`review_batch_id\`, \`project_id\`, and \`document_id\` from the exported Review Batch envelope.
+- Preserve each exact \`comment_id\`; do not infer or rewrite document-local comment identity.
+`
+    : "";
+  const reviewBatchResponseFields = reviewBatchEnvelope
+    ? `  "review_batch_id": ${JSON.stringify(reviewBatchEnvelope.review_batch_id)},
+  "project_id": ${JSON.stringify(reviewBatchEnvelope.project_id)},
+  "document_id": ${JSON.stringify(reviewBatchEnvelope.document_id)},
+`
+    : "";
 
   return `# Patchmark Focused Comments Review
 
@@ -9611,6 +10025,7 @@ Do not describe a new proposal as a revision of an already accepted patch. Earli
 ## Collaboration Rules
 
 - Reply to each exported comment by \`comment_id\`.
+${reviewBatchResponseRules}
 - Do not resolve comments.
 - Only the human user can resolve comments in Patchmark.
 - If a comment needs clarification, ask a question linked to that \`comment_id\`.
@@ -9761,7 +10176,7 @@ Use this exact protocol:
 {
   "protocol": "patchmark.comment_reply_import",
   "protocol_version": 1,
-  "summary": "Brief summary of what you did.",
+${reviewBatchResponseFields}  "summary": "Brief summary of what you did.",
   "replies": [
     {
       "comment_id": "PM-COMMENT-0001",
@@ -14984,12 +15399,7 @@ function createChatGptImportSummaryMessage({
   ];
 
   if (warnings.length > 0) {
-    summary.push(`Some response items referenced comments that were not found: ${
-      warnings
-        .map((warning) => warning.split(": ").at(-1))
-        .filter(Boolean)
-        .join(", ")
-    }`);
+    summary.push(warnings.join(" "));
   }
 
   return summary.join(" ");
@@ -15003,7 +15413,8 @@ function buildFocusedCommentsPromptPreview({
   headings,
   markdown,
   patches,
-  project
+  project,
+  reviewBatchEnvelope
 }: {
   comments: PatchmarkComment[];
   dedicatedDocumentReview: boolean;
@@ -15013,6 +15424,7 @@ function buildFocusedCommentsPromptPreview({
   markdown: string;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
 }): { jsonText: string; promptText: string } {
   const exportPayload = createFocusedCommentsExportPayload({
     comments,
@@ -15022,14 +15434,16 @@ function buildFocusedCommentsPromptPreview({
     headings,
     markdown,
     patches,
-    project
+    project,
+    reviewBatchEnvelope
   });
   const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
   return {
     jsonText,
     promptText: createFocusedCommentsChatGptPrompt(jsonText, {
       dedicatedDocumentReview,
-      observedAt: exportedAt.slice(0, 10)
+      observedAt: exportedAt.slice(0, 10),
+      reviewBatchEnvelope
     })
   };
 }
@@ -15042,7 +15456,8 @@ function createFocusedCommentsExportPayload({
   headings,
   markdown,
   patches,
-  project
+  project,
+  reviewBatchEnvelope
 }: {
   comments: PatchmarkComment[];
   dedicatedDocumentReview: boolean;
@@ -15052,6 +15467,7 @@ function createFocusedCommentsExportPayload({
   markdown: string;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
 }) {
   const tableContexts = createCanonicalTableContextsForExport({
     comments,
@@ -15066,6 +15482,9 @@ function createFocusedCommentsExportPayload({
     export_scope: dedicatedDocumentReview
       ? "dedicated_document_comment"
       : "focused_comments",
+    ...(reviewBatchEnvelope
+      ? { review_batch: reviewBatchEnvelope }
+      : {}),
     project: {
       ...getProjectDocumentExportIdentity(project),
       exported_at: exportedAt
@@ -15075,6 +15494,12 @@ function createFocusedCommentsExportPayload({
         "You are helping review and improve a Markdown document through Patchmark comments.",
       rules: [
         "Reply to each exported comment by comment_id.",
+        ...(reviewBatchEnvelope
+          ? [
+              "Return the exact review_batch_id, project_id, and document_id in the response root.",
+              "Preserve every exact document-local comment_id from the Review Batch envelope."
+            ]
+          : []),
         "Do not resolve comments. Only the human resolves comments.",
         "Earlier accepted patches linked to a comment may be included as related_patch_history. Treat them as immutable history.",
         "Treat the supplied current Markdown and current anchor context as the source of truth.",

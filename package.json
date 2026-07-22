@@ -21,6 +21,7 @@
     "test:document-switch-performance-browser": "node scripts/document-switch-performance-browser.test.mjs",
     "test:review-queue": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/review-queue.test.mjs",
     "test:review-queue-browser": "node scripts/review-queue-browser.test.mjs",
+    "test:review-batches": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/review-batches.test.mjs",
     "audit:persistence": "node scripts/persistence-size-audit.mjs",
     "compact:comment-history": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compact-comment-history.mjs",
     "test:persistence-browser-audit": "node scripts/persistence-browser-audit.mjs",

@@ -141,3 +141,10 @@ read-only dry-run preview. It proposes the next follow-up, whole-document, or
 same-H2 comment batch without marking, exporting, persisting, deferring, or
 resolving anything. See
 [`docs/guided-review-phase-1-review-queue.md`](docs/guided-review-phase-1-review-queue.md).
+
+Guided Review Phase 2 adds persistent, document-scoped Review Batches for both
+Guided Review proposals and manual focused-comment exports. Each batch owns one
+exact fingerprinted context pack, enforces one active export per document, can
+be safely reopened or cancelled, and clears active queue evidence only after an
+exactly identified response imports successfully. See
+[`docs/guided-review-phase-2-review-batches.md`](docs/guided-review-phase-2-review-batches.md).

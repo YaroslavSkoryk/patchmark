@@ -11,7 +11,7 @@ import {
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, join, relative } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   CdpClient,
@@ -162,10 +162,9 @@ try {
   await clickButtonByText(client, "Generate ChatGPT Prompt");
   await waitFor(
     client,
-    `document.querySelector('[aria-label="Generate ChatGPT prompt"] textarea')?.value.includes("PM-COMMENT-0001")`,
-    "existing manual prompt"
+    `document.querySelector('[aria-label="Generate ChatGPT prompt"] textarea')?.value.includes('"review_batch_id"')`,
+    "tracked manual prompt"
   );
-  await clickButtonByText(client, "Save Prompt");
   await waitFor(
     client,
     `window.__patchmarkFixtureWriteLog?.some((entry) => entry.path.includes("context-packs/") && entry.status === "completed")`,
@@ -173,15 +172,164 @@ try {
   );
   await waitFor(
     client,
-    `window.__patchmarkFixtureWriteLog?.some((entry) => entry.path.endsWith("comments.json") && entry.status === "completed")`,
-    "manual comment export-state write"
+    `window.__patchmarkFixtureWriteLog?.some((entry) => entry.path.endsWith("review-batches.json") && entry.status === "completed")`,
+    "manual review batch write"
   );
   const manualWritePaths = await evaluate(client, {
     expression: `window.__patchmarkFixtureWriteLog.map((entry) => entry.path)`
   });
   assert.ok(manualWritePaths.some((path) => path.includes("context-packs/")));
-  assert.ok(manualWritePaths.some((path) => path.endsWith("comments.json")));
-  assert.ok(manualWritePaths.every((path) => !path.includes("review-batch")));
+  assert.ok(manualWritePaths.some((path) => path.endsWith("review-batches.json")));
+  assert.ok(manualWritePaths.every((path) => !path.endsWith("comments.json")));
+  const exactExportedPrompt = await evaluate(client, {
+    expression:
+      `document.querySelector('[aria-label="Generate ChatGPT prompt"] textarea')?.value ?? ""`
+  });
+  const exportedPayload = JSON.parse(
+    exactExportedPrompt.match(/## Patchmark Export Payload\n\n```json\n([\s\S]+)\n```\n?$/)?.[1]
+  );
+  const exportedBatchId = exportedPayload.review_batch.review_batch_id;
+  assert.ok(exportedBatchId.startsWith("review_batch_"));
+  assert.equal(exportedPayload.review_batch.document_id, "doc_market");
+  assert.deepEqual(exportedPayload.review_batch.ordered_comment_ids, [
+    "PM-COMMENT-0001"
+  ]);
+
+  await closePromptDialog(client);
+  await client.call("Page.navigate", { url: editorUrl });
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitFor(
+    client,
+    `document.querySelectorAll(".comment-floating-item").length === 4`,
+    "reopened document comments"
+  );
+  await clickButtonByText(client, "Guided Review Preview");
+  await waitFor(
+    client,
+    `document.querySelector('[aria-label="Active Review Batch"]')?.textContent?.includes("Awaiting ChatGPT response")`,
+    "active batch after restart"
+  );
+  await clickButtonByText(client, "Open context pack");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Generate ChatGPT prompt"]'))`,
+    "saved context pack reopened"
+  );
+  const reopenedPrompt = await evaluate(client, {
+    expression:
+      `document.querySelector('[aria-label="Generate ChatGPT prompt"] textarea')?.value ?? ""`
+  });
+  assert.equal(reopenedPrompt, exactExportedPrompt);
+  await closePromptDialog(client);
+  await clickButtonByText(client, "Cancel batch");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Cancel Review Batch"]'))`,
+    "cancel confirmation"
+  );
+  await clickButtonByText(client, "Cancel exported batch");
+  await waitFor(
+    client,
+    `!document.querySelector('[aria-label="Active Review Batch"]') && Boolean(document.querySelector('[aria-label="Suggested next batch"]'))`,
+    "cancelled batch removed from active evidence"
+  );
+  const persistedBatches = JSON.parse(
+    readFileSync(
+      join(
+        projectDir,
+        ".patchmark",
+        "documents",
+        "doc_market",
+        "review-batches.json"
+      ),
+      "utf8"
+    )
+  );
+  const cancelledBatch = persistedBatches.find(
+    (batch) => batch.batch_id === exportedBatchId
+  );
+  assert.equal(cancelledBatch.status, "cancelled");
+  assert.ok(
+    statSync(
+      join(
+        projectDir,
+        ".patchmark",
+        "documents",
+        "doc_market",
+        "context-packs",
+        basename(cancelledBatch.context_pack.relative_path)
+      )
+    ).isFile()
+  );
+
+  await clickButtonByText(client, "Generate tracked prompt");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Generate ChatGPT prompt"]'))`,
+    "guided tracked prompt"
+  );
+  const guidedPrompt = await evaluate(client, {
+    expression:
+      `document.querySelector('[aria-label="Generate ChatGPT prompt"] textarea')?.value ?? ""`
+  });
+  const guidedPayload = JSON.parse(
+    guidedPrompt.match(/## Patchmark Export Payload\n\n```json\n([\s\S]+)\n```\n?$/)?.[1]
+  );
+  const guidedEnvelope = guidedPayload.review_batch;
+  assert.equal(guidedEnvelope.document_id, "doc_market");
+  assert.deepEqual(guidedEnvelope.ordered_comment_ids, [
+    "PM-COMMENT-0001",
+    "PM-COMMENT-0002"
+  ]);
+  await closePromptDialog(client);
+  await clickButtonByText(client, "Import response");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Import ChatGPT response"]'))`,
+    "response import dialog"
+  );
+  await fillImportResponse(client, {
+    protocol: "patchmark.comment_reply_import",
+    protocol_version: 1,
+    review_batch_id: guidedEnvelope.review_batch_id,
+    project_id: guidedEnvelope.project_id,
+    document_id: guidedEnvelope.document_id,
+    summary: "Reviewed the tracked batch.",
+    replies: [
+      {
+        comment_id: "PM-COMMENT-0001",
+        reply: "The retail evidence is clear.",
+        reply_sources: [],
+        suggested_user_action: "review"
+      }
+    ],
+    patch_proposals: [],
+    open_questions: []
+  });
+  await clickButtonByText(client, "Import");
+  await waitFor(
+    client,
+    `!document.querySelector('[aria-label="Import ChatGPT response"]') && !document.querySelector('[aria-label="Active Review Batch"]')`,
+    "exact response receipt"
+  );
+  const receivedBatches = JSON.parse(
+    readFileSync(
+      join(
+        projectDir,
+        ".patchmark",
+        "documents",
+        "doc_market",
+        "review-batches.json"
+      ),
+      "utf8"
+    )
+  );
+  const receivedBatch = receivedBatches.find(
+    (batch) => batch.batch_id === guidedEnvelope.review_batch_id
+  );
+  assert.equal(receivedBatch.status, "response_received");
+  assert.ok(receivedBatch.import_id);
 
   console.log(
     JSON.stringify(
@@ -190,6 +338,9 @@ try {
         firstPreview,
         manualExportWritePaths: manualWritePaths,
         noWriteFingerprintStable: true,
+        exactPromptReopenedAfterRestart: reopenedPrompt === exactExportedPrompt,
+        cancellationKeptContextPack: true,
+        exactResponseReceipt: true,
         previewWriteCount: 0,
         secondPreview,
         switchClosedPreview: true
@@ -242,6 +393,37 @@ async function clickPreviewClose(pageClient) {
     `!document.querySelector('[aria-label="Guided Review Preview"]')`,
     "review preview closed"
   );
+}
+
+async function closePromptDialog(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = document.querySelector('[aria-label="Generate ChatGPT prompt"] .snapshot-dialog-header > button');
+      if (!button) throw new Error("Prompt close button not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await waitFor(
+    pageClient,
+    `!document.querySelector('[aria-label="Generate ChatGPT prompt"]')`,
+    "prompt dialog closed"
+  );
+}
+
+async function fillImportResponse(pageClient, response) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const textarea = document.querySelector('[aria-label="Import ChatGPT response"] .comment-import-fields textarea');
+      if (!textarea) throw new Error("Import response textarea not found.");
+      const valueSetter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value").set;
+      valueSetter.call(textarea, ${JSON.stringify(JSON.stringify(response, null, 2))});
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
 }
 
 async function clickProjectDocument(pageClient, title) {

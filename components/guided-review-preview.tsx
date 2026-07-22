@@ -1,4 +1,5 @@
 import type { PatchmarkComment } from "@/lib/project/project-types";
+import type { PatchmarkReviewBatch } from "@/lib/review-batches/review-batch-types";
 import type {
   CommentReviewReasonCode,
   CommentReviewState,
@@ -46,14 +47,28 @@ const stopReasonLabels: Record<ReviewQueueProposal["stopReason"], string> = {
 };
 
 export function GuidedReviewPreview({
+  activeBatch,
   comments,
   documentTitle,
+  isBusy,
+  onCancelBatch,
   onClose,
+  onCopyPrompt,
+  onGenerateTrackedPrompt,
+  onImportResponse,
+  onOpenContextPack,
   queue
 }: {
+  activeBatch: PatchmarkReviewBatch | null;
   comments: PatchmarkComment[];
   documentTitle: string;
+  isBusy: boolean;
+  onCancelBatch: () => void;
   onClose: () => void;
+  onCopyPrompt: () => void;
+  onGenerateTrackedPrompt: () => void;
+  onImportResponse: () => void;
+  onOpenContextPack: () => void;
   queue: ReviewQueue;
 }) {
   const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
@@ -67,11 +82,12 @@ export function GuidedReviewPreview({
       >
         <header className="snapshot-dialog-header">
           <div>
-            <span>Dry run only</span>
+            <span>{activeBatch ? "Tracked export" : "Dry run only"}</span>
             <h2>Guided Review Preview</h2>
             <p>
-              Proposes the next batch without marking, exporting, saving, or
-              changing any project data.
+              {activeBatch
+                ? "This document has one exported Review Batch awaiting a response."
+                : "Proposes the next batch without marking, exporting, saving, or changing any project data."}
             </p>
           </div>
           <button type="button" onClick={onClose}>
@@ -98,6 +114,85 @@ export function GuidedReviewPreview({
             ))}
           </dl>
 
+          {activeBatch ? (
+            <section
+              className="guided-review-proposal"
+              aria-label="Active Review Batch"
+            >
+              <header>
+                <div>
+                  <span>Batch exported</span>
+                  <h3>Awaiting ChatGPT response</h3>
+                </div>
+                <strong>
+                  {activeBatch.ordered_comment_ids.length} comment
+                  {activeBatch.ordered_comment_ids.length === 1 ? "" : "s"}
+                </strong>
+              </header>
+              <dl className="guided-review-counts">
+                <div>
+                  <dt>Document</dt>
+                  <dd>{activeBatch.document_title_snapshot}</dd>
+                </div>
+                <div>
+                  <dt>Section</dt>
+                  <dd>
+                    {activeBatch.section?.heading_snapshot ??
+                      (activeBatch.batch_type === "document_level"
+                        ? "Whole document"
+                        : "Manual selection")}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Source</dt>
+                  <dd>
+                    {activeBatch.source === "guided_review"
+                      ? "Guided Review"
+                      : "Manual export"}
+                  </dd>
+                </div>
+                <div>
+                  <dt>Exported</dt>
+                  <dd>{new Date(activeBatch.exported_at).toLocaleString()}</dd>
+                </div>
+              </dl>
+              <p className="guided-review-warning">
+                This is a historical exported snapshot. Copy and open actions
+                use the exact saved context pack and never regenerate it from
+                current document content.
+              </p>
+              <ol className="guided-review-comment-list">
+                {activeBatch.ordered_comment_ids.map((commentId) => (
+                  <li className="guided-review-comment-card" key={commentId}>
+                    <header>
+                      <strong>{commentId}</strong>
+                      <span data-state="awaiting_chatgpt_response">
+                        Awaiting ChatGPT
+                      </span>
+                    </header>
+                  </li>
+                ))}
+              </ol>
+              <div className="comment-export-actions">
+                <button disabled={isBusy} onClick={onCopyPrompt} type="button">
+                  Copy prompt again
+                </button>
+                <button
+                  disabled={isBusy}
+                  onClick={onOpenContextPack}
+                  type="button"
+                >
+                  Open context pack
+                </button>
+                <button disabled={isBusy} onClick={onImportResponse} type="button">
+                  Import response
+                </button>
+                <button disabled={isBusy} onClick={onCancelBatch} type="button">
+                  Cancel batch
+                </button>
+              </div>
+            </section>
+          ) : (
           <section
             className="guided-review-proposal"
             aria-label="Suggested next batch"
@@ -153,11 +248,21 @@ export function GuidedReviewPreview({
                     ) : null;
                   })}
                 </ol>
+                <div className="comment-export-actions">
+                  <button
+                    disabled={isBusy}
+                    onClick={onGenerateTrackedPrompt}
+                    type="button"
+                  >
+                    Generate tracked prompt
+                  </button>
+                </div>
               </>
             ) : (
               <p>No comment currently requests another ChatGPT turn.</p>
             )}
           </section>
+          )}
 
           <details className="guided-review-classifications">
             <summary>All comment classifications</summary>

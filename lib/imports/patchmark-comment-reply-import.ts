@@ -126,6 +126,18 @@ export function parsePatchmarkCommentReplyImport(
   const normalizedResponse: PatchmarkCommentReplyImport = {
     protocol: "patchmark.comment_reply_import",
     protocol_version: 1,
+    review_batch_id:
+      typeof parsedResponse.review_batch_id === "string"
+        ? parsedResponse.review_batch_id
+        : undefined,
+    project_id:
+      typeof parsedResponse.project_id === "string"
+        ? parsedResponse.project_id
+        : undefined,
+    document_id:
+      typeof parsedResponse.document_id === "string"
+        ? parsedResponse.document_id
+        : undefined,
     summary:
       typeof parsedResponse.summary === "string"
         ? normalizeOptionalProtocolTextField({
