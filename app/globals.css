@@ -1808,6 +1808,28 @@ button {
   padding: 18px;
 }
 
+.guided-review-wizard-dialog {
+  width: min(980px, 100%);
+}
+
+.guided-review-wizard-body {
+  display: grid;
+  gap: 16px;
+  min-height: 0;
+  overflow: auto;
+  padding: 18px;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 .guided-review-document {
   display: grid;
   gap: 3px;
@@ -1823,6 +1845,29 @@ button {
 
 .guided-review-document small {
   color: var(--muted);
+}
+
+.guided-review-step {
+  display: grid;
+  gap: 14px;
+}
+
+.guided-review-step > header {
+  display: grid;
+  gap: 4px;
+}
+
+.guided-review-step > header span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.guided-review-step h3,
+.guided-review-step h4,
+.guided-review-step p {
+  margin: 0;
 }
 
 .guided-review-counts {
@@ -1944,6 +1989,12 @@ button {
   color: #714700;
 }
 
+.guided-review-comment-card > header span[data-state="awaiting_chatgpt_response"] {
+  border-color: #7d92ba;
+  background: #eef3ff;
+  color: #2f4775;
+}
+
 .guided-review-comment-card dl {
   display: grid;
   gap: 8px;
@@ -1974,6 +2025,110 @@ button {
 
 .guided-review-classifications > .guided-review-comment-list {
   padding: 14px;
+}
+
+.guided-review-category-explanations,
+.guided-review-empty-state,
+.guided-review-proposal-summary,
+.guided-review-adjustment-section,
+.guided-review-batch-details,
+.guided-review-detail-list {
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.guided-review-category-explanations,
+.guided-review-empty-state,
+.guided-review-proposal-summary,
+.guided-review-adjustment-section {
+  display: grid;
+  gap: 9px;
+  padding: 12px;
+}
+
+.guided-review-detail-list > summary {
+  cursor: pointer;
+  padding: 12px;
+  font-weight: 800;
+}
+
+.guided-review-detail-list[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.guided-review-detail-list ul,
+.guided-review-adjustment-section ul {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 12px;
+  list-style: none;
+}
+
+.guided-review-detail-list li,
+.guided-review-adjustment-section li {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.guided-review-detail-list li p,
+.guided-review-adjustment-section li p {
+  margin: 4px 0;
+}
+
+.guided-review-detail-list small,
+.guided-review-adjustment-section small {
+  color: var(--muted);
+}
+
+.guided-review-proposal-summary dl,
+.guided-review-batch-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.guided-review-proposal-summary dl div,
+.guided-review-batch-details div {
+  display: grid;
+  gap: 3px;
+}
+
+.guided-review-proposal-summary dt,
+.guided-review-batch-details dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.guided-review-proposal-summary dd,
+.guided-review-batch-details dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.guided-review-card-actions,
+.guided-review-wizard-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.guided-review-error,
+.guided-review-stale {
+  border: 1px solid #c9665b;
+  background: #fff0ed;
+  color: #702b25;
+  padding: 10px;
+}
+
+.guided-review-stale {
+  display: grid;
+  gap: 7px;
 }
 
 .document-export-guard-dialog {
@@ -3899,6 +4054,23 @@ button {
 
   .guided-review-counts {
     grid-template-columns: 1fr;
+  }
+
+  .guided-review-proposal-summary dl,
+  .guided-review-batch-details {
+    grid-template-columns: 1fr;
+  }
+
+  .guided-review-detail-list li,
+  .guided-review-adjustment-section li {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .guided-review-card-actions,
+  .guided-review-wizard-actions {
+    align-items: stretch;
+    flex-direction: column;
   }
 }
 

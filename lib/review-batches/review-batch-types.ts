@@ -34,6 +34,13 @@ export type ReviewBatchSectionSnapshot = {
   heading_snapshot: string | null;
 };
 
+export type ReviewBatchSelectionAdjustment = {
+  base_proposal_comment_ids: string[];
+  final_comment_ids: string[];
+  transiently_removed_comment_ids: string[];
+  transiently_added_comment_ids: string[];
+};
+
 export type PatchmarkReviewBatch = {
   schema_version: typeof REVIEW_BATCH_SCHEMA_VERSION;
   batch_id: string;
@@ -43,6 +50,7 @@ export type PatchmarkReviewBatch = {
   batch_type: ReviewBatchType;
   ordered_comment_ids: string[];
   section: ReviewBatchSectionSnapshot | null;
+  selection_adjustment?: ReviewBatchSelectionAdjustment;
   algorithm_version: number | null;
   prompt_builder_version: typeof REVIEW_BATCH_PROMPT_BUILDER_VERSION;
   document_generation: number;

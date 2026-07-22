@@ -20,6 +20,8 @@
     "test:document-switch-performance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/document-switch-performance.test.mjs",
     "test:document-switch-performance-browser": "node scripts/document-switch-performance-browser.test.mjs",
     "test:review-queue": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/review-queue.test.mjs",
+    "test:guided-review-session": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/guided-review-session.test.mjs",
+    "test:review-queue-overrides": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/review-queue-overrides.test.mjs",
     "test:review-queue-browser": "node scripts/review-queue-browser.test.mjs",
     "test:review-batches": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/review-batches.test.mjs",
     "audit:persistence": "node scripts/persistence-size-audit.mjs",

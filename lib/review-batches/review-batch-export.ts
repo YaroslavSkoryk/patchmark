@@ -23,6 +23,7 @@ import {
   REVIEW_BATCH_SCHEMA_VERSION,
   type PatchmarkReviewBatch,
   type ReviewBatchPromptEnvelope,
+  type ReviewBatchSelectionAdjustment,
   type ReviewBatchSectionSnapshot,
   type ReviewBatchSource,
   type ReviewBatchType
@@ -49,6 +50,7 @@ export async function createTrackedReviewBatchExport({
   patches,
   project,
   section,
+  selectionAdjustment,
   source,
   validateBeforeCommit
 }: {
@@ -68,6 +70,7 @@ export async function createTrackedReviewBatchExport({
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
   section: ReviewBatchSectionSnapshot | null;
+  selectionAdjustment?: ReviewBatchSelectionAdjustment;
   source: ReviewBatchSource;
   validateBeforeCommit?: () => void;
 }): Promise<TrackedReviewBatchExportResult> {
@@ -130,6 +133,9 @@ export async function createTrackedReviewBatchExport({
     batch_type: batchType,
     ordered_comment_ids: orderedCommentIds,
     section,
+    ...(selectionAdjustment
+      ? { selection_adjustment: selectionAdjustment }
+      : {}),
     algorithm_version: algorithmVersion,
     prompt_builder_version: REVIEW_BATCH_PROMPT_BUILDER_VERSION,
     document_generation: documentGeneration,

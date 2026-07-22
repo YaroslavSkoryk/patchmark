@@ -145,9 +145,12 @@ exact tokenizer count.
 Identical inputs produce identical semantic output. The result contains no
 runtime timestamp or random ID.
 
-## Preview and No-Write Guarantee
+## Original Preview and No-Write Guarantee
 
-**Guided Review Preview** appears in Project Folder Mode. Computation starts
+Phase 1 originally exposed **Guided Review Preview** in Project Folder Mode.
+Phase 3 replaces that diagnostic modal with the Guided Review Wizard while
+retaining the same no-write guarantees for overview and transient proposal
+interactions. Computation starts
 only when the preview is opened and recomputes from the current active working
 Markdown while open. The modal displays queue counts, the proposed batch,
 approximate prompt size, selection reasons, selected comment details, and all
@@ -170,7 +173,7 @@ The current in-memory Markdown is authoritative for anchor positions, section
 buckets, order, and prompt content, including recovered unsaved Markdown. Queue
 evaluation never saves that content. Bookmarks do not affect priority.
 
-Loading a standalone file or another project document closes the preview. Queue
+Loading a standalone file or another project document closes the wizard. Queue
 construction is synchronous and tied to the current render's document identity,
 so a previous document's proposal cannot complete later beneath a new title.
 Closed previews perform no queue or prompt-size work, preserving the existing

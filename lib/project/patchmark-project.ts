@@ -79,6 +79,12 @@ import {
   serializeReviewBatchRecords
 } from "../review-batches/review-batch-schema.ts";
 import type { PatchmarkReviewBatch } from "../review-batches/review-batch-types.ts";
+import {
+  createEmptyReviewQueueOverrides,
+  parseReviewQueueOverrides,
+  serializeReviewQueueOverrides
+} from "../review-queue/review-queue-override-schema.ts";
+import type { PatchmarkReviewQueueOverrides } from "../review-queue/review-queue-override-types.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
@@ -86,6 +92,7 @@ const manifestFileName = "manifest.json";
 const commentsFileName = "comments.json";
 const patchesFileName = "patches.json";
 const reviewBatchesFileName = "review-batches.json";
+const reviewQueueOverridesFileName = "review-queue-overrides.json";
 const saveCommitFileName = "save-commit.json";
 const recoveryDirectoryName = "recovery";
 const saveCommitFormatVersion = 1;
@@ -148,9 +155,11 @@ type PatchmarkProjectPersistenceState = {
   commentsReference?: PatchmarkComment[];
   patchesReference?: PatchmarkPatch[];
   reviewBatchesReference?: PatchmarkReviewBatch[];
+  reviewQueueOverridesReference?: PatchmarkReviewQueueOverrides;
   commentsRaw?: string;
   patchesRaw?: string;
   reviewBatchesRaw?: string;
+  reviewQueueOverridesRaw?: string;
   readSource: "current" | "current_readonly" | "lkg";
   recovery?: PatchmarkProjectRecoveryState;
   debug: PatchmarkPersistenceDebugState;
@@ -202,6 +211,7 @@ export type ProjectCommitFileKey =
   | "comments"
   | "patches"
   | "review_batches"
+  | "review_queue_overrides"
   | "manifest";
 
 type PreparedProjectFile = {
@@ -221,6 +231,10 @@ type ProjectCommitRequest = {
   reviewBatchesUpdate?: (
     batches: PatchmarkReviewBatch[]
   ) => PatchmarkReviewBatch[];
+  reviewQueueOverrides?: PatchmarkReviewQueueOverrides;
+  reviewQueueOverridesUpdate?: (
+    overrides: PatchmarkReviewQueueOverrides
+  ) => PatchmarkReviewQueueOverrides;
   manifest?: PatchmarkManifest;
   manifestUpdate?: (manifest: PatchmarkManifest) => PatchmarkManifest;
   reason: string;
@@ -1453,6 +1467,68 @@ export async function commitProjectReviewBatchUpdate({
   return project.persistence.reviewBatchesReference ?? [];
 }
 
+export async function readProjectReviewQueueOverrides(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkReviewQueueOverrides> {
+  if (project.persistence.reviewQueueOverridesReference) {
+    return project.persistence.reviewQueueOverridesReference;
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const hasCommittedOverrides = Boolean(
+    project.persistence.files.review_queue_overrides
+  );
+  let text = project.persistence.reviewQueueOverridesRaw;
+  if (text === undefined && hasCommittedOverrides) {
+    const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
+    text = await readTextFile(
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? `${reviewQueueOverridesFileName}.lkg`
+          : reviewQueueOverridesFileName
+      )
+    );
+  }
+  const overrides = hasCommittedOverrides
+    ? parseReviewQueueOverrides({
+        identity,
+        text:
+          text ??
+          serializeReviewQueueOverrides({
+            identity,
+            overrides: createEmptyReviewQueueOverrides(identity)
+          })
+      })
+    : createEmptyReviewQueueOverrides(identity);
+  project.persistence.reviewQueueOverridesReference = overrides;
+  project.persistence.reviewQueueOverridesRaw = undefined;
+  return overrides;
+}
+
+export async function commitProjectReviewQueueOverridesUpdate({
+  project,
+  reason,
+  update
+}: {
+  project: PatchmarkProjectHandle;
+  reason: string;
+  update: (
+    overrides: PatchmarkReviewQueueOverrides
+  ) => PatchmarkReviewQueueOverrides;
+}): Promise<PatchmarkReviewQueueOverrides> {
+  if (!project.persistence.reviewQueueOverridesReference) {
+    await readProjectReviewQueueOverrides(project);
+  }
+  await commitProjectState({
+    project,
+    reason,
+    reviewQueueOverridesUpdate: update
+  });
+  return (
+    project.persistence.reviewQueueOverridesReference ??
+    createEmptyReviewQueueOverrides(getProjectDocumentIdentity(project))
+  );
+}
+
 export async function readProjectPatches(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkPatch[]> {
@@ -1640,6 +1716,9 @@ export async function restoreProjectLastKnownGood(
     if (!lkg.commit.files.review_batches) {
       await removeReviewBatchFileIfPresent(project.directoryHandle);
     }
+    if (!lkg.commit.files.review_queue_overrides) {
+      await removeReviewQueueOverridesFileIfPresent(project.directoryHandle);
+    }
   } finally {
     await cleanupPreparedFiles(preparedFiles);
   }
@@ -1662,6 +1741,9 @@ export async function restoreProjectLastKnownGood(
       patchesRaw: lkg.texts.patches,
       reviewBatchesRaw: lkg.commit.files.review_batches
         ? lkg.texts.review_batches
+        : undefined,
+      reviewQueueOverridesRaw: lkg.commit.files.review_queue_overrides
+        ? lkg.texts.review_queue_overrides
         : undefined,
       readSource: "current",
       debug: createEmptyPersistenceDebugState()
@@ -1701,6 +1783,8 @@ async function commitProjectState({
   patches,
   reviewBatches,
   reviewBatchesUpdate,
+  reviewQueueOverrides,
+  reviewQueueOverridesUpdate,
   project,
   reason
 }: ProjectCommitRequest & {
@@ -1742,6 +1826,8 @@ async function commitProjectState({
         patches,
         reviewBatches,
         reviewBatchesUpdate,
+        reviewQueueOverrides,
+        reviewQueueOverridesUpdate,
         project,
         queue,
         reason,
@@ -1767,6 +1853,8 @@ async function executeProjectCommit({
   patches,
   reviewBatches,
   reviewBatchesUpdate,
+  reviewQueueOverrides,
+  reviewQueueOverridesUpdate,
   project,
   queue,
   reason,
@@ -1791,6 +1879,7 @@ async function executeProjectCommit({
     comments: "skipped",
     patches: "skipped",
     review_batches: "skipped",
+    review_queue_overrides: "skipped",
     manifest: "skipped"
   };
 
@@ -1904,6 +1993,65 @@ async function executeProjectCommit({
     }
   }
 
+  const reviewQueueIdentity = getProjectDocumentIdentity(project);
+  const emptyReviewQueueOverrides = createEmptyReviewQueueOverrides(
+    reviewQueueIdentity
+  );
+  const emptyReviewQueueOverridesText = serializeReviewQueueOverrides({
+    identity: reviewQueueIdentity,
+    overrides: emptyReviewQueueOverrides
+  });
+  const currentReviewQueueOverrides =
+    persistence.reviewQueueOverridesReference ??
+    (persistence.files.review_queue_overrides
+      ? parseReviewQueueOverrides({
+          identity: reviewQueueIdentity,
+          text:
+            persistence.reviewQueueOverridesRaw ??
+            emptyReviewQueueOverridesText
+        })
+      : emptyReviewQueueOverrides);
+  const requestedReviewQueueOverrides = reviewQueueOverridesUpdate
+    ? reviewQueueOverridesUpdate(currentReviewQueueOverrides)
+    : reviewQueueOverrides;
+  if (requestedReviewQueueOverrides !== undefined) {
+    if (
+      requestedReviewQueueOverrides ===
+      persistence.reviewQueueOverridesReference
+    ) {
+      debug.lastFileResults.review_queue_overrides = "unchanged";
+    } else {
+      const reviewQueueOverridesText = serializeReviewQueueOverrides({
+        identity: reviewQueueIdentity,
+        overrides: requestedReviewQueueOverrides
+      });
+      serializedFiles.push("review_queue_overrides");
+      debug.serializationCount += 1;
+      const reviewQueueOverridesCommit = await createPersistedFileCommit(
+        `${metadataDirectoryName}/${reviewQueueOverridesFileName}`,
+        reviewQueueOverridesText
+      );
+      const currentReviewQueueOverridesCommit =
+        persistence.files.review_queue_overrides ??
+        (await createPersistedFileCommit(
+          `${metadataDirectoryName}/${reviewQueueOverridesFileName}`,
+          emptyReviewQueueOverridesText
+        ));
+      if (
+        reviewQueueOverridesCommit.sha256 ===
+        currentReviewQueueOverridesCommit.sha256
+      ) {
+        persistence.reviewQueueOverridesReference =
+          requestedReviewQueueOverrides;
+        debug.lastFileResults.review_queue_overrides = "unchanged";
+      } else {
+        changedFiles.push("review_queue_overrides");
+        desiredTexts.review_queue_overrides = reviewQueueOverridesText;
+        debug.lastFileResults.review_queue_overrides = "changed";
+      }
+    }
+  }
+
   const manifestChanged =
     requestedManifest !== undefined &&
     createManifestMeaningfulKey(requestedManifest) !==
@@ -1936,13 +2084,19 @@ async function executeProjectCommit({
   const includeCurrentReviewBatches = Boolean(
     persistence.files.review_batches
   );
+  const includeCurrentReviewQueueOverrides = Boolean(
+    persistence.files.review_queue_overrides
+  );
   const currentTexts = await readCurrentProjectTexts(
     project.directoryHandle,
-    includeCurrentReviewBatches
+    includeCurrentReviewBatches,
+    includeCurrentReviewQueueOverrides,
+    emptyReviewQueueOverridesText
   );
   const currentDescriptors = await createProjectFileDescriptors(
     currentTexts,
-    includeCurrentReviewBatches
+    includeCurrentReviewBatches,
+    includeCurrentReviewQueueOverrides
   );
   const currentCommit =
     persistence.commit ??
@@ -1978,9 +2132,13 @@ async function executeProjectCommit({
   } satisfies Record<ProjectCommitFileKey, string>;
   const includeNextReviewBatches =
     includeCurrentReviewBatches || changedFiles.includes("review_batches");
+  const includeNextReviewQueueOverrides =
+    includeCurrentReviewQueueOverrides ||
+    changedFiles.includes("review_queue_overrides");
   const nextDescriptors = await createProjectFileDescriptors(
     nextTexts,
-    includeNextReviewBatches
+    includeNextReviewBatches,
+    includeNextReviewQueueOverrides
   );
   const saveCommit: PatchmarkSaveCommit = {
     format_version: saveCommitFormatVersion,
@@ -2074,6 +2232,11 @@ async function executeProjectCommit({
   if (requestedReviewBatches !== undefined) {
     persistence.reviewBatchesReference = requestedReviewBatches;
     persistence.reviewBatchesRaw = undefined;
+  }
+
+  if (requestedReviewQueueOverrides !== undefined) {
+    persistence.reviewQueueOverridesReference = requestedReviewQueueOverrides;
+    persistence.reviewQueueOverridesRaw = undefined;
   }
 
   const bytesWritten = debug.bytesWritten - bytesWrittenBeforeCommit;
@@ -2734,6 +2897,10 @@ async function createOpenedProjectHandle({
     metadataDirectoryHandle,
     reviewBatchesFileName
   );
+  const reviewQueueOverridesText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    reviewQueueOverridesFileName
+  );
   const commitText = await readOptionalTextFile(
     metadataDirectoryHandle,
     saveCommitFileName
@@ -2748,6 +2915,7 @@ async function createOpenedProjectHandle({
     new TextEncoder().encode(commentsText ?? "").byteLength +
     new TextEncoder().encode(patchesText ?? "").byteLength +
     new TextEncoder().encode(reviewBatchesText ?? "").byteLength +
+    new TextEncoder().encode(reviewQueueOverridesText ?? "").byteLength +
     new TextEncoder().encode(commitText ?? "").byteLength;
   incrementDocumentSwitchPerformanceCounter(
     performanceOperationId,
@@ -2778,9 +2946,23 @@ async function createOpenedProjectHandle({
     ? parseSaveCommitForValidation(commitText, currentDetails)
     : null;
   const committedReviewBatches = Boolean(currentCommit?.files.review_batches);
+  const committedReviewQueueOverrides = Boolean(
+    currentCommit?.files.review_queue_overrides
+  );
   if (committedReviewBatches && reviewBatchesText === null) {
     currentDetails.push("Missing .patchmark/review-batches.json.");
   }
+  if (committedReviewQueueOverrides && reviewQueueOverridesText === null) {
+    currentDetails.push("Missing .patchmark/review-queue-overrides.json.");
+  }
+  const emptyReviewQueueOverridesText = currentManifest
+    ? serializeReviewQueueOverrides({
+        identity: getManifestDocumentIdentity(currentManifest),
+        overrides: createEmptyReviewQueueOverrides(
+          getManifestDocumentIdentity(currentManifest)
+        )
+      })
+    : "{}\n";
 
   const currentTexts =
     commentsText !== null && patchesText !== null
@@ -2791,6 +2973,9 @@ async function createOpenedProjectHandle({
           review_batches: committedReviewBatches
             ? reviewBatchesText ?? "[]\n"
             : "[]\n",
+          review_queue_overrides: committedReviewQueueOverrides
+            ? reviewQueueOverridesText ?? emptyReviewQueueOverridesText
+            : emptyReviewQueueOverridesText,
           manifest: manifestText
         }
       : null;
@@ -2802,7 +2987,8 @@ async function createOpenedProjectHandle({
       directoryHandle,
       documentText: markdown,
       manifestText,
-      patchesText: currentTexts.patches
+      patchesText: currentTexts.patches,
+      reviewQueueOverridesText: currentTexts.review_queue_overrides
     });
 
     if (currentDetails.length > 0) {
@@ -2846,6 +3032,12 @@ async function createOpenedProjectHandle({
       identity: getManifestDocumentIdentity(currentManifest),
       text: currentTexts.review_batches
     });
+    validateReviewQueueOverridesTextForIdentity({
+      commit: currentCommit,
+      details: currentDetails,
+      identity: getManifestDocumentIdentity(currentManifest),
+      text: currentTexts.review_queue_overrides
+    });
     recordDocumentSwitchPerformanceDuration(
       performanceOperationId,
       "validate_target_integrity",
@@ -2854,7 +3046,9 @@ async function createOpenedProjectHandle({
     incrementDocumentSwitchPerformanceCounter(
       performanceOperationId,
       "content_hashes_computed",
-      committedReviewBatches ? 5 : 4
+      4 +
+        (committedReviewBatches ? 1 : 0) +
+        (committedReviewQueueOverrides ? 1 : 0)
     );
     markDocumentSwitchPerformance(
       performanceOperationId,
@@ -2878,6 +3072,9 @@ async function createOpenedProjectHandle({
           patchesRaw: currentTexts.patches,
           reviewBatchesRaw: committedReviewBatches
             ? currentTexts.review_batches
+            : undefined,
+          reviewQueueOverridesRaw: committedReviewQueueOverrides
+            ? currentTexts.review_queue_overrides
             : undefined,
           readSource: "current",
           debug: createEmptyPersistenceDebugState()
@@ -2917,6 +3114,9 @@ async function createOpenedProjectHandle({
         reviewBatchesRaw: lkg.commit.files.review_batches
           ? lkg.texts.review_batches
           : undefined,
+        reviewQueueOverridesRaw: lkg.commit.files.review_queue_overrides
+          ? lkg.texts.review_queue_overrides
+          : undefined,
         readSource: "lkg",
         recovery,
         debug: createEmptyPersistenceDebugState()
@@ -2945,7 +3145,8 @@ async function createOpenedProjectHandle({
   };
   const descriptors = await createProjectFileDescriptors(
     currentTexts,
-    committedReviewBatches
+    committedReviewBatches,
+    committedReviewQueueOverrides
   );
   const project: PatchmarkProjectHandle = {
     directoryHandle,
@@ -2961,6 +3162,9 @@ async function createOpenedProjectHandle({
       reviewBatchesRaw: committedReviewBatches
         ? reviewBatchesText ?? undefined
         : undefined,
+      reviewQueueOverridesRaw: committedReviewQueueOverrides
+        ? reviewQueueOverridesText ?? undefined
+        : undefined,
       readSource: "current_readonly",
       recovery,
       debug: createEmptyPersistenceDebugState()
@@ -2974,13 +3178,15 @@ async function createLegacyPersistenceState({
   directoryHandle,
   documentText,
   manifestText,
-  patchesText
+  patchesText,
+  reviewQueueOverridesText
 }: {
   commentsText?: string;
   directoryHandle: PatchmarkDirectoryHandle;
   documentText: string;
   manifestText: string;
   patchesText?: string;
+  reviewQueueOverridesText?: string;
 }): Promise<PatchmarkProjectPersistenceState> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
@@ -2998,6 +3204,7 @@ async function createLegacyPersistenceState({
     comments: resolvedCommentsText,
     patches: resolvedPatchesText,
     review_batches: "[]\n",
+    review_queue_overrides: reviewQueueOverridesText ?? "{}\n",
     manifest: manifestText
   };
 
@@ -3016,12 +3223,21 @@ async function createLegacyPersistenceState({
 
 async function readCurrentProjectTexts(
   directoryHandle: PatchmarkDirectoryHandle,
-  includeReviewBatches: boolean
+  includeReviewBatches: boolean,
+  includeReviewQueueOverrides: boolean,
+  emptyReviewQueueOverridesText: string
 ): Promise<Record<ProjectCommitFileKey, string>> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
   );
-  const [document, comments, patches, manifest, reviewBatches] = await Promise.all([
+  const [
+    document,
+    comments,
+    patches,
+    manifest,
+    reviewBatches,
+    reviewQueueOverrides
+  ] = await Promise.all([
     readTextFile(await directoryHandle.getFileHandle(documentFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(commentsFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(patchesFileName)),
@@ -3030,13 +3246,21 @@ async function readCurrentProjectTexts(
       ? readTextFile(
           await metadataDirectoryHandle.getFileHandle(reviewBatchesFileName)
         )
-      : Promise.resolve("[]\n")
+      : Promise.resolve("[]\n"),
+    includeReviewQueueOverrides
+      ? readTextFile(
+          await metadataDirectoryHandle.getFileHandle(
+            reviewQueueOverridesFileName
+          )
+        )
+      : Promise.resolve(emptyReviewQueueOverridesText)
   ]);
   return {
     document,
     comments,
     patches,
     review_batches: reviewBatches,
+    review_queue_overrides: reviewQueueOverrides,
     manifest
   };
 }
@@ -3047,14 +3271,22 @@ async function readCurrentFileCommit(
 ): Promise<PatchmarkPersistedFileCommit> {
   const texts = await readCurrentProjectTexts(
     project.directoryHandle,
-    Boolean(project.persistence.files.review_batches)
+    Boolean(project.persistence.files.review_batches),
+    Boolean(project.persistence.files.review_queue_overrides),
+    serializeReviewQueueOverrides({
+      identity: getProjectDocumentIdentity(project),
+      overrides: createEmptyReviewQueueOverrides(
+        getProjectDocumentIdentity(project)
+      )
+    })
   );
   return createPersistedFileCommit(getProjectFilePath(key), texts[key]);
 }
 
 async function createProjectFileDescriptors(
   texts: Record<ProjectCommitFileKey, string>,
-  includeReviewBatches: boolean
+  includeReviewBatches: boolean,
+  includeReviewQueueOverrides = false
 ): Promise<PatchmarkSaveCommit["files"]> {
   const [document, comments, patches, manifest] = await Promise.all(
     (["document", "comments", "patches", "manifest"] as const).map((key) =>
@@ -3067,12 +3299,21 @@ async function createProjectFileDescriptors(
         texts.review_batches
       )
     : undefined;
+  const reviewQueueOverrides = includeReviewQueueOverrides
+    ? await createPersistedFileCommit(
+        getProjectFilePath("review_queue_overrides"),
+        texts.review_queue_overrides
+      )
+    : undefined;
   return {
     document,
     comments,
     patches,
     manifest,
-    ...(reviewBatches ? { review_batches: reviewBatches } : {})
+    ...(reviewBatches ? { review_batches: reviewBatches } : {}),
+    ...(reviewQueueOverrides
+      ? { review_queue_overrides: reviewQueueOverrides }
+      : {})
   };
 }
 
@@ -3124,6 +3365,9 @@ function getProjectFilePath(key: ProjectCommitFileKey): string {
   if (key === "review_batches") {
     return `${metadataDirectoryName}/${reviewBatchesFileName}`;
   }
+  if (key === "review_queue_overrides") {
+    return `${metadataDirectoryName}/${reviewQueueOverridesFileName}`;
+  }
   return `${metadataDirectoryName}/${manifestFileName}`;
 }
 
@@ -3140,6 +3384,9 @@ function getProjectFileName(key: ProjectCommitFileKey): string {
   if (key === "review_batches") {
     return reviewBatchesFileName;
   }
+  if (key === "review_queue_overrides") {
+    return reviewQueueOverridesFileName;
+  }
   return manifestFileName;
 }
 
@@ -3152,6 +3399,9 @@ function getCommittedProjectFileKeys(
     "patches",
     ...(commit.files.review_batches
       ? (["review_batches"] as ProjectCommitFileKey[])
+      : []),
+    ...(commit.files.review_queue_overrides
+      ? (["review_queue_overrides"] as ProjectCommitFileKey[])
       : []),
     "manifest"
   ];
@@ -3188,6 +3438,24 @@ async function removeReviewBatchFileIfPresent(
   }
 }
 
+async function removeReviewQueueOverridesFileIfPresent(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    if (!metadataDirectoryHandle.removeEntry) {
+      return;
+    }
+    await metadataDirectoryHandle.removeEntry(reviewQueueOverridesFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
+}
+
 function createLegacyBaselineCommit({
   descriptors,
   manifest
@@ -3200,7 +3468,8 @@ function createLegacyBaselineCommit({
     descriptors.comments.sha256,
     descriptors.patches.sha256,
     descriptors.manifest.sha256,
-    descriptors.review_batches?.sha256
+    descriptors.review_batches?.sha256,
+    descriptors.review_queue_overrides?.sha256
   ]
     .filter((hash): hash is string => Boolean(hash))
     .map((hash) => hash.slice(0, 8))
@@ -3478,11 +3747,23 @@ async function readValidLastKnownGoodGeneration(
           )
         )
       : "[]\n";
+    const lkgIdentity = getManifestDocumentIdentity(normalizedManifest);
+    const reviewQueueOverrides = commit.files.review_queue_overrides
+      ? await readTextFile(
+          await recoveryDirectoryHandle.getFileHandle(
+            `${reviewQueueOverridesFileName}.lkg`
+          )
+        )
+      : serializeReviewQueueOverrides({
+          identity: lkgIdentity,
+          overrides: createEmptyReviewQueueOverrides(lkgIdentity)
+        });
     const texts = {
       document,
       comments,
       patches,
       review_batches: reviewBatches,
+      review_queue_overrides: reviewQueueOverrides,
       manifest
     };
 
@@ -3493,6 +3774,12 @@ async function readValidLastKnownGoodGeneration(
       details,
       identity: getManifestDocumentIdentity(normalizedManifest),
       text: texts.review_batches
+    });
+    validateReviewQueueOverridesTextForIdentity({
+      commit,
+      details,
+      identity: lkgIdentity,
+      text: texts.review_queue_overrides
     });
     return details.length === 0
       ? { commit, manifest: normalizedManifest, texts }
@@ -3546,6 +3833,31 @@ function validateReviewBatchTextForIdentity({
   }
 }
 
+function validateReviewQueueOverridesTextForIdentity({
+  commit,
+  details,
+  identity,
+  text
+}: {
+  commit: PatchmarkSaveCommit;
+  details: string[];
+  identity: ProjectDocumentIdentity;
+  text: string;
+}): void {
+  if (!commit.files.review_queue_overrides) {
+    return;
+  }
+  try {
+    parseReviewQueueOverrides({ identity, text });
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/review-queue-overrides.json is invalid."
+    );
+  }
+}
+
 function getManifestDocumentIdentity(
   manifest: PatchmarkManifest
 ): ProjectDocumentIdentity {
@@ -3566,7 +3878,8 @@ async function validateCommittedProjectTexts(
   validatePersistedJson(texts, details);
   const descriptors = await createProjectFileDescriptors(
     texts,
-    Boolean(commit.files.review_batches)
+    Boolean(commit.files.review_batches),
+    Boolean(commit.files.review_queue_overrides)
   );
 
   for (const key of getCommittedProjectFileKeys(commit)) {
@@ -3598,6 +3911,19 @@ function validatePersistedJson(
     } catch {
       details.push(`${getProjectFilePath(key)} contains malformed JSON.`);
     }
+  }
+
+  try {
+    const value = JSON.parse(texts.review_queue_overrides);
+    if (!isRecord(value)) {
+      details.push(
+        `${getProjectFilePath("review_queue_overrides")} must contain a JSON object.`
+      );
+    }
+  } catch {
+    details.push(
+      `${getProjectFilePath("review_queue_overrides")} contains malformed JSON.`
+    );
   }
 
   try {
@@ -3669,6 +3995,11 @@ function isPatchmarkSaveCommit(value: unknown): value is PatchmarkSaveCommit {
       isPersistedFileCommit(
         files.review_batches,
         getProjectFilePath("review_batches")
+      )) &&
+    (files.review_queue_overrides === undefined ||
+      isPersistedFileCommit(
+        files.review_queue_overrides,
+        getProjectFilePath("review_queue_overrides")
       ))
   );
 }
@@ -3791,6 +4122,7 @@ async function preserveQuestionableCurrentProjectFiles(
       commentsFileName,
       patchesFileName,
       reviewBatchesFileName,
+      reviewQueueOverridesFileName,
       manifestFileName,
       saveCommitFileName
     ].map((fileName) => ({

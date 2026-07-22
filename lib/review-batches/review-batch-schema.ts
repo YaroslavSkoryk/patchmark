@@ -141,6 +141,14 @@ function normalizeReviewBatch(
     throw invalidBatch(index);
   }
   const section = normalizeSection(value.section, value.batch_type, index);
+  const selectionAdjustment = normalizeSelectionAdjustment({
+    index,
+    orderedCommentIds,
+    value: value.selection_adjustment
+  });
+  if (value.source === "manual" && selectionAdjustment) {
+    throw invalidBatch(index);
+  }
   const commentFingerprints = normalizeCommentFingerprints(
     value.comment_fingerprints,
     orderedCommentIds,
@@ -184,6 +192,9 @@ function normalizeReviewBatch(
     batch_type: value.batch_type as ReviewBatchType,
     ordered_comment_ids: orderedCommentIds,
     section,
+    ...(selectionAdjustment
+      ? { selection_adjustment: selectionAdjustment }
+      : {}),
     algorithm_version: algorithmVersion,
     prompt_builder_version: REVIEW_BATCH_PROMPT_BUILDER_VERSION,
     document_generation: value.document_generation,
@@ -203,6 +214,71 @@ function normalizeReviewBatch(
     cancel_reason: cancelReason,
     import_id: importId
   };
+}
+
+function normalizeSelectionAdjustment({
+  index,
+  orderedCommentIds,
+  value
+}: {
+  index: number;
+  orderedCommentIds: string[];
+  value: unknown;
+}): PatchmarkReviewBatch["selection_adjustment"] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!isRecord(value)) {
+    throw invalidBatch(index);
+  }
+  const base = normalizeAdjustmentIds(
+    value.base_proposal_comment_ids,
+    index
+  );
+  const finalIds = normalizeAdjustmentIds(value.final_comment_ids, index);
+  const removed = normalizeAdjustmentIds(
+    value.transiently_removed_comment_ids,
+    index,
+    true
+  );
+  const added = normalizeAdjustmentIds(
+    value.transiently_added_comment_ids,
+    index,
+    true
+  );
+  if (
+    JSON.stringify(finalIds) !== JSON.stringify(orderedCommentIds) ||
+    JSON.stringify(removed) !==
+      JSON.stringify(base.filter((commentId) => !finalIds.includes(commentId))) ||
+    JSON.stringify(added) !==
+      JSON.stringify(finalIds.filter((commentId) => !base.includes(commentId)))
+  ) {
+    throw invalidBatch(index);
+  }
+  return {
+    base_proposal_comment_ids: base,
+    final_comment_ids: finalIds,
+    transiently_removed_comment_ids: removed,
+    transiently_added_comment_ids: added
+  };
+}
+
+function normalizeAdjustmentIds(
+  value: unknown,
+  index: number,
+  allowEmpty = false
+): string[] {
+  if (
+    !Array.isArray(value) ||
+    (!allowEmpty && value.length === 0) ||
+    !value.every(
+      (commentId) => typeof commentId === "string" && commentId.length > 0
+    ) ||
+    new Set(value).size !== value.length
+  ) {
+    throw invalidBatch(index);
+  }
+  return [...value] as string[];
 }
 
 function normalizeSection(

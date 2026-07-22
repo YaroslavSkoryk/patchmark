@@ -177,8 +177,8 @@ and are not inferred as active Review Batches.
 
 ## Future Handoff
 
-Phase 3 may add proposal adjustment and a full Guided Review wizard. Phase 4 may
-add response completeness, partial-response analysis, summaries,
+Phase 3 adds proposal adjustment and the Guided Review wizard while preserving
+this transaction. Phase 4 may add response completeness, partial-response analysis, summaries,
 acknowledgment, and next-batch progression. Those phases must continue using the
 exact document-scoped ownership and committed-prompt guarantees established
 here.

@@ -337,9 +337,21 @@ const oversized = await createTrackedReviewBatchExport({
   patches: oversizedFixture.patches,
   project: oversizedFixture.project,
   section: null,
+  selectionAdjustment: {
+    base_proposal_comment_ids: [oversizedFixture.comment.id],
+    final_comment_ids: [oversizedFixture.comment.id],
+    transiently_removed_comment_ids: [],
+    transiently_added_comment_ids: []
+  },
   source: "guided_review"
 });
 assert.equal(oversized.batch.over_limit_warning, true);
+assert.deepEqual(oversized.batch.selection_adjustment, {
+  base_proposal_comment_ids: [oversizedFixture.comment.id],
+  final_comment_ids: [oversizedFixture.comment.id],
+  transiently_removed_comment_ids: [],
+  transiently_added_comment_ids: []
+});
 
 const persistenceFailureFixture = await createFixture("persistence-failure");
 persistenceFailureFixture.root.controller.failNext(

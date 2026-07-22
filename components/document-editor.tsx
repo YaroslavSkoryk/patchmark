@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
 import {
@@ -86,7 +87,7 @@ import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import { DocumentActions } from "@/components/document-actions";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
-import { GuidedReviewPreview } from "@/components/guided-review-preview";
+import { GuidedReviewWizard } from "@/components/guided-review/guided-review-wizard";
 import { ProjectDocumentNavigator } from "@/components/project-document-navigator";
 import {
   MarkdownSourceEditor,
@@ -119,6 +120,18 @@ import {
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
 import { deriveReviewQueue } from "@/lib/review-queue/review-queue-engine";
+import {
+  getDeferredReviewCommentIds,
+  getReviewQueueOverrides,
+  deferReviewComment,
+  restoreDeferredReviewComment
+} from "@/lib/review-queue/review-queue-overrides";
+import { createEmptyReviewQueueOverrides } from "@/lib/review-queue/review-queue-override-schema";
+import type { PatchmarkReviewQueueOverrides } from "@/lib/review-queue/review-queue-override-types";
+import {
+  validateGuidedReviewSessionSelection,
+  type GuidedReviewProposalSession
+} from "@/lib/review-queue/guided-review-session";
 import { createReviewBatchActiveExportEvidence } from "@/lib/review-batches/review-batch-active-evidence";
 import {
   createTrackedReviewBatchExport,
@@ -385,6 +398,7 @@ type ChatGptPromptDialogState = {
 type ReviewBatchCancelDialogState = {
   batchId: string;
   documentId: string;
+  projectId: string;
 };
 type DocumentLevelExportGuardDialogState =
   | {
@@ -417,6 +431,7 @@ type MarkCommentFocusGuardDialogState =
 type ChatGptImportDialogState = {
   documentId: string;
   error: string | null;
+  projectId: string;
   responseJson: string;
   sourceChatUrl: string;
 };
@@ -722,6 +737,8 @@ export function DocumentEditor() {
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
   const [reviewBatches, setReviewBatches] = useState<PatchmarkReviewBatch[]>([]);
+  const [reviewQueueOverrides, setReviewQueueOverrides] =
+    useState<PatchmarkReviewQueueOverrides | null>(null);
   const markdownRef = useRef(markdown);
   markdownRef.current = markdown;
   const commentsRef = useRef(comments);
@@ -835,8 +852,14 @@ export function DocumentEditor() {
     useState<ChatGptPromptDialogState | null>(null);
   const [reviewBatchCancelDialog, setReviewBatchCancelDialog] =
     useState<ReviewBatchCancelDialogState | null>(null);
-  const [isGuidedReviewPreviewOpen, setIsGuidedReviewPreviewOpen] =
-    useState(false);
+  const reviewBatchCancelDialogRef = useRef<HTMLElement>(null);
+  const reviewBatchCancelPrimaryButtonRef = useRef<HTMLButtonElement>(null);
+  const [isGuidedReviewOpen, setIsGuidedReviewOpen] = useState(false);
+  useEffect(() => {
+    if (reviewBatchCancelDialog) {
+      reviewBatchCancelPrimaryButtonRef.current?.focus();
+    }
+  }, [reviewBatchCancelDialog]);
   const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
     useState<DocumentLevelExportGuardDialogState | null>(null);
   const [markCommentFocusGuardDialog, setMarkCommentFocusGuardDialog] =
@@ -1119,9 +1142,67 @@ export function DocumentEditor() {
     () => getActiveReviewBatch(reviewBatches),
     [reviewBatches]
   );
+  const responseReceivedReviewBatch = useMemo(
+    () =>
+      [...reviewBatches]
+        .reverse()
+        .find((batch) => batch.status === "response_received") ?? null,
+    [reviewBatches]
+  );
+  const deferredReviewCommentIds = useMemo(
+    () =>
+      reviewQueueOverrides
+        ? getDeferredReviewCommentIds(reviewQueueOverrides)
+        : new Set<string>(),
+    [reviewQueueOverrides]
+  );
+  const guidedReviewPromptPreviewBuilder = useCallback(
+    ({
+      batchType,
+      selectedCommentIds
+    }: {
+      batchType: "follow_up" | "document_level" | "section";
+      selectedCommentIds: string[];
+    }) => {
+      if (!projectHandle || !activeDocumentIdentity) {
+        return "";
+      }
+      const commentsById = new Map(
+        comments.map((comment) => [comment.id, comment])
+      );
+      const selectedComments = selectedCommentIds.flatMap((commentId) => {
+        const comment = commentsById.get(commentId);
+        return comment ? [comment] : [];
+      });
+      return buildFocusedCommentsPromptPreview({
+        comments: selectedComments,
+        dedicatedDocumentReview: batchType === "document_level",
+        exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
+        exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
+        headings,
+        markdown,
+        patches,
+        project: projectHandle,
+        reviewBatchEnvelope: {
+          review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
+          project_id: activeDocumentIdentity.projectId,
+          document_id: activeDocumentIdentity.documentId,
+          ordered_comment_ids: selectedCommentIds
+        }
+      }).promptText;
+    },
+    [
+      activeDocumentIdentity,
+      comments,
+      headings,
+      markdown,
+      patches,
+      projectHandle
+    ]
+  );
   const guidedReviewQueue = useMemo(() => {
     if (
-      !isGuidedReviewPreviewOpen ||
+      !isGuidedReviewOpen ||
       !projectHandle ||
       !activeDocumentIdentity
     ) {
@@ -1129,37 +1210,12 @@ export function DocumentEditor() {
     }
 
     return deriveReviewQueue({
-      buildPromptPreview: ({ batchType, selectedCommentIds }) => {
-        const commentsById = new Map(
-          comments.map((comment) => [comment.id, comment])
-        );
-        const selectedComments = selectedCommentIds.flatMap((commentId) => {
-          const comment = commentsById.get(commentId);
-          return comment ? [comment] : [];
-        });
-        return buildFocusedCommentsPromptPreview({
-          comments: selectedComments,
-          dedicatedDocumentReview: batchType === "document_level",
-          exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
-          exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
-          headings,
-          markdown,
-          patches,
-          project: projectHandle,
-          reviewBatchEnvelope: {
-            review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
-            project_id: activeDocumentIdentity.projectId,
-            document_id: activeDocumentIdentity.documentId,
-            ordered_comment_ids: selectedCommentIds
-          }
-        }).promptText;
-      },
+      buildPromptPreview: guidedReviewPromptPreviewBuilder,
       activeExportEvidence:
         createReviewBatchActiveExportEvidence(activeReviewBatch),
       comments,
-      documentGeneration:
-        projectHandle.manifest.save_generation ??
-        projectHandle.persistence.generation,
+      deferredCommentIds: deferredReviewCommentIds,
+      documentGeneration: projectHandle.persistence.generation,
       documentId: activeDocumentIdentity.documentId,
       markdown,
       patches,
@@ -1169,12 +1225,40 @@ export function DocumentEditor() {
     activeDocumentIdentity,
     activeReviewBatch,
     comments,
-    headings,
-    isGuidedReviewPreviewOpen,
+    deferredReviewCommentIds,
+    guidedReviewPromptPreviewBuilder,
+    isGuidedReviewOpen,
     markdown,
     patches,
     projectHandle
   ]);
+  const guidedReviewWorkingStateKey = useMemo(
+    () =>
+      isGuidedReviewOpen && activeDocumentIdentity && projectHandle
+        ? createDocumentHash(
+            JSON.stringify({
+              activeBatchId: activeReviewBatch?.batch_id ?? null,
+              comments,
+              deferredCommentIds: [...deferredReviewCommentIds].sort(),
+              documentGeneration: projectHandle.persistence.generation,
+              documentId: activeDocumentIdentity.documentId,
+              markdown,
+              patches,
+              projectId: activeDocumentIdentity.projectId
+            })
+          )
+        : "",
+    [
+      activeDocumentIdentity,
+      activeReviewBatch,
+      comments,
+      deferredReviewCommentIds,
+      isGuidedReviewOpen,
+      markdown,
+      patches,
+      projectHandle
+    ]
+  );
   continueReadingAtBookmarkRef.current = continueReadingAtBookmark;
 
   const persistActiveRecoveryNow = useCallback(async () => {
@@ -2214,6 +2298,7 @@ export function DocumentEditor() {
     setComments([]);
     setPatches([]);
     setReviewBatches([]);
+    setReviewQueueOverrides(null);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
     setPatchGroupListDialog(null);
@@ -2223,7 +2308,7 @@ export function DocumentEditor() {
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setReviewBatchCancelDialog(null);
-    setIsGuidedReviewPreviewOpen(false);
+    setIsGuidedReviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
@@ -3512,7 +3597,7 @@ export function DocumentEditor() {
     }
 
     if (activeReviewBatch) {
-      setIsGuidedReviewPreviewOpen(true);
+      setIsGuidedReviewOpen(true);
       setSaveFeedback({
         kind: "info",
         message: `Review Batch ${activeReviewBatch.batch_id} is already awaiting a response for this document.`
@@ -3836,10 +3921,11 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleGenerateGuidedReviewBatch() {
+  async function handleGenerateGuidedReviewBatch(
+    proposalSession: GuidedReviewProposalSession
+  ) {
     if (
       !projectHandle ||
-      !guidedReviewQueue?.proposal ||
       !activeDocumentIdentity ||
       isCommentBusy
     ) {
@@ -3855,69 +3941,72 @@ export function DocumentEditor() {
 
     const operationProject = projectHandle;
     const operationIdentity = activeDocumentIdentity;
-    const operationDocumentId = operationIdentity.documentId;
     const operationMarkdown = markdown;
     const operationComments = comments;
     const operationPatches = patches;
-    const previewProposal = guidedReviewQueue.proposal;
+    const operationDeferredCommentIds = new Set(deferredReviewCommentIds);
+    const operationBuildPromptPreview = ({
+      batchType,
+      selectedCommentIds
+    }: {
+      batchType: "follow_up" | "document_level" | "section";
+      selectedCommentIds: string[];
+    }) => {
+      const commentsById = new Map(
+        operationComments.map((comment) => [comment.id, comment])
+      );
+      const selectedComments = selectedCommentIds.flatMap((commentId) => {
+        const comment = commentsById.get(commentId);
+        return comment ? [comment] : [];
+      });
+      return buildFocusedCommentsPromptPreview({
+        comments: selectedComments,
+        dedicatedDocumentReview: batchType === "document_level",
+        exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
+        exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
+        headings: parseMarkdownHeadings(operationMarkdown),
+        markdown: operationMarkdown,
+        patches: operationPatches,
+        project: operationProject,
+        reviewBatchEnvelope: {
+          review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
+          project_id: operationIdentity.projectId,
+          document_id: operationIdentity.documentId,
+          ordered_comment_ids: selectedCommentIds
+        }
+      }).promptText;
+    };
     const freshQueue = deriveReviewQueue({
       activeExportEvidence: [],
-      buildPromptPreview: ({ batchType, selectedCommentIds }) => {
-        const commentsById = new Map(
-          operationComments.map((comment) => [comment.id, comment])
-        );
-        const selectedComments = selectedCommentIds.flatMap((commentId) => {
-          const comment = commentsById.get(commentId);
-          return comment ? [comment] : [];
-        });
-        return buildFocusedCommentsPromptPreview({
-          comments: selectedComments,
-          dedicatedDocumentReview: batchType === "document_level",
-          exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
-          exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
-          headings: parseMarkdownHeadings(operationMarkdown),
-          markdown: operationMarkdown,
-          patches: operationPatches,
-          project: operationProject,
-          reviewBatchEnvelope: {
-            review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
-            project_id: operationIdentity.projectId,
-            document_id: operationIdentity.documentId,
-            ordered_comment_ids: selectedCommentIds
-          }
-        }).promptText;
-      },
+      buildPromptPreview: operationBuildPromptPreview,
       comments: operationComments,
+      deferredCommentIds: operationDeferredCommentIds,
       documentGeneration: operationProject.persistence.generation,
       documentId: operationIdentity.documentId,
       markdown: operationMarkdown,
       patches: operationPatches,
       projectId: operationIdentity.projectId
     });
-    if (
-      !freshQueue.proposal ||
-      JSON.stringify(freshQueue.proposal) !== JSON.stringify(previewProposal)
-    ) {
-      setSaveFeedback({
-        kind: "info",
-        message:
-          "The document or comments changed after this preview. Review the refreshed proposal before exporting."
-      });
-      return;
-    }
+    const validatedSession = validateGuidedReviewSessionSelection({
+      buildPromptPreview: operationBuildPromptPreview,
+      queue: freshQueue,
+      session: proposalSession
+    });
 
     const commentsById = new Map(
       operationComments.map((comment) => [comment.id, comment])
     );
-    const selectedComments = previewProposal.commentIds.flatMap((commentId) => {
-      const comment = commentsById.get(commentId);
-      return comment ? [comment] : [];
-    });
+    const selectedComments = validatedSession.selectedCommentIds.flatMap(
+      (commentId) => {
+        const comment = commentsById.get(commentId);
+        return comment ? [comment] : [];
+      }
+    );
     const section: ReviewBatchSectionSnapshot | null =
-      previewProposal.batchType === "section"
+      validatedSession.batchType === "section"
         ? {
-            section_key_snapshot: previewProposal.sectionKey!,
-            heading_snapshot: previewProposal.sectionHeadingSnapshot
+            section_key_snapshot: validatedSession.sectionKey!,
+            heading_snapshot: validatedSession.sectionHeadingSnapshot
           }
         : null;
     const exportedAt = new Date().toISOString();
@@ -3929,12 +4018,12 @@ export function DocumentEditor() {
     try {
       const result = await createTrackedReviewBatchExport({
         algorithmVersion: freshQueue.algorithmVersion,
-        batchType: previewProposal.batchType,
+        batchType: validatedSession.batchType,
         buildPrompt: (reviewBatchEnvelope) =>
           buildFocusedCommentsPromptPreview({
             comments: selectedComments,
             dedicatedDocumentReview:
-              previewProposal.batchType === "document_level",
+              validatedSession.batchType === "document_level",
             exportedAt,
             exportId,
             headings: parseMarkdownHeadings(operationMarkdown),
@@ -3950,17 +4039,27 @@ export function DocumentEditor() {
           operationProject.manifest.project_name,
         markdown: operationMarkdown,
         now: exportedAt,
-        overLimitWarning: previewProposal.overLimitWarning,
+        overLimitWarning: validatedSession.overLimitWarning,
         patches: operationPatches,
         project: operationProject,
         section,
+        selectionAdjustment: {
+          base_proposal_comment_ids:
+            validatedSession.baseProposalCommentIds,
+          final_comment_ids: validatedSession.selectedCommentIds,
+          transiently_removed_comment_ids:
+            validatedSession.transientlyRemovedCommentIds,
+          transiently_added_comment_ids:
+            validatedSession.transientlyAddedCommentIds
+        },
         source: "guided_review",
         validateBeforeCommit: () => {
           if (
-            activeDocumentIdRef.current === operationDocumentId &&
-            (markdownRef.current !== operationMarkdown ||
-              commentsRef.current !== operationComments ||
-              patchesRef.current !== operationPatches)
+            activeDocumentKeyRef.current !==
+              createProjectDocumentKey(operationIdentity) ||
+            markdownRef.current !== operationMarkdown ||
+            commentsRef.current !== operationComments ||
+            patchesRef.current !== operationPatches
           ) {
             throw new Error(
               "The document or comments changed during export. Review the refreshed proposal and try again."
@@ -3968,7 +4067,10 @@ export function DocumentEditor() {
           }
         }
       });
-      if (activeDocumentIdRef.current !== operationDocumentId) {
+      if (
+        activeDocumentKeyRef.current !==
+        createProjectDocumentKey(operationIdentity)
+      ) {
         return;
       }
       setReviewBatches(result.batches);
@@ -3987,6 +4089,82 @@ export function DocumentEditor() {
       const message = getProjectErrorMessage(error);
       setCommentsError(message);
       setSaveFeedback({ kind: "error", message });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleDeferGuidedReviewComment(commentId: string) {
+    if (!projectHandle || !activeDocumentIdentity || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationIdentity = activeDocumentIdentity;
+    const operationDocumentKey = createProjectDocumentKey(operationIdentity);
+    const operationComments = comments;
+    const expectedDocumentGeneration = operationProject.persistence.generation;
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const overrides = await deferReviewComment({
+        commentId,
+        comments: operationComments,
+        deferredAt: new Date().toISOString(),
+        expectedDocumentGeneration,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setReviewQueueOverrides(overrides);
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentId} is deferred from Guided Review. The comment remains open.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      }
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleRestoreGuidedReviewComment(commentId: string) {
+    if (!projectHandle || !activeDocumentIdentity || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationIdentity = activeDocumentIdentity;
+    const operationDocumentKey = createProjectDocumentKey(operationIdentity);
+    const expectedDocumentGeneration = operationProject.persistence.generation;
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const overrides = await restoreDeferredReviewComment({
+        commentId,
+        expectedDocumentGeneration,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setReviewQueueOverrides(overrides);
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentId} returned to lifecycle-based review classification.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      }
+      throw error;
     } finally {
       setIsCommentBusy(false);
     }
@@ -3998,14 +4176,17 @@ export function DocumentEditor() {
     }
     const operationProject = projectHandle;
     const operationBatch = activeReviewBatch;
-    const operationDocumentId = operationBatch.document_id;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: operationBatch.document_id,
+      projectId: operationBatch.project_id
+    });
     setIsCommentBusy(true);
     try {
       const promptText = await readExactReviewBatchPrompt({
         batch: operationBatch,
         project: operationProject
       });
-      if (activeDocumentIdRef.current !== operationDocumentId) {
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
         return;
       }
       setChatGptPromptDialog(
@@ -4036,7 +4217,10 @@ export function DocumentEditor() {
     }
     const operationProject = projectHandle;
     const operationBatch = activeReviewBatch;
-    const operationDocumentId = operationBatch.document_id;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: operationBatch.document_id,
+      projectId: operationBatch.project_id
+    });
     setIsCommentBusy(true);
     try {
       const promptText = await readExactReviewBatchPrompt({
@@ -4044,7 +4228,7 @@ export function DocumentEditor() {
         project: operationProject
       });
       await navigator.clipboard.writeText(promptText);
-      if (activeDocumentIdRef.current !== operationDocumentId) {
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
         return;
       }
       setSaveFeedback({
@@ -4066,8 +4250,39 @@ export function DocumentEditor() {
     }
     setReviewBatchCancelDialog({
       batchId: activeReviewBatch.batch_id,
-      documentId: activeReviewBatch.document_id
+      documentId: activeReviewBatch.document_id,
+      projectId: activeReviewBatch.project_id
     });
+  }
+
+  function handleReviewBatchCancelDialogKeyDown(
+    event: ReactKeyboardEvent<HTMLElement>
+  ) {
+    if (event.key === "Escape" && !isCommentBusy) {
+      event.preventDefault();
+      setReviewBatchCancelDialog(null);
+      return;
+    }
+    if (event.key !== "Tab" || !reviewBatchCancelDialogRef.current) {
+      return;
+    }
+    const focusable = Array.from(
+      reviewBatchCancelDialogRef.current.querySelectorAll<HTMLButtonElement>(
+        "button:not([disabled])"
+      )
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   async function handleConfirmCancelReviewBatch() {
@@ -4076,7 +4291,10 @@ export function DocumentEditor() {
     }
     const operationProject = projectHandle;
     const operation = reviewBatchCancelDialog;
-    if (getProjectDocumentScopeId(operationProject) !== operation.documentId) {
+    if (
+      createProjectDocumentKey(getProjectDocumentIdentity(operationProject)) !==
+      createProjectDocumentKey(operation)
+    ) {
       setReviewBatchCancelDialog(null);
       return;
     }
@@ -4088,7 +4306,9 @@ export function DocumentEditor() {
         cancelledAt: new Date().toISOString(),
         project: operationProject
       });
-      if (activeDocumentIdRef.current !== operation.documentId) {
+      if (
+        activeDocumentKeyRef.current !== createProjectDocumentKey(operation)
+      ) {
         return;
       }
       setReviewBatches(batches);
@@ -4117,9 +4337,11 @@ export function DocumentEditor() {
       return;
     }
 
+    const identity = getProjectDocumentIdentity(projectHandle);
     setChatGptImportDialog({
-      documentId: getProjectDocumentScopeId(projectHandle),
+      documentId: identity.documentId,
       error: null,
+      projectId: identity.projectId,
       responseJson: "",
       sourceChatUrl: ""
     });
@@ -4134,10 +4356,8 @@ export function DocumentEditor() {
       !projectHandle ||
       !chatGptImportDialog ||
       isCommentBusy ||
-      !isDocumentScopeCurrent(
-        chatGptImportDialog,
-        activeDocumentIdRef.current
-      )
+      activeDocumentKeyRef.current !==
+        createProjectDocumentKey(chatGptImportDialog)
     ) {
       return;
     }
@@ -4261,10 +4481,8 @@ export function DocumentEditor() {
           });
         } catch (error) {
           if (
-            isDocumentScopeCurrent(
-              chatGptImportDialog,
-              activeDocumentIdRef.current
-            )
+            activeDocumentKeyRef.current ===
+              createProjectDocumentKey(chatGptImportDialog)
           ) {
             const message = `The response imported, but its Review Batch receipt could not be recorded: ${getProjectErrorMessage(error)}`;
             setBaselineMarkdown(markdown);
@@ -4282,10 +4500,8 @@ export function DocumentEditor() {
       }
 
       if (
-        !isDocumentScopeCurrent(
-          chatGptImportDialog,
-          activeDocumentIdRef.current
-        )
+        activeDocumentKeyRef.current !==
+          createProjectDocumentKey(chatGptImportDialog)
       ) {
         return;
       }
@@ -4309,15 +4525,20 @@ export function DocumentEditor() {
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
-      setCommentsError(message);
-      setChatGptImportDialog({
-        ...chatGptImportDialog,
-        error: message
-      });
-      setSaveFeedback({
-        kind: "error",
-        message
-      });
+      if (
+        activeDocumentKeyRef.current ===
+        createProjectDocumentKey(chatGptImportDialog)
+      ) {
+        setCommentsError(message);
+        setChatGptImportDialog({
+          ...chatGptImportDialog,
+          error: message
+        });
+        setSaveFeedback({
+          kind: "error",
+          message
+        });
+      }
     } finally {
       setIsCommentBusy(false);
     }
@@ -6387,18 +6608,21 @@ export function DocumentEditor() {
             [],
             [],
             [],
-            []
+            [],
+            createEmptyReviewQueueOverrides(identity)
           ] as [
             PatchmarkVersionEntry[],
             PatchmarkComment[],
             PatchmarkPatch[],
-            PatchmarkReviewBatch[]
+            PatchmarkReviewBatch[],
+            PatchmarkReviewQueueOverrides
           ])
         : Promise.all([
             listProjectVersions(loadedProject.project),
             readProjectComments(loadedProject.project),
             readProjectPatches(loadedProject.project),
-            listReviewBatches(loadedProject.project)
+            listReviewBatches(loadedProject.project),
+            getReviewQueueOverrides(loadedProject.project)
           ]);
     const canReuseNavigatorState = Boolean(
       projectHandle?.projectManifest &&
@@ -6552,7 +6776,13 @@ export function DocumentEditor() {
     const loadedDocumentId = getProjectDocumentScopeId(loadedProject.project);
     const [
       documents,
-      [versions, projectComments, projectPatches, projectReviewBatches]
+      [
+        versions,
+        projectComments,
+        projectPatches,
+        projectReviewBatches,
+        projectReviewQueueOverrides
+      ]
     ] =
       await Promise.all([navigatorPromise, reviewStatePromise]);
     recordDocumentSwitchPerformanceDuration(
@@ -6620,6 +6850,7 @@ export function DocumentEditor() {
     setComments(projectComments);
     setPatches(projectPatches);
     setReviewBatches(projectReviewBatches);
+    setReviewQueueOverrides(projectReviewQueueOverrides);
     setDocumentActiveCommentState({
       documentId: loadedDocumentId,
       state: restoredUiState?.activeCommentState ?? { kind: "none" }
@@ -6635,7 +6866,7 @@ export function DocumentEditor() {
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setReviewBatchCancelDialog(null);
-    setIsGuidedReviewPreviewOpen(false);
+    setIsGuidedReviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
@@ -6844,9 +7075,9 @@ export function DocumentEditor() {
                 isReanchorMode ||
                 projectHandle.documentAvailability === "missing"
               }
-              onClick={() => setIsGuidedReviewPreviewOpen(true)}
+              onClick={() => setIsGuidedReviewOpen(true)}
             >
-              Guided Review Preview
+              Guided Review
             </button>
           </div>
 
@@ -7652,26 +7883,59 @@ export function DocumentEditor() {
         </div>
       ) : null}
 
-      {isGuidedReviewPreviewOpen && guidedReviewQueue && projectHandle ? (
-        <GuidedReviewPreview
+      {isGuidedReviewOpen && guidedReviewQueue && projectHandle ? (
+        <GuidedReviewWizard
           activeBatch={activeReviewBatch}
+          buildPromptPreview={guidedReviewPromptPreviewBuilder}
           comments={comments}
+          deferredCommentIds={deferredReviewCommentIds}
+          documentChangedSinceExport={Boolean(
+            activeReviewBatch &&
+              (activeReviewBatch.batch_record_generation !==
+                projectHandle.persistence.generation ||
+                markdown !== projectHandle.persistence.documentText)
+          )}
           documentTitle={
             projectHandle.document?.display_title ??
             projectHandle.manifest.project_name
           }
+          generationBlockedReason={
+            documentRecoveryPresentation?.kind === "conflict"
+              ? "Resolve the recovery conflict before generating a tracked prompt."
+              : isProjectRecoveryReadOnly
+                ? "Restore a writable project state before generating a tracked prompt."
+                : null
+          }
           isBusy={isCommentBusy}
           onCancelBatch={handleRequestCancelActiveReviewBatch}
-          onClose={() => setIsGuidedReviewPreviewOpen(false)}
+          onClose={() => setIsGuidedReviewOpen(false)}
           onCopyPrompt={() => void handleCopyActiveReviewBatchPrompt()}
-          onGenerateTrackedPrompt={() =>
-            void handleGenerateGuidedReviewBatch()
-          }
+          onDeferComment={handleDeferGuidedReviewComment}
+          onGenerateTrackedPrompt={handleGenerateGuidedReviewBatch}
           onImportResponse={handleOpenChatGptImportDialog}
           onOpenContextPack={() =>
             void handleOpenActiveReviewBatchPrompt()
           }
+          onReanchorComment={(commentId) => {
+            setIsGuidedReviewOpen(false);
+            handleStartReanchor(commentId);
+          }}
+          onRestoreDeferredComment={handleRestoreGuidedReviewComment}
+          onReviewComments={() => {
+            const target = guidedReviewQueue.comments.find(
+              (comment) => comment.state === "awaiting_human_review"
+            );
+            setIsGuidedReviewOpen(false);
+            if (target) {
+              setActiveCommentState({
+                kind: "comment",
+                commentId: target.commentId
+              });
+            }
+          }}
           queue={guidedReviewQueue}
+          responseReceivedBatch={responseReceivedReviewBatch}
+          workingStateKey={guidedReviewWorkingStateKey}
         />
       ) : null}
 
@@ -7740,7 +8004,11 @@ export function DocumentEditor() {
         <div className="snapshot-dialog-backdrop">
           <section
             aria-label="Cancel Review Batch"
+            aria-modal="true"
             className="comment-export-dialog"
+            onKeyDown={handleReviewBatchCancelDialogKeyDown}
+            ref={reviewBatchCancelDialogRef}
+            role="dialog"
           >
             <header className="snapshot-dialog-header">
               <div>
@@ -7757,6 +8025,7 @@ export function DocumentEditor() {
               <button
                 disabled={isCommentBusy}
                 onClick={() => void handleConfirmCancelReviewBatch()}
+                ref={reviewBatchCancelPrimaryButtonRef}
                 type="button"
               >
                 Cancel exported batch

@@ -91,22 +91,23 @@ try {
     "first document comments"
   );
   await clearFixtureWriteLog(client);
-  const beforePreview = fingerprintDirectory(projectDir);
+  const beforeWizard = fingerprintDirectory(projectDir);
 
-  await clickButtonByText(client, "Guided Review Preview");
+  await clickButtonByText(client, "Guided Review");
   await waitFor(
     client,
-    `document.querySelector('[aria-label="Guided Review Preview"]')?.textContent?.includes("Market Evidence")`,
-    "first review proposal"
+    `Boolean(document.querySelector('[aria-label="Review queue overview"]'))`,
+    "first queue overview"
   );
-  const firstPreview = await readPreview(client);
-  assert.equal(firstPreview.documentTitle, "Market Review");
-  assert.equal(firstPreview.proposalTitle, "Market Evidence");
-  assert.deepEqual(firstPreview.proposedCommentIds, [
-    "PM-COMMENT-0001",
-    "PM-COMMENT-0002"
-  ]);
-  assert.deepEqual(firstPreview.counts, {
+  const firstOverview = await readWizard(client);
+  assert.equal(firstOverview.documentTitle, "Market Review");
+  assert.equal(
+    await evaluate(client, {
+      expression: `document.activeElement?.textContent?.trim() === "Close Guided Review"`
+    }),
+    true
+  );
+  assert.deepEqual(firstOverview.counts, {
     "Awaiting ChatGPT": 0,
     "Awaiting your review": 1,
     Blocked: 0,
@@ -114,12 +115,80 @@ try {
     "Ready for ChatGPT": 3,
     Resolved: 0
   });
-  await clickPreviewClose(client);
-  await clickButtonByText(client, "Guided Review Preview");
+  await clickButtonByText(client, "Prepare next batch");
   await waitFor(
     client,
-    `Boolean(document.querySelector('[aria-label="Guided Review Preview"]'))`,
-    "reopened review preview"
+    `document.querySelector('[aria-label="Proposed review batch"]')?.textContent?.includes("Market Evidence")`,
+    "first review proposal"
+  );
+  const firstProposal = await readWizard(client);
+  assert.equal(firstProposal.proposalTitle, "Next review batch");
+  assert.deepEqual(firstProposal.proposedCommentIds, [
+    "PM-COMMENT-0001",
+    "PM-COMMENT-0002"
+  ]);
+  await clickCardAction(client, "PM-COMMENT-0002", "Remove from this batch");
+  await waitFor(
+    client,
+    `document.querySelectorAll('[aria-label="Proposed review batch"] > .guided-review-comment-list .guided-review-comment-card').length === 1`,
+    "transient removal"
+  );
+  assert.equal(await getFixtureWriteCount(client), 0);
+  await clickButtonByText(client, "Reset suggestion");
+  await waitFor(
+    client,
+    `document.querySelectorAll('[aria-label="Proposed review batch"] > .guided-review-comment-list .guided-review-comment-card').length === 2`,
+    "proposal reset"
+  );
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 820,
+    mobile: false,
+    width: 390
+  });
+  const responsiveState = await evaluate(client, {
+      expression: `(() => {
+        const dialog = document.querySelector('[aria-label="Guided Review Wizard"]');
+        const summary = dialog?.querySelector('.guided-review-proposal-summary dl');
+        const actions = dialog?.querySelector('.guided-review-wizard-actions');
+        return {
+          actionsDirection: actions ? getComputedStyle(actions).flexDirection : null,
+          columns: summary ? getComputedStyle(summary).gridTemplateColumns : null,
+          dialog: Boolean(dialog),
+          media: matchMedia('(max-width: 900px)').matches,
+          viewportWidth: window.innerWidth
+        };
+      })()`
+    });
+  assert.deepEqual(responsiveState, {
+    actionsDirection: "column",
+    columns: responsiveState.columns,
+    dialog: true,
+    media: true,
+    viewportWidth: 390
+  });
+  assert.equal(responsiveState.columns?.includes(" "), false);
+  await client.call("Input.dispatchKeyEvent", {
+    code: "Escape",
+    key: "Escape",
+    type: "keyDown"
+  });
+  await waitFor(
+    client,
+    `!document.querySelector('[aria-label="Guided Review Wizard"]')`,
+    "wizard closed with Escape"
+  );
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1000,
+    mobile: false,
+    width: 1500
+  });
+  await clickButtonByText(client, "Guided Review");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Guided Review Wizard"]'))`,
+    "reopened guided review"
   );
 
   await clickProjectDocument(client, "Second Review");
@@ -130,28 +199,33 @@ try {
   );
   await waitFor(
     client,
-    `!document.querySelector('[aria-label="Guided Review Preview"]')`,
-    "preview closed after switch"
+    `!document.querySelector('[aria-label="Guided Review Wizard"]')`,
+    "wizard closed after switch"
   );
   await waitFor(
     client,
     `document.querySelectorAll(".comment-floating-item").length === 1`,
     "second document comments"
   );
-  await clickButtonByText(client, "Guided Review Preview");
+  await clickButtonByText(client, "Guided Review");
   await waitFor(
     client,
-    `document.querySelector('[aria-label="Guided Review Preview"]')?.textContent?.includes("Second Signals")`,
+    `Boolean(document.querySelector('[aria-label="Review queue overview"]'))`,
+    "second queue overview"
+  );
+  await clickButtonByText(client, "Prepare next batch");
+  await waitFor(
+    client,
+    `document.querySelector('[aria-label="Proposed review batch"]')?.textContent?.includes("Second Signals")`,
     "second review proposal"
   );
-  const secondPreview = await readPreview(client);
-  assert.equal(secondPreview.documentTitle, "Second Review");
-  assert.equal(secondPreview.proposalTitle, "Second Signals");
-  assert.deepEqual(secondPreview.proposedCommentIds, ["PM-COMMENT-0001"]);
-  await clickPreviewClose(client);
+  const secondProposal = await readWizard(client);
+  assert.equal(secondProposal.documentTitle, "Second Review");
+  assert.deepEqual(secondProposal.proposedCommentIds, ["PM-COMMENT-0001"]);
+  await clickWizardClose(client);
 
   assert.equal(await getFixtureWriteCount(client), 0);
-  assert.equal(fingerprintDirectory(projectDir), beforePreview);
+  assert.equal(fingerprintDirectory(projectDir), beforeWizard);
 
   await clickProjectDocument(client, "Market Review");
   await waitFor(
@@ -204,13 +278,20 @@ try {
     `document.querySelectorAll(".comment-floating-item").length === 4`,
     "reopened document comments"
   );
-  await clickButtonByText(client, "Guided Review Preview");
+  await clickButtonByText(client, "Guided Review");
   await waitFor(
     client,
-    `document.querySelector('[aria-label="Active Review Batch"]')?.textContent?.includes("Awaiting ChatGPT response")`,
+    `document.querySelector('[aria-label="Active Review Batch"]')?.textContent?.includes("Batch awaiting ChatGPT response")`,
     "active batch after restart"
   );
-  await clickButtonByText(client, "Open context pack");
+  assert.match(
+    await evaluate(client, {
+      expression:
+        `document.querySelector('[aria-label="Active Review Batch"]')?.textContent ?? ""`
+    }),
+    /Source: Manual selection/
+  );
+  await clickButtonByText(client, "Open saved context pack");
   await waitFor(
     client,
     `Boolean(document.querySelector('[aria-label="Generate ChatGPT prompt"]'))`,
@@ -231,7 +312,7 @@ try {
   await clickButtonByText(client, "Cancel exported batch");
   await waitFor(
     client,
-    `!document.querySelector('[aria-label="Active Review Batch"]') && Boolean(document.querySelector('[aria-label="Suggested next batch"]'))`,
+    `!document.querySelector('[aria-label="Active Review Batch"]') && Boolean(document.querySelector('[aria-label="Review queue overview"]'))`,
     "cancelled batch removed from active evidence"
   );
   const persistedBatches = JSON.parse(
@@ -263,7 +344,53 @@ try {
     ).isFile()
   );
 
-  await clickButtonByText(client, "Generate tracked prompt");
+  await clearFixtureWriteLog(client);
+  await clickButtonByText(client, "Prepare next batch");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Proposed review batch"]'))`,
+    "proposal before deferral"
+  );
+  await clickCardAction(client, "PM-COMMENT-0002", "Defer comment");
+  await waitFor(
+    client,
+    `Array.from(document.querySelectorAll('.guided-review-counts > div')).some((item) => item.querySelector('dt')?.textContent?.trim() === 'Deferred' && item.querySelector('dd')?.textContent?.trim() === '1')`,
+    "persisted deferral reflected in queue"
+  );
+  const deferWritePaths = await evaluate(client, {
+    expression: `window.__patchmarkFixtureWriteLog.map((entry) => entry.path)`
+  });
+  assert.ok(
+    deferWritePaths.some((path) =>
+      path.endsWith("review-queue-overrides.json")
+    )
+  );
+  assert.ok(deferWritePaths.every((path) => !path.endsWith("comments.json")));
+  assert.ok(deferWritePaths.every((path) => !path.endsWith("patches.json")));
+  await evaluate(client, {
+    expression: `(() => {
+      const details = Array.from(document.querySelectorAll('.guided-review-detail-list'))
+        .find((candidate) => candidate.querySelector('summary')?.textContent?.includes('Deferred comments'));
+      if (!details) throw new Error('Deferred comments list not found.');
+      details.open = true;
+      return true;
+    })()`
+  });
+  await clickButtonByText(client, "Return to queue");
+  await waitFor(
+    client,
+    `Array.from(document.querySelectorAll('.guided-review-counts > div')).some((item) => item.querySelector('dt')?.textContent?.trim() === 'Deferred' && item.querySelector('dd')?.textContent?.trim() === '0')`,
+    "restored deferred comment"
+  );
+
+  await clickButtonByText(client, "Prepare next batch");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Proposed review batch"]'))`,
+    "guided adjusted proposal"
+  );
+  await clickCardAction(client, "PM-COMMENT-0002", "Remove from this batch");
+  await clickButtonByText(client, "Generate prompt for this batch");
   await waitFor(
     client,
     `Boolean(document.querySelector('[aria-label="Generate ChatGPT prompt"]'))`,
@@ -278,10 +405,7 @@ try {
   );
   const guidedEnvelope = guidedPayload.review_batch;
   assert.equal(guidedEnvelope.document_id, "doc_market");
-  assert.deepEqual(guidedEnvelope.ordered_comment_ids, [
-    "PM-COMMENT-0001",
-    "PM-COMMENT-0002"
-  ]);
+  assert.deepEqual(guidedEnvelope.ordered_comment_ids, ["PM-COMMENT-0001"]);
   await closePromptDialog(client);
   await clickButtonByText(client, "Import response");
   await waitFor(
@@ -310,7 +434,7 @@ try {
   await clickButtonByText(client, "Import");
   await waitFor(
     client,
-    `!document.querySelector('[aria-label="Import ChatGPT response"]') && !document.querySelector('[aria-label="Active Review Batch"]')`,
+    `!document.querySelector('[aria-label="Import ChatGPT response"]') && Boolean(document.querySelector('[aria-label="Review Batch response received"]'))`,
     "exact response receipt"
   );
   const receivedBatches = JSON.parse(
@@ -330,20 +454,28 @@ try {
   );
   assert.equal(receivedBatch.status, "response_received");
   assert.ok(receivedBatch.import_id);
+  assert.deepEqual(receivedBatch.selection_adjustment, {
+    base_proposal_comment_ids: ["PM-COMMENT-0001", "PM-COMMENT-0002"],
+    final_comment_ids: ["PM-COMMENT-0001"],
+    transiently_removed_comment_ids: ["PM-COMMENT-0002"],
+    transiently_added_comment_ids: []
+  });
 
   console.log(
     JSON.stringify(
       {
         duplicateLocalIdIsolated: true,
-        firstPreview,
+        deferWritesOnlyReviewMetadata: true,
+        firstOverview,
+        firstProposal,
         manualExportWritePaths: manualWritePaths,
         noWriteFingerprintStable: true,
         exactPromptReopenedAfterRestart: reopenedPrompt === exactExportedPrompt,
         cancellationKeptContextPack: true,
         exactResponseReceipt: true,
-        previewWriteCount: 0,
-        secondPreview,
-        switchClosedPreview: true
+        transientWriteCount: 0,
+        secondProposal,
+        switchClosedWizard: true
       },
       null,
       2
@@ -359,29 +491,29 @@ try {
   rmSync(fixtureRoot, { force: true, recursive: true });
 }
 
-async function readPreview(pageClient) {
+async function readWizard(pageClient) {
   return evaluate(pageClient, {
     expression: `(() => {
-      const dialog = document.querySelector('[aria-label="Guided Review Preview"]');
+      const dialog = document.querySelector('[aria-label="Guided Review Wizard"]');
       const counts = Object.fromEntries(Array.from(dialog?.querySelectorAll(".guided-review-counts > div") ?? []).map((item) => [
         item.querySelector("dt")?.textContent?.trim(),
         Number(item.querySelector("dd")?.textContent ?? 0)
       ]));
-      const proposal = dialog?.querySelector(".guided-review-proposal");
+      const proposal = dialog?.querySelector('[aria-label="Proposed review batch"]');
       return {
         counts,
         documentTitle: dialog?.querySelector(".guided-review-document strong")?.textContent?.trim() ?? null,
         proposalTitle: proposal?.querySelector("h3")?.textContent?.trim() ?? null,
-        proposedCommentIds: Array.from(proposal?.querySelectorAll(".guided-review-comment-card > header > strong") ?? []).map((element) => element.textContent?.trim())
+        proposedCommentIds: Array.from(proposal?.querySelectorAll(":scope > .guided-review-comment-list .guided-review-comment-card > header > strong") ?? []).map((element) => element.textContent?.trim())
       };
     })()`
   });
 }
 
-async function clickPreviewClose(pageClient) {
+async function clickWizardClose(pageClient) {
   await evaluate(pageClient, {
     expression: `(() => {
-      const button = document.querySelector('[aria-label="Guided Review Preview"] .snapshot-dialog-header > button');
+      const button = document.querySelector('[aria-label="Guided Review Wizard"] .snapshot-dialog-header > button');
       if (!button) throw new Error("Guided Review close button not found.");
       button.click();
       return true;
@@ -390,9 +522,26 @@ async function clickPreviewClose(pageClient) {
   });
   await waitFor(
     pageClient,
-    `!document.querySelector('[aria-label="Guided Review Preview"]')`,
-    "review preview closed"
+    `!document.querySelector('[aria-label="Guided Review Wizard"]')`,
+    "guided review closed"
   );
+}
+
+async function clickCardAction(pageClient, commentId, action) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const commentId = ${JSON.stringify(commentId)};
+      const action = ${JSON.stringify(action)};
+      const card = Array.from(document.querySelectorAll('.guided-review-comment-card'))
+        .find((candidate) => candidate.querySelector('header strong')?.textContent?.trim() === commentId);
+      const button = Array.from(card?.querySelectorAll('button') ?? [])
+        .find((candidate) => candidate.textContent?.trim() === action && !candidate.disabled);
+      if (!button) throw new Error('Guided Review action not found: ' + commentId + ' / ' + action);
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
 }
 
 async function closePromptDialog(pageClient) {

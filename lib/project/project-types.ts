@@ -306,6 +306,7 @@ export type PatchmarkSaveCommit = {
     patches: PatchmarkPersistedFileCommit;
     manifest: PatchmarkPersistedFileCommit;
     review_batches?: PatchmarkPersistedFileCommit;
+    review_queue_overrides?: PatchmarkPersistedFileCommit;
   };
 };
 

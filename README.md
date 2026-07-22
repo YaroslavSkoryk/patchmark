@@ -148,3 +148,9 @@ exact fingerprinted context pack, enforces one active export per document, can
 be safely reopened or cancelled, and clears active queue evidence only after an
 exactly identified response imports successfully. See
 [`docs/guided-review-phase-2-review-batches.md`](docs/guided-review-phase-2-review-batches.md).
+
+Guided Review Phase 3 replaces the diagnostic preview with an accessible,
+document-scoped wizard for queue understanding, transparent deterministic
+proposals, transient same-section adjustments, persistent defer and restore,
+tracked export, active-batch management, and minimal exact response receipt. See
+[`docs/guided-review-phase-3-wizard.md`](docs/guided-review-phase-3-wizard.md).
