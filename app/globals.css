@@ -3476,6 +3476,33 @@ button {
   padding: 10px 18px;
 }
 
+.patch-dependency-summary {
+  display: grid;
+  gap: 0.75rem;
+  padding: 0.9rem 1rem;
+  border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--border));
+  border-radius: 0.75rem;
+  background: color-mix(in srgb, var(--accent) 8%, var(--surface));
+}
+
+.patch-dependency-summary > div:first-child,
+.patch-dependency-list,
+.patch-dependency-list > div {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.patch-dependency-list > div {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  padding-top: 0.55rem;
+  border-top: 1px solid var(--border);
+}
+
+.patch-dependency-list button {
+  white-space: nowrap;
+}
+
 .patch-follow-up-context span,
 .patch-follow-up-inline {
   color: #76510f;

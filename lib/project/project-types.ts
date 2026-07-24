@@ -92,7 +92,7 @@ export type PatchmarkSourceReference = {
 
 export type PatchmarkCommentReplyImport = {
   protocol: "patchmark.comment_reply_import";
-  protocol_version: 1;
+  protocol_version: 1 | 2;
   review_batch_id?: string;
   project_id?: string;
   document_id?: string;
@@ -106,6 +106,8 @@ export type PatchmarkCommentReplyImport = {
     sources?: PatchmarkSourceReference[];
   }>;
   patch_proposals: Array<{
+    patch_key?: string;
+    depends_on?: string[];
     comment_id: string;
     display_title?: string;
     title?: string;
@@ -369,6 +371,9 @@ export type PatchmarkPatch = {
   comment_id?: string;
   source_import_id?: string;
   source_chat_url?: string;
+  source_patch_key?: string;
+  depends_on_patch_ids?: string[];
+  depends_on_patch_keys_snapshot?: string[];
   display_title?: string;
   target_heading?: string;
   original_text: string;

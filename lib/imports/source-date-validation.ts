@@ -215,6 +215,43 @@ export function validateSuggestedTextReferenceDates({
   sources: PatchmarkSourceReference[];
   suggestedText: string;
 }) {
+  validateSuggestedTextReferenceDatesInternal({
+    originalText,
+    sources,
+    suggestedText
+  });
+}
+
+export function validateSuggestedTextReferenceDatesWithCoverage({
+  coverageMarkdown,
+  originalText,
+  sources,
+  suggestedText
+}: {
+  coverageMarkdown: string;
+  originalText: string;
+  sources: PatchmarkSourceReference[];
+  suggestedText: string;
+}) {
+  validateSuggestedTextReferenceDatesInternal({
+    coverageMarkdown,
+    originalText,
+    sources,
+    suggestedText
+  });
+}
+
+function validateSuggestedTextReferenceDatesInternal({
+  coverageMarkdown,
+  originalText,
+  sources,
+  suggestedText
+}: {
+  coverageMarkdown?: string;
+  originalText: string;
+  sources: PatchmarkSourceReference[];
+  suggestedText: string;
+}) {
   const sourceByUrl = new Map(
     sources.map((source) => [normalizeUrl(source.url), source])
   );
@@ -233,9 +270,16 @@ export function validateSuggestedTextReferenceDates({
     const hasUnavailableAnnotation =
       UNAVAILABLE_PUBLICATION_PATTERN.test(context);
     const hasObservationAnnotation = hasObservedAnnotation(context);
+    const hasDependencyCoverage =
+      coverageMarkdown && source
+        ? hasVisibleDependencyDateCoverage(coverageMarkdown, source)
+        : false;
 
     if (source?.published_at === null) {
-      if (!hasUnavailableAnnotation || !hasObservationAnnotation) {
+      if (
+        (!hasUnavailableAnnotation || !hasObservationAnnotation) &&
+        !hasDependencyCoverage
+      ) {
         throw new Error(SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR);
       }
       continue;
@@ -245,13 +289,18 @@ export function validateSuggestedTextReferenceDates({
       throw new Error(SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR);
     }
 
-    if (!hasPublishedAnnotation && !hasUnavailableAnnotation) {
+    if (
+      !hasPublishedAnnotation &&
+      !hasUnavailableAnnotation &&
+      !hasDependencyCoverage
+    ) {
       throw new Error(SOURCE_DATE_REFERENCE_ERROR);
     }
 
     if (
       isTimeSensitiveReference({ context, linkLabel: link.label, source }) &&
-      !hasObservationAnnotation
+      !hasObservationAnnotation &&
+      !hasDependencyCoverage
     ) {
       throw new Error(SOURCE_OBSERVATION_REFERENCE_ERROR);
     }
@@ -341,6 +390,113 @@ function isTimeSensitiveReference({
 
 function isLikelyLiveDynamicSource(value: string): boolean {
   return DYNAMIC_SOURCE_PATTERN.test(value);
+}
+
+function hasVisibleDependencyDateCoverage(
+  markdown: string,
+  source: PatchmarkSourceReference
+): boolean {
+  if (!source.observed_at) {
+    return false;
+  }
+
+  const hasObservationDate = containsLabeledSourceDate(
+    markdown,
+    /(?:observed|checked|accessed|verified)(?:\s+on)?/,
+    source.observed_at
+  );
+
+  if (source.published_at === null) {
+    return (
+      UNAVAILABLE_PUBLICATION_PATTERN.test(markdown) && hasObservationDate
+    );
+  }
+
+  if (!source.published_at) {
+    return false;
+  }
+
+  const hasPublicationDate = containsLabeledSourceDate(
+    markdown,
+    /published(?:\s+on)?/,
+    source.published_at
+  );
+
+  return (
+    hasPublicationDate &&
+    (!isLikelyLiveDynamicSource(
+      [
+        source.title ?? "",
+        source.url,
+        source.supports ?? "",
+        source.note ?? ""
+      ].join(" ")
+    ) ||
+      hasObservationDate)
+  );
+}
+
+function containsLabeledSourceDate(
+  markdown: string,
+  labelPattern: RegExp,
+  date: string
+): boolean {
+  const dateAlternatives = getVisibleSourceDateAlternatives(date)
+    .map(escapeRegExp)
+    .join("|");
+
+  if (!dateAlternatives) {
+    return false;
+  }
+
+  return new RegExp(
+    `${labelPattern.source}[^.\\n]{0,80}(?:${dateAlternatives})`,
+    "i"
+  ).test(markdown);
+}
+
+function getVisibleSourceDateAlternatives(value: string): string[] {
+  const parsed = parseSourceDateValue(value, "source date");
+
+  if (parsed.precision === "year") {
+    return [value];
+  }
+
+  const [year, monthValue, dayValue] = value.split("-");
+  const month = Number(monthValue);
+  const monthName = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+  ][month - 1];
+
+  if (!monthName) {
+    return [value];
+  }
+
+  if (parsed.precision === "month") {
+    return [value, `${monthName} ${year}`];
+  }
+
+  const day = Number(dayValue);
+  return [
+    value,
+    `${day} ${monthName} ${year}`,
+    `${monthName} ${day}, ${year}`
+  ];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeUrl(url: string): string {

@@ -257,10 +257,20 @@ import {
 } from "@/lib/project/multi-document-project";
 import {
   CHATGPT_IMPORT_REPAIR_PROMPT,
+  CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES,
   CHATGPT_INTERNAL_CITATION_PROMPT_RULES,
   normalizeSourceChatUrl,
   parsePatchmarkCommentReplyImport
 } from "@/lib/imports/patchmark-comment-reply-import";
+import { applyPatchReplacementAt } from "@/lib/patches/patch-application";
+import {
+  PatchDependencyValidationError,
+  createPatchDependencyRepairPrompt,
+  getPatchDependencyBlockerMessage,
+  getPatchDependencyReviewStatus,
+  validateImportedPatchDependencySimulation,
+  type PatchDependencyReviewStatus
+} from "@/lib/patches/patch-dependencies";
 import {
   type CommentAnchorStatus,
   type PatchmarkComment,
@@ -432,6 +442,7 @@ type ChatGptImportDialogState = {
   documentId: string;
   error: string | null;
   projectId: string;
+  repairPrompt: string;
   responseJson: string;
   sourceChatUrl: string;
 };
@@ -1075,6 +1086,20 @@ export function DocumentEditor() {
         ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches, comments)
         : null,
     [comments, markdown, patches, selectedPatch]
+  );
+  const selectedPatchDependencyStatus = useMemo(
+    () =>
+      selectedPatch && selectedPatchAnchorStatus
+        ? getPatchDependencyReviewStatus({
+            applicability:
+              selectedPatchAnchorStatus.kind === "pending"
+                ? selectedPatchAnchorStatus.applicability
+                : undefined,
+            patch: selectedPatch,
+            patches
+          })
+        : null,
+    [patches, selectedPatch, selectedPatchAnchorStatus]
   );
   const selectedPatchFollowUpRelationship = useMemo(
     () =>
@@ -4342,6 +4367,7 @@ export function DocumentEditor() {
       documentId: identity.documentId,
       error: null,
       projectId: identity.projectId,
+      repairPrompt: CHATGPT_IMPORT_REPAIR_PROMPT,
       responseJson: "",
       sourceChatUrl: ""
     });
@@ -4377,6 +4403,15 @@ export function DocumentEditor() {
         response: parsedResponse,
         target: getProjectDocumentIdentity(projectHandle)
       });
+      if (
+        parsedResponse.protocol_version === 2 &&
+        responseAssociation.kind === "identity_mismatch"
+      ) {
+        throw new PatchDependencyValidationError({
+          code: "cross_document_dependency",
+          message: responseAssociation.message
+        });
+      }
       validateAtomicTablePatchImport({
         markdown,
         patchProposals: parsedResponse.patch_proposals
@@ -4386,9 +4421,13 @@ export function DocumentEditor() {
       );
     } catch (error) {
       const message = getProjectErrorMessage(error);
+      const dependencyRepairPrompt = createPatchDependencyRepairPrompt(error);
       setChatGptImportDialog({
         ...chatGptImportDialog,
-        error: message
+        error: message,
+        repairPrompt: dependencyRepairPrompt
+          ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
+          : CHATGPT_IMPORT_REPAIR_PROMPT
       });
       setSaveFeedback({
         kind: "error",
@@ -4423,6 +4462,12 @@ export function DocumentEditor() {
         knownCommentIds,
         patchProposals: parsedResponse.patch_proposals,
         sourceChatUrl
+      });
+      validateImportedPatchDependencySimulation({
+        comments,
+        existingPatches,
+        importedPatches,
+        markdown
       });
       const { nextComments, openQuestionsAttached, repliesAttached } =
         createImportedCommentThreads({
@@ -4525,6 +4570,7 @@ export function DocumentEditor() {
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
+      const dependencyRepairPrompt = createPatchDependencyRepairPrompt(error);
       if (
         activeDocumentKeyRef.current ===
         createProjectDocumentKey(chatGptImportDialog)
@@ -4532,7 +4578,10 @@ export function DocumentEditor() {
         setCommentsError(message);
         setChatGptImportDialog({
           ...chatGptImportDialog,
-          error: message
+          error: message,
+          repairPrompt: dependencyRepairPrompt
+            ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
+            : CHATGPT_IMPORT_REPAIR_PROMPT
         });
         setSaveFeedback({
           kind: "error",
@@ -5141,6 +5190,17 @@ export function DocumentEditor() {
     setSelectedPatchId(reviewablePatches[nextIndex].id);
   }
 
+  function handleReviewPatchDependency(patch: PatchmarkPatch) {
+    const group =
+      patchGroups.find((candidate) => candidate.id === getDerivedPatchGroupId(patch)) ??
+      null;
+
+    setSelectedPatchGroupId(group?.id ?? null);
+    setPatchReviewGroupScopeId(group?.id ?? null);
+    setPatchReviewCommentScopeId(null);
+    setSelectedPatchId(patch.id);
+  }
+
   function handleFindPatchAnchorText(patch: PatchmarkPatch) {
     if (patch.status === "accepted") {
       const anchorStatus = getAppliedPatchAnchorStatus(markdown, patch, patches);
@@ -5290,10 +5350,17 @@ export function DocumentEditor() {
       currentPatchAnchorStatus.kind === "pending"
         ? currentPatchAnchorStatus.applicability
         : "not_found";
-    const acceptBlocker = getPatchAcceptDisabledMessage(
-      currentPatch,
-      currentPatchApplicability
-    );
+    const dependencyStatus = getPatchDependencyReviewStatus({
+      applicability: currentPatchApplicability,
+      patch: currentPatch,
+      patches
+    });
+    const acceptBlocker =
+      getPatchDependencyBlockerMessage(dependencyStatus) ??
+      getPatchAcceptDisabledMessage(
+        currentPatch,
+        currentPatchApplicability
+      );
 
     if (acceptBlocker) {
       setSaveFeedback({
@@ -5346,11 +5413,11 @@ export function DocumentEditor() {
         throw new Error("Patchmark could not create a pre-apply safety snapshot.");
       }
 
-      const nextMarkdown = replaceSingleOccurrenceAt({
-        replacement: currentPatch.suggested_text,
-        search: currentPatch.original_text,
+      const nextMarkdown = applyPatchReplacementAt({
+        markdown,
+        originalText: currentPatch.original_text,
         start: originalStart,
-        text: markdown
+        suggestedText: currentPatch.suggested_text
       });
       const replacementStart = originalStart;
       const replacementEnd = replacementStart + currentPatch.suggested_text.length;
@@ -8072,7 +8139,7 @@ export function DocumentEditor() {
                 <p>{chatGptImportDialog.error}</p>
                 <label>
                   <span>Repair prompt</span>
-                  <textarea readOnly value={CHATGPT_IMPORT_REPAIR_PROMPT} />
+                  <textarea readOnly value={chatGptImportDialog.repairPrompt} />
                 </label>
               </div>
             ) : null}
@@ -8159,6 +8226,13 @@ export function DocumentEditor() {
           hasMultipleReviewablePatches={reviewablePatches.length > 1}
           isPatchActionBusy={isSaving}
           markdown={markdown}
+          dependencyStatus={
+            selectedPatchDependencyStatus ??
+            getPatchDependencyReviewStatus({
+              patch: selectedPatch,
+              patches
+            })
+          }
           onAcceptPatch={() => handleAcceptPatch(selectedPatch)}
           onBackToGroup={
             selectedPatchDerivedGroup
@@ -8181,6 +8255,7 @@ export function DocumentEditor() {
           }
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
+          onReviewDependency={handleReviewPatchDependency}
           onRejectPatch={() => handleRejectPatch(selectedPatch)}
           onUpdatePatchAnchor={() => handleUpdatePatchAnchor(selectedPatch)}
           patch={selectedPatch}
@@ -8495,6 +8570,12 @@ function PatchGroupPatchCard({
     patch,
     patches: allPatches
   });
+  const dependencyStatus = getPatchDependencyReviewStatus({
+    applicability:
+      anchorStatus.kind === "pending" ? anchorStatus.applicability : undefined,
+    patch,
+    patches: allPatches
+  });
 
   return (
     <article
@@ -8516,6 +8597,9 @@ function PatchGroupPatchCard({
             Refines: {followUpRelationship.display_title}
           </span>
         ) : null}
+        {dependencyStatus.totalCount > 0 ? (
+          <span>{formatPatchDependencySummary(dependencyStatus)}</span>
+        ) : null}
         <details className="patch-group-technical-details">
           <summary>Details</summary>
           <span>Patch ID: {patch.id}</span>
@@ -8535,6 +8619,7 @@ function PatchGroupPatchCard({
 function PatchReviewDialog({
   anchorStatus,
   comment,
+  dependencyStatus,
   followUpRelationship,
   hasMultipleReviewablePatches,
   isPatchActionBusy,
@@ -8547,6 +8632,7 @@ function PatchReviewDialog({
   onNextPatch,
   onPreviousPatch,
   onRejectPatch,
+  onReviewDependency,
   onUpdatePatchAnchor,
   patch,
   patchGroup,
@@ -8557,6 +8643,7 @@ function PatchReviewDialog({
 }: {
   anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
+  dependencyStatus: PatchDependencyReviewStatus;
   followUpRelationship: PatchFollowUpRelationship | null;
   hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
@@ -8569,6 +8656,7 @@ function PatchReviewDialog({
   onNextPatch: () => void;
   onPreviousPatch: () => void;
   onRejectPatch: () => void;
+  onReviewDependency: (patch: PatchmarkPatch) => void;
   onUpdatePatchAnchor: () => void;
   patch: PatchmarkPatch;
   patchGroup: DerivedPatchGroup | null;
@@ -8613,9 +8701,14 @@ function PatchReviewDialog({
     patch,
     anchorStatus.kind === "pending" ? anchorStatus.applicability : "not_found"
   );
+  const dependencyBlockerMessage =
+    getPatchDependencyBlockerMessage(dependencyStatus);
   const sourceReferenceWarnings = getPatchSourceReferenceWarnings(patch);
   const canAcceptPatch =
-    patch.status === "pending" && !acceptDisabledMessage && !isPatchActionBusy;
+    patch.status === "pending" &&
+    !dependencyBlockerMessage &&
+    !acceptDisabledMessage &&
+    !isPatchActionBusy;
   const canRejectPatch = patch.status === "pending" && !isPatchActionBusy;
   const canUpdatePatchAnchor =
     anchorStatus.kind === "pending" &&
@@ -8730,8 +8823,8 @@ function PatchReviewDialog({
               >
                 Reject Patch
               </button>
-              {acceptDisabledMessage ? (
-                <span>{acceptDisabledMessage}</span>
+              {dependencyBlockerMessage || acceptDisabledMessage ? (
+                <span>{dependencyBlockerMessage ?? acceptDisabledMessage}</span>
               ) : (
                 <span>
                   Accepting creates a safety snapshot. The linked comment stays open.
@@ -8763,6 +8856,38 @@ function PatchReviewDialog({
           <strong>{getPatchReviewAnchorLabel(anchorStatus)}</strong>
           <span>{getPatchReviewAnchorDetail(anchorStatus)}</span>
         </div>
+
+        {dependencyStatus.totalCount > 0 ? (
+          <div className="patch-dependency-summary" role="status">
+            <div>
+              <strong>
+                Requires {dependencyStatus.totalCount} patch
+                {dependencyStatus.totalCount === 1 ? "" : "es"}
+              </strong>
+              <span>{formatPatchDependencySummary(dependencyStatus)}</span>
+            </div>
+            <div className="patch-dependency-list">
+              {dependencyStatus.directDependencies.map((dependency) => (
+                <div key={dependency.id}>
+                  <span>
+                    {getPatchDependencyStatusSymbol(dependency.patch)}{" "}
+                    {dependency.patch
+                      ? getPatchDisplayTitle(dependency.patch)
+                      : `Unavailable prerequisite ${dependency.id}`}
+                  </span>
+                  {dependency.patch ? (
+                    <button
+                      type="button"
+                      onClick={() => onReviewDependency(dependency.patch as PatchmarkPatch)}
+                    >
+                      Review required patch
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {followUpRelationship ? (
           <div className="patch-follow-up-context" role="note">
@@ -10300,6 +10425,11 @@ ${reviewBatchResponseRules}
 - If a comment needs clarification, ask a question linked to that \`comment_id\`.
 - If you suggest a document change, return a patch proposal linked to the \`comment_id\`.
 - If one comment requires multiple document changes, return multiple \`patch_proposals\` with the same \`comment_id\`.
+- Every patch proposal must include a unique response-local \`patch_key\` and a \`depends_on\` array.
+- Use an empty \`depends_on\` array for an independent patch.
+- When one patch supplies context or preserves information required by another patch, list its \`patch_key\` in the dependent patch's \`depends_on\` array.
+- Keep dependencies within this response and within the same \`comment_id\`.
+- Dependencies never cause automatic acceptance. Every patch remains a separate human decision.
 - Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 - Each \`patch_proposal\` must have its own exact \`original_text\` and \`suggested_text\`.
 - Patch proposals must use exact Markdown from the supplied context as \`original_text\`.
@@ -10317,6 +10447,8 @@ ${dedicatedDocumentReviewNote}
 ${CHATGPT_ATOMIC_TABLE_PROMPT_RULES}
 
 ${CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES}
+
+${CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES}
 
 ## Required Response Format
 
@@ -10345,6 +10477,8 @@ If the comment asks to make references inline, every reference that remains nece
 Do not remove a final references/source-notes section unless the relevant source information has been preserved in the proposed document text through inline Markdown links or another visible Markdown source format.
 
 If you propose deleting a Source Notes / References section, explain in \`risk\` whether visible source information would be lost.
+
+A patch that removes a Sources, Source Notes, or References section must depend on every patch needed to preserve those visible source URLs elsewhere in the document.
 
 Do not include footnotes.
 
@@ -10421,6 +10555,7 @@ Source preservation rule:
 - If \`published_at\` is known, write a concise human-readable date near the link, such as \`— published 31 March 2026\`.
 - If \`updated_at\` is relevant, write both dates, such as \`— published 12 January 2025; updated 3 June 2026\`.
 - If \`published_at\` is \`null\`, write \`publication date unavailable\` and include the observation date near the link.
+- A dependent source-link patch may rely on a declared prerequisite that inserts one visible publication/observation-date disclosure in the same target section. Include that prerequisite's \`patch_key\` in \`depends_on\`.
 - For prices, menus, availability, delivery fees, opening hours, promotions, and other dynamic facts, include the observation date even when a publication date exists.
 - Keep ISO-style dates in source metadata and human-readable dates in document Markdown.
 - Do not rely only on \`suggested_text_sources\` when the task asks for inline references.
@@ -10444,7 +10579,7 @@ Use this exact protocol:
 \`\`\`json
 {
   "protocol": "patchmark.comment_reply_import",
-  "protocol_version": 1,
+  "protocol_version": 2,
 ${reviewBatchResponseFields}  "summary": "Brief summary of what you did.",
   "replies": [
     {
@@ -10456,6 +10591,8 @@ ${reviewBatchResponseFields}  "summary": "Brief summary of what you did.",
   ],
   "patch_proposals": [
     {
+      "patch_key": "add-example-source",
+      "depends_on": [],
       "comment_id": "PM-COMMENT-0001",
       "display_title": "Add concise human-readable patch title",
       "target_heading": "## Example Heading",
@@ -10732,6 +10869,13 @@ function createImportedPatchProposals({
   );
   const groupIndexesByCommentId = new Map<string, number>();
   const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
+  const patchIdsByKey = new Map(
+    validPatchProposals.flatMap((patchProposal, index) =>
+      patchProposal.patch_key
+        ? [[patchProposal.patch_key, createNextPatchId(existingPatches, index)]]
+        : []
+    )
+  );
 
   return validPatchProposals.map((patchProposal, index) => {
     const currentGroupIndex =
@@ -10751,6 +10895,24 @@ function createImportedPatchProposals({
       comment_id: patchProposal.comment_id,
       source_import_id: importId,
       source_chat_url: sourceChatUrl,
+      source_patch_key: patchProposal.patch_key,
+      depends_on_patch_ids: patchProposal.depends_on?.map((dependencyKey) => {
+        const dependencyPatchId = patchIdsByKey.get(dependencyKey);
+
+        if (!dependencyPatchId) {
+          throw new PatchDependencyValidationError({
+            code: "missing_patch_dependency",
+            dependencyKey,
+            message: `Patch ${patchProposal.patch_key ?? index + 1} references a dependency that was not assigned an internal patch ID.`,
+            patchKey: patchProposal.patch_key
+          });
+        }
+
+        return dependencyPatchId;
+      }),
+      depends_on_patch_keys_snapshot: patchProposal.depends_on
+        ? [...patchProposal.depends_on]
+        : undefined,
       display_title: patchProposal.display_title,
       target_heading: patchProposal.target_heading,
       original_text: patchProposal.original_text,
@@ -12221,6 +12383,45 @@ function getPatchAcceptDisabledMessage(
   return null;
 }
 
+function formatPatchDependencySummary(
+  status: PatchDependencyReviewStatus
+): string {
+  const parts = [
+    status.acceptedCount > 0 ? `${status.acceptedCount} accepted` : null,
+    status.pendingCount > 0
+      ? `${status.pendingCount} awaiting review`
+      : null,
+    status.rejectedCount > 0 ? `${status.rejectedCount} rejected` : null,
+    status.unavailableCount > 0
+      ? `${status.unavailableCount} unavailable`
+      : null
+  ].filter((part): part is string => Boolean(part));
+
+  if (status.state === "dependency_validation_stale") {
+    parts.push("current document needs revalidation");
+  }
+
+  return parts.join(" · ");
+}
+
+function getPatchDependencyStatusSymbol(
+  patch: PatchmarkPatch | null
+): string {
+  if (!patch || patch.status === "stale") {
+    return "!";
+  }
+
+  if (patch.status === "accepted") {
+    return "✓";
+  }
+
+  if (patch.status === "rejected") {
+    return "×";
+  }
+
+  return "○";
+}
+
 function getPatchSourceReferenceWarnings(patch: PatchmarkPatch): string[] {
   const warnings: string[] = [];
 
@@ -12277,20 +12478,6 @@ function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {
   }
 
   return "Pending";
-}
-
-function replaceSingleOccurrenceAt({
-  replacement,
-  search,
-  start,
-  text
-}: {
-  replacement: string;
-  search: string;
-  start: number;
-  text: string;
-}): string {
-  return text.slice(0, start) + replacement + text.slice(start + search.length);
 }
 
 function createAppliedPatchAnchorMetadata({
@@ -15775,6 +15962,9 @@ function createFocusedCommentsExportPayload({
         "Answer the latest user follow-up in the existing comment discussion.",
         "Any further document change must be a new patch using exact original_text from the current supplied Markdown, not a revision of an accepted patch.",
         "If you suggest a document change, return a patch proposal linked to the comment_id.",
+        "Return patchmark.comment_reply_import protocol version 2. Every patch proposal must include a unique response-local patch_key and a depends_on array.",
+        "Use an empty depends_on array for independent patches. Declare same-response, same-comment prerequisites when another patch supplies required validation context or source preservation.",
+        "Dependencies never cause automatic acceptance; every patch remains a separate human decision.",
         "If more information is needed, ask a clarification question linked to the comment_id.",
         "Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.",
         "For structural table changes, copy the complete table into original_text and return the complete resulting table in suggested_text.",

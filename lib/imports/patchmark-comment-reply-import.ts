@@ -4,6 +4,10 @@ import type {
   PatchmarkSuggestedUserAction
 } from "../project/project-types.ts";
 import { containsReservedPatchmarkTableMarker } from "../patches/atomic-table-patches.ts";
+import {
+  PatchDependencyValidationError,
+  validatePatchDependencyGraph
+} from "../patches/patch-dependencies.ts";
 import { normalizePatchDisplayTitleCandidate } from "../patches/patch-display-title.ts";
 import {
   normalizeSourceDateField,
@@ -34,6 +38,15 @@ Source rules:
 - \`supports\` must be plain text only.
 - Markdown links are allowed only in document Markdown fields: \`original_text\` and \`suggested_text\`.
 - Any new Markdown link in \`suggested_text\` must visibly include a publication date or the phrase \`publication date unavailable\`; dynamic facts must also include an observation date.`;
+
+export const CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES = `Dependency rules:
+- Use \`protocol_version: 2\` when returning patch dependencies.
+- Every protocol-v2 patch proposal must include a unique non-empty \`patch_key\`.
+- Every protocol-v2 patch proposal must include \`depends_on\`; use an empty array for an independent patch.
+- Each \`depends_on\` entry must reference a \`patch_key\` in this same response and for the same \`comment_id\`.
+- Do not create self-dependencies, duplicate dependency entries, or cycles.
+- Declare every prerequisite needed to make a later patch valid, including visible source-date disclosures and inline-source preservation before source-section deletion.
+- Dependencies control validation and review order only. Do not claim that Patchmark will accept prerequisites automatically.`;
 
 export const CHATGPT_INTERNAL_CITATION_PROMPT_RULES = `Internal citation artifact rules:
 
@@ -107,11 +120,15 @@ export function parsePatchmarkCommentReplyImport(
     );
   }
 
-  if (parsedResponse.protocol_version !== 1) {
+  if (
+    parsedResponse.protocol_version !== 1 &&
+    parsedResponse.protocol_version !== 2
+  ) {
     throw new Error(
-      "Invalid Patchmark response. Expected protocol_version 1."
+      "Invalid Patchmark response. Expected protocol_version 1 or 2."
     );
   }
+  const protocolVersion = parsedResponse.protocol_version;
 
   if (
     !Array.isArray(parsedResponse.replies) ||
@@ -125,7 +142,7 @@ export function parsePatchmarkCommentReplyImport(
 
   const normalizedResponse: PatchmarkCommentReplyImport = {
     protocol: "patchmark.comment_reply_import",
-    protocol_version: 1,
+    protocol_version: protocolVersion,
     review_batch_id:
       typeof parsedResponse.review_batch_id === "string"
         ? parsedResponse.review_batch_id
@@ -155,7 +172,8 @@ export function parsePatchmarkCommentReplyImport(
         normalizeImportedPatchProposal(
           patchProposal,
           index,
-          normalization.changedStringPaths
+          normalization.changedStringPaths,
+          protocolVersion
         )
       ),
     open_questions:
@@ -171,7 +189,11 @@ export function parsePatchmarkCommentReplyImport(
   validateConsistentRepeatedSourceDates(
     collectImportedSources(normalizedResponse)
   );
-  validatePatchProposalVisibleReferenceDates(normalizedResponse.patch_proposals);
+  validatePatchDependencyGraph(normalizedResponse);
+  validatePatchProposalVisibleReferenceDates(
+    normalizedResponse.patch_proposals,
+    protocolVersion
+  );
 
   return normalizedResponse;
 }
@@ -361,7 +383,8 @@ function normalizeImportedReply(
 function normalizeImportedPatchProposal(
   patchProposal: unknown,
   index: number,
-  changedStringPaths: Set<string>
+  changedStringPaths: Set<string>,
+  protocolVersion: 1 | 2
 ): PatchmarkCommentReplyImport["patch_proposals"][number] {
   if (
     !isRecord(patchProposal) ||
@@ -399,8 +422,14 @@ function normalizeImportedPatchProposal(
   ) {
     throw new Error(RESERVED_PATCHMARK_TABLE_MARKER_ERROR);
   }
+  const dependencyFields = normalizePatchDependencyFields({
+    patchProposal,
+    patchProposalPath,
+    protocolVersion
+  });
 
   return {
+    ...dependencyFields,
     comment_id: normalizeRequiredProtocolField({
       changedStringPaths,
       fieldName: `${patchProposalPath}.comment_id`,
@@ -447,6 +476,59 @@ function normalizeImportedPatchProposal(
       patchProposal.sources,
       `${patchProposalPath}.sources`
     )
+  };
+}
+
+function normalizePatchDependencyFields({
+  patchProposal,
+  patchProposalPath,
+  protocolVersion
+}: {
+  patchProposal: Record<string, unknown>;
+  patchProposalPath: string;
+  protocolVersion: 1 | 2;
+}): Pick<
+  PatchmarkCommentReplyImport["patch_proposals"][number],
+  "depends_on" | "patch_key"
+> {
+  if (protocolVersion === 1) {
+    if (
+      patchProposal.patch_key !== undefined ||
+      patchProposal.depends_on !== undefined
+    ) {
+      throw new PatchDependencyValidationError({
+        code: "unsupported_dependency_protocol",
+        message:
+          "Protocol version 1 patch proposals cannot include patch_key or depends_on."
+      });
+    }
+
+    return {};
+  }
+
+  if (
+    typeof patchProposal.patch_key !== "string" ||
+    patchProposal.patch_key.trim().length === 0 ||
+    patchProposal.patch_key !== patchProposal.patch_key.trim() ||
+    /[\u0000-\u001f\u007f]/.test(patchProposal.patch_key) ||
+    !Array.isArray(patchProposal.depends_on) ||
+    patchProposal.depends_on.some(
+      (dependency) =>
+        typeof dependency !== "string" ||
+        dependency.trim().length === 0 ||
+        dependency !== dependency.trim() ||
+        /[\u0000-\u001f\u007f]/.test(dependency)
+    )
+  ) {
+    throw new PatchDependencyValidationError({
+      code: "unsupported_dependency_protocol",
+      message: `Invalid dependency fields at ${patchProposalPath}. Protocol version 2 requires a non-empty patch_key and a string depends_on array.`
+    });
+  }
+
+  return {
+    depends_on: patchProposal.depends_on as string[],
+    patch_key: patchProposal.patch_key
   };
 }
 
@@ -683,9 +765,17 @@ function collectImportedSources(
 }
 
 function validatePatchProposalVisibleReferenceDates(
-  patchProposals: PatchmarkCommentReplyImport["patch_proposals"]
+  patchProposals: PatchmarkCommentReplyImport["patch_proposals"],
+  protocolVersion: 1 | 2
 ) {
   for (const patchProposal of patchProposals) {
+    if (
+      protocolVersion === 2 &&
+      (patchProposal.depends_on?.length ?? 0) > 0
+    ) {
+      continue;
+    }
+
     validateSuggestedTextReferenceDates({
       originalText: patchProposal.original_text,
       sources: patchProposal.suggested_text_sources ?? [],

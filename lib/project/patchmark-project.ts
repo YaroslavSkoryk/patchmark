@@ -4970,6 +4970,18 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       typeof patch.source_chat_url === "string"
         ? patch.source_chat_url
         : undefined,
+    source_patch_key:
+      typeof patch.source_patch_key === "string"
+        ? patch.source_patch_key
+        : undefined,
+    depends_on_patch_ids: normalizePatchDependencyIds(
+      patch.depends_on_patch_ids,
+      "depends_on_patch_ids"
+    ),
+    depends_on_patch_keys_snapshot: normalizePatchDependencyIds(
+      patch.depends_on_patch_keys_snapshot,
+      "depends_on_patch_keys_snapshot"
+    ),
     display_title:
       typeof patch.display_title === "string"
         ? patch.display_title
@@ -5077,6 +5089,28 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
         ? patch.reanchor_reason
         : undefined
   };
+}
+
+function normalizePatchDependencyIds(
+  value: unknown,
+  fieldName: "depends_on_patch_ids" | "depends_on_patch_keys_snapshot"
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (
+    !Array.isArray(value) ||
+    value.some(
+      (item) => typeof item !== "string" || item.trim().length === 0
+    )
+  ) {
+    throw new Error(
+      `.patchmark/patches.json contains invalid ${fieldName} metadata.`
+    );
+  }
+
+  return [...value];
 }
 
 function normalizePatchAnchorRecoveryHistory(

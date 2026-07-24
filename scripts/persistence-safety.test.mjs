@@ -108,6 +108,87 @@ assert.equal(
   "accepted"
 );
 
+const dependencyFixture = await createCommittedFixture("patch-dependencies");
+const dependencyPatches = [
+  {
+    ...createPatch("dependency prerequisite"),
+    id: "PM-PATCH-DEPENDENCY-1",
+    source_import_id: "PM-IMPORT-DEPENDENCY",
+    source_patch_key: "base-change",
+    depends_on_patch_ids: [],
+    depends_on_patch_keys_snapshot: []
+  },
+  {
+    ...createPatch("dependent change"),
+    id: "PM-PATCH-DEPENDENCY-2",
+    source_import_id: "PM-IMPORT-DEPENDENCY",
+    source_patch_key: "dependent-change",
+    depends_on_patch_ids: ["PM-PATCH-DEPENDENCY-1"],
+    depends_on_patch_keys_snapshot: ["base-change"]
+  }
+];
+await saveProjectState({
+  patches: dependencyPatches,
+  project: dependencyFixture.project,
+  reason: "persist_patch_dependencies"
+});
+picker.root = dependencyFixture.root;
+const reopenedDependencyFixture = await openProjectFolder();
+assert.ok(reopenedDependencyFixture);
+const reopenedDependencyPatches = await readProjectPatches(
+  reopenedDependencyFixture.project
+);
+assert.deepEqual(
+  reopenedDependencyPatches.map((patch) => ({
+    dependsOnIds: patch.depends_on_patch_ids,
+    dependsOnKeys: patch.depends_on_patch_keys_snapshot,
+    id: patch.id,
+    sourcePatchKey: patch.source_patch_key
+  })),
+  [
+    {
+      dependsOnIds: [],
+      dependsOnKeys: [],
+      id: "PM-PATCH-DEPENDENCY-1",
+      sourcePatchKey: "base-change"
+    },
+    {
+      dependsOnIds: ["PM-PATCH-DEPENDENCY-1"],
+      dependsOnKeys: ["base-change"],
+      id: "PM-PATCH-DEPENDENCY-2",
+      sourcePatchKey: "dependent-change"
+    }
+  ]
+);
+
+const dependencyFailureFixture = await createCommittedFixture(
+  "patch-dependency-failure"
+);
+const dependencyFailurePatchesBefore = dependencyFailureFixture.root.read(
+  ".patchmark/patches.json"
+);
+const dependencyFailureCommitBefore = dependencyFailureFixture.root.read(
+  ".patchmark/save-commit.json"
+);
+dependencyFailureFixture.root.controller.failNext(
+  (path) => path === ".patchmark/patches.json"
+);
+await assert.rejects(() =>
+  saveProjectState({
+    patches: dependencyPatches,
+    project: dependencyFailureFixture.project,
+    reason: "persist_patch_dependencies_failure"
+  })
+);
+assert.equal(
+  dependencyFailureFixture.root.read(".patchmark/patches.json"),
+  dependencyFailurePatchesBefore
+);
+assert.equal(
+  dependencyFailureFixture.root.read(".patchmark/save-commit.json"),
+  dependencyFailureCommitBefore
+);
+
 const interruptionStages = [
   {
     name: "lkg",
@@ -249,6 +330,8 @@ process.stdout.write(
     rapidEdits: rapidDebug,
     delayedWrite: { older: olderResult.status, newer: newerResult.status },
     patchAcceptanceGeneration: patchAcceptanceResult.generation,
+    dependencyPersistenceRestart: true,
+    dependencyFailurePreservedCommit: true,
     interruptionResults,
     malformedRecovery: true,
     staleTemporaryCleanup: true,
