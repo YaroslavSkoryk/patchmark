@@ -239,6 +239,7 @@ type ProjectCommitRequest = {
   manifestUpdate?: (manifest: PatchmarkManifest) => PatchmarkManifest;
   reason: string;
   allowSupersede?: boolean;
+  rollbackOnFailure?: boolean;
 };
 
 export type PatchmarkProjectDocumentListItem = PatchmarkProjectDocumentView & {
@@ -1034,7 +1035,8 @@ export async function saveProjectState({
   reviewBatches,
   project,
   reason,
-  allowSupersede = false
+  allowSupersede = false,
+  rollbackOnFailure = false
 }: {
   comments?: PatchmarkComment[];
   manifest?: PatchmarkManifest;
@@ -1044,6 +1046,7 @@ export async function saveProjectState({
   project: PatchmarkProjectHandle;
   reason: string;
   allowSupersede?: boolean;
+  rollbackOnFailure?: boolean;
 }): Promise<PatchmarkProjectCommitResult> {
   return commitProjectState({
     allowSupersede,
@@ -1053,7 +1056,8 @@ export async function saveProjectState({
     patches,
     reviewBatches,
     project,
-    reason
+    reason,
+    rollbackOnFailure
   });
 }
 
@@ -1630,9 +1634,44 @@ export async function writeProjectImport({
     create: true
   });
 
-  await writeTextFile(importFileHandle, contents);
+  try {
+    await writeTextFile(importFileHandle, contents);
+  } catch (error) {
+    await importsDirectoryHandle.removeEntry?.(fileName).catch(() => undefined);
+    throw error;
+  }
 
   return `${metadataDirectoryName}/imports/${fileName}`;
+}
+
+export async function removeProjectImport({
+  project,
+  relativePath
+}: {
+  project: PatchmarkProjectHandle;
+  relativePath: string;
+}): Promise<boolean> {
+  const match = /^\.patchmark\/imports\/([^/]+)$/.exec(relativePath);
+  if (!match || match[1].includes("..")) {
+    throw new Error("The Patchmark import path is invalid.");
+  }
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const importsDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("imports");
+  if (!importsDirectoryHandle.removeEntry) {
+    return false;
+  }
+  try {
+    await importsDirectoryHandle.removeEntry(match[1]);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return true;
+    }
+    throw error;
+  }
 }
 
 export function getProjectPersistenceDebugState(
@@ -1785,6 +1824,7 @@ async function commitProjectState({
   reviewBatchesUpdate,
   reviewQueueOverrides,
   reviewQueueOverridesUpdate,
+  rollbackOnFailure = false,
   project,
   reason
 }: ProjectCommitRequest & {
@@ -1828,6 +1868,7 @@ async function commitProjectState({
         reviewBatchesUpdate,
         reviewQueueOverrides,
         reviewQueueOverridesUpdate,
+        rollbackOnFailure,
         project,
         queue,
         reason,
@@ -1855,6 +1896,7 @@ async function executeProjectCommit({
   reviewBatchesUpdate,
   reviewQueueOverrides,
   reviewQueueOverridesUpdate,
+  rollbackOnFailure,
   project,
   queue,
   reason,
@@ -2149,6 +2191,7 @@ async function executeProjectCommit({
   };
   const commitText = serializeSaveCommit(saveCommit);
   const preparedFiles: PreparedProjectFile[] = [];
+  const attemptedInstalls: PreparedProjectFile[] = [];
 
   try {
     for (const key of changedFiles.filter((key) => key !== "manifest")) {
@@ -2188,6 +2231,7 @@ async function executeProjectCommit({
     for (const prepared of preparedFiles.filter(
       (file) => file.key !== "manifest" && file.key !== "commit"
     )) {
+      attemptedInstalls.push(prepared);
       await installPreparedProjectFile(prepared, (bytes) =>
         recordPersistenceWrite(project, bytes)
       );
@@ -2202,12 +2246,29 @@ async function executeProjectCommit({
       throw new Error(`Could not prepare project save ${reason}.`);
     }
 
+    attemptedInstalls.push(manifestPrepared);
     await installPreparedProjectFile(manifestPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+    attemptedInstalls.push(commitPrepared);
     await installPreparedProjectFile(commitPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+  } catch (error) {
+    if (rollbackOnFailure) {
+      const rollbackSucceeded = await rollbackAttemptedProjectInstalls({
+        attemptedInstalls,
+        currentCommit,
+        currentTexts,
+        includeCurrentReviewBatches,
+        includeCurrentReviewQueueOverrides,
+        onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+      });
+      if (!rollbackSucceeded) {
+        persistence.readSource = "lkg";
+      }
+    }
+    throw error;
   } finally {
     await cleanupPreparedFiles(preparedFiles);
   }
@@ -3666,6 +3727,65 @@ async function installPreparedProjectFile(
   ) {
     throw new Error(`Could not verify installed project file ${prepared.targetFileName}.`);
   }
+}
+
+async function rollbackAttemptedProjectInstalls({
+  attemptedInstalls,
+  currentCommit,
+  currentTexts,
+  includeCurrentReviewBatches,
+  includeCurrentReviewQueueOverrides,
+  onWrite
+}: {
+  attemptedInstalls: PreparedProjectFile[];
+  currentCommit: PatchmarkSaveCommit;
+  currentTexts: Record<ProjectCommitFileKey, string>;
+  includeCurrentReviewBatches: boolean;
+  includeCurrentReviewQueueOverrides: boolean;
+  onWrite: (bytes: number) => void;
+}): Promise<boolean> {
+  let succeeded = true;
+  const restoredTargets = new Set<string>();
+
+  for (const prepared of [...attemptedInstalls].reverse()) {
+    const targetKey = `${prepared.directoryHandle.name}/${prepared.targetFileName}`;
+    if (restoredTargets.has(targetKey)) {
+      continue;
+    }
+    restoredTargets.add(targetKey);
+    try {
+      const shouldRemove =
+        (prepared.key === "review_batches" &&
+          !includeCurrentReviewBatches) ||
+        (prepared.key === "review_queue_overrides" &&
+          !includeCurrentReviewQueueOverrides);
+      if (shouldRemove) {
+        await prepared.directoryHandle
+          .removeEntry?.(prepared.targetFileName)
+          .catch((error) => {
+            if (!isNotFoundError(error)) {
+              throw error;
+            }
+          });
+        continue;
+      }
+      const text =
+        prepared.key === "commit"
+          ? serializeSaveCommit(currentCommit)
+          : currentTexts[prepared.key];
+      const targetFileHandle =
+        await prepared.directoryHandle.getFileHandle(
+          prepared.targetFileName,
+          { create: true }
+        );
+      await writeTextFile(targetFileHandle, text);
+      onWrite(new TextEncoder().encode(text).byteLength);
+    } catch {
+      succeeded = false;
+    }
+  }
+
+  return succeeded;
 }
 
 async function cleanupPreparedFiles(

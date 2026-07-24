@@ -420,22 +420,21 @@ try {
     project_id: guidedEnvelope.project_id,
     document_id: guidedEnvelope.document_id,
     summary: "Reviewed the tracked batch.",
-    replies: [
-      {
-        comment_id: "PM-COMMENT-0001",
-        reply: "The retail evidence is clear.",
-        reply_sources: [],
-        suggested_user_action: "review"
-      }
-    ],
+    replies: [],
     patch_proposals: [],
     open_questions: []
   });
   await clickButtonByText(client, "Import");
   await waitFor(
     client,
-    `!document.querySelector('[aria-label="Import ChatGPT response"]') && Boolean(document.querySelector('[aria-label="Review Batch response received"]'))`,
-    "exact response receipt"
+    `!document.querySelector('[aria-label="Import ChatGPT response"]') && Boolean(document.querySelector('[aria-label="Review Batch response summary"]'))`,
+    "exact response summary"
+  );
+  assert.equal(
+    await evaluate(client, {
+      expression: `document.activeElement?.textContent?.trim() === "Review response summary"`
+    }),
+    true
   );
   const receivedBatches = JSON.parse(
     readFileSync(
@@ -452,14 +451,49 @@ try {
   const receivedBatch = receivedBatches.find(
     (batch) => batch.batch_id === guidedEnvelope.review_batch_id
   );
-  assert.equal(receivedBatch.status, "response_received");
+  assert.equal(receivedBatch.status, "responded_partial");
   assert.ok(receivedBatch.import_id);
+  assert.equal(receivedBatch.response_analysis.coverage_status, "partial");
+  assert.equal(receivedBatch.response_analysis.aggregate.addressed_comments, 0);
+  assert.equal(receivedBatch.response_analysis.aggregate.unanswered_comments, 1);
   assert.deepEqual(receivedBatch.selection_adjustment, {
     base_proposal_comment_ids: ["PM-COMMENT-0001", "PM-COMMENT-0002"],
     final_comment_ids: ["PM-COMMENT-0001"],
     transiently_removed_comment_ids: ["PM-COMMENT-0002"],
     transiently_added_comment_ids: []
   });
+  assert.match(
+    await evaluate(client, {
+      expression: `document.querySelector('[aria-label="Review Batch response summary"] [role="status"]')?.textContent ?? ""`
+    }),
+    /did not address 1 comment/
+  );
+  await clickButtonByText(client, "Continue to next batch");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Review queue overview"]'))`,
+    "queue after partial response acknowledgment"
+  );
+  const partialProgressionOverview = await readWizard(client);
+  assert.ok(partialProgressionOverview.counts["Ready for ChatGPT"] > 0);
+  const acknowledgedBatches = JSON.parse(
+    readFileSync(
+      join(
+        projectDir,
+        ".patchmark",
+        "documents",
+        "doc_market",
+        "review-batches.json"
+      ),
+      "utf8"
+    )
+  );
+  assert.equal(
+    acknowledgedBatches.find(
+      (batch) => batch.batch_id === guidedEnvelope.review_batch_id
+    ).status,
+    "acknowledged"
+  );
 
   console.log(
     JSON.stringify(
@@ -472,7 +506,8 @@ try {
         noWriteFingerprintStable: true,
         exactPromptReopenedAfterRestart: reopenedPrompt === exactExportedPrompt,
         cancellationKeptContextPack: true,
-        exactResponseReceipt: true,
+        partialResponseSummary: true,
+        partialProgressionOverview,
         transientWriteCount: 0,
         secondProposal,
         switchClosedWizard: true

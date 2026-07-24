@@ -159,6 +159,31 @@ try {
   const exactTextareaState = await setImportResponse(client, fixture.raw);
   assert.equal(exactTextareaState.bytes, EXACT_PROTOCOL_V2_RESPONSE_BYTES);
   assert.equal(exactTextareaState.unchanged, true);
+  const reviewBatchPath =
+    `.patchmark/documents/${fixture.response.document_id}/review-batches.json`;
+  await evaluate(client, {
+    expression: `window.__patchmarkFixtureWriteControls.failNextPath = ${JSON.stringify(
+      reviewBatchPath
+    )}`
+  });
+  await clickButtonByText(client, "Import");
+  await waitFor(
+    client,
+    `document.querySelector(".comment-import-error")?.textContent?.includes("Injected fixture write failure")`,
+    "atomic response import failure"
+  );
+  assert.equal(readReviewBatch(fixture.store).status, "exported");
+  assert.equal(readJson(join(fixture.store, "comments.json"))[0].thread.length, 0);
+  assert.equal(readJson(join(fixture.store, "patches.json")).length, 0);
+  assert.equal(
+    readdirSync(join(fixture.store, "imports")).filter((fileName) =>
+      fileName.endsWith("-comment-reply-import.json")
+    ).length,
+    0
+  );
+  await evaluate(client, {
+    expression: `window.__patchmarkFixtureWriteLog.length = 0`
+  });
   await clickButtonByText(client, "Import");
   await waitFor(
     client,
@@ -172,9 +197,9 @@ try {
       const raw = window.__patchmarkFixtureWrites?.get(
         ".patchmark/documents/${fixture.response.document_id}/review-batches.json"
       );
-      return raw && JSON.parse(raw)[0]?.status === "response_received";
+      return raw && JSON.parse(raw)[0]?.status === "responded";
     })()`,
-    "Review Batch response receipt"
+    "analyzed Review Batch response"
   );
 
   const comments = readJson(join(fixture.store, "comments.json"));
@@ -195,7 +220,7 @@ try {
       entry.path ===
       `.patchmark/documents/${fixture.response.document_id}/patches.json`
   );
-  const receiptWrite = writeLog.findLast(
+  const analysisWrite = writeLog.findLast(
     (entry) =>
       entry.path ===
       `.patchmark/documents/${fixture.response.document_id}/review-batches.json`
@@ -218,13 +243,170 @@ try {
     )?.depends_on_patch_keys_snapshot.length,
     17
   );
-  assert.equal(reviewBatch.status, "response_received");
+  assert.equal(reviewBatch.status, "responded");
   assert.ok(reviewBatch.import_id);
+  assert.equal(reviewBatch.response_analysis.coverage_status, "complete");
+  assert.deepEqual(reviewBatch.response_analysis.aggregate, {
+    expected_comments: 1,
+    addressed_comments: 1,
+    unanswered_comments: 0,
+    replies_added: 1,
+    patch_proposals_added: 18,
+    clarification_questions: 0,
+    explicit_no_change_responses: 0
+  });
+  assert.deepEqual(
+    reviewBatch.response_analysis.ordered_comment_outcomes[0].patch_ids,
+    patches.map((patch) => patch.id)
+  );
   assert.equal(importFiles.length, 1);
   assert.ok(writeLog.every((entry) => entry.status === "completed"));
   assert.ok(finalPatchWrite);
-  assert.ok(receiptWrite);
-  assert.ok(receiptWrite.sequence > finalPatchWrite.sequence);
+  assert.ok(analysisWrite);
+  const authoritativeCommit = readJson(
+    join(fixture.store, "save-commit.json")
+  );
+  assert.ok(authoritativeCommit.files.comments);
+  assert.ok(authoritativeCommit.files.patches);
+  assert.ok(authoritativeCommit.files.review_batches);
+
+  await clickButtonByText(client, "Guided Review");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Review Batch response summary"]'))`,
+    "response summary"
+  );
+  const summaryState = await readResponseSummary(client);
+  assert.equal(summaryState.statusText, "ChatGPT addressed every comment in this batch.");
+  assert.deepEqual(summaryState.counts, {
+    "Clarification questions": "0",
+    "Comments addressed": "1 of 1",
+    "Patch proposals": "18",
+    "Replies added": "1",
+    "Unanswered comments": "0"
+  });
+  assert.match(summaryState.outcomeText, /1 reply · 18 patch proposals/);
+  await clickButtonByText(client, "Close Guided Review");
+  await waitFor(
+    client,
+    `!document.querySelector('[aria-label="Guided Review Wizard"]')`,
+    "summary closed without acknowledgment"
+  );
+  assert.equal(readReviewBatch(fixture.store).status, "responded");
+
+  await client.call("Page.reload");
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitFor(
+    client,
+    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+    "reopened exact response project"
+  );
+  await clickButtonByText(client, "Guided Review");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Review Batch response summary"]'))`,
+    "persisted response summary after restart"
+  );
+  assert.deepEqual((await readResponseSummary(client)).counts, summaryState.counts);
+  await clickButtonByText(client, "Review responses");
+  await waitFor(
+    client,
+    `document.querySelector('[data-comment-id="PM-COMMENT-0019"] article')?.getAttribute("aria-current") === "true"`,
+    "document-scoped response comment navigation"
+  );
+  assert.equal(
+    await evaluate(client, {
+      expression: `!document.querySelector('[aria-label="Guided Review Wizard"]')`
+    }),
+    true
+  );
+
+  await clickButtonByText(client, "Guided Review");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Review Batch response summary"]'))`,
+    "summary reopened after response navigation"
+  );
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 820,
+    mobile: false,
+    width: 390
+  });
+  const responsiveSummary = await evaluate(client, {
+    expression: `(() => {
+      const counts = document.querySelector(".guided-review-response-counts");
+      const actions = document.querySelector(".guided-review-wizard-actions");
+      return {
+        actionsDirection: actions ? getComputedStyle(actions).flexDirection : null,
+        countsWidth: counts?.getBoundingClientRect().width ?? 0,
+        dialogWidth:
+          document.querySelector('[aria-label="Guided Review Wizard"]')
+            ?.getBoundingClientRect().width ?? 0
+      };
+    })()`
+  });
+  assert.equal(responsiveSummary.actionsDirection, "column");
+  assert.ok(responsiveSummary.countsWidth <= responsiveSummary.dialogWidth);
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1000,
+    mobile: false,
+    width: 1500
+  });
+
+  await evaluate(client, {
+    expression: `window.__patchmarkFixtureWriteControls.failNextPath = ${JSON.stringify(
+      reviewBatchPath
+    )}`
+  });
+  await clickButtonByText(client, "Continue to next batch");
+  await waitFor(
+    client,
+    `document.querySelector(".guided-review-error")?.textContent?.includes("Injected fixture write failure")`,
+    "acknowledgment persistence failure"
+  );
+  assert.equal(readReviewBatch(fixture.store).status, "responded");
+  assert.ok(
+    await evaluate(client, {
+      expression: `Boolean(document.querySelector('[aria-label="Review Batch response summary"]'))`
+    })
+  );
+  await clickButtonByText(client, "Continue to next batch");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Review queue overview"]'))`,
+    "queue after response acknowledgment"
+  );
+  const acknowledgedBatch = readReviewBatch(fixture.store);
+  assert.equal(acknowledgedBatch.status, "acknowledged");
+  assert.ok(acknowledgedBatch.acknowledged_at);
+  assert.deepEqual(
+    acknowledgedBatch.response_analysis,
+    reviewBatch.response_analysis
+  );
+  assert.equal(readJson(join(fixture.store, "comments.json"))[0].status, "open");
+  assert.ok(
+    readJson(join(fixture.store, "patches.json")).every(
+      (patch) => patch.status === "pending"
+    )
+  );
+  await client.call("Page.reload");
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitFor(
+    client,
+    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+    "acknowledged project after restart"
+  );
+  await clickButtonByText(client, "Guided Review");
+  await waitFor(
+    client,
+    `Boolean(document.querySelector('[aria-label="Review queue overview"]')) &&
+      !document.querySelector('[aria-label="Review Batch response summary"]')`,
+    "acknowledged response no longer blocks queue after restart"
+  );
   assert.deepEqual(consoleErrors, []);
   assert.deepEqual(exceptions, []);
   assert.deepEqual(networkFailures, []);
@@ -234,15 +416,17 @@ try {
       {
         exactResponseBytes: EXACT_PROTOCOL_V2_RESPONSE_BYTES,
         exactResponseSha256: EXACT_PROTOCOL_V2_RESPONSE_SHA256,
+        acknowledgmentFailurePreservedSummary: true,
+        atomicImportFailurePreservedExport: true,
         failedValidationWrites: negativeState.writes,
         importedPatches: patches.length,
         noAutomaticAcceptance: patches.every(
           (patch) => patch.status === "pending"
         ),
         productionUrl: editorUrl,
-        reviewBatchStatus: reviewBatch.status,
-        receiptAfterPatchCommit:
-          receiptWrite.sequence > finalPatchWrite.sequence
+        acknowledgedRestartShowsQueue: true,
+        responseSummaryRestarted: true,
+        reviewBatchStatus: acknowledgedBatch.status
       },
       null,
       2
@@ -302,6 +486,32 @@ function readJson(path) {
 
 function readReviewBatch(store) {
   return readJson(join(store, "review-batches.json"))[0];
+}
+
+async function readResponseSummary(pageClient) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const summary = document.querySelector(
+        '[aria-label="Review Batch response summary"]'
+      );
+      const counts = Object.fromEntries(
+        Array.from(
+          summary?.querySelectorAll(".guided-review-response-counts > div") ?? []
+        ).map((item) => [
+          item.querySelector("dt")?.textContent?.trim() ?? "",
+          item.querySelector("dd")?.textContent?.trim() ?? ""
+        ])
+      );
+      return {
+        counts,
+        outcomeText:
+          summary?.querySelector(".guided-review-response-outcomes")
+            ?.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+        statusText:
+          summary?.querySelector('[role="status"]')?.textContent?.trim() ?? ""
+      };
+    })()`
+  });
 }
 
 function getProposal(response, patchKey) {

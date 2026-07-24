@@ -88,6 +88,9 @@ function getExportLifecycleEvidence({
   if (activeExportEvidence && !activeExportEvidence.responseImported) {
     return "active";
   }
+  if (activeExportEvidence?.responseImported) {
+    return "none";
+  }
 
   const exportState = comment.export_state;
   const exportedAt = parseTimestamp(exportState.last_exported_at);

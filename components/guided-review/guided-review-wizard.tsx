@@ -7,6 +7,7 @@ import {
 } from "react";
 import type { PatchmarkComment } from "@/lib/project/project-types";
 import type { PatchmarkReviewBatch } from "@/lib/review-batches/review-batch-types";
+import { GuidedReviewResponseSummary } from "./guided-review-response-summary";
 import {
   addCommentToGuidedReviewSession,
   createGuidedReviewProposalSession,
@@ -31,7 +32,7 @@ type WizardStep =
   | "queue_overview"
   | "proposal"
   | "active_exported_batch"
-  | "response_received";
+  | "response_summary";
 
 const stateLabels: Record<CommentReviewState, string> = {
   awaiting_chatgpt_response: "Awaiting ChatGPT",
@@ -80,6 +81,7 @@ export function GuidedReviewWizard({
   generationBlockedReason,
   isBusy,
   onCancelBatch,
+  onAcknowledgeResponse,
   onClose,
   onCopyPrompt,
   onDeferComment,
@@ -88,9 +90,10 @@ export function GuidedReviewWizard({
   onOpenContextPack,
   onReanchorComment,
   onRestoreDeferredComment,
+  onReviewResponseComment,
   onReviewComments,
   queue,
-  responseReceivedBatch,
+  responseBatch,
   workingStateKey
 }: {
   activeBatch: PatchmarkReviewBatch | null;
@@ -101,6 +104,7 @@ export function GuidedReviewWizard({
   documentTitle: string;
   generationBlockedReason: string | null;
   isBusy: boolean;
+  onAcknowledgeResponse: () => Promise<void>;
   onCancelBatch: () => void;
   onClose: () => void;
   onCopyPrompt: () => void;
@@ -112,15 +116,20 @@ export function GuidedReviewWizard({
   onOpenContextPack: () => void;
   onReanchorComment: (commentId: string) => void;
   onRestoreDeferredComment: (commentId: string) => Promise<void>;
+  onReviewResponseComment: (commentId: string) => void;
   onReviewComments: () => void;
   queue: ReviewQueue;
-  responseReceivedBatch: PatchmarkReviewBatch | null;
+  responseBatch: PatchmarkReviewBatch | null;
   workingStateKey: string;
 }) {
   const dialogRef = useRef<HTMLElement>(null);
   const closeButtonRef = useRef<HTMLButtonElement>(null);
   const [step, setStep] = useState<WizardStep>(
-    activeBatch ? "active_exported_batch" : "queue_overview"
+    activeBatch
+      ? "active_exported_batch"
+      : responseBatch
+        ? "response_summary"
+        : "queue_overview"
   );
   const [session, setSession] = useState<GuidedReviewProposalSession | null>(
     null
@@ -128,9 +137,6 @@ export function GuidedReviewWizard({
   const [sessionWorkingStateKey, setSessionWorkingStateKey] = useState<
     string | null
   >(null);
-  const [observedBatchId, setObservedBatchId] = useState<string | null>(
-    activeBatch?.batch_id ?? null
-  );
   const [actionError, setActionError] = useState<string | null>(null);
   const [announcement, setAnnouncement] = useState("");
   const commentsById = useMemo(
@@ -162,33 +168,31 @@ export function GuidedReviewWizard({
     setSession(null);
     setSessionWorkingStateKey(null);
     setActionError(null);
-    setObservedBatchId(null);
     setStep("queue_overview");
   }, [queue.documentId, queue.projectId]);
 
   useEffect(() => {
     if (activeBatch) {
-      setObservedBatchId(activeBatch.batch_id);
       setStep("active_exported_batch");
       setSession(null);
     }
   }, [activeBatch]);
 
   useEffect(() => {
-    if (!observedBatchId || activeBatch) {
+    if (activeBatch) {
       return;
     }
-    if (
-      responseReceivedBatch?.batch_id === observedBatchId &&
-      responseReceivedBatch.status === "response_received"
+    if (responseBatch) {
+      setStep("response_summary");
+      setSession(null);
+    } else if (
+      step === "active_exported_batch" ||
+      step === "response_summary"
     ) {
-      setStep("response_received");
-    } else {
-      setObservedBatchId(null);
       setStep("queue_overview");
+      setSession(null);
     }
-    setSession(null);
-  }, [activeBatch, observedBatchId, responseReceivedBatch]);
+  }, [activeBatch, responseBatch, step]);
 
   function handleDialogKeyDown(event: ReactKeyboardEvent<HTMLElement>) {
     if (event.key === "Escape" && !isBusy) {
@@ -337,6 +341,18 @@ export function GuidedReviewWizard({
     }
   }
 
+  async function acknowledgeResponse() {
+    try {
+      setActionError(null);
+      await onAcknowledgeResponse();
+      setAnnouncement(
+        "Response acknowledged. Replies, patches, and comments remain unchanged."
+      );
+    } catch (error) {
+      setActionError(getErrorMessage(error));
+    }
+  }
+
   return (
     <div className="snapshot-dialog-backdrop guided-review-wizard-backdrop">
       <section
@@ -430,10 +446,14 @@ export function GuidedReviewWizard({
             />
           ) : null}
 
-          {step === "response_received" ? (
-            <ResponseReceivedStep
+          {step === "response_summary" && responseBatch ? (
+            <GuidedReviewResponseSummary
+              batch={responseBatch}
+              comments={comments}
+              isBusy={isBusy}
+              onAcknowledge={() => void acknowledgeResponse()}
               onClose={onClose}
-              onReviewComments={onReviewComments}
+              onReviewComment={onReviewResponseComment}
             />
           ) : null}
         </div>
@@ -983,36 +1003,6 @@ function ActiveBatchStep({
   );
 }
 
-function ResponseReceivedStep({
-  onClose,
-  onReviewComments
-}: {
-  onClose: () => void;
-  onReviewComments: () => void;
-}) {
-  return (
-    <section aria-label="Review Batch response received" className="guided-review-step">
-      <header>
-        <span>Response received</span>
-        <h3>Response imported</h3>
-        <p>The response was attached to this Review Batch.</p>
-      </header>
-      <p>
-        Review the imported replies and patch proposals in the comment panel.
-        Detailed response completeness and progression belong to Phase 4.
-      </p>
-      <div className="guided-review-wizard-actions">
-        <button onClick={onReviewComments} type="button">
-          Review comments
-        </button>
-        <button onClick={onClose} type="button">
-          Close Guided Review
-        </button>
-      </div>
-    </section>
-  );
-}
-
 function getSelectionReasonLabel(reason: ReviewQueueSelectionReason): string {
   switch (reason.code) {
     case "explicit_follow_up_priority":
@@ -1067,7 +1057,7 @@ function getStepLabel(step: WizardStep): string {
   if (step === "active_exported_batch") {
     return "Active exported batch";
   }
-  return "Response received";
+  return "Response summary";
 }
 
 function getAnchorExcerpt(comment: PatchmarkComment): string {

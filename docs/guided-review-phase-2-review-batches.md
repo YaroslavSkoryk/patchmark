@@ -1,5 +1,10 @@
 # Guided Review Phase 2: Persistent Review Batches
 
+Phase 4 extends the minimal `response_received` receipt described here with
+`responded`, `responded_partial`, persisted response analysis, and explicit
+`acknowledged` progression. Existing `response_received` records remain
+backward compatible.
+
 Phase 2 gives every newly tracked focused-comment prompt durable,
 document-scoped ownership. A Review Batch owns one exact exported prompt for one
 document. It does not resolve comments or approve document changes.

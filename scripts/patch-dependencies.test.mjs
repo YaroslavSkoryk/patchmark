@@ -23,17 +23,27 @@ const commentId = "PM-COMMENT-0019";
   const simulationIndex = editorSource.indexOf(
     "validateImportedPatchDependencySimulation({"
   );
+  const analysisIndex = editorSource.indexOf(
+    "analyzeImportedReviewBatchResponse({",
+    simulationIndex
+  );
   const importWriteIndex = editorSource.indexOf("await writeProjectImport({");
   const stateSaveIndex = editorSource.indexOf(
     "await saveProjectState({",
     importWriteIndex
   );
-  const receiptIndex = editorSource.indexOf(
-    "await recordReviewBatchResponseReceipt({"
-  );
 
   assert.ok(simulationIndex > 0 && simulationIndex < importWriteIndex);
-  assert.ok(importWriteIndex < stateSaveIndex && stateSaveIndex < receiptIndex);
+  assert.ok(simulationIndex < analysisIndex && analysisIndex < importWriteIndex);
+  assert.ok(importWriteIndex < stateSaveIndex);
+  assert.match(
+    editorSource.slice(stateSaveIndex, stateSaveIndex + 500),
+    /reviewBatches: nextReviewBatches/
+  );
+  assert.doesNotMatch(
+    editorSource,
+    /await recordReviewBatchResponseReceipt\(\{/
+  );
   assert.match(editorSource, /"protocol_version": 2/);
   assert.match(editorSource, /"patch_key": "add-example-source"/);
   assert.match(editorSource, /"depends_on": \[\]/);

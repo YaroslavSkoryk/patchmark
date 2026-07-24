@@ -1,5 +1,6 @@
 import type { ProjectDocumentIdentity } from "../project/document-scoped-identity.ts";
 import { isReviewBatchSha256 } from "./review-batch-fingerprints.ts";
+import { normalizeReviewResponseAnalysis } from "./review-response-analysis-schema.ts";
 import {
   REVIEW_BATCH_PROMPT_BUILDER_VERSION,
   REVIEW_BATCH_SCHEMA_VERSION,
@@ -19,6 +20,9 @@ const batchTypes: ReviewBatchType[] = [
 ];
 const statuses: ReviewBatchStatus[] = [
   "exported",
+  "responded",
+  "responded_partial",
+  "acknowledged",
   "response_received",
   "cancelled"
 ];
@@ -160,6 +164,11 @@ function normalizeReviewBatch(
     "response_received_at",
     index
   );
+  const acknowledgedAt = normalizeOptionalNullableString(
+    value.acknowledged_at,
+    "acknowledged_at",
+    index
+  );
   const cancelledAt = normalizeNullableString(
     value.cancelled_at,
     "cancelled_at",
@@ -175,11 +184,21 @@ function normalizeReviewBatch(
   if (cancelReason === undefined) {
     throw invalidBatch(index);
   }
+  const responseAnalysis = normalizeReviewResponseAnalysis({
+    batchId: value.batch_id,
+    documentId: identity.documentId,
+    importId,
+    orderedCommentIds,
+    projectId: identity.projectId,
+    value: value.response_analysis
+  });
   assertStatusFields({
+    acknowledgedAt,
     cancelReason,
     cancelledAt,
     importId,
     index,
+    responseAnalysis,
     responseReceivedAt,
     status: value.status as ReviewBatchStatus
   });
@@ -210,9 +229,11 @@ function normalizeReviewBatch(
     created_at: value.created_at,
     exported_at: value.exported_at,
     response_received_at: responseReceivedAt,
+    acknowledged_at: acknowledgedAt,
     cancelled_at: cancelledAt,
     cancel_reason: cancelReason,
-    import_id: importId
+    import_id: importId,
+    response_analysis: responseAnalysis
   };
 }
 
@@ -350,26 +371,65 @@ function normalizeContextPack(
 }
 
 function assertStatusFields({
+  acknowledgedAt,
   cancelReason,
   cancelledAt,
   importId,
   index,
+  responseAnalysis,
   responseReceivedAt,
   status
 }: {
+  acknowledgedAt: string | null;
   cancelReason: ReviewBatchCancelReason | null;
   cancelledAt: string | null;
   importId: string | null;
   index: number;
+  responseAnalysis: PatchmarkReviewBatch["response_analysis"];
   responseReceivedAt: string | null;
   status: ReviewBatchStatus;
 }): void {
-  const valid =
-    status === "exported"
-      ? !responseReceivedAt && !cancelledAt && !cancelReason && !importId
-      : status === "response_received"
-        ? Boolean(responseReceivedAt && importId && !cancelledAt && !cancelReason)
-        : Boolean(cancelledAt && cancelReason && !responseReceivedAt && !importId);
+  const hasResponseReceipt = Boolean(responseReceivedAt && importId);
+  const hasCancellation = Boolean(cancelledAt && cancelReason);
+  const valid = (() => {
+    if (status === "exported") {
+      return (
+        !hasResponseReceipt &&
+        !hasCancellation &&
+        !acknowledgedAt &&
+        !responseAnalysis
+      );
+    }
+    if (status === "response_received") {
+      return (
+        hasResponseReceipt &&
+        !hasCancellation &&
+        !acknowledgedAt &&
+        !responseAnalysis
+      );
+    }
+    if (status === "responded" || status === "responded_partial") {
+      return (
+        hasResponseReceipt &&
+        !hasCancellation &&
+        !acknowledgedAt &&
+        Boolean(
+          responseAnalysis &&
+            responseAnalysis.coverage_status ===
+              (status === "responded" ? "complete" : "partial")
+        )
+      );
+    }
+    if (status === "acknowledged") {
+      return hasResponseReceipt && !hasCancellation && Boolean(acknowledgedAt);
+    }
+    return (
+      hasCancellation &&
+      !hasResponseReceipt &&
+      !acknowledgedAt &&
+      !responseAnalysis
+    );
+  })();
   if (!valid) {
     throw invalidBatch(index);
   }
@@ -402,6 +462,16 @@ function normalizeNullableString(
     throw new Error(`Review Batch ${index + 1} has invalid ${field}.`);
   }
   return value;
+}
+
+function normalizeOptionalNullableString(
+  value: unknown,
+  field: string,
+  index: number
+): string | null {
+  return value === undefined
+    ? null
+    : normalizeNullableString(value, field, index);
 }
 
 function isNonNegativeInteger(value: unknown): value is number {

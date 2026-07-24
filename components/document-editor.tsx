@@ -132,7 +132,7 @@ import {
   validateGuidedReviewSessionSelection,
   type GuidedReviewProposalSession
 } from "@/lib/review-queue/guided-review-session";
-import { createReviewBatchActiveExportEvidence } from "@/lib/review-batches/review-batch-active-evidence";
+import { createReviewBatchExportLifecycleEvidence } from "@/lib/review-batches/review-batch-active-evidence";
 import {
   createTrackedReviewBatchExport,
   readExactReviewBatchPrompt
@@ -140,10 +140,22 @@ import {
 import {
   cancelReviewBatch,
   getActiveReviewBatch,
-  listReviewBatches,
-  recordReviewBatchResponseReceipt
+  listReviewBatches
 } from "@/lib/review-batches/review-batch-repository";
-import { classifyReviewBatchResponseAssociation } from "@/lib/review-batches/review-batch-response-receipt";
+import {
+  associateReviewBatchResponse,
+  validateExactReviewBatchResponseComments
+} from "@/lib/review-batches/review-batch-response-receipt";
+import {
+  acknowledgeReviewBatchResponse,
+  createRespondedReviewBatchRecords,
+  getPendingReviewResponseBatch,
+  upgradeLegacyReviewBatchResponse
+} from "@/lib/review-batches/review-batch-progression";
+import {
+  analyzeImportedReviewBatchResponse,
+  hasExactImportedReviewBatchContributions
+} from "@/lib/review-batches/review-response-analysis";
 import type {
   PatchmarkReviewBatch,
   ReviewBatchPromptEnvelope,
@@ -226,6 +238,7 @@ import {
   readProjectVersionMarkdownByRef,
   readProjectComments,
   readProjectPatches,
+  removeProjectImport,
   resolveDocumentPathFromFileHandle,
   renameProjectDocumentGroup,
   restoreProjectDocument,
@@ -1167,11 +1180,8 @@ export function DocumentEditor() {
     () => getActiveReviewBatch(reviewBatches),
     [reviewBatches]
   );
-  const responseReceivedReviewBatch = useMemo(
-    () =>
-      [...reviewBatches]
-        .reverse()
-        .find((batch) => batch.status === "response_received") ?? null,
+  const pendingReviewResponseBatch = useMemo(
+    () => getPendingReviewResponseBatch(reviewBatches),
     [reviewBatches]
   );
   const deferredReviewCommentIds = useMemo(
@@ -1237,7 +1247,7 @@ export function DocumentEditor() {
     return deriveReviewQueue({
       buildPromptPreview: guidedReviewPromptPreviewBuilder,
       activeExportEvidence:
-        createReviewBatchActiveExportEvidence(activeReviewBatch),
+        createReviewBatchExportLifecycleEvidence(reviewBatches),
       comments,
       deferredCommentIds: deferredReviewCommentIds,
       documentGeneration: projectHandle.persistence.generation,
@@ -1248,14 +1258,14 @@ export function DocumentEditor() {
     });
   }, [
     activeDocumentIdentity,
-    activeReviewBatch,
     comments,
     deferredReviewCommentIds,
     guidedReviewPromptPreviewBuilder,
     isGuidedReviewOpen,
     markdown,
     patches,
-    projectHandle
+    projectHandle,
+    reviewBatches
   ]);
   const guidedReviewWorkingStateKey = useMemo(
     () =>
@@ -1263,6 +1273,8 @@ export function DocumentEditor() {
         ? createDocumentHash(
             JSON.stringify({
               activeBatchId: activeReviewBatch?.batch_id ?? null,
+              pendingResponseBatchId:
+                pendingReviewResponseBatch?.batch_id ?? null,
               comments,
               deferredCommentIds: [...deferredReviewCommentIds].sort(),
               documentGeneration: projectHandle.persistence.generation,
@@ -1281,6 +1293,7 @@ export function DocumentEditor() {
       isGuidedReviewOpen,
       markdown,
       patches,
+      pendingReviewResponseBatch,
       projectHandle
     ]
   );
@@ -3622,10 +3635,18 @@ export function DocumentEditor() {
     }
 
     if (activeReviewBatch) {
-      setIsGuidedReviewOpen(true);
+      handleOpenGuidedReview();
       setSaveFeedback({
         kind: "info",
         message: `Review Batch ${activeReviewBatch.batch_id} is already awaiting a response for this document.`
+      });
+      return;
+    }
+    if (pendingReviewResponseBatch) {
+      handleOpenGuidedReview();
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${pendingReviewResponseBatch.batch_id} has a response summary awaiting acknowledgment.`
       });
       return;
     }
@@ -3963,6 +3984,13 @@ export function DocumentEditor() {
       });
       return;
     }
+    if (pendingReviewResponseBatch) {
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${pendingReviewResponseBatch.batch_id} has a response summary awaiting acknowledgment.`
+      });
+      return;
+    }
 
     const operationProject = projectHandle;
     const operationIdentity = activeDocumentIdentity;
@@ -4195,6 +4223,120 @@ export function DocumentEditor() {
     }
   }
 
+  function handleOpenGuidedReview() {
+    setIsGuidedReviewOpen(true);
+    const legacyBatch =
+      pendingReviewResponseBatch?.status === "response_received"
+        ? pendingReviewResponseBatch
+        : null;
+    if (
+      !projectHandle ||
+      !legacyBatch?.import_id ||
+      isCommentBusy ||
+      !hasExactImportedReviewBatchContributions({
+        batch: legacyBatch,
+        comments,
+        importId: legacyBatch.import_id,
+        patches
+      })
+    ) {
+      return;
+    }
+
+    const operationProject = projectHandle;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: legacyBatch.document_id,
+      projectId: legacyBatch.project_id
+    });
+    const analysis = analyzeImportedReviewBatchResponse({
+      analyzedAt: new Date().toISOString(),
+      batch: legacyBatch,
+      comments,
+      importId: legacyBatch.import_id,
+      patches
+    });
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    void upgradeLegacyReviewBatchResponse({
+      analysis,
+      batchId: legacyBatch.batch_id,
+      project: operationProject
+    })
+      .then((batches) => {
+        if (activeDocumentKeyRef.current !== operationDocumentKey) {
+          return;
+        }
+        setReviewBatches(batches);
+      })
+      .catch((error) => {
+        if (activeDocumentKeyRef.current !== operationDocumentKey) {
+          return;
+        }
+        const message = getProjectErrorMessage(error);
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      })
+      .finally(() => setIsCommentBusy(false));
+  }
+
+  async function handleAcknowledgeReviewBatchResponse() {
+    if (!projectHandle || !pendingReviewResponseBatch || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationBatch = pendingReviewResponseBatch;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: operationBatch.document_id,
+      projectId: operationBatch.project_id
+    });
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const batches = await acknowledgeReviewBatchResponse({
+        acknowledgedAt: new Date().toISOString(),
+        batchId: operationBatch.batch_id,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setReviewBatches(batches);
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Review Batch response acknowledged. Replies, patches, and comments remain unchanged."
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      }
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  function handleReviewResponseComment(commentId: string) {
+    if (
+      !pendingReviewResponseBatch ||
+      !pendingReviewResponseBatch.ordered_comment_ids.includes(commentId) ||
+      !comments.some((comment) => comment.id === commentId)
+    ) {
+      setSaveFeedback({
+        kind: "error",
+        message: "The selected Review Batch comment is no longer available."
+      });
+      return;
+    }
+    setIsGuidedReviewOpen(false);
+    setActiveCommentState({
+      kind: "comment",
+      commentId
+    });
+  }
+
   async function handleOpenActiveReviewBatchPrompt() {
     if (!projectHandle || !activeReviewBatch || isCommentBusy) {
       return;
@@ -4391,25 +4533,22 @@ export function DocumentEditor() {
     let parsedResponse: PatchmarkCommentReplyImport;
     let sourceChatUrl: string | undefined;
     let responseAssociation: ReturnType<
-      typeof classifyReviewBatchResponseAssociation
+      typeof associateReviewBatchResponse
     >;
 
     try {
       parsedResponse = parsePatchmarkCommentReplyImport(
         chatGptImportDialog.responseJson
       );
-      responseAssociation = classifyReviewBatchResponseAssociation({
-        activeBatch: activeReviewBatch,
+      responseAssociation = associateReviewBatchResponse({
+        batches: reviewBatches,
         response: parsedResponse,
         target: getProjectDocumentIdentity(projectHandle)
       });
-      if (
-        parsedResponse.protocol_version === 2 &&
-        responseAssociation.kind === "identity_mismatch"
-      ) {
-        throw new PatchDependencyValidationError({
-          code: "cross_document_dependency",
-          message: responseAssociation.message
+      if (responseAssociation.kind === "exact") {
+        validateExactReviewBatchResponseComments({
+          batch: responseAssociation.batch,
+          response: parsedResponse
         });
       }
       validateAtomicTablePatchImport({
@@ -4485,9 +4624,7 @@ export function DocumentEditor() {
       );
       if (activeReviewBatch && responseAssociation.kind !== "exact") {
         importWarnings.push(
-          responseAssociation.kind === "legacy_missing_identity"
-            ? "The response did not include exact Review Batch identity. The active batch remains awaiting an associated response."
-            : `${responseAssociation.message} The active batch remains awaiting an associated response.`
+          "The response did not include exact Review Batch identity. The active batch remains awaiting an associated response."
         );
       }
       const importWrapper = {
@@ -4500,48 +4637,49 @@ export function DocumentEditor() {
         warnings: importWarnings
       };
 
-      await writeProjectImport({
+      const nextPatches = [...existingPatches, ...importedPatches];
+      const responseAnalysis =
+        responseAssociation.kind === "exact"
+          ? analyzeImportedReviewBatchResponse({
+              analyzedAt: importedAt,
+              batch: responseAssociation.batch,
+              comments: nextComments,
+              importId,
+              patches: nextPatches
+            })
+          : null;
+      const nextReviewBatches =
+        responseAssociation.kind === "exact" && responseAnalysis
+          ? createRespondedReviewBatchRecords({
+              analysis: responseAnalysis,
+              batchId: responseAssociation.batch.batch_id,
+              batches: reviewBatches,
+              importId,
+              responseReceivedAt: importedAt
+            })
+          : reviewBatches;
+      const importRelativePath = await writeProjectImport({
         contents: `${JSON.stringify(importWrapper, null, 2)}\n`,
         fileName: `${safeTimestamp}-comment-reply-import.json`,
         project: projectHandle
       });
 
-      const nextPatches = [...existingPatches, ...importedPatches];
-      await saveProjectState({
-        comments: nextComments,
-        markdown,
-        patches: nextPatches,
-        project: projectHandle,
-        reason: "import_chatgpt_response"
-      });
-
-      let nextReviewBatches = reviewBatches;
-      if (responseAssociation.kind === "exact") {
-        try {
-          nextReviewBatches = await recordReviewBatchResponseReceipt({
-            batchId: responseAssociation.batchId,
-            importId,
-            project: projectHandle,
-            responseReceivedAt: importedAt
-          });
-        } catch (error) {
-          if (
-            activeDocumentKeyRef.current ===
-              createProjectDocumentKey(chatGptImportDialog)
-          ) {
-            const message = `The response imported, but its Review Batch receipt could not be recorded: ${getProjectErrorMessage(error)}`;
-            setBaselineMarkdown(markdown);
-            setRestoredMarkdown(null);
-            commentsRef.current = nextComments;
-            patchesRef.current = nextPatches;
-            setComments(nextComments);
-            setPatches(nextPatches);
-            setChatGptImportDialog(null);
-            setCommentsError(message);
-            setSaveFeedback({ kind: "error", message });
-          }
-          return;
-        }
+      try {
+        await saveProjectState({
+          comments: nextComments,
+          markdown,
+          patches: nextPatches,
+          reviewBatches: nextReviewBatches,
+          project: projectHandle,
+          reason: "import_chatgpt_response",
+          rollbackOnFailure: true
+        });
+      } catch (error) {
+        await removeProjectImport({
+          project: projectHandle,
+          relativePath: importRelativePath
+        }).catch(() => false);
+        throw error;
       }
 
       if (
@@ -7142,7 +7280,7 @@ export function DocumentEditor() {
                 isReanchorMode ||
                 projectHandle.documentAvailability === "missing"
               }
-              onClick={() => setIsGuidedReviewOpen(true)}
+              onClick={handleOpenGuidedReview}
             >
               Guided Review
             </button>
@@ -7974,6 +8112,7 @@ export function DocumentEditor() {
                 : null
           }
           isBusy={isCommentBusy}
+          onAcknowledgeResponse={handleAcknowledgeReviewBatchResponse}
           onCancelBatch={handleRequestCancelActiveReviewBatch}
           onClose={() => setIsGuidedReviewOpen(false)}
           onCopyPrompt={() => void handleCopyActiveReviewBatchPrompt()}
@@ -7988,6 +8127,7 @@ export function DocumentEditor() {
             handleStartReanchor(commentId);
           }}
           onRestoreDeferredComment={handleRestoreGuidedReviewComment}
+          onReviewResponseComment={handleReviewResponseComment}
           onReviewComments={() => {
             const target = guidedReviewQueue.comments.find(
               (comment) => comment.state === "awaiting_human_review"
@@ -8001,7 +8141,7 @@ export function DocumentEditor() {
             }
           }}
           queue={guidedReviewQueue}
-          responseReceivedBatch={responseReceivedReviewBatch}
+          responseBatch={pendingReviewResponseBatch}
           workingStateKey={guidedReviewWorkingStateKey}
         />
       ) : null}

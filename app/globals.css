@@ -1877,6 +1877,54 @@ button {
   margin: 0;
 }
 
+.guided-review-response-counts {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+
+.guided-review-response-counts div {
+  display: grid;
+  gap: 4px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  padding: 10px;
+}
+
+.guided-review-response-counts dt {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.guided-review-response-counts dd {
+  margin: 0;
+  font-size: 1.15rem;
+  font-weight: 800;
+}
+
+.guided-review-response-outcomes {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.guided-review-response-complete {
+  border: 1px solid #73a981;
+  background: #eef8f0;
+  color: #245c33;
+  padding: 10px;
+  font-weight: 700;
+}
+
+.guided-review-response-acknowledgment-note {
+  color: var(--muted);
+}
+
 .guided-review-counts div {
   display: grid;
   gap: 4px;
@@ -1993,6 +2041,18 @@ button {
   border-color: #7d92ba;
   background: #eef3ff;
   color: #2f4775;
+}
+
+.guided-review-comment-card > header span[data-state="addressed"] {
+  border-color: #73a981;
+  background: #eef8f0;
+  color: #245c33;
+}
+
+.guided-review-comment-card > header span[data-state="unanswered"] {
+  border-color: #d39c49;
+  background: #fff5df;
+  color: #714700;
 }
 
 .guided-review-comment-card dl {
@@ -4081,6 +4141,10 @@ button {
 
   .guided-review-counts {
     grid-template-columns: 1fr;
+  }
+
+  .guided-review-response-counts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
   .guided-review-proposal-summary dl,

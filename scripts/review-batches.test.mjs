@@ -18,6 +18,7 @@ import {
   listReviewBatches,
   recordReviewBatchResponseReceipt
 } from "../lib/review-batches/review-batch-repository.ts";
+import { acknowledgeReviewBatchResponse } from "../lib/review-batches/review-batch-progression.ts";
 import { classifyReviewBatchResponseAssociation } from "../lib/review-batches/review-batch-response-receipt.ts";
 import {
   parseReviewBatchRecords,
@@ -216,6 +217,17 @@ const received = await recordReviewBatchResponseReceipt({
 });
 assert.equal(received.at(-1).status, "response_received");
 assert.equal(getActiveReviewBatch(received), null);
+const acknowledgedLegacy = await acknowledgeReviewBatchResponse({
+  acknowledgedAt: "2026-07-21T04:30:00.000Z",
+  batchId: secondExport.batch.batch_id,
+  project: reopened.project
+});
+assert.equal(acknowledgedLegacy.at(-1).status, "acknowledged");
+assert.equal(
+  acknowledgedLegacy.at(-1).acknowledged_at,
+  "2026-07-21T04:30:00.000Z"
+);
+assert.equal(acknowledgedLegacy.at(-1).response_analysis, null);
 
 const uniquenessFixture = await createFixture("uniqueness");
 const concurrent = await Promise.allSettled([
@@ -430,6 +442,32 @@ assert.equal(
   getActiveReviewBatch(await listReviewBatches(responseFailureFixture.project))?.batch_id,
   responseFailureExport.batch.batch_id
 );
+await recordReviewBatchResponseReceipt({
+  batchId: responseFailureExport.batch.batch_id,
+  importId: "comment-import-success",
+  project: responseFailureFixture.project,
+  responseReceivedAt: "2026-07-21T06:30:00.000Z"
+});
+responseFailureFixture.root.controller.failNext(
+  (path) => path.includes(".patchmark-tmp-") && path.endsWith("review-batches.json")
+);
+await assert.rejects(() =>
+  acknowledgeReviewBatchResponse({
+    acknowledgedAt: "2026-07-21T07:00:00.000Z",
+    batchId: responseFailureExport.batch.batch_id,
+    project: responseFailureFixture.project
+  })
+);
+assert.equal(
+  getPendingStatus(await listReviewBatches(responseFailureFixture.project)),
+  "response_received"
+);
+const acknowledgedAfterRetry = await acknowledgeReviewBatchResponse({
+  acknowledgedAt: "2026-07-21T07:01:00.000Z",
+  batchId: responseFailureExport.batch.batch_id,
+  project: responseFailureFixture.project
+});
+assert.equal(acknowledgedAfterRetry.at(-1).status, "acknowledged");
 
 const independentA = await createFixture("independent-a");
 const independentB = await createFixture("independent-b");
@@ -486,6 +524,7 @@ console.log(
   JSON.stringify(
     {
       activeEvidence: queueWithActive.comments[0].state,
+      acknowledgmentFailurePreservedResponse: true,
       batchLastOrdering: true,
       cancellationFailurePreservedActive: true,
       concurrentActiveCount: 1,
@@ -494,6 +533,7 @@ console.log(
       exactPromptReopened: true,
       markerFailureRetry: true,
       lkgRecoveryReloadedActive: true,
+      legacyResponseAcknowledgedWithoutGuessing: true,
       oversizedWarningRetained: true,
       responseFailurePreservedActive: true,
       schemaOwnershipValidated: true,
@@ -566,6 +606,10 @@ function createComment() {
     created_at: "2026-07-21T01:00:00.000Z",
     updated_at: "2026-07-21T01:00:00.000Z"
   };
+}
+
+function getPendingStatus(batches) {
+  return batches.find((batch) => batch.status === "response_received")?.status;
 }
 
 class MemoryWriteController {

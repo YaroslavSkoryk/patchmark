@@ -157,9 +157,11 @@ export async function createTrackedReviewBatchExport({
     created_at: now,
     exported_at: now,
     response_received_at: null,
+    acknowledged_at: null,
     cancelled_at: null,
     cancel_reason: null,
-    import_id: null
+    import_id: null,
+    response_analysis: null
   };
   try {
     const batches = await createReviewBatchRecord({

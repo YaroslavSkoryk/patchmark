@@ -8,6 +8,7 @@ import type {
   PatchmarkReviewBatch,
   ReviewBatchCancelReason
 } from "./review-batch-types.ts";
+import { getPendingReviewResponseBatch } from "./review-batch-progression.ts";
 
 export async function listReviewBatches(
   project: PatchmarkProjectHandle
@@ -47,6 +48,12 @@ export async function createReviewBatchRecord({
       if (active) {
         throw new Error(
           `Review Batch ${active.batch_id} is already awaiting a response for this document.`
+        );
+      }
+      const pendingResponse = getPendingReviewResponseBatch(current);
+      if (pendingResponse) {
+        throw new Error(
+          `Review Batch ${pendingResponse.batch_id} has an unacknowledged response. Continue from its Guided Review summary before exporting another batch.`
         );
       }
       if (current.some((candidate) => candidate.batch_id === batch.batch_id)) {
@@ -117,7 +124,9 @@ export async function recordReviewBatchResponseReceipt({
               ...batch,
               status: "response_received" as const,
               response_received_at: responseReceivedAt,
-              import_id: importId
+              acknowledged_at: null,
+              import_id: importId,
+              response_analysis: null
             }
           : batch
       );
