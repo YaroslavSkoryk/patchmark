@@ -2,6 +2,7 @@ import {
   SOURCE_DATE_REFERENCE_ERROR,
   SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR,
   SOURCE_OBSERVATION_REFERENCE_ERROR,
+  SourceReferenceValidationError,
   validateSuggestedTextReferenceDates,
   validateSuggestedTextReferenceDatesWithCoverage
 } from "../imports/source-date-validation.ts";
@@ -24,6 +25,7 @@ export type PatchDependencyErrorCode =
   | "dependency_patch_target_ambiguous"
   | "dependency_patch_target_missing"
   | "dependency_simulation_failed"
+  | "dependency_source_date_coverage_failed"
   | "dependency_source_preservation_failed"
   | "duplicate_dependency_reference"
   | "duplicate_patch_key"
@@ -36,16 +38,25 @@ export class PatchDependencyValidationError extends Error {
   readonly code: PatchDependencyErrorCode;
   readonly patchKey?: string;
   readonly dependencyKey?: string;
+  readonly disclosurePrerequisiteStatus?: "absent" | "invalid" | "unrelated";
+  readonly observedAt?: string;
+  readonly sourceUrl?: string;
 
   constructor({
     code,
     dependencyKey,
+    disclosurePrerequisiteStatus,
     message,
+    observedAt,
+    sourceUrl,
     patchKey
   }: {
     code: PatchDependencyErrorCode;
     dependencyKey?: string;
+    disclosurePrerequisiteStatus?: "absent" | "invalid" | "unrelated";
     message: string;
+    observedAt?: string;
+    sourceUrl?: string;
     patchKey?: string;
   }) {
     super(message);
@@ -53,6 +64,9 @@ export class PatchDependencyValidationError extends Error {
     this.code = code;
     this.patchKey = patchKey;
     this.dependencyKey = dependencyKey;
+    this.disclosurePrerequisiteStatus = disclosurePrerequisiteStatus;
+    this.observedAt = observedAt;
+    this.sourceUrl = sourceUrl;
   }
 }
 
@@ -331,13 +345,35 @@ export function createPatchDependencyRepairPrompt(error: unknown): string {
     return "";
   }
 
+  const errorDetails =
+    error instanceof PatchDependencyValidationError
+      ? [
+          error.patchKey ? `Failing patch_key: ${error.patchKey}` : "",
+          error.dependencyKey
+            ? `Dependency patch_key: ${error.dependencyKey}`
+            : "",
+          error.sourceUrl ? `Failed source: ${error.sourceUrl}` : "",
+          error.observedAt
+            ? `Expected observation date: ${error.observedAt}`
+            : "",
+          error.disclosurePrerequisiteStatus
+            ? `Disclosure prerequisite status: ${error.disclosurePrerequisiteStatus}`
+            : ""
+        ].filter(Boolean)
+      : [];
+  const sourceDependencyRule =
+    error instanceof PatchDependencyValidationError &&
+    error.code === "dependency_source_date_coverage_failed"
+      ? `\n- Correct the \`depends_on\` graph for ${error.patchKey ?? "the failing patch"} so it declares a prerequisite whose output supplies the required disclosure in the same or deterministically containing section.\n- Do not duplicate shared disclosure prose into each dependent patch.`
+      : "";
+
   return `Dependency repair required.
 
 Validation code: ${
     error instanceof PatchDependencyValidationError
       ? error.code
       : "coordinated_source_validation_failed"
-  }
+  }${errorDetails.length > 0 ? `\n${errorDetails.join("\n")}` : ""}
 
 - Return protocol_version 2.
 - Give every patch proposal a unique non-empty patch_key.
@@ -349,7 +385,7 @@ Validation code: ${
 - When one same-section disclosure supplies publication and observation dates for source-link patches, make those patches depend on the disclosure patch instead of repeating the disclosure in every patch.
 - Include every source-preservation prerequisite needed before deleting a Sources or References section.
 - Preserve review_batch_id, project_id, document_id, comment IDs, titles, original_text, suggested_text, sources, reasons, risks, and response substance.
-- Do not remove patches or rewrite unrelated content.`;
+- Do not remove patches or rewrite unrelated content.${sourceDependencyRule}`;
 }
 
 function createDependencyGraph(
@@ -703,6 +739,8 @@ function validateSimulatedPatchSources({
   finalMarkdown: string;
   patch: PatchmarkPatch;
 }): void {
+  let initialSourceError: SourceReferenceValidationError | null = null;
+
   try {
     validateSuggestedTextReferenceDates({
       originalText: patch.original_text,
@@ -712,11 +750,21 @@ function validateSimulatedPatchSources({
     return;
   } catch (error) {
     if (
-      appliedPrerequisites.length === 0 ||
       !(error instanceof Error) ||
       !SOURCE_DATE_ERRORS.has(error.message)
     ) {
       throw error;
+    }
+
+    initialSourceError =
+      error instanceof SourceReferenceValidationError ? error : null;
+
+    if (appliedPrerequisites.length === 0) {
+      throw createDependencySourceDateCoverageError({
+        error: initialSourceError ?? error,
+        patch,
+        status: "absent"
+      });
     }
   }
 
@@ -734,15 +782,51 @@ function validateSimulatedPatchSources({
       suggestedText: patch.suggested_text
     });
   } catch (error) {
-    throw new PatchDependencyValidationError({
-      code: "dependency_simulation_failed",
-      message:
-        error instanceof Error
-          ? error.message
-          : "Dependency-aware source validation failed.",
-      patchKey: patch.source_patch_key
+    throw createDependencySourceDateCoverageError({
+      error:
+        error instanceof SourceReferenceValidationError
+          ? error
+          : initialSourceError ?? error,
+      patch,
+      status: coverageMarkdown ? "invalid" : "unrelated"
     });
   }
+}
+
+function createDependencySourceDateCoverageError({
+  error,
+  patch,
+  status
+}: {
+  error: unknown;
+  patch: PatchmarkPatch;
+  status: "absent" | "invalid" | "unrelated";
+}): PatchDependencyValidationError {
+  const sourceError =
+    error instanceof SourceReferenceValidationError ? error : null;
+  const patchKey = patch.source_patch_key ?? patch.id;
+  const sourceDetails = sourceError
+    ? ` Source ${sourceError.sourceUrl}${
+        sourceError.observedAt
+          ? ` requires observation date ${sourceError.observedAt}`
+          : ""
+      }.`
+    : "";
+  const statusDetails =
+    status === "absent"
+      ? " No disclosure prerequisite is declared."
+      : status === "unrelated"
+        ? " The declared prerequisites do not add disclosure coverage in the same or a containing section."
+        : " The declared prerequisite disclosure does not match the source date metadata.";
+
+  return new PatchDependencyValidationError({
+    code: "dependency_source_date_coverage_failed",
+    disclosurePrerequisiteStatus: status,
+    message: `Patch ${patchKey} failed dependency-aware source-date validation.${sourceDetails}${statusDetails}`,
+    observedAt: sourceError?.observedAt,
+    patchKey: patch.source_patch_key,
+    sourceUrl: sourceError?.sourceUrl
+  });
 }
 
 function getRelevantPrerequisiteCoverage({
@@ -823,12 +907,13 @@ function validateSimulatedSourcePreservation({
   if (missingUrls.length > 0) {
     throw new PatchDependencyValidationError({
       code: "dependency_source_preservation_failed",
-      message: `Deleting the source section would remove ${missingUrls.length} visible source URL${missingUrls.length === 1 ? "" : "s"}.`,
-      patchKey: patch.source_patch_key
+      message: `Deleting the source section would remove ${missingUrls.length} visible source URL${missingUrls.length === 1 ? "" : "s"}; first missing source: ${missingUrls[0]}.`,
+      patchKey: patch.source_patch_key,
+      sourceUrl: missingUrls[0]
     });
   }
 }
 
 function normalizeVisibleUrl(url: string): string {
-  return url.replace(/[.,;:!?]+$/, "");
+  return url.replace(/\\&/g, "&").replace(/[.,;:!?]+$/, "");
 }

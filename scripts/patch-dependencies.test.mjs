@@ -402,7 +402,7 @@ ${sourceUrls.map((url) => `- ${url}`).join("\n")}`;
     ])
   );
 
-  expectDependencyError("dependency_simulation_failed", () =>
+  expectDependencyError("dependency_source_date_coverage_failed", () =>
     validateImportedPatchDependencySimulation({
       comments: [comment()],
       existingPatches: [],
@@ -441,7 +441,7 @@ ${sourceUrls.map((url) => `- ${url}`).join("\n")}`;
     ])
   );
 
-  expectDependencyError("dependency_simulation_failed", () =>
+  expectDependencyError("dependency_source_date_coverage_failed", () =>
     validateImportedPatchDependencySimulation({
       comments: [comment()],
       existingPatches: [],

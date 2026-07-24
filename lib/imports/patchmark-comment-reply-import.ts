@@ -10,6 +10,7 @@ import {
 } from "../patches/patch-dependencies.ts";
 import { normalizePatchDisplayTitleCandidate } from "../patches/patch-display-title.ts";
 import {
+  SourceReferenceValidationError,
   normalizeSourceDateField,
   validateConsistentRepeatedSourceDates,
   validateSourceDateOrder,
@@ -776,11 +777,34 @@ function validatePatchProposalVisibleReferenceDates(
       continue;
     }
 
-    validateSuggestedTextReferenceDates({
-      originalText: patchProposal.original_text,
-      sources: patchProposal.suggested_text_sources ?? [],
-      suggestedText: patchProposal.suggested_text
-    });
+    try {
+      validateSuggestedTextReferenceDates({
+        originalText: patchProposal.original_text,
+        sources: patchProposal.suggested_text_sources ?? [],
+        suggestedText: patchProposal.suggested_text
+      });
+    } catch (error) {
+      if (
+        protocolVersion !== 2 ||
+        !(error instanceof SourceReferenceValidationError)
+      ) {
+        throw error;
+      }
+
+      const patchKey = patchProposal.patch_key;
+      throw new PatchDependencyValidationError({
+        code: "dependency_source_date_coverage_failed",
+        disclosurePrerequisiteStatus: "absent",
+        message: `Patch ${patchKey} failed dependency-aware source-date validation. Source ${error.sourceUrl}${
+          error.observedAt
+            ? ` requires observation date ${error.observedAt}`
+            : ""
+        }. No disclosure prerequisite is declared.`,
+        observedAt: error.observedAt,
+        patchKey,
+        sourceUrl: error.sourceUrl
+      });
+    }
   }
 }
 
