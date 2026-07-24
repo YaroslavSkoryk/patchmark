@@ -39,15 +39,25 @@ document identity mismatches.
 Transitive prerequisite order is deterministic. Response order is the primary
 tie-breaker and `patch_key` is the secondary tie-breaker.
 
+> Response order does not create a patch dependency. Only `depends_on` does.
+
 ## Combined-state simulation
 
 Before importing any reply or patch, Patchmark creates an in-memory simulation
 for every proposal:
 
-1. Start from the current document.
-2. Apply the proposal’s transitive prerequisites in deterministic order.
+1. Start from the exact current/base document state for that proposal.
+2. Apply only the proposal’s declared transitive prerequisites in deterministic
+   order.
 3. Apply the proposal.
 4. Validate the resulting document.
+
+Every independent proposal receives an isolated copy of the base Markdown and
+never sees an unrelated imported sibling. Every dependent proposal receives a
+dependency-specific state containing only its transitive prerequisite closure.
+After each prerequisite mutation, Patchmark re-runs the canonical target
+resolver against that exact intermediate Markdown instead of reusing absolute
+offsets.
 
 Simulation uses the existing canonical pending-patch target resolver and shared
 text replacement operation. It writes no files, creates no snapshots, advances
@@ -112,6 +122,13 @@ New focused-comment and Guided Review prompts request protocol version 2,
 combined-state failures and preserves Review Batch identity, comment IDs, patch
 content, sources, reasons, and risks.
 
+Target failures distinguish an authoritative document changed after export,
+an absent or ambiguous target in the exported base state, a target changed by
+declared prerequisites, and an internal independent-simulation invariant.
+Current-document and internal invariant failures do not show a misleading
+ChatGPT repair prompt because rewriting a valid response cannot repair local
+document state or Patchmark behavior.
+
 Source-date dependency failures use
 `dependency_source_date_coverage_failed` and report the failing `patch_key`,
 source URL, expected observation date, and whether the disclosure prerequisite
@@ -140,6 +157,19 @@ commit, and Review Batch receipt. The production browser test runs against a
 caller-provided Patchmark URL and verifies that a missing dependency performs no
 writes, while the exact response stores all patches as pending and records the
 response receipt only after the patch commit.
+
+A second byte-locked regression fixture,
+`scripts/fixtures/independent-protocol-v2-import-response.json`, contains four
+independent proposals for sections 9.1–9.3, including the complete long
+unit-economics replacement. Its exact payload is 11,573 bytes with SHA-256
+`08b1eba33fae1244d101c6d4d3b2a1fe4b1df7d77a43847a448d8ba56e0d3ffa`.
+Direct tests record the empty closure and unique canonical range for every
+proposal. Production-browser coverage verifies the atomic four-reply/four-patch
+import, Review Batch response analysis, no dependency badges, no automatic
+acceptance, and continued reviewability of later independent patches after one
+earlier sibling is accepted. A saved-document divergence variant verifies the
+precise current-document error, no repair prompt, no partial writes, and an
+unchanged exported Review Batch.
 
 ## Non-goals
 

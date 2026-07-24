@@ -20,7 +20,10 @@ import { resolveAndApplyPendingPatch } from "./patch-application.ts";
 export type PatchDependencyErrorCode =
   | "cross_comment_dependency"
   | "cross_document_dependency"
+  | "current_document_patch_target_ambiguous"
+  | "current_document_patch_target_missing"
   | "dependent_patch_stale_after_prerequisites"
+  | "dependent_patch_target_ambiguous_after_prerequisites"
   | "dependency_patch_overlap_conflict"
   | "dependency_patch_target_ambiguous"
   | "dependency_patch_target_missing"
@@ -29,10 +32,18 @@ export type PatchDependencyErrorCode =
   | "dependency_source_preservation_failed"
   | "duplicate_dependency_reference"
   | "duplicate_patch_key"
+  | "exported_document_patch_target_ambiguous"
+  | "exported_document_patch_target_missing"
+  | "independent_patch_simulation_invariant"
   | "missing_patch_dependency"
   | "patch_dependency_cycle"
   | "self_patch_dependency"
   | "unsupported_dependency_protocol";
+
+export type PatchDependencyBaseDocumentState =
+  | "changed"
+  | "current"
+  | "unknown";
 
 export class PatchDependencyValidationError extends Error {
   readonly code: PatchDependencyErrorCode;
@@ -40,6 +51,7 @@ export class PatchDependencyValidationError extends Error {
   readonly dependencyKey?: string;
   readonly disclosurePrerequisiteStatus?: "absent" | "invalid" | "unrelated";
   readonly observedAt?: string;
+  readonly repairPromptEligible: boolean;
   readonly sourceUrl?: string;
 
   constructor({
@@ -48,6 +60,7 @@ export class PatchDependencyValidationError extends Error {
     disclosurePrerequisiteStatus,
     message,
     observedAt,
+    repairPromptEligible = true,
     sourceUrl,
     patchKey
   }: {
@@ -56,6 +69,7 @@ export class PatchDependencyValidationError extends Error {
     disclosurePrerequisiteStatus?: "absent" | "invalid" | "unrelated";
     message: string;
     observedAt?: string;
+    repairPromptEligible?: boolean;
     sourceUrl?: string;
     patchKey?: string;
   }) {
@@ -66,6 +80,7 @@ export class PatchDependencyValidationError extends Error {
     this.dependencyKey = dependencyKey;
     this.disclosurePrerequisiteStatus = disclosurePrerequisiteStatus;
     this.observedAt = observedAt;
+    this.repairPromptEligible = repairPromptEligible;
     this.sourceUrl = sourceUrl;
   }
 }
@@ -144,11 +159,13 @@ export function getPatchDependencyClosureOrder(
 }
 
 export function validateImportedPatchDependencySimulation({
+  baseDocumentState = "unknown",
   comments,
   existingPatches,
   importedPatches,
   markdown
 }: {
+  baseDocumentState?: PatchDependencyBaseDocumentState;
   comments: PatchmarkComment[];
   existingPatches: PatchmarkPatch[];
   importedPatches: PatchmarkPatch[];
@@ -168,11 +185,7 @@ export function validateImportedPatchDependencySimulation({
       importedById,
       importedIndexById
     );
-    const simulatedPatches = [...existingPatches, ...importedPatches];
-    let simulatedMarkdown = markdown;
-    const appliedPrerequisites: PatchmarkPatch[] = [];
-
-    for (const prerequisiteId of prerequisiteIds) {
+    const prerequisitePatches = prerequisiteIds.map((prerequisiteId) => {
       const prerequisite = importedById.get(prerequisiteId);
 
       if (!prerequisite) {
@@ -184,6 +197,17 @@ export function validateImportedPatchDependencySimulation({
         });
       }
 
+      return prerequisite;
+    });
+    const simulatedPatches = [
+      ...existingPatches,
+      ...prerequisitePatches,
+      patch
+    ];
+    let simulatedMarkdown = markdown;
+    const appliedPrerequisites: PatchmarkPatch[] = [];
+
+    for (const prerequisite of prerequisitePatches) {
       const application = resolveAndApplyPendingPatch({
         comments,
         markdown: simulatedMarkdown,
@@ -197,12 +221,22 @@ export function validateImportedPatchDependencySimulation({
           dependentPatch: patch,
           failedPatch: prerequisite,
           kind: application.kind,
-          prerequisite: true
+          prerequisite: true,
+          baseDocumentState
         });
       }
 
       simulatedMarkdown = application.markdown;
       appliedPrerequisites.push(prerequisite);
+    }
+
+    if (prerequisiteIds.length === 0 && simulatedMarkdown !== markdown) {
+      throw new PatchDependencyValidationError({
+        code: "independent_patch_simulation_invariant",
+        message: `Patch ${patch.source_patch_key ?? patch.id} could not be validated because Patchmark mutated an independent sibling simulation. The response itself was not the cause.`,
+        patchKey: patch.source_patch_key,
+        repairPromptEligible: false
+      });
     }
 
     const application = resolveAndApplyPendingPatch({
@@ -218,7 +252,8 @@ export function validateImportedPatchDependencySimulation({
         dependentPatch: patch,
         failedPatch: patch,
         kind: application.kind,
-        prerequisite: false
+        prerequisite: false,
+        baseDocumentState
       });
     }
 
@@ -341,6 +376,12 @@ export function createPatchDependencyRepairPrompt(error: unknown): string {
   if (
     !(error instanceof PatchDependencyValidationError) &&
     !isSourceDateFailure
+  ) {
+    return "";
+  }
+  if (
+    error instanceof PatchDependencyValidationError &&
+    !error.repairPromptEligible
   ) {
     return "";
   }
@@ -693,12 +734,14 @@ function isValidPersistedDependencyOwnership({
 
 function createSimulationTargetError({
   appliedPrerequisites,
+  baseDocumentState,
   dependentPatch,
   failedPatch,
   kind,
   prerequisite
 }: {
   appliedPrerequisites: PatchmarkPatch[];
+  baseDocumentState: PatchDependencyBaseDocumentState;
   dependentPatch: PatchmarkPatch;
   failedPatch: PatchmarkPatch;
   kind: "ambiguous" | "not_found" | "stale";
@@ -711,21 +754,71 @@ function createSimulationTargetError({
         appliedPatch.original_text.includes(failedPatch.original_text) ||
         failedPatch.original_text.includes(appliedPatch.original_text)
     );
+  const dependentKey =
+    dependentPatch.source_patch_key ?? dependentPatch.id;
+  const failedKey = failedPatch.source_patch_key ?? failedPatch.id;
+
+  if (!prerequisite && appliedPrerequisites.length === 0) {
+    const exportedBase = baseDocumentState === "current";
+    const code: PatchDependencyErrorCode =
+      kind === "ambiguous"
+        ? exportedBase
+          ? "exported_document_patch_target_ambiguous"
+          : "current_document_patch_target_ambiguous"
+        : exportedBase
+          ? "exported_document_patch_target_missing"
+          : "current_document_patch_target_missing";
+    const message =
+      kind === "ambiguous"
+        ? exportedBase
+          ? `Patch ${dependentKey} could not be validated because its target is ambiguous in the document exported with this Review Batch.`
+          : `Patch ${dependentKey} could not be validated because its target is ambiguous in the current saved document.${baseDocumentState === "changed" ? " The document changed after the prompt was exported." : ""}`
+        : exportedBase
+          ? `Patch ${dependentKey} does not match the document state exported with this Review Batch.`
+          : `Patch ${dependentKey} no longer matches the current saved document.${baseDocumentState === "changed" ? " The document changed after the prompt was exported." : ""}`;
+
+    return new PatchDependencyValidationError({
+      code,
+      message,
+      patchKey: dependentPatch.source_patch_key,
+      repairPromptEligible: exportedBase
+    });
+  }
+
+  if (!prerequisite) {
+    const prerequisiteKeys = appliedPrerequisites.map(
+      (appliedPatch) => appliedPatch.source_patch_key ?? appliedPatch.id
+    );
+    const lastPrerequisite = prerequisiteKeys.at(-1);
+
+    return new PatchDependencyValidationError({
+      code:
+        kind === "ambiguous"
+          ? "dependent_patch_target_ambiguous_after_prerequisites"
+          : "dependent_patch_stale_after_prerequisites",
+      dependencyKey: lastPrerequisite,
+      message:
+        kind === "ambiguous"
+          ? `Patch ${dependentKey} could not be validated because its target is ambiguous after declared prerequisite${prerequisiteKeys.length === 1 ? "" : "s"} ${prerequisiteKeys.join(", ")} ${prerequisiteKeys.length === 1 ? "was" : "were"} applied.`
+          : `Patch ${dependentKey} became stale after declared prerequisite${prerequisiteKeys.length === 1 ? "" : "s"} ${prerequisiteKeys.join(", ")} changed its target.`,
+      patchKey: dependentPatch.source_patch_key
+    });
+  }
+
   const code: PatchDependencyErrorCode =
     kind === "ambiguous"
       ? "dependency_patch_target_ambiguous"
-      : prerequisite
-        ? kind === "stale" || overlapsAppliedPrerequisite
-          ? "dependency_patch_overlap_conflict"
-          : "dependency_patch_target_missing"
-        : "dependent_patch_stale_after_prerequisites";
+      : kind === "stale" || overlapsAppliedPrerequisite
+        ? "dependency_patch_overlap_conflict"
+        : "dependency_patch_target_missing";
 
   return new PatchDependencyValidationError({
     code,
-    dependencyKey: prerequisite ? failedPatch.source_patch_key : undefined,
-    message: prerequisite
-      ? `Prerequisite patch ${failedPatch.source_patch_key ?? failedPatch.id} cannot be applied deterministically before ${dependentPatch.source_patch_key ?? dependentPatch.id}.`
-      : `Patch ${dependentPatch.source_patch_key ?? dependentPatch.id} is stale after its prerequisites are applied.`,
+    dependencyKey: failedPatch.source_patch_key,
+    message:
+      kind === "ambiguous"
+        ? `Declared prerequisite ${failedKey} has an ambiguous target before ${dependentKey} can be validated.`
+        : `Declared prerequisite ${failedKey} cannot be applied deterministically before ${dependentKey}.`,
     patchKey: dependentPatch.source_patch_key
   });
 }

@@ -137,6 +137,7 @@ import {
   createTrackedReviewBatchExport,
   readExactReviewBatchPrompt
 } from "@/lib/review-batches/review-batch-export";
+import { createReviewBatchSha256 } from "@/lib/review-batches/review-batch-fingerprints";
 import {
   cancelReviewBatch,
   getActiveReviewBatch,
@@ -454,6 +455,7 @@ type MarkCommentFocusGuardDialogState =
 type ChatGptImportDialogState = {
   documentId: string;
   error: string | null;
+  errorCode: string | null;
   projectId: string;
   repairPrompt: string;
   responseJson: string;
@@ -4508,6 +4510,7 @@ export function DocumentEditor() {
     setChatGptImportDialog({
       documentId: identity.documentId,
       error: null,
+      errorCode: null,
       projectId: identity.projectId,
       repairPrompt: CHATGPT_IMPORT_REPAIR_PROMPT,
       responseJson: "",
@@ -4535,6 +4538,10 @@ export function DocumentEditor() {
     let responseAssociation: ReturnType<
       typeof associateReviewBatchResponse
     >;
+    let dependencyBaseDocumentState:
+      | "changed"
+      | "current"
+      | "unknown" = "unknown";
 
     try {
       parsedResponse = parsePatchmarkCommentReplyImport(
@@ -4550,6 +4557,11 @@ export function DocumentEditor() {
           batch: responseAssociation.batch,
           response: parsedResponse
         });
+        dependencyBaseDocumentState =
+          (await createReviewBatchSha256(markdown)) ===
+          responseAssociation.batch.document_content_sha256
+            ? "current"
+            : "changed";
       }
       validateAtomicTablePatchImport({
         markdown,
@@ -4564,6 +4576,8 @@ export function DocumentEditor() {
       setChatGptImportDialog({
         ...chatGptImportDialog,
         error: message,
+        errorCode:
+          error instanceof PatchDependencyValidationError ? error.code : null,
         repairPrompt: dependencyRepairPrompt
           ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
           : CHATGPT_IMPORT_REPAIR_PROMPT
@@ -4603,6 +4617,7 @@ export function DocumentEditor() {
         sourceChatUrl
       });
       validateImportedPatchDependencySimulation({
+        baseDocumentState: dependencyBaseDocumentState,
         comments,
         existingPatches,
         importedPatches,
@@ -4709,6 +4724,13 @@ export function DocumentEditor() {
     } catch (error) {
       const message = getProjectErrorMessage(error);
       const dependencyRepairPrompt = createPatchDependencyRepairPrompt(error);
+      const repairPrompt =
+        error instanceof PatchDependencyValidationError &&
+        !error.repairPromptEligible
+          ? ""
+          : dependencyRepairPrompt
+            ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
+            : CHATGPT_IMPORT_REPAIR_PROMPT;
       if (
         activeDocumentKeyRef.current ===
         createProjectDocumentKey(chatGptImportDialog)
@@ -4717,9 +4739,9 @@ export function DocumentEditor() {
         setChatGptImportDialog({
           ...chatGptImportDialog,
           error: message,
-          repairPrompt: dependencyRepairPrompt
-            ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
-            : CHATGPT_IMPORT_REPAIR_PROMPT
+          errorCode:
+            error instanceof PatchDependencyValidationError ? error.code : null,
+          repairPrompt
         });
         setSaveFeedback({
           kind: "error",
@@ -8275,12 +8297,21 @@ export function DocumentEditor() {
               </button>
             </header>
             {chatGptImportDialog.error ? (
-              <div className="comment-import-error" role="alert">
+              <div
+                className="comment-import-error"
+                data-error-code={chatGptImportDialog.errorCode ?? undefined}
+                role="alert"
+              >
                 <p>{chatGptImportDialog.error}</p>
-                <label>
-                  <span>Repair prompt</span>
-                  <textarea readOnly value={chatGptImportDialog.repairPrompt} />
-                </label>
+                {chatGptImportDialog.repairPrompt ? (
+                  <label>
+                    <span>Repair prompt</span>
+                    <textarea
+                      readOnly
+                      value={chatGptImportDialog.repairPrompt}
+                    />
+                  </label>
+                ) : null}
               </div>
             ) : null}
             <div className="comment-import-fields">
@@ -8294,6 +8325,7 @@ export function DocumentEditor() {
                     setChatGptImportDialog({
                       ...chatGptImportDialog,
                       error: null,
+                      errorCode: null,
                       sourceChatUrl: event.target.value
                     })
                   }
@@ -8308,6 +8340,7 @@ export function DocumentEditor() {
                     setChatGptImportDialog({
                       ...chatGptImportDialog,
                       error: null,
+                      errorCode: null,
                       responseJson: event.target.value
                     })
                   }

@@ -1,0 +1,93 @@
+{
+  "protocol": "patchmark.comment_reply_import",
+  "protocol_version": 2,
+  "review_batch_id": "review_batch_8db57c18-bfa8-4abd-b4ae-2651f4d45b95",
+  "project_id": "prj_0b86549a-56aa-4f37-8f4e-68cba8c958a3",
+  "document_id": "doc_49d34ef1-a7fd-4d5d-bdab-900397d07054",
+  "summary": "Explained incremental utility costs and merchant-funded promotions, rewrote the unit-economics formulas with definitions and worked examples, and adopted the proposed wholesale-price model for internal bread transfers.",
+  "replies": [
+    {
+      "comment_id": "PM-COMMENT-0044",
+      "reply": "Incremental means additional: only the electricity, gas or water consumed because the ready-to-eat product or channel exists, compared with what the bakery would consume without it. It does not mean allocating the entire bakery utility bill to the product. The term appears once in the supplied section, so I suggest replacing it with a direct description.",
+      "reply_sources": [],
+      "suggested_user_action": "apply_patch"
+    },
+    {
+      "comment_id": "PM-COMMENT-0045",
+      "reply": "Merchant-funded means paid for by Crust Chant as the seller rather than by the delivery platform. If a promotion lowers the amount charged to the customer and Crust Chant bears that reduction, it is a Crust Chant-funded discount and must be included in the product economics. A discount funded entirely by the platform is not a Crust Chant cost. I suggest replacing the accounting term with this distinction.",
+      "reply_sources": [],
+      "suggested_user_action": "apply_patch"
+    },
+    {
+      "comment_id": "PM-COMMENT-0046",
+      "reply": "Contribution is not final profit. It is the revenue remaining after the variable costs caused by producing and fulfilling a product or order. That amount must still cover fixed bakery and pilot costs before any remainder becomes profit. Average contribution per order is total contribution from all orders in a period divided by the number of orders. The contribution rate is contribution divided by revenue. Incremental fixed pilot costs are pilot-specific costs that do not rise with each additional order. Absolute variable costs means variable costs expressed as a baht amount per product or order rather than as a percentage of revenue. For example, 200 THB of revenue minus 130 THB of variable costs leaves 70 THB contribution and a 35% contribution rate; if fixed pilot costs are 1,400 THB, an average contribution of 70 THB requires 20 orders to cover them. I suggest replacing the formula section with definitions and worked examples.",
+      "reply_sources": [],
+      "suggested_user_action": "apply_patch"
+    },
+    {
+      "comment_id": "PM-COMMENT-0047",
+      "reply": "Actual batch yield originally meant the real number or weight of usable bread portions obtained from a production batch after losses. Your proposed model is valid and cleaner for channel decisions: treat the bakery and ready-to-eat operation as separate internal units, with ready-to-eat buying bread at the bakery's wholesale price. The production-batch yield then no longer determines the internal bread price. However, when one baguette or loaf supplies several sandwiches, its wholesale price must still be divided by the number of usable sandwich portions. This is a management-accounting convention rather than a real external sale.",
+      "reply_sources": [],
+      "suggested_user_action": "apply_patch"
+    }
+  ],
+  "patch_proposals": [
+    {
+      "patch_key": "clarify-additional-utility-cost",
+      "depends_on": [],
+      "comment_id": "PM-COMMENT-0044",
+      "display_title": "Clarify additional utility cost",
+      "target_heading": "### 9.1 Required definitions",
+      "original_text": "* incremental utilities;",
+      "suggested_text": "* additional electricity, gas and water used beyond what existing bakery work would consume;",
+      "suggested_text_sources": [],
+      "reason": "Explains that only additional utility consumption caused by the product or channel belongs in its unit economics.",
+      "reason_sources": [],
+      "risk": "The additional consumption may initially require an estimate until it can be measured through production tests.",
+      "risk_sources": []
+    },
+    {
+      "patch_key": "clarify-crust-chant-funded-promotions",
+      "depends_on": [],
+      "comment_id": "PM-COMMENT-0045",
+      "display_title": "Clarify promotion funding",
+      "target_heading": "### 9.1 Required definitions",
+      "original_text": "* merchant-funded discounts and promotions;",
+      "suggested_text": "* discounts and promotions paid for by Crust Chant rather than the platform;",
+      "suggested_text_sources": [],
+      "reason": "Identifies whose revenue is reduced by the promotion without relying on the term merchant-funded.",
+      "reason_sources": [],
+      "risk": "A jointly funded promotion must be split so that only the portion borne by Crust Chant is recorded as its cost.",
+      "risk_sources": []
+    },
+    {
+      "patch_key": "explain-unit-economics-formulas",
+      "depends_on": [],
+      "comment_id": "PM-COMMENT-0046",
+      "display_title": "Explain unit economics formulas",
+      "target_heading": "### 9.2 Reusable formulas",
+      "original_text": "### 9.2 Reusable formulas\n\nLet:\n\n* `R` \\= net product revenue after removing VAT where applicable;\n* `B` \\= bread transfer cost;\n* `F` \\= fillings;\n* `S` \\= sauces/garnishes;\n* `P` \\= packaging;\n* `L` \\= direct labour;\n* `W` \\= waste allowance;\n* `U` \\= incremental utilities;\n* `C` \\= platform commission and channel fees;\n* `D` \\= merchant-funded discounts;\n* `Y` \\= delivery subsidy;\n* `X` \\= refunds/credits allowance.\n\nThen:\n\n`Contribution = R - B - F - S - P - L - W - U - C - D - Y - X`\n\n`Contribution margin % = Contribution / R`\n\n`Break-even orders per period = Incremental fixed pilot cost / Average contribution per order`\n\nFor a target contribution rate `t`, percentage channel/discount fees `f`, and absolute variable costs `A`:\n\n`Minimum revenue = A / (1 - f - t)`\n\nThis equation is only useful when all cost categories are included and `f + t` is below 100%.\n\n",
+      "suggested_text": "### 9.2 Reusable formulas\n\n**Contribution is not final profit.** It is the amount left from product revenue after subtracting the variable costs caused by producing and fulfilling the product or order. It first contributes toward fixed bakery and pilot costs; only the remainder after those costs are covered becomes profit.\n\nFor one product or order, let:\n\n* `R` = product revenue before discounts paid for by Crust Chant, excluding VAT where applicable;\n* `V` = all variable costs caused by that product or order, including bread transfer cost, fillings, sauces and garnishes, packaging, direct labour, waste, additional utilities, channel and payment fees, discounts paid for by Crust Chant, delivery subsidy and refunds or credits.\n\nThen:\n\n`Contribution = R - V`\n\n`Contribution margin % = Contribution / R × 100`\n\nDo not reduce `R` for a Crust Chant-funded discount and also include the same discount in `V`; that would count it twice. Use one treatment consistently.\n\nFor example, if `R` is 200 THB and `V` is 130 THB, contribution is 70 THB and the contribution margin is 35%. The 70 THB is not final profit because fixed costs have not yet been deducted.\n\nFor the pilot break-even calculation:\n\n* **Incremental fixed pilot cost** means a pilot-specific cost that does not increase with each additional order, such as a fixed pilot-only service fee or a setup cost allocated to the period. Existing costs that remain unchanged with or without the pilot are excluded.\n* **Average contribution per order** equals total contribution from all pilot orders in the period divided by the number of orders.\n\n`Break-even orders per period = Incremental fixed pilot cost / Average contribution per order`\n\nFor example, fixed pilot costs of 1,400 THB divided by average contribution of 70 THB per order gives 20 break-even orders.\n\nFor minimum-revenue planning, let:\n\n* `A` = variable costs stated as a baht amount per product or order rather than as a percentage of revenue;\n* `f` = the combined fraction of revenue consumed by percentage-based channel fees and Crust Chant-funded discounts;\n* `t` = the target contribution margin expressed as a fraction of revenue.\n\n`Minimum revenue = A / (1 - f - t)`\n\nFor example, if `A` is 100 THB, `f` is 0.20 and `t` is 0.30, minimum revenue is 200 THB: 100 THB covers the baht-amount costs, 40 THB covers percentage charges and discounts, and 60 THB remains as contribution.\n\nThis equation is useful only when all relevant costs are included, no cost is counted twice, and `f + t` is below 1.\n\n",
+      "suggested_text_sources": [],
+      "reason": "Replaces the unexplained accounting shorthand with operational definitions, separates contribution from final profit and shows how every formula is calculated.",
+      "reason_sources": [],
+      "risk": "The framework still requires Crust Chant to decide consistently how VAT, founder labour, shared overhead and order-level costs are recorded; the examples explain the calculations but do not establish those accounting policies.",
+      "risk_sources": []
+    },
+    {
+      "patch_key": "use-wholesale-bread-transfer-price",
+      "depends_on": [],
+      "comment_id": "PM-COMMENT-0047",
+      "display_title": "Use wholesale transfer price",
+      "target_heading": "### 9.3 Bread transfer cost",
+      "original_text": "### 9.3 Bread transfer cost\n\nBread should not enter the sandwich model at zero cost merely because it was produced in the same bakery. Its transfer cost should include:\n\n* ingredients;\n* direct bakery labour allocation;\n* packaging or slicing loss where relevant;\n* yield loss;\n* a reasonable share of incremental utilities.\n\nFor early decisions, a standard cost per usable sandwich portion is adequate. Later, actual batch yield should replace the standard.\n\n",
+      "suggested_text": "### 9.3 Bread transfer cost\n\nFor internal decision-making, treat the bakery and ready-to-eat channel as separate operating units. The ready-to-eat channel buys bread internally at the wholesale price that the bakery would charge an external wholesale customer. This prevents the ready-to-eat margin from treating bread as free and recognizes the value of bread that the bakery could otherwise sell wholesale.\n\nIf one bread unit produces several sandwiches:\n\n`Bread transfer cost per sandwich = Wholesale price of the bread unit / Number of usable sandwich portions from that unit`\n\nUse a standard number of usable portions for initial planning. Replace it with the average number observed in real cutting tests if ends, slicing loss or inconsistent sizes materially change the result. If one bread unit is used for one ready-to-eat item, assign its full wholesale price as the bread transfer cost.\n\n",
+      "suggested_text_sources": [],
+      "reason": "Adopts the proposed internal wholesale model while preserving a clear method for allocating the wholesale price when one bread unit supplies several sandwiches.",
+      "reason_sources": [],
+      "risk": "The wholesale transfer price represents the bread's internal opportunity value rather than the consolidated company's production cost. It is not a real external sale, must use a consistent product, packaging and VAT basis, and must not be counted as external bakery revenue in company-wide results.",
+      "risk_sources": []
+    }
+  ],
+  "open_questions": []
+}
