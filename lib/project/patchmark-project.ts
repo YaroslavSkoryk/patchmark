@@ -1370,11 +1370,18 @@ export async function writeProjectContextPack({
     { create: true }
   );
 
-  await writeTextFile(contextPackFileHandle, contents);
+  try {
+    await writeTextFile(contextPackFileHandle, contents);
 
-  const writtenContents = await readTextFile(contextPackFileHandle);
-  if (writtenContents !== contents) {
-    throw new Error(`Could not verify context pack ${fileName}.`);
+    const writtenContents = await readTextFile(contextPackFileHandle);
+    if (writtenContents !== contents) {
+      throw new Error(`Could not verify context pack ${fileName}.`);
+    }
+  } catch (error) {
+    if (contextPacksDirectoryHandle.removeEntry) {
+      await contextPacksDirectoryHandle.removeEntry(fileName).catch(() => {});
+    }
+    throw error;
   }
 
   return `${metadataDirectoryName}/context-packs/${fileName}`;

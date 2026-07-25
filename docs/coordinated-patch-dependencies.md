@@ -44,7 +44,9 @@ tie-breaker and `patch_key` is the secondary tie-breaker.
 ## Combined-state simulation
 
 Before importing any reply or patch, Patchmark creates an in-memory simulation
-for every proposal:
+for every proposal. An exact Review Batch response starts from the immutable
+Markdown snapshot exported with that batch; an untracked legacy response starts
+from the current document:
 
 1. Start from the exact current/base document state for that proposal.
 2. Apply only the proposal’s declared transitive prerequisites in deterministic
@@ -64,6 +66,22 @@ text replacement operation. It writes no files, creates no snapshots, advances
 no save generation, changes no comments, and records no Review Batch receipt.
 Missing, ambiguous, stale, or overlapping targets fail with structured
 dependency error codes.
+
+The prompt context pack is never a target corpus. Full-document, section, table,
+display-target, and anchor excerpts may repeat inside that human-readable file,
+but import resolution searches only one authoritative Markdown snapshot.
+
+Canonical candidates are identified by their physical content range in that
+snapshot. Range boundaries that differ only by leading or trailing whitespace
+collapse to the same identity, while discovery methods remain as provenance in
+`supportingMethods`. A linked comment anchor, target-heading match, and
+normalized-text match can therefore describe one target without creating false
+ambiguity. Two distinct physical ranges remain ambiguous.
+
+Owning comments provide deterministic scope only when their canonical anchor
+resolves uniquely and the patch target is proven inside that scope. Duplicate
+heading sections, document-level anchors, and unrelated anchors do not justify
+choosing the first occurrence.
 
 ## Source validation
 
@@ -122,12 +140,13 @@ New focused-comment and Guided Review prompts request protocol version 2,
 combined-state failures and preserves Review Batch identity, comment IDs, patch
 content, sources, reasons, and risks.
 
-Target failures distinguish an authoritative document changed after export,
-an absent or ambiguous target in the exported base state, a target changed by
-declared prerequisites, and an internal independent-simulation invariant.
-Current-document and internal invariant failures do not show a misleading
-ChatGPT repair prompt because rewriting a valid response cannot repair local
-document state or Patchmark behavior.
+Target failures distinguish genuine ambiguity in the exported snapshot, a
+target changed by declared prerequisites, later current-document staleness, and
+an internal independent-simulation invariant. Current-document and internal
+invariant failures do not show a misleading ChatGPT repair prompt because
+rewriting a valid response cannot repair local document state or Patchmark
+behavior. Genuine exported-snapshot ambiguity still produces focused repair
+guidance.
 
 Source-date dependency failures use
 `dependency_source_date_coverage_failed` and report the failing `patch_key`,
@@ -167,9 +186,19 @@ Direct tests record the empty closure and unique canonical range for every
 proposal. Production-browser coverage verifies the atomic four-reply/four-patch
 import, Review Batch response analysis, no dependency badges, no automatic
 acceptance, and continued reviewability of later independent patches after one
-earlier sibling is accepted. A saved-document divergence variant verifies the
-precise current-document error, no repair prompt, no partial writes, and an
-unchanged exported Review Batch.
+earlier sibling is accepted. A saved-document divergence variant verifies that
+import still validates against the persisted exported snapshot while later
+acceptance revalidates against the changed current document.
+
+The real July 2026 Review Batch
+`review_batch_8db57c18-bfa8-4abd-b4ae-2651f4d45b95` exposed a false target
+ambiguity for `explain-unit-economics-formulas`. Its exported Markdown contained
+one `### 9.2 Reusable formulas` section. Exact matching returned
+`50823:51698`; normalized matching removed the proposal's two trailing newlines
+and returned `50823:51696`. Patchmark previously treated those whitespace-only
+boundary differences as distinct candidates. Physical-range canonicalization
+now merges them while retaining linked-anchor, target-heading, and normalized
+provenance. Regression coverage keeps genuine duplicate sections blocked.
 
 ## Non-goals
 

@@ -10,6 +10,7 @@ import { parsePatchmarkCommentReplyImport } from "../lib/imports/patchmark-comme
 import { createReviewBatchActiveExportEvidence } from "../lib/review-batches/review-batch-active-evidence.ts";
 import {
   createTrackedReviewBatchExport,
+  readExactReviewBatchDocumentSnapshot,
   readExactReviewBatchPrompt
 } from "../lib/review-batches/review-batch-export.ts";
 import {
@@ -46,15 +47,29 @@ assert.equal(firstExport.batch.batch_record_generation, 2);
 assert.equal(firstExport.batch.prompt_sha256.length, 64);
 assert.equal(firstExport.batch.context_pack.content_sha256.length, 64);
 assert.equal(firstExport.batch.prompt_sha256, firstExport.batch.context_pack.content_sha256);
+assert.equal(
+  firstExport.batch.document_snapshot.content_sha256,
+  firstExport.batch.document_content_sha256
+);
+assert.equal(firstExport.batch.document_snapshot.bytes, Buffer.byteLength(fixture.markdown));
 const writePaths = fixture.root.controller.completedWrites.map((entry) => entry.path);
-const contextWriteIndex = writePaths.findIndex((path) => path.includes("context-packs/"));
+const snapshotWriteIndex = writePaths.findIndex((path) =>
+  path.endsWith("-document.md")
+);
+const contextWriteIndex = writePaths.findIndex((path) =>
+  path.endsWith("-prompt.md")
+);
 const batchInstallIndex = writePaths.findIndex(
   (path) => path === ".patchmark/review-batches.json"
 );
 const commitInstallIndex = writePaths.findIndex(
   (path) => path === ".patchmark/save-commit.json"
 );
-assert.ok(contextWriteIndex >= 0 && batchInstallIndex > contextWriteIndex);
+assert.ok(
+  snapshotWriteIndex >= 0 &&
+    contextWriteIndex > snapshotWriteIndex &&
+    batchInstallIndex > contextWriteIndex
+);
 assert.ok(commitInstallIndex > batchInstallIndex);
 const commit = JSON.parse(fixture.root.read(".patchmark/save-commit.json"));
 assert.ok(commit.files.review_batches);
@@ -86,6 +101,41 @@ assert.equal(
   }),
   firstExport.promptText
 );
+assert.deepEqual(
+  await readExactReviewBatchDocumentSnapshot({
+    batch: reopenedActive,
+    currentMarkdown: reopened.markdown,
+    project: reopened.project
+  }),
+  {
+    markdown: fixture.markdown,
+    source: "persisted_snapshot"
+  }
+);
+const legacyBatch = { ...reopenedActive };
+delete legacyBatch.document_snapshot;
+assert.deepEqual(
+  await readExactReviewBatchDocumentSnapshot({
+    batch: legacyBatch,
+    currentMarkdown: fixture.markdown,
+    project: reopened.project
+  }),
+  {
+    markdown: fixture.markdown,
+    source: "verified_current_document"
+  }
+);
+await assert.rejects(
+  () =>
+    readExactReviewBatchDocumentSnapshot({
+      batch: legacyBatch,
+      currentMarkdown: `${fixture.markdown}\nLegacy batch changed.\n`,
+      project: reopened.project
+    }),
+  (error) =>
+    error?.code === "exported_document_snapshot_unavailable" &&
+    error?.repairPromptEligible === false
+);
 
 const recoveredFixture = await createFixture("review-batch-lkg-recovery");
 const recoveredExport = await exportManualBatch(recoveredFixture, {
@@ -97,6 +147,17 @@ await saveProjectState({
   project: recoveredFixture.project,
   reason: "review_batch_recovery_generation"
 });
+assert.deepEqual(
+  await readExactReviewBatchDocumentSnapshot({
+    batch: reopenedActive,
+    currentMarkdown: `${fixture.markdown}\nChanged after export.\n`,
+    project: reopened.project
+  }),
+  {
+    markdown: fixture.markdown,
+    source: "persisted_snapshot"
+  }
+);
 recoveredFixture.root.resolveFile(
   ".patchmark/review-batches.json"
 ).contents = "{malformed\n";
@@ -250,7 +311,7 @@ assert.equal(
 );
 assert.equal(
   uniquenessFixture.root.findPaths((path) => path.includes("context-packs/")).length,
-  1
+  2
 );
 
 const contextFailureFixture = await createFixture("context-failure");
@@ -263,10 +324,39 @@ await assert.rejects(() =>
 );
 assert.equal(await listReviewBatches(contextFailureFixture.project).then(getActiveReviewBatch), null);
 assert.equal(contextFailureFixture.root.has(".patchmark/review-batches.json"), false);
+assert.equal(
+  contextFailureFixture.root.findPaths((path) =>
+    path.includes("context-packs/")
+  ).length,
+  0
+);
 await exportManualBatch(contextFailureFixture, {
   batchId: "review_batch_context_retry",
   promptSuffix: "context-retry"
 });
+
+const snapshotIntegrityFixture = await createFixture("snapshot-integrity");
+const snapshotIntegrityExport = await exportManualBatch(
+  snapshotIntegrityFixture,
+  {
+    batchId: "review_batch_snapshot_integrity",
+    promptSuffix: "snapshot-integrity"
+  }
+);
+snapshotIntegrityFixture.root.resolveFile(
+  snapshotIntegrityExport.batch.document_snapshot.relative_path
+).contents = "tampered snapshot";
+await assert.rejects(
+  () =>
+    readExactReviewBatchDocumentSnapshot({
+      batch: snapshotIntegrityExport.batch,
+      currentMarkdown: snapshotIntegrityFixture.markdown,
+      project: snapshotIntegrityFixture.project
+    }),
+  (error) =>
+    error?.code === "exported_document_snapshot_invalid" &&
+    error?.repairPromptEligible === false
+);
 
 const staleFixture = await createFixture("stale-proposal");
 await assert.rejects(

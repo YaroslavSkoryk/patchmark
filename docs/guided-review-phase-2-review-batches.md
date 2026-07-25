@@ -6,8 +6,9 @@ Phase 4 extends the minimal `response_received` receipt described here with
 backward compatible.
 
 Phase 2 gives every newly tracked focused-comment prompt durable,
-document-scoped ownership. A Review Batch owns one exact exported prompt for one
-document. It does not resolve comments or approve document changes.
+document-scoped ownership. A Review Batch owns one exact exported prompt and one
+exact exported Markdown snapshot for one document. It does not resolve comments
+or approve document changes.
 
 ## Phase Boundary
 
@@ -51,6 +52,7 @@ Schema version 1 preserves:
 - type: `follow_up`, `document_level`, `section`, or `manual`;
 - exact ordered comment IDs and per-comment SHA-256 fingerprints;
 - source document generation and Markdown SHA-256;
+- immutable exported-Markdown relative path, SHA-256, and byte count;
 - Guided Review algorithm version when applicable;
 - prompt-builder version, prompt SHA-256, estimated tokens, and oversize warning;
 - context-pack relative path, SHA-256, and byte count;
@@ -88,13 +90,15 @@ Tracked export follows this order:
 2. Generate a new opaque batch ID.
 3. Build the existing focused-comment prompt with a structured batch envelope.
 4. Compute document, comment, and exact prompt fingerprints.
-5. Write the context pack and read it back to verify exact bytes and SHA-256.
-6. Atomically commit the Review Batch record last.
-7. Derive active-export evidence from the committed record.
+5. Write the exact Markdown snapshot and read it back to verify exact bytes and
+   SHA-256.
+6. Write the context pack and read it back to verify exact bytes and SHA-256.
+7. Atomically commit the Review Batch record last.
+8. Derive active-export evidence from the committed record.
 
-The batch record therefore never commits before its context pack is available.
-If the context-pack write fails, no batch exists. If batch persistence fails,
-the uncommitted context pack is removed where supported and is never inferred as
+The batch record therefore never commits before both immutable artifacts are
+available. If either write fails, no batch exists. If batch persistence fails,
+both uncommitted files are removed where supported and are never inferred as
 active. A retry compares against authoritative committed state, including when
 a prior save-marker installation failed.
 
@@ -119,6 +123,14 @@ Copying or opening a batch always reads the committed context pack and verifies
 its byte count and SHA-256. It never regenerates from current Markdown or current
 comments. Document edits, comment replies, resolution, re-anchoring, rename,
 regroup, archive, and Locate operations leave the historical prompt unchanged.
+
+Protocol-v2 patch import reads the separate Markdown snapshot, not the
+human-readable prompt. Repeated section or anchor excerpts in the context pack
+are therefore never target candidates. Legacy batches created before snapshot
+persistence may use current Markdown only when its SHA-256 exactly equals the
+batch's exported document fingerprint. If it differs, Patchmark preserves the
+response and reports an internal snapshot-unavailable error without asking
+ChatGPT to repair valid JSON.
 
 ## Manual and Guided Export
 

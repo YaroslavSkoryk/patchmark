@@ -5,6 +5,10 @@ import { performance } from "node:perf_hooks";
 import { resolveCanonicalPatchTarget } from "../lib/comments/canonical-target-resolution.ts";
 import { parsePatchmarkCommentReplyImport } from "../lib/imports/patchmark-comment-reply-import.ts";
 import {
+  findExactTextMatches,
+  findNormalizedTextMatches
+} from "../lib/markdown/markdown-text.ts";
+import {
   PatchDependencyValidationError,
   createPatchDependencyRepairPrompt,
   getPatchDependencyClosureOrder,
@@ -72,6 +76,11 @@ const exactDiagnostics = patches.map((patch) => {
     patchesSimulatedBefore: [],
     target: {
       cardinality: resolution.cardinality,
+      candidates: resolution.candidates.map((candidate) => ({
+        end: candidate.range.end,
+        matchedBy: candidate.supportingMethods,
+        start: candidate.range.start
+      })),
       end: resolution.range.end,
       method: resolution.method,
       section: proposal.target_heading,
@@ -103,6 +112,37 @@ assert.deepEqual(formulaDiagnostic.dependencyClosure, []);
 assert.deepEqual(formulaDiagnostic.patchesSimulatedBefore, []);
 assert.equal(formulaDiagnostic.target.cardinality, "unique");
 assert.equal(formulaDiagnostic.target.state, "resolved");
+assert.deepEqual(formulaDiagnostic.target.candidates, [
+  {
+    end: formulaPatch.original_text.length + formulaDiagnostic.target.start,
+    matchedBy: [
+      "linked_comment_anchor",
+      "target_heading",
+      "normalized"
+    ],
+    start: formulaDiagnostic.target.start
+  }
+]);
+const formulaExactRanges = findExactTextMatches(
+  markdown,
+  formulaPatch.original_text
+);
+const formulaNormalizedRanges = findNormalizedTextMatches(
+  markdown,
+  formulaPatch.original_text
+);
+assert.deepEqual(formulaExactRanges, [
+  {
+    start: formulaDiagnostic.target.start,
+    end: formulaDiagnostic.target.end
+  }
+]);
+assert.deepEqual(formulaNormalizedRanges, [
+  {
+    start: formulaDiagnostic.target.start,
+    end: formulaDiagnostic.target.end - 2
+  }
+]);
 assert.equal(
   exactOrders.get(formulaPatch.id)?.some((patchId) =>
     [
@@ -235,6 +275,93 @@ assert.match(
   /exported_document_patch_target_ambiguous/
 );
 
+const duplicateSectionText =
+  "### 9.2 Reusable formulas\n\nRepeated formula target.\n\n";
+const genuineDuplicate = createSyntheticFixture({
+  markdown: `# Duplicate sections\n\n${duplicateSectionText}${duplicateSectionText}`,
+  proposals: [
+    syntheticProposal({
+      patch_key: "genuine-duplicate-section",
+      target_heading: "### 9.2 Reusable formulas",
+      original_text: duplicateSectionText,
+      suggested_text:
+        "### 9.2 Reusable formulas\n\nReplacement formula target.\n\n"
+    })
+  ]
+});
+const genuineDuplicateResolution = resolveCanonicalPatchTarget({
+  comments: [],
+  markdown: genuineDuplicate.markdown,
+  patch: genuineDuplicate.patches[0],
+  patches: genuineDuplicate.patches
+});
+assert.equal(genuineDuplicateResolution.state, "ambiguous");
+assert.equal(genuineDuplicateResolution.candidates.length, 2);
+assert.notDeepEqual(
+  genuineDuplicateResolution.candidates[0].range,
+  genuineDuplicateResolution.candidates[1].range
+);
+
+const anchorScopedMarkdown = [
+  "# Anchor scoping",
+  "",
+  "## First section",
+  "",
+  "Repeated formula target.",
+  "",
+  "## Second section",
+  "",
+  "Repeated formula target.",
+  ""
+].join("\n");
+const secondTargetStart = anchorScopedMarkdown.lastIndexOf(
+  "Repeated formula target."
+);
+const anchorScoped = createSyntheticFixture({
+  markdown: anchorScopedMarkdown,
+  proposals: [
+    syntheticProposal({
+      patch_key: "anchor-scoped-duplicate",
+      target_heading: undefined,
+      original_text: "Repeated formula target.",
+      suggested_text: "Scoped replacement."
+    })
+  ]
+});
+anchorScoped.comments[0].anchor = {
+  kind: "selected_text",
+  selected_text: "Repeated formula target.",
+  markdown_start_offset: secondTargetStart,
+  markdown_end_offset:
+    secondTargetStart + "Repeated formula target.".length,
+  context_before: "",
+  context_after: "",
+  anchor_source: "markdown"
+};
+const anchorScopedResolution = resolveCanonicalPatchTarget({
+  comments: anchorScoped.comments,
+  markdown: anchorScoped.markdown,
+  patch: anchorScoped.patches[0],
+  patches: anchorScoped.patches
+});
+assert.equal(anchorScopedResolution.state, "resolved");
+assert.deepEqual(anchorScopedResolution.range, {
+  start: secondTargetStart,
+  end: secondTargetStart + "Repeated formula target.".length
+});
+
+const unsafeAnchorResolution = resolveCanonicalPatchTarget({
+  comments: anchorScoped.comments.map((comment) => ({
+    ...comment,
+    anchor: { kind: "document" }
+  })),
+  markdown: anchorScoped.markdown,
+  patch: anchorScoped.patches[0],
+  patches: anchorScoped.patches
+});
+assert.equal(unsafeAnchorResolution.state, "ambiguous");
+assert.equal(unsafeAnchorResolution.candidates.length, 2);
+
 const internalError = new PatchDependencyValidationError({
   code: "independent_patch_simulation_invariant",
   message:
@@ -282,11 +409,20 @@ console.log(
         simulatedDocumentTargetResult: formulaDiagnostic.target
       },
       negativeVariants: {
+        anchorDoesNotScope: unsafeAnchorResolution.state,
+        anchorScopedDuplicate: anchorScopedResolution.state,
         ambiguousTarget: ambiguityError.code,
         currentDocumentStale: staleError.code,
         dependentTargetRemoved: dependencyRemovalError.code,
         dependentTargetShifted: "passed",
+        genuineDuplicateSections: genuineDuplicateResolution.state,
         independentSiblingLengthShift: "passed"
+      },
+      physicalCandidateDeduplication: {
+        after: formulaDiagnostic.target.candidates.length,
+        before: 3,
+        exactRange: formulaExactRanges[0],
+        normalizedRange: formulaNormalizedRanges[0]
       },
       noAutomaticAcceptance: patches.every(
         (patch) => patch.status === "pending"

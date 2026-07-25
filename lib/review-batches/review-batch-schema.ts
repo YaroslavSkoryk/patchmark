@@ -159,6 +159,16 @@ function normalizeReviewBatch(
     index
   );
   const contextPack = normalizeContextPack(value.context_pack, index);
+  const documentSnapshot =
+    value.document_snapshot === undefined
+      ? undefined
+      : normalizeContextPack(value.document_snapshot, index);
+  if (
+    documentSnapshot &&
+    documentSnapshot.content_sha256 !== value.document_content_sha256
+  ) {
+    throw invalidBatch(index);
+  }
   const responseReceivedAt = normalizeNullableString(
     value.response_received_at,
     "response_received_at",
@@ -219,6 +229,7 @@ function normalizeReviewBatch(
     document_generation: value.document_generation,
     batch_record_generation: value.batch_record_generation,
     document_content_sha256: value.document_content_sha256,
+    ...(documentSnapshot ? { document_snapshot: documentSnapshot } : {}),
     comment_fingerprints: commentFingerprints,
     estimated_prompt_tokens: value.estimated_prompt_tokens,
     over_limit_warning: value.over_limit_warning,

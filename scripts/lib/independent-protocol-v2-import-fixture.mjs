@@ -81,23 +81,39 @@ export function createIndependentProtocolV2Comments(response, markdown) {
         `Missing comment anchor target for ${proposal.patch_key}.`
       );
     }
+    const sectionAnchor =
+      proposal.target_heading &&
+      proposal.original_text.startsWith(`${proposal.target_heading}\n`)
+        ? {
+            kind: "section",
+            heading: proposal.target_heading.replace(/^#{1,6}\s+/, ""),
+            heading_level:
+              proposal.target_heading.match(/^#{1,6}/)?.[0].length ?? 1,
+            heading_line: markdown.slice(0, start).split("\n").length,
+            heading_path: [
+              "Unit economics",
+              proposal.target_heading.replace(/^#{1,6}\s+/, "")
+            ]
+          }
+        : null;
 
     return {
       id: proposal.comment_id,
       type: "note",
       status: "open",
-      anchor: {
-        kind: "selected_text",
-        selected_text: proposal.original_text,
-        markdown_start_offset: start,
-        markdown_end_offset: start + proposal.original_text.length,
-        context_before: markdown.slice(Math.max(0, start - 80), start),
-        context_after: markdown.slice(
-          start + proposal.original_text.length,
-          start + proposal.original_text.length + 80
-        ),
-        anchor_source: "markdown"
-      },
+      anchor:
+        sectionAnchor ?? {
+          kind: "selected_text",
+          selected_text: proposal.original_text,
+          markdown_start_offset: start,
+          markdown_end_offset: start + proposal.original_text.length,
+          context_before: markdown.slice(Math.max(0, start - 80), start),
+          context_after: markdown.slice(
+            start + proposal.original_text.length,
+            start + proposal.original_text.length + 80
+          ),
+          anchor_source: "markdown"
+        },
       comment: `Review ${proposal.patch_key}.`,
       thread: [],
       export_state: { focus_state: "awaiting_reply" },
@@ -143,14 +159,24 @@ export function createIndependentProtocolV2ImportedPatches(response) {
 
 export function createIndependentProtocolV2ProjectFixture(
   root,
-  { staleFormula = false } = {}
+  { duplicateFormulaSection = false, staleFormula = false } = {}
 ) {
   const { parsed: response, raw } =
     readIndependentProtocolV2ResponseFixture();
   const now = "2026-07-24T00:00:00.000Z";
   const metadata = join(root, ".patchmark");
   const store = join(metadata, "documents", response.document_id);
-  const exportedMarkdown = createIndependentProtocolV2Markdown(response);
+  const baseExportedMarkdown = createIndependentProtocolV2Markdown(response);
+  const formulaProposal = response.patch_proposals.find(
+    (proposal) => proposal.patch_key === "explain-unit-economics-formulas"
+  );
+  const exportedMarkdown =
+    duplicateFormulaSection && formulaProposal
+      ? baseExportedMarkdown.replace(
+          formulaProposal.original_text,
+          `${formulaProposal.original_text}${formulaProposal.original_text}`
+        )
+      : baseExportedMarkdown;
   const markdown = staleFormula
     ? exportedMarkdown.replace(
         "Let:\n\n* `R`",
@@ -178,6 +204,12 @@ export function createIndependentProtocolV2ProjectFixture(
     document_generation: 12,
     batch_record_generation: 13,
     document_content_sha256: sha256(exportedMarkdown),
+    document_snapshot: {
+      relative_path:
+        ".patchmark/context-packs/independent-exported-document.md",
+      content_sha256: sha256(exportedMarkdown),
+      bytes: Buffer.byteLength(exportedMarkdown)
+    },
     comment_fingerprints: comments.map((comment) => ({
       comment_id: comment.id,
       fingerprint: sha256(JSON.stringify(comment))
@@ -260,6 +292,10 @@ export function createIndependentProtocolV2ProjectFixture(
   writeFileSync(
     join(store, "context-packs", "independent-response.md"),
     promptText
+  );
+  writeFileSync(
+    join(store, "context-packs", "independent-exported-document.md"),
+    exportedMarkdown
   );
   writeFileSync(join(store, "review-batches.json"), reviewBatchesText);
   writeJson(join(store, "save-commit.json"), {

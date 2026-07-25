@@ -76,9 +76,11 @@ the session identity, proposal signature, lifecycle eligibility, anchor state,
 section membership, order, count, size, and one-active-batch rule.
 
 The final selection is then passed to the existing Phase 2 transaction. The
-context pack is written and verified first; the Review Batch record is committed
-last. Guided batches may persist an audit-only `selection_adjustment` snapshot.
-The exact committed context pack remains authoritative.
+exact Markdown snapshot and context pack are written and verified first; the
+Review Batch record is committed last. Guided batches may persist an audit-only
+`selection_adjustment` snapshot. The context pack remains authoritative for
+prompt reopening, while patch import resolves only against the separate Markdown
+snapshot.
 
 Opening the overview, preparing a proposal, removing or adding comments, resetting,
 or closing the wizard performs no authoritative write.
@@ -114,4 +116,3 @@ status, answer/reply/patch counts, clarification summaries, acknowledgment,
 automatic next-batch progression, cross-document batching, semantic grouping,
 automatic sending, patch acceptance, or comment resolution. Those remain Phase
 4 or later concerns.
-

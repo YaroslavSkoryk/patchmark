@@ -47,6 +47,11 @@ const staleResult = await runImportScenario({
   editorUrl,
   staleFormula: true
 });
+const ambiguityResult = await runImportScenario({
+  chromePath,
+  duplicateFormulaSection: true,
+  editorUrl
+});
 const exactResult = await runImportScenario({
   chromePath,
   editorUrl,
@@ -56,6 +61,7 @@ const exactResult = await runImportScenario({
 console.log(
   JSON.stringify(
     {
+      ambiguityImport: ambiguityResult,
       exactImport: exactResult,
       staleImport: staleResult
     },
@@ -64,17 +70,25 @@ console.log(
   )
 );
 
-async function runImportScenario({ chromePath, editorUrl, staleFormula }) {
+async function runImportScenario({
+  chromePath,
+  duplicateFormulaSection = false,
+  editorUrl,
+  staleFormula = false
+}) {
   const fixtureRoot = mkdtempSync(
     join(
       tmpdir(),
-      staleFormula
+      duplicateFormulaSection
+        ? "patchmark-independent-ambiguous-browser-"
+        : staleFormula
         ? "patchmark-independent-stale-browser-"
         : "patchmark-independent-exact-browser-"
     )
   );
   const projectDir = join(fixtureRoot, "Independent Protocol V2");
   const fixture = createIndependentProtocolV2ProjectFixture(projectDir, {
+    duplicateFormulaSection,
     staleFormula
   });
   const inventory = inventoryProject(projectDir);
@@ -160,11 +174,11 @@ async function runImportScenario({ chromePath, editorUrl, staleFormula }) {
     assert.equal(textareaState.unchanged, true);
     await clickButtonByText(client, "Import");
 
-    if (staleFormula) {
+    if (duplicateFormulaSection) {
       await waitFor(
         client,
         `Boolean(document.querySelector(".comment-import-error"))`,
-        "current-document stale error"
+        "genuine exported-snapshot ambiguity"
       );
       const uiState = await evaluate(client, {
         expression: `(() => {
@@ -191,15 +205,10 @@ async function runImportScenario({ chromePath, editorUrl, staleFormula }) {
 
       assert.equal(
         uiState.errorCode,
-        "current_document_patch_target_missing"
+        "exported_document_patch_target_ambiguous"
       );
-      assert.match(uiState.message, /current saved document/);
-      assert.match(
-        uiState.message,
-        /changed after the prompt was exported/
-      );
-      assert.doesNotMatch(uiState.message, /prerequisite/i);
-      assert.equal(uiState.repairPromptVisible, false);
+      assert.match(uiState.message, /exported with this Review Batch/);
+      assert.equal(uiState.repairPromptVisible, true);
       assert.deepEqual(uiState.writes, []);
       assert.deepEqual(
         comments.map((comment) => comment.thread.length),
@@ -218,6 +227,54 @@ async function runImportScenario({ chromePath, editorUrl, staleFormula }) {
         noPartialWrites: uiState.writes.length === 0,
         repairPromptVisible: uiState.repairPromptVisible,
         reviewBatchStatus: reviewBatch.status
+      };
+    }
+
+    if (staleFormula) {
+      await waitFor(
+        client,
+        `!document.querySelector(".comment-import-dialog") &&
+          document.querySelector(".document-save-banner")?.textContent?.includes("Patch proposals stored: 4")`,
+        "stale-current exported-snapshot import"
+      );
+      const comments = readJson(join(fixture.store, "comments.json"));
+      const patches = readJson(join(fixture.store, "patches.json"));
+      const reviewBatch = readJson(
+        join(fixture.store, "review-batches.json")
+      )[0];
+      const importFiles = readdirSync(join(fixture.store, "imports")).filter(
+        (fileName) => fileName.endsWith("-comment-reply-import.json")
+      );
+
+      assert.deepEqual(
+        comments.map((comment) => comment.thread.length),
+        [1, 1, 1, 1]
+      );
+      assert.equal(patches.length, 4);
+      assert.ok(patches.every((patch) => patch.status === "pending"));
+      assert.equal(reviewBatch.status, "responded");
+      assert.equal(reviewBatch.response_analysis.coverage_status, "complete");
+      assert.equal(importFiles.length, 1);
+
+      await openCommentPatch(
+        client,
+        "Review explain-unit-economics-formulas.",
+        "Explain unit economics formulas"
+      );
+      const formulaPatchState = await readPatchDialogState(client);
+      assert.equal(formulaPatchState.acceptDisabled, true);
+      assert.equal(formulaPatchState.hasDependencySummary, false);
+      assert.deepEqual(consoleErrors, []);
+      assert.deepEqual(exceptions, []);
+      assert.deepEqual(networkFailures, []);
+
+      return {
+        importedAgainstPersistedSnapshot: true,
+        noAutomaticAcceptance: patches.every(
+          (patch) => patch.status === "pending"
+        ),
+        reviewBatchStatus: reviewBatch.status,
+        staleAtAcceptance: formulaPatchState.acceptDisabled
       };
     }
 

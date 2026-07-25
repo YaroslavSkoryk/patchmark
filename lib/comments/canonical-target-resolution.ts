@@ -182,42 +182,43 @@ export function resolveCanonicalPatchTarget({
     }
   }
 
-  const sectionRange = getPatchTargetHeadingSectionRange(
+  const sectionRanges = getPatchTargetHeadingSectionRanges(
     markdown,
     resolvedHeadings,
     patch.target_heading
   );
-  const sectionCandidates = sectionRange
-    ? [
-        ...findExactTextMatchesInRange(markdown, patch.original_text, sectionRange).map(
-          (range) => ({
-            confidence: "high" as const,
-            method: "target_heading" as const,
-            range,
-            structuralContext: {
-              containingHeading: patch.target_heading,
-              scope: "section" as const
-            }
-          })
-        ),
-        ...findNormalizedTextMatchesInRange(
-          markdown,
-          patch.original_text,
-          sectionRange
-        ).map((range) => ({
-          confidence: "medium" as const,
-          method: "normalized" as const,
-          range,
-          structuralContext: {
-            containingHeading: patch.target_heading,
-            scope: "section" as const
-          }
-        }))
-      ]
-    : [];
+  const sectionCandidates = sectionRanges.flatMap((sectionRange) => [
+    ...findExactTextMatchesInRange(
+      markdown,
+      patch.original_text,
+      sectionRange
+    ).map((range) => ({
+      confidence: "high" as const,
+      method: "target_heading" as const,
+      range,
+      structuralContext: {
+        containingHeading: patch.target_heading,
+        scope: "section" as const
+      }
+    })),
+    ...findNormalizedTextMatchesInRange(
+      markdown,
+      patch.original_text,
+      sectionRange
+    ).map((range) => ({
+      confidence: "medium" as const,
+      method: "normalized" as const,
+      range,
+      structuralContext: {
+        containingHeading: patch.target_heading,
+        scope: "section" as const
+      }
+    }))
+  ]);
   const sectionResolution = createResolutionFromCandidates({
     candidates: sectionCandidates,
     emptyCode: "patch_not_found_in_target_heading",
+    markdown,
     multipleCode: "patch_ambiguous_in_target_heading"
   });
 
@@ -241,17 +242,19 @@ export function resolveCanonicalPatchTarget({
       }))
     ],
     emptyCode: "patch_not_found",
+    markdown,
     multipleCode: "patch_ambiguous"
   });
 }
 
 export function dedupeCanonicalCandidates(
-  candidates: CandidateInput[]
+  candidates: CandidateInput[],
+  markdown?: string
 ): CanonicalTargetCandidate[] {
   const byRange = new Map<string, CanonicalTargetCandidate>();
 
   for (const candidate of candidates) {
-    const key = getRangeKey(candidate.range);
+    const key = getCanonicalPhysicalRangeKey(candidate.range, markdown);
     const existing = byRange.get(key);
 
     if (!existing) {
@@ -268,12 +271,19 @@ export function dedupeCanonicalCandidates(
       existing.supportingMethods.push(candidate.method);
     }
 
-    existing.confidence = getHigherConfidence(
+    const higherConfidence = getHigherConfidence(
       existing.confidence,
       candidate.confidence
     );
-    existing.structuralContext =
-      existing.structuralContext ?? candidate.structuralContext;
+    if (higherConfidence !== existing.confidence) {
+      existing.confidence = candidate.confidence;
+      existing.range = candidate.range;
+      existing.structuralContext =
+        candidate.structuralContext ?? existing.structuralContext;
+    } else {
+      existing.structuralContext =
+        existing.structuralContext ?? candidate.structuralContext;
+    }
   }
 
   return [...byRange.values()].sort(
@@ -289,12 +299,12 @@ function resolveCanonicalSectionTarget(
   headings: ReturnType<typeof parseMarkdownHeadings>,
   patches: PatchmarkPatch[]
 ): CanonicalTargetResolution {
-  const currentHeading = findMatchingHeading(headings, {
+  const currentHeadings = findMatchingHeadings(headings, {
     level: anchor.heading_level,
     text: anchor.heading
   });
 
-  if (!currentHeading) {
+  if (currentHeadings.length === 0) {
     const replacementHeading = resolveSectionHeadingFromAcceptedLinkedPatch({
       anchor,
       comment,
@@ -310,9 +320,8 @@ function resolveCanonicalSectionTarget(
     return createNotFoundResolution("section_not_found");
   }
 
-  return createResolvedResolution({
-    candidates: [
-      {
+  return createResolutionFromCandidates({
+    candidates: currentHeadings.map((currentHeading) => ({
         confidence: "high",
         method: "section",
         range: getHeadingLineRange(markdown, currentHeading),
@@ -320,10 +329,10 @@ function resolveCanonicalSectionTarget(
           containingHeading: currentHeading.text,
           scope: "section"
         }
-      }
-    ],
-    explanationCode: "section_heading_match",
-    preferredMethod: "section"
+      })),
+    emptyCode: "section_not_found",
+    markdown,
+    multipleCode: "section_ambiguous"
   });
 }
 
@@ -373,6 +382,7 @@ function resolveCanonicalSelectedTextTarget(
   const contextResolution = createResolutionFromCandidates({
     candidates: contextCandidates,
     emptyCode: "context_not_found",
+    markdown,
     multipleCode: "context_ambiguous"
   });
 
@@ -426,6 +436,7 @@ function resolveCanonicalSelectedTextTarget(
   const sectionResolution = createResolutionFromCandidates({
     candidates: sectionCandidates,
     emptyCode: "section_target_not_found",
+    markdown,
     multipleCode: "section_target_ambiguous"
   });
 
@@ -467,6 +478,7 @@ function resolveCanonicalSelectedTextTarget(
       }))
     ],
     emptyCode: "selected_text_not_found",
+    markdown,
     multipleCode: "selected_text_ambiguous"
   });
 
@@ -549,6 +561,7 @@ function resolveSectionHeadingFromAcceptedLinkedPatch({
   return createResolutionFromCandidates({
     candidates,
     emptyCode: "section_heading_replacement_not_found",
+    markdown,
     multipleCode: "section_heading_replacement_ambiguous"
   });
 }
@@ -575,6 +588,7 @@ function resolveSelectedTextFromHistoricalEvidence({
   const linkedPatchResolution = createResolutionFromCandidates({
     candidates: linkedPatchCandidates,
     emptyCode: "accepted_linked_patch_not_found",
+    markdown,
     multipleCode: "accepted_linked_patch_ambiguous"
   });
 
@@ -592,6 +606,7 @@ function resolveSelectedTextFromHistoricalEvidence({
   return createResolutionFromCandidates({
     candidates: historicalAnchorCandidates,
     emptyCode: "historical_anchor_not_found",
+    markdown,
     multipleCode: "historical_anchor_ambiguous"
   });
 }
@@ -1340,6 +1355,78 @@ function resolvePatchFromLinkedComment({
     });
   }
 
+  if (linkedComment.anchor.kind === "section") {
+    const sectionAnchor = linkedComment.anchor;
+    const resolvedHeadings = parseMarkdownHeadings(markdown);
+    const linkedHeading = resolvedHeadings.find((heading) => {
+      const headingRange = getHeadingLineRange(markdown, heading);
+      return (
+        headingRange.start === linkedRange.start &&
+        headingRange.end === linkedRange.end
+      );
+    });
+
+    if (!linkedHeading) {
+      return createNotFoundResolution("linked_comment_section_not_found");
+    }
+
+    const linkedSectionRange = getSectionRange(
+      markdown,
+      resolvedHeadings,
+      linkedHeading
+    );
+    const exactMatches = findExactTextMatchesInRange(
+      markdown,
+      patch.original_text,
+      linkedSectionRange
+    );
+    const headingMatches =
+      patch.target_heading &&
+      normalizeHeading(patch.target_heading) ===
+        normalizeHeading(sectionAnchor.heading)
+        ? exactMatches
+        : [];
+
+    return createResolutionFromCandidates({
+      candidates: [
+        ...exactMatches.map((range) => ({
+          confidence: "high" as const,
+          method: "linked_comment_anchor" as const,
+          range,
+          structuralContext: {
+            containingHeading: sectionAnchor.heading,
+            scope: "section" as const
+          }
+        })),
+        ...headingMatches.map((range) => ({
+          confidence: "high" as const,
+          method: "target_heading" as const,
+          range,
+          structuralContext: {
+            containingHeading: sectionAnchor.heading,
+            scope: "section" as const
+          }
+        })),
+        ...findNormalizedTextMatchesInRange(
+          markdown,
+          patch.original_text,
+          linkedSectionRange
+        ).map((range) => ({
+          confidence: "medium" as const,
+          method: "normalized" as const,
+          range,
+          structuralContext: {
+            containingHeading: sectionAnchor.heading,
+            scope: "section" as const
+          }
+        }))
+      ],
+      emptyCode: "linked_comment_section_patch_not_found",
+      markdown,
+      multipleCode: "linked_comment_section_patch_ambiguous"
+    });
+  }
+
   if (linkedComment.anchor.kind !== "selected_text") {
     return createNotFoundResolution("linked_comment_not_selected_text");
   }
@@ -1355,6 +1442,7 @@ function resolvePatchFromLinkedComment({
   return createResolutionFromCandidates({
     candidates: scopedCandidates,
     emptyCode: "linked_scope_patch_not_found",
+    markdown,
     multipleCode: "linked_scope_patch_ambiguous"
   });
 }
@@ -1500,7 +1588,7 @@ function getSelectedAnchorSectionScopes(
   headings: ReturnType<typeof parseMarkdownHeadings>,
   anchor: SelectedTextAnchor
 ): TextRange[] {
-  const headingRange = getPatchTargetHeadingSectionRange(
+  const headingRanges = getPatchTargetHeadingSectionRanges(
     markdown,
     headings,
     anchor.containing_heading
@@ -1518,7 +1606,7 @@ function getSelectedAnchorSectionScopes(
       : null;
 
   return dedupeRanges(
-    [headingRange, fallbackRange].filter(
+    [...headingRanges, fallbackRange].filter(
       (range): range is TextRange => range !== null
     )
   );
@@ -1806,25 +1894,25 @@ function getMarkdownParagraphRangeContainingRange(
   };
 }
 
-function getPatchTargetHeadingSectionRange(
+function getPatchTargetHeadingSectionRanges(
   markdown: string,
   headings: ReturnType<typeof parseMarkdownHeadings>,
   targetHeading?: string
-): TextRange | null {
+): TextRange[] {
   if (!targetHeading) {
-    return null;
+    return [];
   }
 
   const normalizedTargetHeading = normalizeHeading(targetHeading);
   if (!normalizedTargetHeading) {
-    return null;
+    return [];
   }
 
-  const target = headings.find(
-    (heading) => normalizeHeading(heading.text) === normalizedTargetHeading
-  );
-
-  return target ? getSectionRange(markdown, headings, target) : null;
+  return headings
+    .filter(
+      (heading) => normalizeHeading(heading.text) === normalizedTargetHeading
+    )
+    .map((target) => getSectionRange(markdown, headings, target));
 }
 
 function getSectionRange(
@@ -1869,9 +1957,19 @@ function findMatchingHeading(
     text: string;
   }
 ) {
+  return findMatchingHeadings(headings, target)[0];
+}
+
+function findMatchingHeadings(
+  headings: ReturnType<typeof parseMarkdownHeadings>,
+  target: {
+    level?: number;
+    text: string;
+  }
+) {
   const normalizedTarget = normalizeHeading(target.text);
 
-  return headings.find((heading) => {
+  return headings.filter((heading) => {
     if (target.level && heading.level !== target.level) {
       return false;
     }
@@ -1932,13 +2030,15 @@ function findMarkdownPlainTextMatchesInRange(
 function createResolutionFromCandidates({
   candidates,
   emptyCode,
+  markdown,
   multipleCode
 }: {
   candidates: CandidateInput[];
   emptyCode: string;
+  markdown: string;
   multipleCode: string;
 }): CanonicalTargetResolution {
-  const deduped = dedupeCanonicalCandidates(candidates);
+  const deduped = dedupeCanonicalCandidates(candidates, markdown);
 
   if (deduped.length === 0) {
     return createNotFoundResolution(emptyCode);
@@ -2105,6 +2205,27 @@ function dedupeRanges(ranges: TextRange[]): TextRange[] {
 
 function getRangeKey(range: TextRange): string {
   return `${range.start}:${range.end}`;
+}
+
+function getCanonicalPhysicalRangeKey(
+  range: TextRange,
+  markdown?: string
+): string {
+  if (!markdown) {
+    return getRangeKey(range);
+  }
+
+  let start = range.start;
+  let end = range.end;
+
+  while (start < end && /\s/.test(markdown[start] ?? "")) {
+    start += 1;
+  }
+  while (end > start && /\s/.test(markdown[end - 1] ?? "")) {
+    end -= 1;
+  }
+
+  return getRangeKey({ start, end });
 }
 
 function getHigherConfidence(

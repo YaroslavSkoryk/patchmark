@@ -135,9 +135,10 @@ import {
 import { createReviewBatchExportLifecycleEvidence } from "@/lib/review-batches/review-batch-active-evidence";
 import {
   createTrackedReviewBatchExport,
+  readExactReviewBatchDocumentSnapshot,
+  ReviewBatchDocumentSnapshotError,
   readExactReviewBatchPrompt
 } from "@/lib/review-batches/review-batch-export";
-import { createReviewBatchSha256 } from "@/lib/review-batches/review-batch-fingerprints";
 import {
   cancelReviewBatch,
   getActiveReviewBatch,
@@ -4542,6 +4543,7 @@ export function DocumentEditor() {
       | "changed"
       | "current"
       | "unknown" = "unknown";
+    let dependencyValidationMarkdown = markdown;
 
     try {
       parsedResponse = parsePatchmarkCommentReplyImport(
@@ -4557,14 +4559,17 @@ export function DocumentEditor() {
           batch: responseAssociation.batch,
           response: parsedResponse
         });
-        dependencyBaseDocumentState =
-          (await createReviewBatchSha256(markdown)) ===
-          responseAssociation.batch.document_content_sha256
-            ? "current"
-            : "changed";
+        dependencyValidationMarkdown = (
+          await readExactReviewBatchDocumentSnapshot({
+            batch: responseAssociation.batch,
+            currentMarkdown: markdown,
+            project: projectHandle
+          })
+        ).markdown;
+        dependencyBaseDocumentState = "current";
       }
       validateAtomicTablePatchImport({
-        markdown,
+        markdown: dependencyValidationMarkdown,
         patchProposals: parsedResponse.patch_proposals
       });
       sourceChatUrl = normalizeSourceChatUrl(
@@ -4573,14 +4578,23 @@ export function DocumentEditor() {
     } catch (error) {
       const message = getProjectErrorMessage(error);
       const dependencyRepairPrompt = createPatchDependencyRepairPrompt(error);
+      const repairPrompt =
+        error instanceof ReviewBatchDocumentSnapshotError ||
+        (error instanceof PatchDependencyValidationError &&
+          !error.repairPromptEligible)
+          ? ""
+          : dependencyRepairPrompt
+            ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
+            : CHATGPT_IMPORT_REPAIR_PROMPT;
       setChatGptImportDialog({
         ...chatGptImportDialog,
         error: message,
         errorCode:
-          error instanceof PatchDependencyValidationError ? error.code : null,
-        repairPrompt: dependencyRepairPrompt
-          ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
-          : CHATGPT_IMPORT_REPAIR_PROMPT
+          error instanceof PatchDependencyValidationError ||
+          error instanceof ReviewBatchDocumentSnapshotError
+            ? error.code
+            : null,
+        repairPrompt
       });
       setSaveFeedback({
         kind: "error",
@@ -4619,9 +4633,10 @@ export function DocumentEditor() {
       validateImportedPatchDependencySimulation({
         baseDocumentState: dependencyBaseDocumentState,
         comments,
-        existingPatches,
+        existingPatches:
+          responseAssociation.kind === "exact" ? [] : existingPatches,
         importedPatches,
-        markdown
+        markdown: dependencyValidationMarkdown
       });
       const { nextComments, openQuestionsAttached, repliesAttached } =
         createImportedCommentThreads({

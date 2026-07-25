@@ -33,6 +33,8 @@ export type ReviewBatchContextPack = {
   bytes: number;
 };
 
+export type ReviewBatchDocumentSnapshot = ReviewBatchContextPack;
+
 export type ReviewBatchSectionSnapshot = {
   section_key_snapshot: string;
   heading_snapshot: string | null;
@@ -97,6 +99,7 @@ export type PatchmarkReviewBatch = {
   document_generation: number;
   batch_record_generation: number;
   document_content_sha256: string;
+  document_snapshot?: ReviewBatchDocumentSnapshot;
   comment_fingerprints: ReviewBatchCommentFingerprint[];
   estimated_prompt_tokens: number;
   over_limit_warning: boolean;
