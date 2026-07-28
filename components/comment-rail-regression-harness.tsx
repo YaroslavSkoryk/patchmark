@@ -147,6 +147,7 @@ export function CommentRailRegressionHarness() {
             isBusy={false}
             isProjectMode
             onAddComment={noopAsyncCommentForm}
+            onCloseAddComment={noopVoid}
             onDeleteComment={noopAsyncId}
             onEditComment={noopAsyncEditComment}
             onEditReply={noopAsyncEditReply}

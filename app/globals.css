@@ -1127,6 +1127,30 @@ button {
   line-height: 1.35;
 }
 
+.comment-selection-action {
+  position: fixed;
+  z-index: 80;
+  display: inline-flex;
+  width: 184px;
+  min-height: 42px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--accent-strong);
+  border-radius: 999px;
+  background: var(--accent-strong);
+  box-shadow: 0 14px 34px rgba(22, 35, 29, 0.24);
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.comment-selection-action:hover,
+.comment-selection-action:focus-visible {
+  background: var(--text);
+  outline: 3px solid rgba(45, 122, 79, 0.28);
+  outline-offset: 2px;
+}
+
 .markdown-source-editor {
   display: block;
   width: 100%;

@@ -93,6 +93,7 @@ type CommentsPanelProps = {
   isBusy: boolean;
   isProjectMode: boolean;
   onAddComment: (values: CommentFormValues) => Promise<void>;
+  onCloseAddComment: (reason: "cancel" | "submit") => void;
   onDeleteComment: (commentId: string) => Promise<void>;
   onEditComment: (
     commentId: string,
@@ -166,6 +167,7 @@ export function CommentsPanel({
   isBusy,
   isProjectMode,
   onAddComment,
+  onCloseAddComment,
   onDeleteComment,
   onEditComment,
   onEditReply,
@@ -189,6 +191,8 @@ export function CommentsPanel({
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
   const handledReplyRequestNonceRef = useRef<number | null>(null);
+  const addFormRef = useRef<HTMLFormElement | null>(null);
+  const addCommentInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addScope, setAddScope] = useState<CommentAnchorScope>("document");
   const [addType, setAddType] = useState<PatchmarkCommentType>("note");
@@ -259,6 +263,30 @@ export function CommentsPanel({
     );
   }, [addRequest, openAddForm]);
 
+  useEffect(() => {
+    if (!isAdding) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      addFormRef.current?.scrollIntoView({ block: "nearest" });
+      addCommentInputRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [isAdding]);
+
+  function closeAddForm(reason: "cancel" | "submit") {
+    setAddComment("");
+    setAddTargetLine("");
+    setAddPositionTop(null);
+    setAddType("note");
+    setAddScope("document");
+    setIsAdding(false);
+    setFormError("");
+    onCloseAddComment(reason);
+  }
+
   async function handleAddComment(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError("");
@@ -287,12 +315,7 @@ export function CommentsPanel({
         targetHeadingLine: addTargetLine ? Number(addTargetLine) : null,
         type: addType
       });
-      setAddComment("");
-      setAddTargetLine("");
-      setAddPositionTop(null);
-      setAddType("note");
-      setAddScope("document");
-      setIsAdding(false);
+      closeAddForm("submit");
     } catch {
       setFormError("Could not save comment. Your draft is still here.");
     }
@@ -487,7 +510,19 @@ export function CommentsPanel({
   }
 
   const addForm = isAdding ? (
-    <form className="comment-form comment-form-popover" onSubmit={handleAddComment}>
+    <form
+      ref={addFormRef}
+      aria-label="Add comment"
+      className="comment-form comment-form-popover"
+      data-testid="comment-composer"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeAddForm("cancel");
+        }
+      }}
+      onSubmit={handleAddComment}
+    >
       <CommentAnchorPreview
         anchorContextKind={selectedAnchorContextKind}
         headings={headings}
@@ -499,6 +534,9 @@ export function CommentsPanel({
       <label>
         <span>Comment text</span>
         <textarea
+          ref={addCommentInputRef}
+          aria-label="Comment text"
+          data-comment-composer-input
           required
           value={addComment}
           onChange={(event) => setAddComment(event.target.value)}
@@ -511,10 +549,7 @@ export function CommentsPanel({
         <button
           type="button"
           disabled={isBusy}
-          onClick={() => {
-            setIsAdding(false);
-            setAddPositionTop(null);
-          }}
+          onClick={() => closeAddForm("cancel")}
         >
           Cancel
         </button>
