@@ -177,7 +177,10 @@ export function resolveCanonicalPatchTarget({
       return linkedPatchResolution;
     }
 
-    if (linkedPatchResolution.state === "ambiguous") {
+    if (
+      linkedPatchResolution.state === "ambiguous" &&
+      linkedPatchResolution.explanationCode !== "linked_comment_ambiguous"
+    ) {
       return linkedPatchResolution;
     }
   }

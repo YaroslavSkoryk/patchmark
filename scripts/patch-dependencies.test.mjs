@@ -590,6 +590,125 @@ Shared original.
 }
 
 {
+  const sharedAnchorText = "shared worker cost";
+  const sibling35Original = `35k case includes ${sharedAnchorText}.`;
+  const sibling50Original = `50k case includes ${sharedAnchorText}.`;
+  const siblingMarkdown = `## Section
+
+Payroll basis.
+
+${sibling35Original}
+
+${sibling50Original}
+
+Capacity summary.
+`;
+  const anchorContextStart = siblingMarkdown.indexOf(sibling35Original);
+  const selectedStartInContext = sibling35Original.indexOf(sharedAnchorText);
+  const anchoredComment = {
+    ...comment(),
+    anchor: {
+      kind: "selected_text",
+      selected_text: sharedAnchorText,
+      anchor_context: {
+        kind: "paragraph",
+        plain_text: sibling35Original,
+        markdown_text: sibling35Original,
+        selected_start_in_context: selectedStartInContext,
+        selected_end_in_context:
+          selectedStartInContext + sharedAnchorText.length,
+        markdown_start_offset: anchorContextStart,
+        markdown_end_offset: anchorContextStart + sibling35Original.length
+      },
+      containing_heading: "Section",
+      containing_heading_level: 2,
+      containing_heading_line: 1,
+      containing_heading_path: ["Section"],
+      anchor_source: "visual"
+    }
+  };
+  const siblingResponse = parse(
+    response([
+      proposal({
+        patch_key: "explain-payroll",
+        target_heading: "## Section",
+        original_text: "Payroll basis.",
+        suggested_text: "Payroll basis clarified."
+      }),
+      proposal({
+        patch_key: "recalculate-35k",
+        depends_on: ["explain-payroll"],
+        target_heading: "## Section",
+        original_text: sibling35Original,
+        suggested_text: `35k case recalculated with ${sharedAnchorText}.`
+      }),
+      proposal({
+        patch_key: "recalculate-50k",
+        depends_on: ["explain-payroll"],
+        target_heading: "## Section",
+        original_text: sibling50Original,
+        suggested_text: `50k case recalculated with ${sharedAnchorText}.`
+      }),
+      proposal({
+        patch_key: "recalculate-capacity",
+        depends_on: ["recalculate-35k", "recalculate-50k"],
+        target_heading: "## Section",
+        original_text: "Capacity summary.",
+        suggested_text: "Capacity summary recalculated."
+      })
+    ])
+  );
+  const siblingPatches = importedPatches(siblingResponse);
+  const siblingOrders = validateImportedPatchDependencySimulation({
+    baseDocumentState: "current",
+    comments: [anchoredComment],
+    existingPatches: [],
+    importedPatches: siblingPatches,
+    markdown: siblingMarkdown
+  });
+
+  assert.deepEqual(
+    getPatchDependencyClosureOrder(siblingResponse, "recalculate-capacity"),
+    ["explain-payroll", "recalculate-35k", "recalculate-50k"]
+  );
+  assert.deepEqual(siblingOrders.get("PM-PATCH-0004"), [
+    "PM-PATCH-0001",
+    "PM-PATCH-0002",
+    "PM-PATCH-0003",
+    "PM-PATCH-0004"
+  ]);
+}
+
+{
+  const duplicatedMarkdown = `## Section
+
+Duplicated target.
+
+Duplicated target.
+`;
+  const duplicatedResponse = parse(
+    response([
+      proposal({
+        patch_key: "genuinely-ambiguous",
+        target_heading: "## Section",
+        original_text: "Duplicated target.",
+        suggested_text: "Replacement."
+      })
+    ])
+  );
+
+  expectDependencyError("exported_document_patch_target_ambiguous", () =>
+    validateImportedPatchDependencySimulation({
+      baseDocumentState: "current",
+      comments: [comment()],
+      existingPatches: [],
+      importedPatches: importedPatches(duplicatedResponse),
+      markdown: duplicatedMarkdown
+    })
+  );
+}
+
+{
   const overlapMarkdown = `## Section
 
 Shared prerequisite target.
@@ -744,9 +863,11 @@ Dependent target.
         faithfulFixture: commentId,
         graphFailuresCovered: 7,
         noAutomaticAcceptance: true,
+        siblingPrerequisiteAccumulation: true,
         sourcePreservationValidated: true,
         stressDurationMs: Number(durationMs.toFixed(2)),
-        stressNodeCount: nodeCount
+        stressNodeCount: nodeCount,
+        trueDuplicateAmbiguityPreserved: true
       },
       null,
       2
