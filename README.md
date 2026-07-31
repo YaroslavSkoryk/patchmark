@@ -64,16 +64,23 @@ Snapshots can be viewed or compared with the current in-memory Markdown without 
 Restore is intentionally not implemented yet.
 
 Project comments are stored in `.patchmark/comments.json`, not in `document.md`.
-Selecting text in Visual Mode shows an `Add comment` action beside the
-selection. The action works in paragraphs, headings, lists, links, table cells,
-and supported multi-block selections. `Alt+Shift+M` opens the same composer for
-the current selection. Right-click in the document remains available for
-selected-text, whole-section, and whole-document comments.
+Selecting supported text in Visual or Markdown Mode shows a `+ Comment` action
+beside the selection. It opens one shared chooser for Selected text, Current
+section, Whole document, and Set reading bookmark. `Alt+Shift+M` opens that same
+chooser, and right-click is only an alternative trigger for the same actions.
+The Comments rail also keeps a permanent `Comment on whole document` action
+that requires no selection.
 The right-side Comments rail displays saved comments beside their approximate anchors.
 Comments can apply to selected Markdown text, a whole section, or the whole document.
 Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
 Cancelling the composer creates no comment or project write. See
 `docs/comment-creation.md` for selection, positioning, and accessibility details.
+
+Unresolved selected-text comments can be repaired through a viewport-stable
+human Re-anchor workspace. It preserves scroll context, captures Visual or
+Markdown selections while editing is read-only, and requires explicit atomic
+confirmation. Re-anchoring never repairs or rebases linked patches. See
+`docs/comment-reanchor.md`.
 
 Git is optional and can be used manually around the project folder, but Patchmark does not run Git commands yet.
 

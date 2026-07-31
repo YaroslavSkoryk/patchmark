@@ -91,6 +91,7 @@ type CommentsPanelProps = {
   error: string | null;
   headings: MarkdownHeading[];
   isBusy: boolean;
+  isDocumentCommentAvailable: boolean;
   isProjectMode: boolean;
   onAddComment: (values: CommentFormValues) => Promise<void>;
   onCloseAddComment: (reason: "cancel" | "submit") => void;
@@ -106,6 +107,7 @@ type CommentsPanelProps = {
   ) => Promise<void>;
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
   onMarkCommentForExport: (commentId: string) => Promise<void>;
+  onOpenDocumentComment: () => void;
   onReopenComment: (commentId: string) => Promise<void>;
   onReplyComment: (commentId: string, content: string) => Promise<void>;
   onReviewCommentPatches: (commentId: string) => void;
@@ -165,6 +167,7 @@ export function CommentsPanel({
   error,
   headings,
   isBusy,
+  isDocumentCommentAvailable,
   isProjectMode,
   onAddComment,
   onCloseAddComment,
@@ -173,6 +176,7 @@ export function CommentsPanel({
   onEditReply,
   onFindComment,
   onMarkCommentForExport,
+  onOpenDocumentComment,
   onReopenComment,
   onReplyComment,
   onReviewCommentPatches,
@@ -574,6 +578,18 @@ export function CommentsPanel({
               {formError}
             </p>
           ) : null}
+          <div className="comments-primary-actions">
+            <button
+              type="button"
+              disabled={
+                isBusy || !isDocumentCommentAvailable || isAdding
+              }
+              onClick={onOpenDocumentComment}
+            >
+              Comment on whole document
+            </button>
+            <span>Scope: Whole document</span>
+          </div>
           {pendingPatchTotal > 0 ? (
             <div className="patch-summary-card">
               <span>
@@ -747,20 +763,28 @@ function FloatingCommentList({
     Record<string, number>
   >({});
   const [floatingStageOffsetTop, setFloatingStageOffsetTop] = useState(0);
-  const positionedComments = comments
-    .filter((comment) => commentPositions[comment.id] !== undefined)
-    .sort((firstComment, secondComment) => {
-      const firstTop = commentPositions[firstComment.id] ?? 0;
-      const secondTop = commentPositions[secondComment.id] ?? 0;
+  const positionedComments = useMemo(
+    () =>
+      comments
+        .filter((comment) => commentPositions[comment.id] !== undefined)
+        .sort((firstComment, secondComment) => {
+          const firstTop = commentPositions[firstComment.id] ?? 0;
+          const secondTop = commentPositions[secondComment.id] ?? 0;
 
-      return (
-        firstTop - secondTop ||
-        firstComment.created_at.localeCompare(secondComment.created_at) ||
-        firstComment.id.localeCompare(secondComment.id)
-      );
-    });
-  const unpositionedComments = comments.filter(
-    (comment) => commentPositions[comment.id] === undefined
+          return (
+            firstTop - secondTop ||
+            firstComment.created_at.localeCompare(secondComment.created_at) ||
+            firstComment.id.localeCompare(secondComment.id)
+          );
+        }),
+    [commentPositions, comments]
+  );
+  const unpositionedComments = useMemo(
+    () =>
+      comments.filter(
+        (comment) => commentPositions[comment.id] === undefined
+      ),
+    [commentPositions, comments]
   );
   const floatingLayoutItems = useMemo(
     () =>
@@ -1579,7 +1603,7 @@ function CommentCard({
         isCompact ? "comment-card-compact" : "comment-card-active"
       }`}
       data-active={isActive ? "true" : undefined}
-      tabIndex={isCompact ? 0 : undefined}
+      tabIndex={isCompact ? 0 : -1}
       onClick={(event) => {
         if (isCompact && !isInteractiveCommentTarget(event.target)) {
           onActivateComment(comment.id);

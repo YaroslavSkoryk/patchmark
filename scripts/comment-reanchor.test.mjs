@@ -67,13 +67,17 @@ assert.deepEqual(
     `${secondStart}:${secondStart + duplicateText.length}`
   ]
 );
+assert.equal(candidates.every((candidate) => candidate.confidence), true);
+assert.equal(candidates.every((candidate) => candidate.reason.length > 0), true);
 
 const secondCandidate = candidates[1];
 const proposal = createHumanReanchorProposal({
+  commentId: originalComment.id,
   documentId: "doc-action-plan",
   documentGeneration: 7,
   markdown: duplicateMarkdown,
   previousAnchor: originalComment.anchor,
+  projectId: "project-strategy",
   range: secondCandidate.range,
   saveGeneration: 12,
   source: "candidate"
@@ -94,6 +98,7 @@ const applied = applyHumanReanchor({
   comment: originalComment,
   currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 7,
+  currentProjectId: "project-strategy",
   currentSaveGeneration: 12,
   markdown: duplicateMarkdown,
   patches: relatedPatches,
@@ -131,6 +136,7 @@ const repeated = applyHumanReanchor({
   comment: applied.comment,
   currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 7,
+  currentProjectId: "project-strategy",
   currentSaveGeneration: 13,
   markdown: duplicateMarkdown,
   patches: relatedPatches,
@@ -146,6 +152,7 @@ const stale = applyHumanReanchor({
   comment: originalComment,
   currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 8,
+  currentProjectId: "project-strategy",
   currentSaveGeneration: 12,
   markdown: `${duplicateMarkdown}\nChanged`,
   proposal,
@@ -158,6 +165,7 @@ const switchedDocument = applyHumanReanchor({
   comment: originalComment,
   currentDocumentId: "doc-ready-to-eat",
   currentDocumentGeneration: 7,
+  currentProjectId: "project-strategy",
   currentSaveGeneration: 12,
   markdown: duplicateMarkdown,
   proposal,
@@ -166,10 +174,35 @@ const switchedDocument = applyHumanReanchor({
 assert.equal(switchedDocument.kind, "stale");
 assert.match(switchedDocument.message, /switched/i);
 
+const switchedProject = applyHumanReanchor({
+  comment: originalComment,
+  currentDocumentId: "doc-action-plan",
+  currentDocumentGeneration: 7,
+  currentProjectId: "project-other",
+  currentSaveGeneration: 12,
+  markdown: duplicateMarkdown,
+  proposal,
+  timestamp: "2026-07-15T01:02:40.000Z"
+});
+assert.equal(switchedProject.kind, "stale");
+
+const wrongComment = applyHumanReanchor({
+  comment: { ...originalComment, id: "PM-COMMENT-OTHER" },
+  currentDocumentId: "doc-action-plan",
+  currentDocumentGeneration: 7,
+  currentProjectId: "project-strategy",
+  currentSaveGeneration: 12,
+  markdown: duplicateMarkdown,
+  proposal,
+  timestamp: "2026-07-15T01:02:50.000Z"
+});
+assert.equal(wrongComment.kind, "stale");
+
 const resolved = applyHumanReanchor({
   comment: { ...originalComment, status: "resolved" },
   currentDocumentId: "doc-action-plan",
   currentDocumentGeneration: 7,
+  currentProjectId: "project-strategy",
   currentSaveGeneration: 12,
   markdown: duplicateMarkdown,
   proposal,
@@ -209,10 +242,12 @@ assert.equal(
 );
 
 const linkProposal = createHumanReanchorProposal({
+  commentId: "PM-COMMENT-FIXTURE",
   documentId: "doc-action-plan",
   documentGeneration: 1,
   markdown: linkMarkdown,
   previousAnchor: createComment({ selectedText: "missing" }).anchor,
+  projectId: "project-strategy",
   range: mappedLink,
   saveGeneration: 2,
   source: "visual"
@@ -224,10 +259,12 @@ assert.equal(linkProposal.anchor.anchor_context.table_cell_index, 1);
 
 const rowStart = linkMarkdown.indexOf("| PAUL");
 const rowProposal = createHumanReanchorProposal({
+  commentId: "PM-COMMENT-FIXTURE",
   documentId: "doc-action-plan",
   documentGeneration: 1,
   markdown: linkMarkdown,
   previousAnchor: createComment({ selectedText: "missing" }).anchor,
+  projectId: "project-strategy",
   range: { start: rowStart, end: linkMarkdown.length },
   saveGeneration: 2,
   source: "markdown"
@@ -250,10 +287,12 @@ const multiBlockMarkdown = [
 const multiStart = multiBlockMarkdown.indexOf("### Early");
 const multiEnd = multiBlockMarkdown.indexOf("\n\n## Next");
 const multiProposal = createHumanReanchorProposal({
+  commentId: "PM-COMMENT-FIXTURE",
   documentId: "doc-action-plan",
   documentGeneration: 3,
   markdown: multiBlockMarkdown,
   previousAnchor: createComment({ selectedText: "missing" }).anchor,
+  projectId: "project-strategy",
   range: { start: multiStart, end: multiEnd },
   saveGeneration: 4,
   source: "markdown"
@@ -320,6 +359,7 @@ console.log(
       noOpSuppressed: true,
       noOpWrites: noOpDebug.writeCount,
       patchIntegrity: JSON.stringify(relatedPatches) === patchesBefore,
+      projectAndCommentScoped: true,
       staleGuard: true,
       tableMetadata: true
     },

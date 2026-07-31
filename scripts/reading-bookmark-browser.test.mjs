@@ -371,7 +371,17 @@ async function setBookmarkForActiveDocument(pageClient, fixtureDir, documentId) 
   await clickButtonByText(pageClient, "Markdown Mode");
   await waitForElement(pageClient, ".markdown-source-editor");
   await selectTargetAndOpenMenu(pageClient);
-  await clickButtonByText(pageClient, "Set reading bookmark");
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = document.querySelector(
+        "[data-selection-action-option='bookmark']"
+      );
+      if (!button) throw new Error("Bookmark selection action was not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
   await waitForButton(pageClient, "Continue reading");
   await waitForButtonMissing(pageClient, "Remove bookmark");
   await waitForPersistedBookmark(fixtureDir, documentId, true);
@@ -516,7 +526,10 @@ async function selectTargetAndOpenMenu(pageClient) {
     })()`,
     userGesture: true
   });
-  await waitForElement(pageClient, ".comment-context-menu");
+  await waitForElement(
+    pageClient,
+    "[data-testid='selection-actions-chooser']"
+  );
 }
 
 async function selectNavigatorDocument(pageClient, title) {

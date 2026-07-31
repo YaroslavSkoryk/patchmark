@@ -12,6 +12,7 @@
     "test:comment-card-ux": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-card-ux.test.mjs",
     "test:comment-selection-affordance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-selection-affordance.test.mjs",
     "test:comment-selection-composer-browser": "node scripts/comment-selection-composer-browser.test.mjs",
+    "test:selection-actions-browser": "node scripts/comment-selection-composer-browser.test.mjs",
     "test:comment-anchor-transformation": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-transformation.test.mjs",
     "test:comment-anchor-consistency": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-consistency.test.mjs",
     "test:comment-anchor-visual-projection": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-visual-projection.test.mjs",

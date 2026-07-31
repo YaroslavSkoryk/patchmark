@@ -29,7 +29,7 @@ export const COMMENT_AFFORDANCE_MENU_SIZE = {
 };
 export const COMMENT_SELECTION_ACTION_SIZE = {
   height: 42,
-  width: 184
+  width: 116
 };
 
 const DEFAULT_AFFORDANCE_GAP = 8;

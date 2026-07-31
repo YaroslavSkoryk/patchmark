@@ -20,13 +20,15 @@ type VisualMarkdownEditorProps = {
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
   resetKey: number;
+  selectionOnly?: boolean;
 };
 
 export function VisualMarkdownEditor({
   markdown,
   onMarkdownChange,
   readOnly = false,
-  resetKey
+  resetKey,
+  selectionOnly = false
 }: VisualMarkdownEditorProps) {
   return (
     <div className="visual-editor-shell">
@@ -35,6 +37,7 @@ export function VisualMarkdownEditor({
         onMarkdownChange={onMarkdownChange}
         readOnly={readOnly}
         resetKey={resetKey}
+        selectionOnly={selectionOnly}
       />
     </div>
   );

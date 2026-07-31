@@ -1081,57 +1081,134 @@ button {
   opacity: 0.65;
 }
 
-.comment-context-menu {
+.selection-actions-chooser {
   position: fixed;
-  z-index: 70;
-  display: grid;
-  min-width: 220px;
-  max-width: min(280px, calc(100vw - 16px));
-  max-height: calc(100vh - 16px);
+  z-index: 90;
+  width: min(360px, calc(100vw - 16px));
+  max-height: min(440px, calc(100vh - 16px));
   overflow: auto;
   border: 1px solid var(--border);
+  border-radius: 16px;
   background: var(--surface);
   box-shadow: 0 18px 48px rgba(22, 35, 29, 0.18);
 }
 
-.comment-context-menu button {
+.selection-actions-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 12px 14px;
+}
+
+.selection-actions-header > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.selection-actions-header .selection-actions-close {
+  display: inline-grid;
+  width: 32px;
+  min-height: 32px;
+  place-items: center;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.35rem;
+  line-height: 1;
+}
+
+.selection-actions-context {
+  display: grid;
+  gap: 8px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-muted);
+  padding: 12px 14px;
+}
+
+.selection-actions-context p {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  color: var(--text);
+  font-size: 0.84rem;
+  line-height: 1.4;
+}
+
+.selection-actions-context p > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.selection-actions-context q {
+  overflow-wrap: anywhere;
+}
+
+.selection-actions-options {
+  display: grid;
+}
+
+.selection-actions-options > button {
+  display: grid;
+  gap: 3px;
   border: 0;
   border-bottom: 1px solid var(--border);
   background: var(--surface);
   color: var(--text);
-  padding: 10px 12px;
+  padding: 11px 14px;
   text-align: left;
-  font-weight: 700;
 }
 
-.comment-context-menu button:last-child {
+.selection-actions-options > :last-child {
   border-bottom: 0;
 }
 
-.comment-context-menu button:hover:not(:disabled) {
+.selection-actions-options > button:hover,
+.selection-actions-options > button:focus-visible,
+.selection-actions-header .selection-actions-close:hover,
+.selection-actions-header .selection-actions-close:focus-visible {
   background: var(--accent-soft);
   color: var(--accent-strong);
+  outline: 0;
 }
 
-.comment-context-menu button:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.selection-actions-options > button > strong {
+  font-size: 0.92rem;
 }
 
-.comment-context-menu-note {
+.selection-actions-options > button > span,
+.selection-action-unavailable > span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 500;
+  line-height: 1.35;
+}
+
+.selection-action-unavailable {
+  display: grid;
+  gap: 3px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-muted);
   color: var(--muted);
-  padding: 9px 12px;
-  font-size: 0.8rem;
-  line-height: 1.35;
+  padding: 10px 14px;
+}
+
+.selection-action-unavailable > strong {
+  font-size: 0.84rem;
 }
 
 .comment-selection-action {
   position: fixed;
   z-index: 80;
   display: inline-flex;
-  width: 184px;
+  width: 116px;
   min-height: 42px;
   align-items: center;
   justify-content: center;
@@ -1149,6 +1226,19 @@ button {
   background: var(--text);
   outline: 3px solid rgba(45, 122, 79, 0.28);
   outline-offset: 2px;
+}
+
+@media (max-width: 520px) {
+  .selection-actions-chooser {
+    width: calc(100vw - 16px);
+  }
+
+  .selection-actions-context,
+  .selection-actions-options > button,
+  .selection-action-unavailable {
+    padding-left: 12px;
+    padding-right: 12px;
+  }
 }
 
 .markdown-source-editor {
@@ -1243,6 +1333,24 @@ button {
 .patchmark-mdx-editor .mdxeditor-toolbar {
   border-bottom: 1px solid var(--border);
   background: var(--surface-muted);
+}
+
+.visual-editor-selection-only .mdxeditor-toolbar,
+.visual-editor-selection-only button,
+.visual-editor-selection-only input,
+.visual-editor-selection-only select,
+.visual-editor-selection-only [role="button"],
+.visual-editor-selection-only [role="menuitem"] {
+  pointer-events: none;
+}
+
+.visual-editor-selection-only .mdxeditor-toolbar {
+  opacity: 0.58;
+}
+
+.visual-editor-selection-only .patchmark-prose {
+  cursor: text;
+  user-select: text;
 }
 
 .patchmark-prose {
@@ -2233,10 +2341,28 @@ button {
 
 .reanchor-mode-panel {
   display: grid;
-  gap: 14px;
-  border-bottom: 1px solid #9b8bd6;
+  gap: 12px;
+  min-width: 0;
+  max-height: var(--reanchor-workspace-max-height, calc(100vh - 40px));
+  overflow: auto;
+  border: 1px solid #9b8bd6;
+  border-radius: 10px;
+  outline: none;
   background: #f6f3ff;
-  padding: 16px 18px;
+  box-shadow: 0 18px 50px rgba(42, 31, 82, 0.24);
+  padding: 14px;
+}
+
+.reanchor-workspace {
+  position: fixed;
+  z-index: 70;
+  overscroll-behavior: contain;
+}
+
+.reanchor-workspace:focus-visible {
+  box-shadow:
+    0 0 0 3px rgba(111, 90, 190, 0.28),
+    0 18px 50px rgba(42, 31, 82, 0.24);
 }
 
 .reanchor-mode-header,
@@ -2254,9 +2380,11 @@ button {
 .reanchor-manual-selection > div {
   display: grid;
   gap: 3px;
+  min-width: 0;
 }
 
 .reanchor-mode-header span,
+.reanchor-original-anchor > span,
 .reanchor-candidate-card > span,
 .reanchor-confirmation-card > span {
   color: #5b4b96;
@@ -2268,16 +2396,51 @@ button {
 .reanchor-mode-header p,
 .reanchor-candidate-card p,
 .reanchor-confirmation-card p,
-.reanchor-empty-candidates {
+.reanchor-empty-candidates,
+.reanchor-selection-status p,
+.reanchor-scope-note,
+.reanchor-stale-patch-note {
   margin: 0;
   color: var(--muted);
   line-height: 1.45;
 }
 
+.reanchor-original-anchor,
+.reanchor-selection-status {
+  display: grid;
+  gap: 6px;
+  min-width: 0;
+  border: 1px solid #ddd6f2;
+  background: rgba(255, 255, 255, 0.72);
+  padding: 10px;
+}
+
+.reanchor-original-anchor blockquote,
+.reanchor-selection-status blockquote,
+.reanchor-candidate-card blockquote {
+  overflow-wrap: anywhere;
+  margin: 0;
+  border-left: 3px solid #9b8bd6;
+  padding-left: 9px;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.reanchor-original-anchor blockquote {
+  max-height: 110px;
+  overflow: auto;
+}
+
+.reanchor-original-anchor small,
+.reanchor-selection-status span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .reanchor-candidate-list {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 10px;
+  gap: 9px;
 }
 
 .reanchor-candidate-card {
@@ -2309,9 +2472,33 @@ button {
   font-weight: 700;
 }
 
+.reanchor-mode-panel button:focus-visible,
+.reanchor-confirmation-dialog button:focus-visible {
+  outline: 3px solid rgba(111, 90, 190, 0.32);
+  outline-offset: 2px;
+}
+
 .reanchor-manual-selection {
-  border-top: 1px solid #ddd6f2;
-  padding-top: 12px;
+  align-items: stretch;
+  border-block: 1px solid #ddd6f2;
+  padding-block: 12px;
+}
+
+.reanchor-manual-selection > button {
+  width: 100%;
+}
+
+.reanchor-scope-note,
+.reanchor-stale-patch-note {
+  border-left: 3px solid #9b8bd6;
+  padding-left: 9px;
+  font-size: 0.8rem;
+}
+
+.reanchor-stale-patch-note {
+  margin: 0;
+  border-color: #bd741c;
+  color: #72420d;
 }
 
 .reanchor-confirmation-dialog {
@@ -2365,8 +2552,20 @@ button {
 }
 
 @media (max-width: 760px) {
+  .reanchor-mode-panel {
+    border-radius: 12px 12px 0 0;
+    padding: 12px;
+  }
+
   .reanchor-confirmation-body {
     grid-template-columns: 1fr;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .reanchor-mode-panel,
+  .reanchor-confirmation-dialog {
+    scroll-behavior: auto;
   }
 }
 
@@ -2679,6 +2878,27 @@ button {
 .comment-form button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
+}
+
+.comments-primary-actions {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+  padding: 10px;
+}
+
+.comments-primary-actions > button {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.comments-primary-actions > span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
 }
 
 .comments-empty,

@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type SyntheticEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import {
   BlockTypeSelect,
   BoldItalicUnderlineToggles,
@@ -52,6 +60,7 @@ type MdxEditorClientProps = {
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
   resetKey: number;
+  selectionOnly?: boolean;
 };
 
 const clearHistoryAfterDocumentResetPlugin = realmPlugin({
@@ -69,7 +78,8 @@ export function MdxEditorClient({
   markdown,
   onMarkdownChange,
   readOnly = false,
-  resetKey
+  resetKey,
+  selectionOnly = false
 }: MdxEditorClientProps) {
   const visualMarkdown = useMemo(
     () => {
@@ -143,6 +153,17 @@ export function MdxEditorClient({
     );
     markDocumentSwitchPerformance(switchOperationId, "editor_initialized");
   }, [visualMarkdown]);
+
+  useEffect(() => {
+    const content = editorShellRef.current?.querySelector(".patchmark-prose");
+
+    if (!content || !selectionOnly) {
+      return;
+    }
+
+    content.setAttribute("aria-readonly", "true");
+    return () => content.removeAttribute("aria-readonly");
+  }, [editorInstanceKey, selectionOnly, visualMarkdown]);
 
   useEffect(() => {
     if (renderError || visualMarkdown.trim().length === 0) {
@@ -249,8 +270,65 @@ export function MdxEditorClient({
     onMarkdownChange(nextMarkdown);
   }
 
+  function preventSelectionOnlyMutation(event: SyntheticEvent) {
+    if (!selectionOnly) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handleSelectionOnlyKeyDown(
+    event: ReactKeyboardEvent<HTMLDivElement>
+  ) {
+    if (!selectionOnly) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    const primaryModifier = event.metaKey || event.ctrlKey;
+    const mutatingShortcut =
+      primaryModifier &&
+      ["b", "i", "k", "u", "v", "x", "y", "z"].includes(key);
+    const mutatingKey =
+      !primaryModifier &&
+      !event.altKey &&
+      (event.key.length === 1 ||
+        ["Backspace", "Delete", "Enter", "Tab"].includes(event.key));
+
+    if (mutatingShortcut || mutatingKey) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function handleSelectionOnlyClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (
+      !selectionOnly ||
+      !(event.target instanceof Element) ||
+      !event.target.closest(
+        "a, button, input, select, [role='button'], [role='menuitem']"
+      )
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   return (
-    <div ref={editorShellRef}>
+    <div
+      ref={editorShellRef}
+      className={selectionOnly ? "visual-editor-selection-only" : undefined}
+      onBeforeInputCapture={preventSelectionOnlyMutation}
+      onClickCapture={handleSelectionOnlyClick}
+      onCutCapture={preventSelectionOnlyMutation}
+      onDropCapture={preventSelectionOnlyMutation}
+      onKeyDownCapture={handleSelectionOnlyKeyDown}
+      onPasteCapture={preventSelectionOnlyMutation}
+    >
       {renderError && markdown.trim().length > 0 ? (
         <div className="visual-editor-error" role="alert">
           <strong>Visual Mode could not render this Markdown.</strong>

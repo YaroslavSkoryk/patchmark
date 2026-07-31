@@ -8,6 +8,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
@@ -69,7 +70,6 @@ import {
 } from "@/lib/comments/comment-anchor-patch-mapping";
 import { findUniqueCurrentTableRowForPatchOriginal } from "@/lib/comments/comment-anchor-table-row-recovery";
 import {
-  COMMENT_AFFORDANCE_MENU_SIZE,
   COMMENT_SELECTION_ACTION_SIZE,
   chooseSelectionAffordanceRect,
   createCommentAffordanceBounds,
@@ -86,6 +86,12 @@ import {
 } from "@/lib/comments/comment-anchor-visual-projection";
 import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import { DocumentActions } from "@/components/document-actions";
+import {
+  SelectionActionsChooser,
+  createSelectionActionOptions,
+  type SelectionActionId,
+  type SelectionActionsPresentation
+} from "@/components/selection-actions-chooser";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
 import { GuidedReviewWizard } from "@/components/guided-review/guided-review-wizard";
@@ -395,18 +401,20 @@ type SelectedCommentAnchorDraftResult = {
   draft: SelectedCommentAnchorDraft | null;
   help: string | null;
 };
-type CommentContextMenuState = {
-  defaultHeadingLine: number | null;
-  selectedDraft: SelectedCommentAnchorDraft | null;
-  selectionHelp: string | null;
-  x: number;
-  y: number;
-};
-type CommentSelectionActionState = {
+type SelectionActionsState = {
+  anchorRect: CommentAffordanceRect;
+  documentFingerprint: string;
+  documentId: string;
   documentKey: string;
   documentVersion: number;
-  draft: SelectedCommentAnchorDraft;
+  presentation: SelectionActionsPresentation;
+  projectId: string;
+  selectedDraft: SelectedCommentAnchorDraft | null;
+  selectionFingerprint: string;
+  selectionHelp: string | null;
+  selectionLatencyMs: number | null;
   targetHeadingLine: number | null;
+  trigger: "context_menu" | "keyboard" | "selection";
   x: number;
   y: number;
 };
@@ -420,6 +428,17 @@ type ReanchorSession = {
   previousActiveCommentState: ActiveCommentState;
   previousStatus: CommentAnchorStatus;
   previewProposal: HumanReanchorProposal | null;
+  previewReturnScrollY: number | null;
+  projectId: string;
+  selectionDraft: SelectedCommentAnchorDraft | null;
+  selectionHelp: string | null;
+  selectionLatencyMs: number | null;
+  startedAt: number;
+  startedMode: EditorMode;
+  startedScrollY: number;
+};
+type ReanchorWorkspaceStyle = CSSProperties & {
+  "--reanchor-workspace-max-height"?: string;
 };
 type ChatGptPromptDialogState = {
   batchId: string;
@@ -696,6 +715,10 @@ const REVIEW_QUEUE_PREVIEW_BATCH_ID =
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
   const editorDocumentRef = useRef<HTMLDivElement>(null);
+  const commentsRailRef = useRef<HTMLElement>(null);
+  const reanchorWorkspaceRef = useRef<HTMLElement>(null);
+  const reanchorWorkspacePrimaryRef = useRef<HTMLButtonElement>(null);
+  const reanchorWorkspaceRenderCountRef = useRef(0);
   const [fileName, setFileName] = useState<string | null>(null);
   // Markdown is the source of truth across both editing modes.
   const [markdown, setMarkdown] = useState("");
@@ -862,19 +885,22 @@ export function DocumentEditor() {
   >(null);
   const [visualSelectionDraft, setVisualSelectionDraft] =
     useState<SelectedCommentAnchorDraft | null>(null);
-  const [commentSelectionAction, setCommentSelectionAction] =
-    useState<CommentSelectionActionState | null>(null);
+  const [selectionActions, setSelectionActions] =
+    useState<SelectionActionsState | null>(null);
+  const selectionActionsRef = useRef<SelectionActionsState | null>(null);
+  selectionActionsRef.current = selectionActions;
   const commentSelectionActionButtonRef = useRef<HTMLButtonElement>(null);
+  const pendingSelectionActionsTriggerRef = useRef<"keyboard" | null>(null);
   const [commentAddRequest, setCommentAddRequest] =
     useState<CommentAddRequest | null>(null);
   const [commentReplyRequest, setCommentReplyRequest] =
     useState<CommentReplyRequest | null>(null);
-  const [commentContextMenu, setCommentContextMenu] =
-    useState<CommentContextMenuState | null>(null);
   const [reanchorSession, setReanchorSession] =
     useState<ReanchorSession | null>(null);
   const [reanchorConfirmation, setReanchorConfirmation] =
     useState<HumanReanchorProposal | null>(null);
+  const [reanchorWorkspaceStyle, setReanchorWorkspaceStyle] =
+    useState<ReanchorWorkspaceStyle | null>(null);
   const [commentPositions, setCommentPositions] = useState<Record<string, number>>(
     {}
   );
@@ -993,6 +1019,26 @@ export function DocumentEditor() {
   const commentsById = useMemo(
     () => new Map(comments.map((comment) => [comment.id, comment])),
     [comments]
+  );
+  const reanchorComment = reanchorSession
+    ? commentsById.get(reanchorSession.commentId) ?? null
+    : null;
+  const reanchorOriginalAnchor = getSelectedTextCommentAnchor(
+    reanchorComment ?? undefined
+  );
+  const reanchorSelectionRange = getDraftMarkdownRange(
+    reanchorSession?.selectionDraft ?? null
+  );
+  const reanchorWorkspaceSessionKey = reanchorSession
+    ? `${reanchorSession.projectId}:${reanchorSession.documentId}:${reanchorSession.commentId}`
+    : null;
+  const reanchorHasLinkedStalePatch = Boolean(
+    reanchorSession &&
+      patches.some(
+        (patch) =>
+          patch.comment_id === reanchorSession.commentId &&
+          patch.status === "stale"
+      )
   );
   const pendingPatchCountsByCommentId = useMemo(
     () => getPendingPatchCountsByCommentId(patches),
@@ -1148,17 +1194,88 @@ export function DocumentEditor() {
   const isProjectRecoveryReadOnly =
     projectRecovery !== null && projectRecovery.kind !== "migration_rolled_back";
   const isReanchorMode = reanchorSession !== null;
-  const syncVisualCommentSelection = useCallback(() => {
+  const syncVisualCommentSelection = useCallback((
+    options: { clearInvalidReanchorSelection?: boolean } = {}
+  ) => {
+    if (mode !== "visual") {
+      return;
+    }
+
     if (
-      mode !== "visual" ||
       !activeDocumentKey ||
+      !activeDocumentIdentity ||
       !isProjectMode ||
       isProjectRecoveryReadOnly ||
-      isReanchorMode ||
       isCommentBusy ||
       requestedProjectDocumentId !== null
     ) {
-      setCommentSelectionAction(null);
+      setSelectionActions(null);
+      return;
+    }
+
+    const selectionStartedAt = performance.now();
+    const selectionResult = createVisualSelectionDraftResult({
+      container: editorDocumentRef.current,
+      markdown
+    });
+
+    if (isReanchorMode) {
+      setSelectionActions(null);
+      const browserSelection = window.getSelection();
+      const hasForeignSelection = Boolean(
+        browserSelection &&
+          !browserSelection.isCollapsed &&
+          browserSelection.rangeCount > 0 &&
+          (!editorDocumentRef.current?.contains(browserSelection.anchorNode) ||
+            !editorDocumentRef.current?.contains(browserSelection.focusNode))
+      );
+      const shouldClearInvalidSelection =
+        options.clearInvalidReanchorSelection || hasForeignSelection;
+
+      setReanchorSession((current) => {
+        if (
+          !current ||
+          current.projectId !== activeProjectIdRef.current ||
+          current.documentId !== activeDocumentIdRef.current ||
+          current.documentVersion !== documentVersion
+        ) {
+          return current;
+        }
+
+        if (!selectionResult.draft && !shouldClearInvalidSelection) {
+          return current;
+        }
+
+        const selectionRange = getDraftMarkdownRange(selectionResult.draft);
+        const selectionHelp = selectionRange
+          ? null
+          : selectionResult.draft
+            ? "Patchmark could not map this selection to the current Markdown. Choose text within one supported document range."
+            : selectionResult.help ??
+              "Select non-empty text inside the current document.";
+
+        if (
+          areSelectedCommentDraftsEqual(
+            current.selectionDraft,
+            selectionResult.draft
+          ) &&
+          current.selectionHelp === selectionHelp
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          error: null,
+          previewProposal: null,
+          selectionDraft: selectionResult.draft,
+          selectionHelp,
+          selectionLatencyMs: Math.max(
+            0,
+            performance.now() - selectionStartedAt
+          )
+        };
+      });
       return;
     }
 
@@ -1166,63 +1283,75 @@ export function DocumentEditor() {
       return;
     }
 
-    const selectionResult = createVisualSelectionDraftResult({
-      container: editorDocumentRef.current,
-      markdown
-    });
-
-    setVisualSelectionDraft(selectionResult.draft);
-
     if (!selectionResult.draft || !selectionResult.affordanceRect) {
-      setCommentSelectionAction(null);
+      if (selectionActionsRef.current?.presentation === "chooser") {
+        const current = selectionActionsRef.current;
+        const position = getSelectionActionsPosition({
+          anchorRect: current.anchorRect,
+          presentation: "chooser"
+        });
+        setSelectionActions({
+          ...current,
+          x: position.x,
+          y: position.y
+        });
+        return;
+      }
+
+      setVisualSelectionDraft(null);
+      setSelectionActions(null);
       return;
     }
 
-    const containerRect = editorDocumentRef.current
-      ? toCommentAffordanceRect(
-          editorDocumentRef.current.getBoundingClientRect()
-        )
-      : null;
-    const bounds = createCommentAffordanceBounds({
-      containerRect,
-      menuSize: COMMENT_SELECTION_ACTION_SIZE,
-      viewportHeight: window.innerHeight,
-      viewportWidth: window.innerWidth
-    });
-    const toolbarRect = editorDocumentRef.current
-      ?.querySelector<HTMLElement>(".mdxeditor-toolbar")
-      ?.getBoundingClientRect();
-    const safeBounds =
-      toolbarRect && toolbarRect.bottom > 0 && toolbarRect.top <= 0
-        ? {
-            ...bounds,
-            top: Math.min(
-              bounds.bottom - COMMENT_SELECTION_ACTION_SIZE.height,
-              Math.max(bounds.top, toolbarRect.bottom + 8)
-            )
-          }
-        : bounds;
-    const position = placeCommentAffordance({
-      anchorRect: selectionResult.affordanceRect,
-      bounds: safeBounds,
-      menuSize: COMMENT_SELECTION_ACTION_SIZE
-    });
     const selectionStart = getDraftMarkdownStartOffset(selectionResult.draft);
     const targetHeading =
       typeof selectionStart === "number"
         ? getHeadingContainingOffset(markdown, headings, selectionStart)
         : undefined;
-
-    setCommentSelectionAction({
-      documentKey: activeDocumentKey,
+    const documentFingerprint = createDocumentHash(markdown);
+    const selectionFingerprint = createSelectionActionFingerprint({
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
       documentVersion,
       draft: selectionResult.draft,
+      projectId: activeDocumentIdentity.projectId,
+      targetHeadingLine: targetHeading?.line ?? null
+    });
+    const current = selectionActionsRef.current;
+    const preservesOpenChooser =
+      current?.presentation === "chooser" &&
+      current.documentKey === activeDocumentKey &&
+      current.documentVersion === documentVersion &&
+      current.selectionFingerprint === selectionFingerprint;
+    const presentation: SelectionActionsPresentation = preservesOpenChooser
+      ? "chooser"
+      : "compact";
+    const position = getSelectionActionsPosition({
+      anchorRect: selectionResult.affordanceRect,
+      presentation
+    });
+
+    setVisualSelectionDraft(selectionResult.draft);
+    setSelectionActions({
+      anchorRect: selectionResult.affordanceRect,
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentKey: activeDocumentKey,
+      documentVersion,
+      presentation,
+      projectId: activeDocumentIdentity.projectId,
+      selectedDraft: selectionResult.draft,
+      selectionFingerprint,
+      selectionHelp: selectionResult.help,
+      selectionLatencyMs: Math.max(0, performance.now() - selectionStartedAt),
       targetHeadingLine: targetHeading?.line ?? null,
-      x: Math.round(position.x),
-      y: Math.round(position.y)
+      trigger: preservesOpenChooser ? current.trigger : "selection",
+      x: position.x,
+      y: position.y
     });
   }, [
     activeDocumentKey,
+    activeDocumentIdentity,
     commentAddRequest?.scope,
     documentVersion,
     headings,
@@ -1260,6 +1389,50 @@ export function DocumentEditor() {
   const isReadingBookmarkBusy =
     activeDocumentKey !== null &&
     readingBookmarkBusyDocumentKey === activeDocumentKey;
+  const selectionActionsHeading = selectionActions?.targetHeadingLine
+    ? headings.find(
+        (heading) => heading.line === selectionActions.targetHeadingLine
+      )
+    : undefined;
+  const selectionActionsSectionLabel = selectionActionsHeading
+    ? cleanMarkdownHeadingText(selectionActionsHeading.text)
+    : null;
+  const selectionActionsContextLabel = selectionActions?.selectedDraft
+    ? getSelectionActionsContextLabel(selectionActions.selectedDraft)
+    : null;
+  const selectionActionOptions = createSelectionActionOptions({
+    bookmarkUnavailableReason: !isProjectMode
+      ? "Reading bookmarks require Project Folder Mode."
+      : isProjectRecoveryReadOnly
+        ? "Bookmarks are unavailable while project recovery is read-only."
+        : isReadingBookmarkBusy
+          ? "A reading bookmark update is already in progress."
+          : !selectionActions?.selectedDraft &&
+              !selectionActionsSectionLabel
+            ? "Select text or open the chooser inside a section."
+            : null,
+    commentsUnavailableReason: !isProjectMode
+      ? "Comments require Project Folder Mode."
+      : isProjectRecoveryReadOnly
+        ? "Comments are unavailable while project recovery is read-only."
+        : isCommentBusy
+          ? "Another comment operation is in progress."
+          : null,
+    sectionLabel: selectionActionsSectionLabel,
+    selectedTextAvailable: Boolean(selectionActions?.selectedDraft),
+    selectionUnavailableReason:
+      selectionActions?.selectionHelp ?? "Select document text first."
+  });
+  const shouldRenderSelectionActions = Boolean(
+    !isReanchorMode &&
+      selectionActions &&
+      selectionActions.documentVersion === documentVersion &&
+      (activeDocumentIdentity
+        ? selectionActions.projectId === activeDocumentIdentity.projectId &&
+          selectionActions.documentId === activeDocumentIdentity.documentId &&
+          selectionActions.documentKey === activeDocumentKey
+        : selectionActions.projectId === "" && selectionActions.documentId === "")
+  );
   const isReadingBookmarkEmphasized =
     activeDocumentKey !== null &&
     readingBookmarkEmphasizedDocumentKey === activeDocumentKey;
@@ -1879,30 +2052,24 @@ export function DocumentEditor() {
   }, [isDirty]);
 
   useEffect(() => {
-    if (!commentContextMenu) {
+    if (selectionActions?.presentation !== "chooser") {
       return;
     }
 
-    function closeCommentContextMenu() {
-      setCommentContextMenu(null);
+    function closeSelectionActionsFromOutside() {
+      setSelectionActions(null);
+      setVisualSelectionDraft(null);
     }
 
-    function handleContextMenuKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeCommentContextMenu();
-      }
-    }
-
-    window.addEventListener("click", closeCommentContextMenu);
-    window.addEventListener("keydown", handleContextMenuKeyDown);
-    window.addEventListener("scroll", closeCommentContextMenu, true);
+    window.addEventListener("pointerdown", closeSelectionActionsFromOutside);
 
     return () => {
-      window.removeEventListener("click", closeCommentContextMenu);
-      window.removeEventListener("keydown", handleContextMenuKeyDown);
-      window.removeEventListener("scroll", closeCommentContextMenu, true);
+      window.removeEventListener(
+        "pointerdown",
+        closeSelectionActionsFromOutside
+      );
     };
-  }, [commentContextMenu]);
+  }, [selectionActions?.presentation]);
 
   useEffect(() => {
     let animationFrameId: number | null = null;
@@ -1934,7 +2101,7 @@ export function DocumentEditor() {
   }, [syncVisualCommentSelection]);
 
   useEffect(() => {
-    if (!commentSelectionAction) {
+    if (!selectionActions) {
       return;
     }
 
@@ -1945,12 +2112,16 @@ export function DocumentEditor() {
         event.key.toLowerCase() === "m"
       ) {
         event.preventDefault();
+        pendingSelectionActionsTriggerRef.current = "keyboard";
         commentSelectionActionButtonRef.current?.click();
         return;
       }
 
-      if (event.key === "Escape") {
-        setCommentSelectionAction(null);
+      if (
+        event.key === "Escape" &&
+        selectionActionsRef.current?.presentation === "compact"
+      ) {
+        setSelectionActions(null);
         setVisualSelectionDraft(null);
         window.getSelection()?.removeAllRanges();
       }
@@ -1959,13 +2130,14 @@ export function DocumentEditor() {
     window.addEventListener("keydown", handleSelectionActionKeyDown);
     return () =>
       window.removeEventListener("keydown", handleSelectionActionKeyDown);
-  }, [commentSelectionAction]);
+  }, [selectionActions]);
 
   useEffect(() => {
     if (!reanchorSession) {
       return;
     }
 
+    const currentReanchorSession = reanchorSession;
     const previousActiveCommentState = reanchorSession.previousActiveCommentState;
 
     function handleReanchorEscape(event: KeyboardEvent) {
@@ -1977,21 +2149,89 @@ export function DocumentEditor() {
       if (reanchorConfirmation) {
         setReanchorConfirmation(null);
       } else {
+        const commentId = currentReanchorSession.commentId;
         setReanchorSession(null);
         setMarkdownSelection({ end: 0, start: 0 });
         setMarkdownSelectionRequest(null);
         setVisualSelectionDraft(null);
         if (
-          isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+          isDocumentScopeCurrent(
+            currentReanchorSession,
+            activeDocumentIdRef.current
+          )
         ) {
           setActiveCommentState(previousActiveCommentState);
         }
+        restoreFocusToCommentCard(commentId);
       }
     }
 
     window.addEventListener("keydown", handleReanchorEscape);
     return () => window.removeEventListener("keydown", handleReanchorEscape);
   }, [reanchorConfirmation, reanchorSession, setActiveCommentState]);
+
+  useLayoutEffect(() => {
+    if (!reanchorWorkspaceSessionKey) {
+      reanchorWorkspaceRenderCountRef.current = 0;
+      setReanchorWorkspaceStyle(null);
+      return;
+    }
+
+    reanchorWorkspaceRenderCountRef.current += 1;
+
+    function positionWorkspace() {
+      const rail = commentsRailRef.current;
+
+      if (window.innerWidth <= 900 || !rail) {
+        setReanchorWorkspaceStyle((current) => {
+          const next: ReanchorWorkspaceStyle = {
+            "--reanchor-workspace-max-height": "min(58vh, 620px)",
+            bottom: 12,
+            left: 12,
+            right: 12,
+            top: "auto",
+            width: "auto"
+          };
+          return areReanchorWorkspaceStylesEqual(current, next)
+            ? current
+            : next;
+        });
+        return;
+      }
+
+      const railRect = rail.getBoundingClientRect();
+      const left = Math.min(
+        window.innerWidth - 12 - railRect.width,
+        Math.max(12, railRect.left)
+      );
+      const next: ReanchorWorkspaceStyle = {
+        "--reanchor-workspace-max-height": "calc(100vh - 40px)",
+        bottom: "auto",
+        left: Math.round(left),
+        right: "auto",
+        top: 20,
+        width: Math.round(railRect.width)
+      };
+
+      setReanchorWorkspaceStyle((current) =>
+        areReanchorWorkspaceStylesEqual(current, next) ? current : next
+      );
+    }
+
+    positionWorkspace();
+    window.addEventListener("resize", positionWorkspace);
+    window.addEventListener("scroll", positionWorkspace, true);
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      reanchorWorkspaceRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("resize", positionWorkspace);
+      window.removeEventListener("scroll", positionWorkspace, true);
+    };
+  }, [reanchorWorkspaceSessionKey]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -2487,7 +2727,7 @@ export function DocumentEditor() {
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
-    setCommentContextMenu(null);
+    setSelectionActions(null);
     setComments([]);
     setPatches([]);
     setReviewBatches([]);
@@ -2514,6 +2754,12 @@ export function DocumentEditor() {
     source: DocumentMutationSource,
     hint?: MarkdownMutationHint
   ) {
+    if (reanchorSession) {
+      return;
+    }
+
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
     const operationId = startEditPerformanceOperation({
       newMarkdownLength: nextMarkdown.length,
       oldMarkdownLength: markdown.length,
@@ -3240,9 +3486,23 @@ export function DocumentEditor() {
     ) {
       return;
     }
+    if (
+      reanchorSession &&
+      !window.confirm(
+        "Cancel re-anchor and switch documents? Your selected replacement has not been saved."
+      )
+    ) {
+      return;
+    }
+    if (reanchorSession) {
+      cancelReanchorMode();
+    }
     if (!confirmTransientDraftLoss()) {
       return;
     }
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
     const requestId = documentSwitchRequestRef.current + 1;
     documentSwitchRequestRef.current = requestId;
     setRequestedProjectDocumentId(documentId);
@@ -6144,7 +6404,8 @@ export function DocumentEditor() {
     if (!projectHandle || reanchorSession) {
       return;
     }
-    const documentId = getProjectDocumentScopeId(projectHandle);
+    const documentIdentity = getProjectDocumentIdentity(projectHandle);
+    const documentId = documentIdentity.documentId;
 
     const comment = comments.find((candidate) => candidate.id === commentId);
 
@@ -6168,7 +6429,7 @@ export function DocumentEditor() {
           ? "not_found"
           : "active");
 
-    setCommentContextMenu(null);
+    setSelectionActions(null);
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
     setMarkdownSelection({ end: 0, start: 0 });
@@ -6188,10 +6449,17 @@ export function DocumentEditor() {
       error: null,
       previousActiveCommentState: activeCommentState,
       previousStatus,
-      previewProposal: null
+      previewProposal: null,
+      previewReturnScrollY: null,
+      projectId: documentIdentity.projectId,
+      selectionDraft: null,
+      selectionHelp: "Select non-empty text inside the current document.",
+      selectionLatencyMs: null,
+      startedAt: performance.now(),
+      startedMode: mode,
+      startedScrollY: window.scrollY
     });
     setActiveCommentState({ kind: "comment", commentId });
-    setSaveFeedback(null);
   }
 
   function cancelReanchorMode() {
@@ -6199,6 +6467,7 @@ export function DocumentEditor() {
       return;
     }
 
+    const commentId = reanchorSession.commentId;
     setReanchorConfirmation(null);
     setReanchorSession(null);
     setMarkdownSelection({ end: 0, start: 0 });
@@ -6209,6 +6478,15 @@ export function DocumentEditor() {
     ) {
       setActiveCommentState(reanchorSession.previousActiveCommentState);
     }
+    restoreFocusToCommentCard(commentId);
+  }
+
+  function restoreFocusToCommentCard(commentId: string) {
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(`patchmark-comment-card-${commentId}`)
+        ?.focus({ preventScroll: true });
+    });
   }
 
   function createProposalForRange(
@@ -6218,6 +6496,7 @@ export function DocumentEditor() {
     if (
       !reanchorSession ||
       !projectHandle ||
+      reanchorSession.projectId !== activeProjectIdRef.current ||
       !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
     ) {
       return null;
@@ -6233,11 +6512,13 @@ export function DocumentEditor() {
 
     try {
       return createHumanReanchorProposal({
+        commentId: reanchorSession.commentId,
         documentId: reanchorSession.documentId,
         documentGeneration: reanchorSession.documentVersion,
         headings,
         markdown,
         previousAnchor: comment.anchor,
+        projectId: reanchorSession.projectId,
         range,
         saveGeneration: projectHandle.manifest.save_generation ?? 0,
         source
@@ -6267,7 +6548,9 @@ export function DocumentEditor() {
         ? {
             ...current,
             error: null,
-            previewProposal: proposal
+            previewProposal: proposal,
+            previewReturnScrollY:
+              current.previewReturnScrollY ?? window.scrollY
           }
         : current
     );
@@ -6296,27 +6579,33 @@ export function DocumentEditor() {
     setReanchorConfirmation(proposal);
   }
 
+  function handleReturnFromReanchorPreview() {
+    if (!reanchorSession || reanchorSession.previewReturnScrollY === null) {
+      return;
+    }
+
+    const returnScrollY = reanchorSession.previewReturnScrollY;
+    setReanchorSession({
+      ...reanchorSession,
+      previewProposal: null,
+      previewReturnScrollY: null
+    });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: returnScrollY });
+    });
+  }
+
   function handleUseSelectionForReanchor() {
     if (!reanchorSession) {
       return;
     }
 
-    const selectionDraft =
-      mode === "markdown"
-        ? createMarkdownSelectionDraft(markdown, markdownSelection)
-        : visualSelectionDraft ??
-          createVisualSelectionDraftResult({
-            container: editorDocumentRef.current,
-            markdown
-          }).draft;
-    const start = getDraftMarkdownStartOffset(selectionDraft);
-    const end = selectionDraft?.markdownEndOffset;
+    const selectionDraft = reanchorSession.selectionDraft;
+    const selectionRange = getDraftMarkdownRange(selectionDraft);
 
     if (
       !selectionDraft ||
-      typeof start !== "number" ||
-      typeof end !== "number" ||
-      end <= start
+      !selectionRange
     ) {
       setReanchorSession({
         ...reanchorSession,
@@ -6326,7 +6615,7 @@ export function DocumentEditor() {
     }
 
     const proposal = createProposalForRange(
-      { start, end },
+      selectionRange,
       mode === "visual" ? "visual" : "markdown"
     );
 
@@ -6348,6 +6637,8 @@ export function DocumentEditor() {
       !reanchorConfirmation ||
       !projectHandle ||
       isCommentBusy ||
+      reanchorSession.projectId !== activeProjectIdRef.current ||
+      reanchorConfirmation.projectId !== activeProjectIdRef.current ||
       !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current) ||
       !isDocumentScopeCurrent(
         reanchorConfirmation,
@@ -6374,6 +6665,7 @@ export function DocumentEditor() {
       comment,
       currentDocumentId: getProjectDocumentScopeId(projectHandle),
       currentDocumentGeneration: documentVersion,
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
       currentSaveGeneration: projectHandle.manifest.save_generation ?? 0,
       markdown,
       patches,
@@ -6392,6 +6684,7 @@ export function DocumentEditor() {
         kind: "info",
         message: "This comment is already anchored to that text."
       });
+      restoreFocusToCommentCard(comment.id);
       return;
     }
 
@@ -6441,9 +6734,21 @@ export function DocumentEditor() {
       setActiveCommentState({ kind: "comment", commentId: comment.id });
       setSaveFeedback({
         kind: "success",
-        message: "Comment anchor updated."
+        message: "Comment re-anchored."
       });
-    } catch {
+      restoreFocusToCommentCard(comment.id);
+    } catch (error) {
+      setReanchorSession((current) =>
+        current &&
+        current.projectId === reanchorSession.projectId &&
+        current.documentId === reanchorSession.documentId &&
+        current.commentId === reanchorSession.commentId
+          ? {
+              ...current,
+              error: `Unable to update the comment anchor. ${getProjectErrorMessage(error)} The previous anchor remains authoritative.`
+            }
+          : current
+      );
       setSaveFeedback({
         kind: "error",
         message:
@@ -6463,12 +6768,162 @@ export function DocumentEditor() {
     });
   }
 
+  function handleEditorModeChange(nextMode: EditorMode) {
+    if (nextMode === mode) {
+      return;
+    }
+
+    setMode(nextMode);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setSelectionActions(null);
+    setReanchorSession((current) =>
+      current
+        ? {
+            ...current,
+            error: null,
+            previewProposal: null,
+            selectionDraft: null,
+            selectionHelp: `Select non-empty text in ${
+              nextMode === "visual" ? "Visual Mode" : "Markdown Mode"
+            }.`,
+            selectionLatencyMs: null
+          }
+        : current
+    );
+  }
+
+  function handleMarkdownSelectionChange(
+    nextSelection: MarkdownSelection,
+    sourceElement?: HTMLTextAreaElement
+  ) {
+    const selectionStartedAt = performance.now();
+    setMarkdownSelection(nextSelection);
+
+    if (mode !== "markdown") {
+      return;
+    }
+
+    const selectionResult = createMarkdownSelectionDraftResult(
+      markdown,
+      nextSelection
+    );
+
+    if (reanchorSession) {
+      setSelectionActions(null);
+      const selectionRange = getDraftMarkdownRange(selectionResult.draft);
+      const selectionHelp = selectionRange
+        ? null
+        : selectionResult.help ??
+          "Select non-empty text inside the current Markdown document.";
+
+      setReanchorSession((current) => {
+        if (
+          !current ||
+          current.projectId !== activeProjectIdRef.current ||
+          current.documentId !== activeDocumentIdRef.current ||
+          current.documentVersion !== documentVersion
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          error: null,
+          previewProposal: null,
+          selectionDraft: selectionResult.draft,
+          selectionHelp,
+          selectionLatencyMs: Math.max(
+            0,
+            performance.now() - selectionStartedAt
+          )
+        };
+      });
+      return;
+    }
+
+    if (
+      !activeDocumentIdentity ||
+      !activeDocumentKey ||
+      !isProjectMode ||
+      isProjectRecoveryReadOnly ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null ||
+      commentAddRequest?.scope === "selected_text"
+    ) {
+      setSelectionActions(null);
+      return;
+    }
+
+    if (!selectionResult.draft) {
+      setSelectionActions(null);
+      return;
+    }
+
+    const selectionStart = getDraftMarkdownStartOffset(selectionResult.draft);
+    const targetHeading =
+      typeof selectionStart === "number"
+        ? getHeadingContainingOffset(markdown, headings, selectionStart)
+        : undefined;
+    const sourceRect = sourceElement?.getBoundingClientRect();
+    const anchorRect = sourceRect
+      ? createPointAffordanceRect(
+          Math.min(sourceRect.right - 24, sourceRect.left + sourceRect.width * 0.7),
+          Math.min(sourceRect.bottom - 24, sourceRect.top + 88)
+        )
+      : createPointAffordanceRect(
+          Math.max(16, window.innerWidth / 2),
+          Math.max(16, window.innerHeight / 3)
+        );
+    const documentFingerprint = createDocumentHash(markdown);
+    const selectionFingerprint = createSelectionActionFingerprint({
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentVersion,
+      draft: selectionResult.draft,
+      projectId: activeDocumentIdentity.projectId,
+      targetHeadingLine: targetHeading?.line ?? null
+    });
+    const current = selectionActionsRef.current;
+    const preservesOpenChooser =
+      current?.presentation === "chooser" &&
+      current.documentKey === activeDocumentKey &&
+      current.documentVersion === documentVersion &&
+      current.selectionFingerprint === selectionFingerprint;
+    const presentation: SelectionActionsPresentation = preservesOpenChooser
+      ? "chooser"
+      : "compact";
+    const position = getSelectionActionsPosition({
+      anchorRect,
+      presentation
+    });
+
+    setSelectionActions({
+      anchorRect,
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentKey: activeDocumentKey,
+      documentVersion,
+      presentation,
+      projectId: activeDocumentIdentity.projectId,
+      selectedDraft: selectionResult.draft,
+      selectionFingerprint,
+      selectionHelp: selectionResult.help,
+      selectionLatencyMs: Math.max(0, performance.now() - selectionStartedAt),
+      targetHeadingLine: targetHeading?.line ?? null,
+      trigger: preservesOpenChooser ? current.trigger : "selection",
+      x: position.x,
+      y: position.y
+    });
+  }
+
   function handleEditorMouseUp() {
     if (mode !== "visual") {
       return;
     }
 
-    syncVisualCommentSelection();
+    syncVisualCommentSelection({ clearInvalidReanchorSelection: true });
   }
 
   function handleEditorClick(event: React.MouseEvent<HTMLDivElement>) {
@@ -6512,20 +6967,32 @@ export function DocumentEditor() {
     }
 
     event.preventDefault();
-    setCommentSelectionAction(null);
 
     if (isReanchorMode) {
-      setCommentContextMenu(null);
+      setSelectionActions(null);
       return;
     }
 
-    const selectionResult =
+    const capturedSelectionResult =
       mode === "markdown"
         ? createMarkdownSelectionDraftResult(markdown, markdownSelection)
         : createVisualSelectionDraftResult({
             container: editorDocumentRef.current,
             markdown
           });
+    const selectionResult: SelectedCommentAnchorDraftResult =
+      mode === "visual" &&
+      capturedSelectionResult.draft &&
+      !isPointInsideVisualSelection({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        container: editorDocumentRef.current
+      })
+        ? {
+            draft: null,
+            help: null
+          }
+        : capturedSelectionResult;
     const selectedDraft = selectionResult.draft;
     const headingForSelection =
       typeof selectedDraft?.markdownStartOffset === "number"
@@ -6546,117 +7013,185 @@ export function DocumentEditor() {
       setVisualSelectionDraft(selectedDraft);
     }
 
-    const menuPosition = getCommentContextMenuPosition({
-      container: editorDocumentRef.current,
-      event,
-      selectionRect: selectionResult.affordanceRect ?? null
+    const anchorRect =
+      selectionResult.affordanceRect ??
+      createPointAffordanceRect(event.clientX, event.clientY);
+    const position = getSelectionActionsPosition({
+      anchorRect,
+      presentation: "chooser"
     });
+    const documentFingerprint = createDocumentHash(markdown);
+    const projectId = activeDocumentIdentity?.projectId ?? "";
+    const documentId = activeDocumentIdentity?.documentId ?? "";
+    const targetHeadingLine = headingForSelection?.line ?? null;
 
-    setCommentContextMenu({
-      defaultHeadingLine: headingForSelection?.line ?? null,
-      selectionHelp: selectionResult.help,
+    setSelectionActions({
+      anchorRect,
+      documentFingerprint,
+      documentId,
+      documentKey:
+        activeDocumentKey ?? `standalone:${fileName}:${documentVersion}`,
+      documentVersion,
+      presentation: "chooser",
+      projectId,
       selectedDraft,
-      x: menuPosition.x,
-      y: menuPosition.y
+      selectionFingerprint: createSelectionActionFingerprint({
+        documentFingerprint,
+        documentId,
+        documentVersion,
+        draft: selectedDraft,
+        projectId,
+        targetHeadingLine
+      }),
+      selectionHelp: selectionResult.help,
+      selectionLatencyMs: null,
+      targetHeadingLine,
+      trigger: "context_menu",
+      x: position.x,
+      y: position.y
     });
   }
 
-  function handleOpenCommentFromMenu(scope: CommentAnchorScope) {
-    if (!commentContextMenu) {
+  function handleOpenSelectionActions(
+    trigger: "keyboard" | "selection" = "selection"
+  ) {
+    const current = selectionActionsRef.current;
+
+    if (!current || current.presentation === "chooser") {
       return;
     }
 
-    const selectedDraft =
-      commentContextMenu.selectedDraft?.anchorSource === "visual"
-        ? commentContextMenu.selectedDraft
-        : null;
+    if (!isSelectionActionsStateCurrent(current)) {
+      rejectStaleSelectionActions();
+      return;
+    }
+
+    const position = getSelectionActionsPosition({
+      anchorRect: current.anchorRect,
+      presentation: "chooser"
+    });
+    setSelectionActions({
+      ...current,
+      presentation: "chooser",
+      trigger,
+      x: position.x,
+      y: position.y
+    });
+  }
+
+  function handleSelectionAction(actionId: SelectionActionId) {
+    const current = selectionActionsRef.current;
+
+    if (!current || !isSelectionActionsStateCurrent(current)) {
+      rejectStaleSelectionActions();
+      return;
+    }
+
+    if (actionId === "bookmark") {
+      void handleSetReadingBookmarkFromSelectionActions(current);
+      return;
+    }
+
+    const scope: CommentAnchorScope =
+      actionId === "selected_text"
+        ? "selected_text"
+        : actionId === "section"
+          ? "section"
+          : "document";
+    if (
+      (scope === "selected_text" && !current.selectedDraft) ||
+      (scope === "section" && !current.targetHeadingLine)
+    ) {
+      rejectStaleSelectionActions();
+      return;
+    }
+
     const positionTop = measurePendingCommentTop({
       scope,
-      selectedDraft: commentContextMenu.selectedDraft,
-      targetHeadingLine: commentContextMenu.defaultHeadingLine
+      selectedDraft: current.selectedDraft,
+      targetHeadingLine: current.targetHeadingLine
     });
 
     setVisualSelectionDraft(
-      selectedDraft
+      current.selectedDraft?.anchorSource === "visual"
+        ? current.selectedDraft
+        : null
     );
     setCommentAddRequest({
       nonce: Date.now(),
       positionTop,
       scope,
-      targetHeadingLine: commentContextMenu.defaultHeadingLine
+      targetHeadingLine: current.targetHeadingLine
     });
-    setCommentContextMenu(null);
+    setSelectionActions(null);
   }
 
-  function handleOpenCommentFromSelectionAction() {
+  function handleOpenWholeDocumentComment() {
     if (
-      !commentSelectionAction ||
-      commentSelectionAction.documentKey !== activeDocumentKey ||
-      commentSelectionAction.documentVersion !== documentVersion
+      !activeDocumentKey ||
+      !isProjectMode ||
+      isProjectRecoveryReadOnly ||
+      isCommentBusy ||
+      isReanchorMode
     ) {
-      setCommentSelectionAction(null);
       return;
     }
 
-    const selectedDraft = commentSelectionAction.draft;
-    const targetHeadingLine = commentSelectionAction.targetHeadingLine;
     const positionTop = measurePendingCommentTop({
-      scope: "selected_text",
-      selectedDraft,
-      targetHeadingLine
+      scope: "document",
+      selectedDraft: null,
+      targetHeadingLine: null
     });
-
-    setVisualSelectionDraft(selectedDraft);
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
     setCommentAddRequest({
       nonce: Date.now(),
       positionTop,
-      scope: "selected_text",
-      targetHeadingLine
+      scope: "document",
+      targetHeadingLine: null
     });
-    setCommentSelectionAction(null);
-    setCommentContextMenu(null);
   }
 
   function handleCommentComposerClosed(reason: "cancel" | "submit") {
     setCommentAddRequest(null);
-    setCommentSelectionAction(null);
+    setSelectionActions(null);
     setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
 
     if (reason !== "cancel") {
       return;
     }
 
-    window.requestAnimationFrame(() => {
-      editorDocumentRef.current
-        ?.querySelector<HTMLElement>('[aria-label="editable markdown"]')
-        ?.focus({ preventScroll: true });
-    });
+    restoreEditorFocus();
   }
 
-  async function handleSetReadingBookmarkFromMenu() {
+  async function handleSetReadingBookmarkFromSelectionActions(
+    actionState: SelectionActionsState
+  ) {
     if (
       !projectHandle ||
       !activeDocumentIdentity ||
       !activeDocumentKey ||
-      !commentContextMenu ||
       isReadingBookmarkBusy ||
-      isProjectRecoveryReadOnly
+      isProjectRecoveryReadOnly ||
+      !isSelectionActionsStateCurrent(actionState)
     ) {
       return;
     }
 
     const operationDocument = activeDocumentIdentity;
     const operationDocumentKey = activeDocumentKey;
-    const scope: CommentAnchorScope = commentContextMenu.selectedDraft
+    const scope: CommentAnchorScope = actionState.selectedDraft
       ? "selected_text"
       : "section";
 
-    if (scope === "section" && !commentContextMenu.defaultHeadingLine) {
+    if (scope === "section" && !actionState.targetHeadingLine) {
       setSaveFeedback({
         kind: "info",
         message: "Select text or open the menu inside a section to set a bookmark."
       });
-      setCommentContextMenu(null);
+      setSelectionActions(null);
       return;
     }
 
@@ -6664,11 +7199,11 @@ export function DocumentEditor() {
       headings,
       markdown,
       selection: markdownSelection,
-      selectedDraft: commentContextMenu.selectedDraft,
+      selectedDraft: actionState.selectedDraft,
       values: {
         anchorScope: scope,
         comment: "",
-        targetHeadingLine: commentContextMenu.defaultHeadingLine,
+        targetHeadingLine: actionState.targetHeadingLine,
         type: "note"
       }
     });
@@ -6677,7 +7212,7 @@ export function DocumentEditor() {
       return;
     }
 
-    setCommentContextMenu(null);
+    setSelectionActions(null);
     setReadingBookmarkBusyDocumentKey(operationDocumentKey);
 
     try {
@@ -6869,36 +7404,120 @@ export function DocumentEditor() {
     }
   }
 
-  function getCommentContextMenuPosition({
-    container,
-    event,
-    selectionRect
+  function getSelectionActionsPosition({
+    anchorRect,
+    presentation
   }: {
-    container: HTMLElement | null;
-    event: React.MouseEvent<HTMLDivElement>;
-    selectionRect: CommentAffordanceRect | null;
+    anchorRect: CommentAffordanceRect;
+    presentation: SelectionActionsPresentation;
   }): { x: number; y: number } {
-    const containerRect = container
-      ? toCommentAffordanceRect(container.getBoundingClientRect())
+    const menuSize =
+      presentation === "compact"
+        ? COMMENT_SELECTION_ACTION_SIZE
+        : {
+            height: Math.min(440, Math.max(240, window.innerHeight - 16)),
+            width:
+              window.innerWidth <= 520
+                ? Math.max(280, window.innerWidth - 16)
+                : Math.min(360, Math.max(280, window.innerWidth - 16))
+          };
+    const containerRect = editorDocumentRef.current
+      ? toCommentAffordanceRect(
+          editorDocumentRef.current.getBoundingClientRect()
+        )
       : null;
     const bounds = createCommentAffordanceBounds({
-      containerRect,
-      menuSize: COMMENT_AFFORDANCE_MENU_SIZE,
+      containerRect:
+        containerRect && containerRect.width >= menuSize.width
+          ? containerRect
+          : null,
+      menuSize,
       viewportHeight: window.innerHeight,
       viewportWidth: window.innerWidth
     });
-    const anchorRect =
-      selectionRect ?? createPointAffordanceRect(event.clientX, event.clientY);
+    const toolbarRect = editorDocumentRef.current
+      ?.querySelector<HTMLElement>(".mdxeditor-toolbar")
+      ?.getBoundingClientRect();
+    const safeBounds =
+      toolbarRect && toolbarRect.bottom > 0 && toolbarRect.top <= 0
+        ? {
+            ...bounds,
+            top: Math.min(
+              bounds.bottom - menuSize.height,
+              Math.max(bounds.top, toolbarRect.bottom + 8)
+            )
+          }
+        : bounds;
     const position = placeCommentAffordance({
       anchorRect,
-      bounds,
-      menuSize: COMMENT_AFFORDANCE_MENU_SIZE
+      bounds: safeBounds,
+      menuSize
     });
 
     return {
       x: Math.round(position.x),
       y: Math.round(position.y)
     };
+  }
+
+  function isSelectionActionsStateCurrent(
+    actionState: SelectionActionsState
+  ): boolean {
+    if (
+      !activeDocumentIdentity ||
+      actionState.projectId !== activeDocumentIdentity.projectId ||
+      actionState.documentId !== activeDocumentIdentity.documentId ||
+      actionState.documentKey !== activeDocumentKey ||
+      actionState.documentVersion !== documentVersion
+    ) {
+      return false;
+    }
+
+    const documentFingerprint = createDocumentHash(markdown);
+
+    return (
+      actionState.documentFingerprint === documentFingerprint &&
+      actionState.selectionFingerprint ===
+        createSelectionActionFingerprint({
+          documentFingerprint,
+          documentId: actionState.documentId,
+          documentVersion: actionState.documentVersion,
+          draft: actionState.selectedDraft,
+          projectId: actionState.projectId,
+          targetHeadingLine: actionState.targetHeadingLine
+        })
+    );
+  }
+
+  function rejectStaleSelectionActions() {
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setSaveFeedback({
+      kind: "info",
+      message:
+        "That selection is no longer current. Select document text again."
+    });
+    restoreEditorFocus();
+  }
+
+  function handleCancelSelectionActions() {
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    window.getSelection()?.removeAllRanges();
+    restoreEditorFocus();
+  }
+
+  function restoreEditorFocus() {
+    window.requestAnimationFrame(() => {
+      const editorSelector =
+        mode === "visual"
+          ? '[aria-label="editable markdown"]'
+          : '[aria-label="Markdown Mode"]';
+      editorDocumentRef.current
+        ?.querySelector<HTMLElement>(editorSelector)
+        ?.focus({ preventScroll: true });
+    });
   }
 
   function measurePendingCommentTop({
@@ -7274,7 +7893,7 @@ export function DocumentEditor() {
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
-    setCommentContextMenu(null);
+    setSelectionActions(null);
     setReanchorSession(null);
     setReanchorConfirmation(null);
     setCommentPositions({});
@@ -7612,14 +8231,14 @@ export function DocumentEditor() {
                 <button
                   type="button"
                   aria-pressed={mode === "visual"}
-                  onClick={() => setMode("visual")}
+                  onClick={() => handleEditorModeChange("visual")}
                 >
                   Visual Mode
                 </button>
                 <button
                   type="button"
                   aria-pressed={mode === "markdown"}
-                  onClick={() => setMode("markdown")}
+                  onClick={() => handleEditorModeChange("markdown")}
                 >
                   Markdown Mode
                 </button>
@@ -7683,92 +8302,6 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
-        {reanchorSession ? (
-          <section className="reanchor-mode-panel" aria-label="Re-anchor comment">
-            <div className="reanchor-mode-header">
-              <div>
-                <span>Re-anchoring comment</span>
-                <strong>{reanchorSession.commentId}</strong>
-                <p>
-                  Choose a suggested location or select new text in the document.
-                  Document editing is temporarily read-only.
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={cancelReanchorMode}
-              >
-                Cancel
-              </button>
-            </div>
-
-            {reanchorSession.candidates.length > 0 ? (
-              <div className="reanchor-candidate-list">
-                {reanchorSession.candidates.map((candidate, index) => (
-                  <article
-                    className="reanchor-candidate-card"
-                    data-previewed={
-                      reanchorSession.previewProposal?.id === candidate.id
-                        ? "true"
-                        : undefined
-                    }
-                    key={candidate.id}
-                  >
-                    <span>Possible location {index + 1}</span>
-                    <strong>
-                      {candidate.containingHeading ?? "Document beginning"}
-                    </strong>
-                    <small>{candidate.structureLabel}</small>
-                    <p>“…{candidate.contextExcerpt.slice(0, 220)}…”</p>
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => handleShowReanchorCandidate(candidate)}
-                      >
-                        Show in document
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleUseReanchorCandidate(candidate)}
-                      >
-                        Use this location
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="reanchor-empty-candidates">
-                Patchmark did not find a safe suggested location. Select the
-                relevant current text manually.
-              </p>
-            )}
-
-            <div className="reanchor-manual-selection">
-              <div>
-                <strong>Select new text manually</strong>
-                <span>
-                  Current mode: {mode === "visual" ? "Visual Mode" : "Markdown Mode"}
-                </span>
-              </div>
-              <button
-                type="button"
-                disabled={!selectedCommentDraft || isCommentBusy}
-                onClick={handleUseSelectionForReanchor}
-              >
-                Use selection as new anchor
-              </button>
-            </div>
-
-            {reanchorSession.error ? (
-              <p className="comments-error" role="alert">
-                {reanchorSession.error}
-              </p>
-            ) : null}
-          </section>
-        ) : null}
-
         {!fileName && recentProject ? (
           <ProjectResumeBanner
             busy={isResumingProject || isSaving}
@@ -7815,10 +8348,10 @@ export function DocumentEditor() {
                 }
                 readOnly={
                   isProjectRecoveryReadOnly ||
-                  isReanchorMode ||
                   requestedProjectDocumentId !== null
                 }
                 resetKey={documentVersion}
+                selectionOnly={isReanchorMode}
               />
             ) : (
               <MarkdownSourceEditor
@@ -7826,7 +8359,7 @@ export function DocumentEditor() {
                 onMarkdownChange={(nextMarkdown, hint) =>
                   handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
-                onSelectionChange={setMarkdownSelection}
+                onSelectionChange={handleMarkdownSelectionChange}
                 readOnly={
                   isProjectRecoveryReadOnly ||
                   isReanchorMode ||
@@ -7899,7 +8432,190 @@ export function DocumentEditor() {
         </div>
       </div>
 
-      <aside className="comments-rail" aria-label="Document comments">
+      <aside
+        ref={commentsRailRef}
+        className="comments-rail"
+        aria-label="Document comments"
+      >
+        {reanchorSession ? (
+          <section
+            ref={reanchorWorkspaceRef}
+            aria-label="Re-anchor comment"
+            aria-describedby="reanchor-workspace-instructions"
+            className="reanchor-mode-panel reanchor-workspace"
+            data-comment-id={reanchorSession.commentId}
+            data-document-id={reanchorSession.documentId}
+            data-editor-generation={reanchorSession.documentVersion}
+            data-mode={mode}
+            data-project-id={reanchorSession.projectId}
+            data-render-count={reanchorWorkspaceRenderCountRef.current + 1}
+            data-selection-latency-ms={
+              reanchorSession.selectionLatencyMs?.toFixed(2)
+            }
+            data-start-scroll-y={Math.round(reanchorSession.startedScrollY)}
+            data-start-mode={reanchorSession.startedMode}
+            data-testid="reanchor-workspace"
+            style={
+              reanchorWorkspaceStyle ?? {
+                visibility: "hidden"
+              }
+            }
+            tabIndex={-1}
+          >
+            <div className="reanchor-mode-header">
+              <div>
+                <span>Re-anchor comment</span>
+                <strong>{reanchorSession.commentId}</strong>
+                <p id="reanchor-workspace-instructions">
+                  Select the current text this comment should reference.
+                  Document editing is temporarily read-only, but text remains
+                  selectable.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label={`Cancel re-anchor for ${reanchorSession.commentId}`}
+                disabled={isCommentBusy}
+                onClick={cancelReanchorMode}
+              >
+                Cancel
+              </button>
+            </div>
+
+            <div className="reanchor-original-anchor">
+              <span>Original anchor</span>
+              <blockquote>
+                {reanchorOriginalAnchor?.selected_text ??
+                  "The historical selected text is unavailable."}
+              </blockquote>
+              <small>
+                {reanchorOriginalAnchor?.containing_heading ??
+                  "No containing section"}
+              </small>
+            </div>
+
+            {reanchorSession.candidates.length > 0 ? (
+              <div className="reanchor-candidate-list">
+                <strong>Suggested locations</strong>
+                {reanchorSession.candidates.map((candidate, index) => (
+                  <article
+                    className="reanchor-candidate-card"
+                    data-previewed={
+                      reanchorSession.previewProposal?.id === candidate.id
+                        ? "true"
+                        : undefined
+                    }
+                    key={candidate.id}
+                  >
+                    <span>Candidate {index + 1}</span>
+                    <strong>
+                      {candidate.containingHeading ?? "Document beginning"}
+                    </strong>
+                    <small>
+                      {candidate.structureLabel} · {candidate.confidence} confidence
+                    </small>
+                    <p>{candidate.reason}</p>
+                    <blockquote>“…{candidate.contextExcerpt.slice(0, 220)}…”</blockquote>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => handleShowReanchorCandidate(candidate)}
+                      >
+                        Preview candidate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUseReanchorCandidate(candidate)}
+                      >
+                        Review this location
+                      </button>
+                    </div>
+                  </article>
+                ))}
+                {reanchorSession.previewReturnScrollY !== null ? (
+                  <button
+                    type="button"
+                    onClick={handleReturnFromReanchorPreview}
+                  >
+                    Return to previous position
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <p className="reanchor-empty-candidates">
+                No safe automatic location was found. Select replacement text
+                manually in the document.
+              </p>
+            )}
+
+            <div className="reanchor-manual-selection">
+              <div>
+                <strong>Current selection</strong>
+                <span>
+                  {mode === "visual" ? "Visual Mode" : "Markdown Mode"}
+                </span>
+              </div>
+              <div
+                className="reanchor-selection-status"
+                aria-live="polite"
+                data-selection-context={
+                  reanchorSession.selectionDraft?.anchorContext.kind
+                }
+                data-selection-text={
+                  reanchorSession.selectionDraft?.selectedText
+                }
+                role="status"
+              >
+                {reanchorSession.selectionDraft && reanchorSelectionRange ? (
+                  <>
+                    <blockquote>
+                      {reanchorSession.selectionDraft.selectedText.slice(0, 320)}
+                      {reanchorSession.selectionDraft.selectedText.length > 320
+                        ? "…"
+                        : ""}
+                    </blockquote>
+                    <span>
+                      {reanchorSession.selectionDraft.selectedText.length} characters
+                      {" · "}
+                      {reanchorSession.selectionDraft.anchorContext.kind.replaceAll(
+                        "_",
+                        " "
+                      )}
+                    </span>
+                  </>
+                ) : (
+                  <p>{reanchorSession.selectionHelp}</p>
+                )}
+              </div>
+              <button
+                ref={reanchorWorkspacePrimaryRef}
+                type="button"
+                disabled={!reanchorSelectionRange || isCommentBusy}
+                onClick={handleUseSelectionForReanchor}
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                Use selection as new anchor
+              </button>
+            </div>
+
+            <p className="reanchor-scope-note">
+              Re-anchoring changes where this comment points. It does not resolve
+              the comment or rewrite, accept, or rebase linked patches.
+            </p>
+            {reanchorHasLinkedStalePatch ? (
+              <p className="reanchor-stale-patch-note">
+                Linked patch proposals remain unchanged and may still require an
+                updated ChatGPT response.
+              </p>
+            ) : null}
+
+            {reanchorSession.error ? (
+              <p className="comments-error" role="alert">
+                {reanchorSession.error}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
         <CommentsPanel
           key={`comments:${activeDocumentId ?? "none"}`}
           addRequest={commentAddRequest}
@@ -7911,6 +8627,12 @@ export function DocumentEditor() {
           error={commentsError}
           headings={headings}
           isBusy={isCommentBusy || isReanchorMode}
+          isDocumentCommentAvailable={
+            isProjectMode &&
+            !isProjectRecoveryReadOnly &&
+            !isReanchorMode &&
+            requestedProjectDocumentId === null
+          }
           isProjectMode={isProjectMode}
           onAddComment={handleAddComment}
           onCloseAddComment={handleCommentComposerClosed}
@@ -7919,6 +8641,7 @@ export function DocumentEditor() {
           onEditReply={handleEditCommentReply}
           onFindComment={handleFindComment}
           onMarkCommentForExport={handleMarkCommentForExport}
+          onOpenDocumentComment={handleOpenWholeDocumentComment}
           onReopenComment={handleReopenComment}
           onReplyComment={handleReplyToComment}
           onReviewCommentPatches={handleReviewCommentPatches}
@@ -7937,96 +8660,27 @@ export function DocumentEditor() {
         />
       </aside>
 
-      {commentSelectionAction &&
-      commentSelectionAction.documentKey === activeDocumentKey &&
-      commentSelectionAction.documentVersion === documentVersion ? (
-        <button
-          ref={commentSelectionActionButtonRef}
-          type="button"
-          aria-keyshortcuts="Alt+Shift+M"
-          aria-label="Add comment to selected text"
-          className="comment-selection-action"
-          data-testid="comment-selection-action"
-          onClick={handleOpenCommentFromSelectionAction}
-          onMouseDown={(event) => event.preventDefault()}
-          style={{
-            left: commentSelectionAction.x,
-            top: commentSelectionAction.y
+      {shouldRenderSelectionActions && selectionActions ? (
+        <SelectionActionsChooser
+          compactButtonRef={commentSelectionActionButtonRef}
+          contextLabel={selectionActionsContextLabel}
+          excerpt={selectionActions.selectedDraft?.selectedText ?? null}
+          onActivate={handleSelectionAction}
+          onCancel={handleCancelSelectionActions}
+          onOpen={() => {
+            const trigger =
+              pendingSelectionActionsTriggerRef.current ?? "selection";
+            pendingSelectionActionsTriggerRef.current = null;
+            handleOpenSelectionActions(trigger);
           }}
-          title="Add comment to selected text (Alt+Shift+M)"
-        >
-          + Add comment
-        </button>
-      ) : null}
-
-      {commentContextMenu ? (
-        <div
-          className="comment-context-menu"
-          style={{ left: commentContextMenu.x, top: commentContextMenu.y }}
-          role="menu"
-          aria-label="Patchmark document menu"
-          onClick={(event) => event.stopPropagation()}
-        >
-          {!isProjectMode ? (
-            <span className="comment-context-menu-note">
-              Comments require Project Folder Mode.
-            </span>
-          ) : null}
-          {commentContextMenu.selectedDraft || commentContextMenu.selectionHelp ? (
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!isProjectMode || !commentContextMenu.selectedDraft}
-              onClick={() => handleOpenCommentFromMenu("selected_text")}
-            >
-              Add Comment to Selection
-            </button>
-          ) : null}
-          {isProjectMode && commentContextMenu.selectionHelp ? (
-            <span className="comment-context-menu-note">
-              {SHORT_SELECTION_HELP}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!isProjectMode || !commentContextMenu.defaultHeadingLine}
-            onClick={() => handleOpenCommentFromMenu("section")}
-          >
-            Add Comment to Section
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!isProjectMode}
-            onClick={() => handleOpenCommentFromMenu("document")}
-          >
-            Add Comment to Document
-          </button>
-          {isProjectMode && !commentContextMenu.defaultHeadingLine ? (
-            <span className="comment-context-menu-note">
-              No section detected here.
-            </span>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            disabled={
-              !isProjectMode ||
-              isReadingBookmarkBusy ||
-              (!commentContextMenu.selectedDraft &&
-                !commentContextMenu.defaultHeadingLine)
-            }
-            onClick={() => void handleSetReadingBookmarkFromMenu()}
-          >
-            Set reading bookmark
-          </button>
-          {!isProjectMode ? (
-            <span className="comment-context-menu-note">
-              Reading bookmarks require Project Folder Mode.
-            </span>
-          ) : null}
-        </div>
+          options={selectionActionOptions}
+          presentation={selectionActions.presentation}
+          sectionLabel={selectionActionsSectionLabel}
+          selectionLatencyMs={selectionActions.selectionLatencyMs}
+          trigger={selectionActions.trigger}
+          x={selectionActions.x}
+          y={selectionActions.y}
+        />
       ) : null}
 
       {reanchorSession && reanchorConfirmation ? (
@@ -8034,6 +8688,7 @@ export function DocumentEditor() {
           <section
             className="comment-export-dialog reanchor-confirmation-dialog"
             aria-label="Confirm comment re-anchor"
+            data-testid="reanchor-confirmation"
           >
             <header className="snapshot-dialog-header">
               <div>
@@ -8049,7 +8704,7 @@ export function DocumentEditor() {
                 disabled={isCommentBusy}
                 onClick={() => setReanchorConfirmation(null)}
               >
-                Cancel
+                Choose different text
               </button>
             </header>
             <div className="reanchor-confirmation-body">
@@ -8080,6 +8735,17 @@ export function DocumentEditor() {
                 <p>{reanchorConfirmation.contextExcerpt}</p>
               </section>
             </div>
+            {reanchorHasLinkedStalePatch ? (
+              <p className="reanchor-stale-patch-note">
+                This changes the comment location only. Linked patch proposals
+                remain unchanged and may still require an updated ChatGPT response.
+              </p>
+            ) : null}
+            {reanchorSession.error ? (
+              <p className="comments-error" role="alert">
+                {reanchorSession.error}
+              </p>
+            ) : null}
             <div className="comment-export-actions reanchor-confirmation-actions">
               <button
                 className="document-action-primary"
@@ -8092,9 +8758,9 @@ export function DocumentEditor() {
               <button
                 type="button"
                 disabled={isCommentBusy}
-                onClick={() => setReanchorConfirmation(null)}
+                onClick={cancelReanchorMode}
               >
-                Cancel
+                Cancel re-anchor
               </button>
             </div>
           </section>
@@ -10669,6 +11335,110 @@ function getDraftMarkdownStartOffset(
 ): number | undefined {
   return (
     draft?.markdownStartOffset ?? draft?.anchorContext.markdown_start_offset
+  );
+}
+
+function getDraftMarkdownRange(
+  draft: SelectedCommentAnchorDraft | null
+): { end: number; start: number } | null {
+  const start = getDraftMarkdownStartOffset(draft);
+  const end = draft?.markdownEndOffset;
+
+  return typeof start === "number" &&
+    typeof end === "number" &&
+    end > start
+    ? { end, start }
+    : null;
+}
+
+function areSelectedCommentDraftsEqual(
+  first: SelectedCommentAnchorDraft | null,
+  second: SelectedCommentAnchorDraft | null
+): boolean {
+  return (
+    first?.anchorSource === second?.anchorSource &&
+    first?.selectedText === second?.selectedText &&
+    first?.markdownStartOffset === second?.markdownStartOffset &&
+    first?.markdownEndOffset === second?.markdownEndOffset &&
+    first?.anchorContext.kind === second?.anchorContext.kind
+  );
+}
+
+function createSelectionActionFingerprint({
+  documentFingerprint,
+  documentId,
+  documentVersion,
+  draft,
+  projectId,
+  targetHeadingLine
+}: {
+  documentFingerprint: string;
+  documentId: string;
+  documentVersion: number;
+  draft: SelectedCommentAnchorDraft | null;
+  projectId: string;
+  targetHeadingLine: number | null;
+}): string {
+  return createDocumentHash(
+    JSON.stringify({
+      anchorContext: draft?.anchorContext ?? null,
+      anchorSource: draft?.anchorSource ?? null,
+      documentFingerprint,
+      documentId,
+      documentVersion,
+      markdownEndOffset: draft?.markdownEndOffset ?? null,
+      markdownStartOffset: draft?.markdownStartOffset ?? null,
+      projectId,
+      selectedText: draft?.selectedText ?? null,
+      targetHeadingLine
+    })
+  );
+}
+
+function getSelectionActionsContextLabel(
+  draft: SelectedCommentAnchorDraft
+): string {
+  if (draft.anchorContext.kind === "table_cell") {
+    return "Surrounding table cell";
+  }
+
+  if (DOCUMENT_MARKDOWN_LINK_PATTERN.test(draft.selectedText)) {
+    return "Linked text";
+  }
+
+  if (/\n\s*\n/.test(draft.selectedText)) {
+    return "Supported multi-block range";
+  }
+
+  switch (draft.anchorContext.kind) {
+    case "heading":
+      return "Heading";
+    case "list_item":
+      return "List item";
+    case "blockquote":
+      return "Block quote";
+    case "sentence":
+      return "Sentence";
+    case "paragraph":
+      return "Paragraph";
+    default:
+      return "Document text";
+  }
+}
+
+function areReanchorWorkspaceStylesEqual(
+  first: ReanchorWorkspaceStyle | null,
+  second: ReanchorWorkspaceStyle
+): boolean {
+  return Boolean(
+    first &&
+      first.left === second.left &&
+      first.right === second.right &&
+      first.top === second.top &&
+      first.bottom === second.bottom &&
+      first.width === second.width &&
+      first["--reanchor-workspace-max-height"] ===
+        second["--reanchor-workspace-max-height"]
   );
 }
 
@@ -16964,6 +17734,39 @@ function getBrowserSelectionSnapshotWithin(
     selectedStartInBlock: selectedRangeInBlock?.start,
     selectedText
   };
+}
+
+function isPointInsideVisualSelection({
+  clientX,
+  clientY,
+  container
+}: {
+  clientX: number;
+  clientY: number;
+  container: HTMLElement | null;
+}): boolean {
+  const selection = window.getSelection();
+
+  if (
+    !container ||
+    !selection ||
+    selection.isCollapsed ||
+    selection.rangeCount === 0 ||
+    !selection.anchorNode ||
+    !selection.focusNode ||
+    !container.contains(selection.anchorNode) ||
+    !container.contains(selection.focusNode)
+  ) {
+    return false;
+  }
+
+  return Array.from(selection.getRangeAt(0).getClientRects()).some(
+    (rect) =>
+      clientX >= rect.left - 2 &&
+      clientX <= rect.right + 2 &&
+      clientY >= rect.top - 2 &&
+      clientY <= rect.bottom + 2
+  );
 }
 
 function getBrowserSelectionAffordanceRect({

@@ -31,6 +31,8 @@ import {
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
 const screenshotPath = process.env.PATCHMARK_COMMENT_COMPOSER_SCREENSHOT;
+const preambleTarget =
+  "Preamble selection has no deterministic containing section.";
 const paragraphTarget =
   "Paragraph selection remains available without using a context menu.";
 const tableTarget =
@@ -40,6 +42,8 @@ const rightEdgeTarget = "Right edge selection target.";
 const keyboardTarget =
   "Keyboard-created selections expose the same anchored comment action.";
 const linkLabel = "Evidence link";
+const multiBlockStart = "Multi-block anchor first paragraph.";
+const multiBlockEnd = "Multi-block anchor second paragraph.";
 const secondDocumentTarget =
   "Second-document selection must never reuse the first document draft.";
 
@@ -110,6 +114,13 @@ async function run() {
     await waitForVisualEditor(client);
 
     const initialFingerprint = fingerprintProject(fixtureDir);
+    await evaluate(client, {
+      expression: `(() => {
+        window.__patchmarkSelectionActionsEditorNode =
+          document.querySelector("[aria-label='editable markdown']");
+        return Boolean(window.__patchmarkSelectionActionsEditorNode);
+      })()`
+    });
 
     await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
@@ -120,8 +131,102 @@ async function run() {
       paragraphTarget
     );
     assertActionInViewport(paragraphAction);
-    await openSelectionComposer(client);
+    const chooserOpenStartedAt = Date.now();
+    await openSelectionChooser(client);
+    const paragraphChooser = await waitForChooser(
+      client,
+      paragraphTarget,
+      "selection"
+    );
+    const chooserOpenLatencyMs = Date.now() - chooserOpenStartedAt;
+    assertChooserInViewport(paragraphChooser);
+    assertCompleteChooser(paragraphChooser);
+    assert.match(paragraphChooser.text, /Action Plan/);
+    assert.ok(paragraphChooser.selectionLatencyMs < 1000);
+    assert.ok(chooserOpenLatencyMs < 1000);
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector("[aria-label='editable markdown']") === window.__patchmarkSelectionActionsEditorNode`
+      }),
+      true,
+      "Opening the chooser must not remount the editor."
+    );
+    await cancelChooser(client);
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      initialFingerprint,
+      "Opening and cancelling the shared chooser must not write project files."
+    );
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    const rightClickChooser = await openRightClickChooser(client);
+    assertChooserInViewport(rightClickChooser);
+    assertCompleteChooser(rightClickChooser);
+    assert.equal(rightClickChooser.text, paragraphChooser.text);
+    await cancelChooser(client);
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      initialFingerprint,
+      "Right-click chooser cancellation must not write project files."
+    );
+
+    await selectVisualText(client, preambleTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, preambleTarget);
+    await openSelectionChooser(client);
+    const noSectionChooser = await waitForChooser(client, preambleTarget);
+    assertChooserInViewport(noSectionChooser);
+    assert.equal(noSectionChooser.actionIds.includes("section"), false);
+    assert.equal(noSectionChooser.unavailableIds.includes("section"), true);
+    assert.equal(noSectionChooser.actionIds.includes("selected_text"), true);
+    assert.equal(noSectionChooser.actionIds.includes("document"), true);
+    assert.match(noSectionChooser.text, /No containing section/);
+    await cancelChooser(client);
+
+    await selectVisualText(client, linkLabel, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, linkLabel);
+    await openSelectionChooser(client);
+    const linkChooser = await waitForChooser(client, linkLabel);
+    assertCompleteChooser(linkChooser);
+    assert.match(linkChooser.text, /Linked text/);
+    await cancelChooser(client);
+
+    const multiBlockSelectedText = await selectVisualRange(
+      client,
+      multiBlockStart,
+      multiBlockEnd
+    );
+    const multiBlockAction = await waitForSelectionAction(
+      client,
+      multiBlockSelectedText
+    );
+    assertActionInViewport(multiBlockAction);
+    await openSelectionChooser(client);
+    const multiBlockChooser = await waitForChooser(client, multiBlockStart);
+    assertCompleteChooser(multiBlockChooser);
+    assert.match(multiBlockChooser.text, /Supported multi-block range/);
+    await cancelChooser(client);
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    const composerOpenStartedAt = Date.now();
+    await chooseSelectionAction(client, "selected_text");
     const paragraphComposer = await waitForComposer(client, paragraphTarget);
+    const composerOpenLatencyMs = Date.now() - composerOpenStartedAt;
+    assert.ok(composerOpenLatencyMs < 1000);
     assertComposerInViewport(paragraphComposer);
     await cancelComposer(client);
     assert.deepEqual(
@@ -138,7 +243,17 @@ async function run() {
     assert.ok(tableAction.scrollY > 2000, "Table selection should require long scrolling.");
     assert.equal(tableAction.cellTag, "TD");
     assertActionInViewport(tableAction);
-    await openSelectionComposer(client);
+    await openSelectionChooser(client);
+    const tableChooser = await waitForChooser(
+      client,
+      tableTarget,
+      "selection"
+    );
+    assertChooserInViewport(tableChooser);
+    assertCompleteChooser(tableChooser);
+    assert.match(tableChooser.text, /Surrounding table cell/);
+    assert.match(tableChooser.text, /10\. Growth Path and Scenarios/);
+    await chooseSelectionAction(client, "selected_text");
     const tableComposer = await waitForComposer(client, tableTarget);
     assertComposerInViewport(tableComposer);
     assert.match(tableComposer.preview, /surrounding table cell/i);
@@ -161,8 +276,31 @@ async function run() {
       });
       const action = await waitForSelectionAction(client, edgeScenario.text);
       assertActionInViewport(action);
-      await dismissSelectionAction(client);
+      await openSelectionChooser(client);
+      const edgeChooser = await waitForChooser(client, edgeScenario.text);
+      assertChooserInViewport(edgeChooser);
+      await cancelChooser(client);
     }
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    await selectVisualText(client, tableTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, tableTarget);
+    assert.equal(
+      await evaluate(client, {
+        expression: `Boolean(document.querySelector("[data-testid='selection-actions-chooser']"))`
+      }),
+      false,
+      "Changing the captured selection must close the old chooser."
+    );
+    await dismissSelectionAction(client);
 
     await selectVisualText(client, keyboardTarget, {
       dispatchMouseUp: false,
@@ -171,6 +309,14 @@ async function run() {
     const keyboardAction = await waitForSelectionAction(client, keyboardTarget);
     assertActionInViewport(keyboardAction);
     await pressShortcut(client);
+    const keyboardChooser = await waitForChooser(
+      client,
+      keyboardTarget,
+      "keyboard"
+    );
+    assertChooserInViewport(keyboardChooser);
+    assertCompleteChooser(keyboardChooser);
+    await chooseSelectionAction(client, "selected_text");
     const keyboardComposer = await waitForComposer(client, keyboardTarget);
     assertComposerInViewport(keyboardComposer);
     await pressEscape(client);
@@ -180,6 +326,54 @@ async function run() {
       initialFingerprint,
       "Keyboard cancellation must not write project files."
     );
+
+    await clickButtonByText(client, "Markdown Mode");
+    await selectMarkdownText(client, paragraphTarget);
+    const markdownAction = await waitForMarkdownSelectionAction(client);
+    assertActionInViewport(markdownAction);
+    await openSelectionChooser(client);
+    const markdownChooser = await waitForChooser(client, paragraphTarget);
+    assertChooserInViewport(markdownChooser);
+    assertCompleteChooser(markdownChooser);
+    assert.match(markdownChooser.text, /Action Plan/);
+    await cancelChooser(client);
+    await clickButtonByText(client, "Visual Mode");
+    await waitForVisualEditor(client);
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      initialFingerprint,
+      "Markdown chooser cancellation must not write project files."
+    );
+
+    for (const scopeScenario of [
+      {
+        actionId: "section",
+        preview: "Commenting on whole section"
+      },
+      {
+        actionId: "document",
+        preview: "Commenting on whole document"
+      }
+    ]) {
+      await selectVisualText(client, paragraphTarget, {
+        dispatchMouseUp: true,
+        scrollBlock: "center"
+      });
+      await waitForSelectionAction(client, paragraphTarget);
+      await openSelectionChooser(client);
+      await chooseSelectionAction(client, scopeScenario.actionId);
+      const scopedComposer = await waitForComposer(
+        client,
+        scopeScenario.preview
+      );
+      assertComposerInViewport(scopedComposer);
+      await cancelComposer(client);
+      assert.deepEqual(
+        fingerprintProject(fixtureDir),
+        initialFingerprint,
+        `Cancelling the ${scopeScenario.actionId} composer must not write project files.`
+      );
+    }
 
     await openWholeDocumentComposer(client);
     const wholeDocumentComposer = await waitForComposer(
@@ -194,14 +388,60 @@ async function run() {
       "Cancelling a whole-document comment must not write project files."
     );
 
+    const noSelectionChooser = await openChooserWithoutSelection(client);
+    assertChooserInViewport(noSelectionChooser);
+    assert.equal(noSelectionChooser.actionIds.includes("selected_text"), false);
+    assert.equal(
+      noSelectionChooser.unavailableIds.includes("selected_text"),
+      true
+    );
+    assert.equal(noSelectionChooser.actionIds.includes("document"), true);
+    assert.doesNotMatch(noSelectionChooser.text, new RegExp(paragraphTarget));
+    await cancelChooser(client);
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      initialFingerprint,
+      "Right-clicking without a selection must not use or write a stale range."
+    );
+
+    await client.call("Emulation.setDeviceMetricsOverride", {
+      deviceScaleFactor: 1,
+      height: 760,
+      mobile: false,
+      width: 430
+    });
     await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
       scrollBlock: "center"
     });
     await waitForSelectionAction(client, paragraphTarget);
-    await dismissSelectionAction(client);
+    await openSelectionChooser(client);
+    const narrowChooser = await waitForChooser(client, paragraphTarget);
+    assertChooserInViewport(narrowChooser);
+    assertCompleteChooser(narrowChooser);
+    await cancelChooser(client);
+    await client.call("Emulation.setDeviceMetricsOverride", {
+      deviceScaleFactor: 1,
+      height: 820,
+      mobile: false,
+      width: 1500
+    });
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
     await selectDocument(client, "Notes");
     await waitForActiveDocument(client, "Notes");
+    assert.equal(
+      await evaluate(client, {
+        expression: `Boolean(document.querySelector("[data-testid='selection-actions-chooser']"))`
+      }),
+      false,
+      "Switching documents must close the owning document chooser."
+    );
     await selectVisualText(client, secondDocumentTarget, {
       dispatchMouseUp: true,
       scrollBlock: "center"
@@ -214,6 +454,84 @@ async function run() {
     await dismissSelectionAction(client);
     await selectDocument(client, "Action Plan");
     await waitForActiveDocument(client, "Action Plan");
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    await chooseSelectionAction(client, "section");
+    const sectionComposer = await waitForComposer(
+      client,
+      "Commenting on whole section"
+    );
+    assert.doesNotMatch(
+      sectionComposer.preview,
+      /Commenting on selected text/
+    );
+    await fillComposer(client, "Fixture section comment.");
+    await clickComposerButton(client, "Save Comment");
+    await waitForComposerMissing(client, false);
+    const sectionComment = await waitForPersistedComment(
+      fixtureDir,
+      "doc_action",
+      { commentText: "Fixture section comment." }
+    );
+    assert.equal(sectionComment.anchor.kind, "section");
+    assert.equal(sectionComment.anchor.heading, "Action Plan");
+    assert.equal("selected_text" in sectionComment.anchor, false);
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    await chooseSelectionAction(client, "document");
+    const documentComposer = await waitForComposer(
+      client,
+      "Commenting on whole document"
+    );
+    assert.doesNotMatch(
+      documentComposer.preview,
+      /Commenting on selected text/
+    );
+    await fillComposer(client, "Fixture document comment.");
+    await clickComposerButton(client, "Save Comment");
+    await waitForComposerMissing(client, false);
+    const documentComment = await waitForPersistedComment(
+      fixtureDir,
+      "doc_action",
+      { commentText: "Fixture document comment." }
+    );
+    assert.equal(documentComment.anchor.kind, "document");
+    assert.equal("selected_text" in documentComment.anchor, false);
+
+    const commentCountBeforeBookmark = readFixtureComments(
+      fixtureDir,
+      "doc_action"
+    ).length;
+    await selectVisualText(client, keyboardTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, keyboardTarget);
+    await openSelectionChooser(client);
+    await chooseSelectionAction(client, "bookmark");
+    const bookmark = await waitForReadingBookmark(
+      fixtureDir,
+      "doc_action",
+      keyboardTarget
+    );
+    assert.equal(bookmark.anchor.kind, "selected_text");
+    assert.equal(bookmark.anchor.selected_text, keyboardTarget);
+    assert.equal(
+      readFixtureComments(fixtureDir, "doc_action").length,
+      commentCountBeforeBookmark,
+      "Setting a bookmark must not create a comment."
+    );
+
     await selectVisualText(client, tableTarget, {
       dispatchMouseUp: true,
       scrollBlock: "center"
@@ -228,11 +546,11 @@ async function run() {
     }
     await fillComposer(client, "Fixture table-cell comment.");
     await clickComposerButton(client, "Save Comment");
-    const createdComment = await waitForPersistedComment(
-      fixtureDir,
-      "doc_action",
-      tableTarget
-    );
+    await waitForComposerMissing(client, false);
+    const createdComment = await waitForPersistedComment(fixtureDir, "doc_action", {
+      commentText: "Fixture table-cell comment.",
+      selectedText: tableTarget
+    });
     assert.equal(createdComment.anchor.kind, "selected_text");
     assert.equal(createdComment.anchor.selected_text, tableTarget);
     assert.equal(createdComment.anchor.anchor_context?.kind, "table_cell");
@@ -262,6 +580,14 @@ async function run() {
           editorUrl,
           paragraphAction,
           tableAction,
+          chooserRenderCount: paragraphChooser.renderCount,
+          selectionLatencyMs: paragraphChooser.selectionLatencyMs,
+          chooserOpenLatencyMs,
+          composerOpenLatencyMs,
+          editorRemounted: false,
+          sectionCommentId: sectionComment.id,
+          documentCommentId: documentComment.id,
+          bookmarkKind: bookmark.anchor.kind,
           createdCommentId: createdComment.id,
           existingAnchorAudit,
           screenshotPath: screenshotPath ?? null
@@ -342,6 +668,8 @@ function createActionMarkdown() {
   ]).flat();
 
   return [
+    preambleTarget,
+    "",
     "# Action Plan",
     "",
     paragraphTarget,
@@ -350,9 +678,9 @@ function createActionMarkdown() {
     "",
     `The [${linkLabel}](https://example.com/evidence) supports the current plan.`,
     "",
-    "Multi-block anchor first paragraph.",
+    multiBlockStart,
     "",
-    "Multi-block anchor second paragraph.",
+    multiBlockEnd,
     "",
     ...filler,
     "## 10. Growth Path and Scenarios",
@@ -542,6 +870,99 @@ async function selectVisualText(
   });
 }
 
+async function selectVisualRange(client, startText, endText) {
+  return await evaluate(client, {
+    expression: `(() => {
+      const root = document.querySelector(".patchmark-prose");
+      if (!root) throw new Error("Visual editor missing.");
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let startNode = null;
+      let endNode = null;
+      let node = walker.nextNode();
+      while (node) {
+        if (!startNode && node.textContent.includes(${JSON.stringify(startText)})) {
+          startNode = node;
+        }
+        if (node.textContent.includes(${JSON.stringify(endText)})) {
+          endNode = node;
+        }
+        node = walker.nextNode();
+      }
+      if (!startNode || !endNode) throw new Error("Multi-block selection text missing.");
+      startNode.parentElement.scrollIntoView({ block: "center", inline: "nearest" });
+      const range = document.createRange();
+      range.setStart(startNode, startNode.textContent.indexOf(${JSON.stringify(startText)}));
+      range.setEnd(
+        endNode,
+        endNode.textContent.indexOf(${JSON.stringify(endText)}) +
+          ${JSON.stringify(endText)}.length
+      );
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      document.querySelector(".editor-body")
+        .dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return selection.toString();
+    })()`,
+    userGesture: true
+  });
+}
+
+async function selectMarkdownText(client, selectedText) {
+  await evaluate(client, {
+    expression: `(() => {
+      const textarea = document.querySelector("textarea.markdown-source-editor");
+      if (!textarea) throw new Error("Markdown editor missing.");
+      const start = textarea.value.indexOf(${JSON.stringify(selectedText)});
+      if (start < 0) throw new Error("Markdown selection text missing.");
+      textarea.focus();
+      textarea.setSelectionRange(start, start + ${JSON.stringify(selectedText)}.length);
+      textarea.dispatchEvent(new Event("select", { bubbles: true }));
+      textarea.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return { start, end: textarea.selectionEnd };
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForMarkdownSelectionAction(client) {
+  return await waitFor(client, "Markdown selection action", `(() => {
+    const action = document.querySelector("[data-testid='comment-selection-action']");
+    const textarea = document.querySelector("textarea.markdown-source-editor");
+    if (!action || !textarea || textarea.selectionEnd <= textarea.selectionStart) {
+      return null;
+    }
+    const rect = action.getBoundingClientRect();
+    const style = getComputedStyle(action);
+    return {
+      selectedText: textarea.value.slice(
+        textarea.selectionStart,
+        textarea.selectionEnd
+      ),
+      cellTag: null,
+      scrollY: window.scrollY,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      toolbarBottom: 0,
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      },
+      style: {
+        display: style.display,
+        visibility: style.visibility,
+        opacity: style.opacity,
+        pointerEvents: style.pointerEvents,
+        zIndex: style.zIndex
+      }
+    };
+  })()`, Boolean);
+}
+
 async function waitForSelectionAction(client, expectedText) {
   return await waitFor(client, "selection action", `(() => {
     const action = document.querySelector("[data-testid='comment-selection-action']");
@@ -592,15 +1013,198 @@ function assertActionInViewport(action) {
 }
 
 async function openSelectionComposer(client) {
-  await evaluate(client, {
+  await openSelectionChooser(client);
+  await chooseSelectionAction(client, "selected_text");
+}
+
+async function openSelectionChooser(client) {
+  const point = await evaluate(client, {
     expression: `(() => {
       const button = document.querySelector("[data-testid='comment-selection-action']");
       if (!button) throw new Error("Selection action missing.");
+      const rect = button.getBoundingClientRect();
+      return {
+        x: rect.left + rect.width / 2,
+        y: rect.top + rect.height / 2
+      };
+    })()`
+  });
+  await client.call("Input.dispatchMouseEvent", {
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y
+  });
+  await client.call("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    type: "mousePressed",
+    x: point.x,
+    y: point.y
+  });
+  await client.call("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    type: "mouseReleased",
+    x: point.x,
+    y: point.y
+  });
+  await waitForChooser(client);
+}
+
+async function waitForChooser(client, expectedExcerpt, expectedTrigger) {
+  return await waitFor(client, "selection actions chooser", `(() => {
+    const chooser = document.querySelector("[data-testid='selection-actions-chooser']");
+    if (
+      !chooser ||
+      (${JSON.stringify(expectedExcerpt ?? null)} &&
+        !chooser.textContent.includes(${JSON.stringify(expectedExcerpt ?? "")})) ||
+      (${JSON.stringify(expectedTrigger ?? null)} &&
+        chooser.dataset.chooserTrigger !== ${JSON.stringify(expectedTrigger ?? "")})
+    ) {
+      return null;
+    }
+    const rect = chooser.getBoundingClientRect();
+    const style = getComputedStyle(chooser);
+    return {
+      actionIds: Array.from(
+        chooser.querySelectorAll("[data-selection-action-option]")
+      ).map((control) => control.dataset.selectionActionOption),
+      unavailableIds: Array.from(
+        chooser.querySelectorAll("[data-selection-action-unavailable]")
+      ).map((control) => control.dataset.selectionActionUnavailable),
+      text: chooser.textContent,
+      trigger: chooser.dataset.chooserTrigger,
+      selectionLatencyMs: Number(chooser.dataset.selectionLatencyMs || 0),
+      renderCount: Number(chooser.dataset.renderCount || 0),
+      activeAction:
+        document.activeElement?.dataset?.selectionActionOption ?? null,
+      viewport: { width: window.innerWidth, height: window.innerHeight },
+      rect: {
+        left: rect.left,
+        top: rect.top,
+        right: rect.right,
+        bottom: rect.bottom,
+        width: rect.width,
+        height: rect.height
+      },
+      style: {
+        display: style.display,
+        visibility: style.visibility,
+        opacity: style.opacity,
+        pointerEvents: style.pointerEvents,
+        zIndex: style.zIndex
+      }
+    };
+  })()`, (value) => Boolean(value?.activeAction));
+}
+
+function assertChooserInViewport(chooser) {
+  assert.equal(chooser.style.display === "none", false);
+  assert.equal(chooser.style.visibility, "visible");
+  assert.notEqual(chooser.style.opacity, "0");
+  assert.notEqual(chooser.style.pointerEvents, "none");
+  assert.ok(Number(chooser.style.zIndex) >= 80);
+  assert.ok(chooser.rect.left >= 8);
+  assert.ok(chooser.rect.top >= 8);
+  assert.ok(chooser.rect.right <= chooser.viewport.width - 8);
+  assert.ok(chooser.rect.bottom <= chooser.viewport.height - 8);
+}
+
+function assertCompleteChooser(chooser) {
+  assert.deepEqual(chooser.actionIds, [
+    "selected_text",
+    "section",
+    "document",
+    "bookmark"
+  ]);
+  assert.deepEqual(chooser.unavailableIds, []);
+  assert.match(chooser.text, /Selected text/);
+  assert.match(chooser.text, /Current section/);
+  assert.match(chooser.text, /Whole document/);
+  assert.match(chooser.text, /Set reading bookmark/);
+}
+
+async function chooseSelectionAction(client, actionId) {
+  await evaluate(client, {
+    expression: `(() => {
+      const button = document.querySelector(
+        "[data-selection-action-option='${escapeJs(actionId)}']"
+      );
+      if (!button) throw new Error("Selection action option missing: ${escapeJs(actionId)}");
       button.click();
       return true;
     })()`,
     userGesture: true
   });
+}
+
+async function cancelChooser(client) {
+  await evaluate(client, {
+    expression: `(() => {
+      const button = document.querySelector(
+        "[aria-label='Close comment scope chooser']"
+      );
+      if (!button) throw new Error("Chooser close button missing.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await waitFor(client, "chooser close", `(() => (
+    !document.querySelector("[data-testid='selection-actions-chooser']") &&
+    ["editable markdown", "Markdown Mode"].includes(
+      document.activeElement?.getAttribute("aria-label")
+    )
+  ))()`);
+}
+
+async function openRightClickChooser(client) {
+  await evaluate(client, {
+    expression: `(() => {
+      const selection = window.getSelection();
+      if (!selection?.rangeCount) throw new Error("Selection missing.");
+      const rect = selection.getRangeAt(0).getClientRects()[0];
+      if (!rect) throw new Error("Selection rectangle missing.");
+      document.querySelector(".editor-body").dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + Math.max(1, rect.width / 2),
+          clientY: rect.top + Math.max(1, rect.height / 2)
+        })
+      );
+      return true;
+    })()`,
+    userGesture: true
+  });
+  return await waitForChooser(client, null, "context_menu");
+}
+
+async function openChooserWithoutSelection(client) {
+  await evaluate(client, {
+    expression: `(() => {
+      window.getSelection()?.removeAllRanges();
+      const paragraph = Array.from(
+        document.querySelectorAll(".patchmark-prose p")
+      ).find((candidate) => candidate.textContent.includes(${JSON.stringify(paragraphTarget)}));
+      if (!paragraph) throw new Error("Paragraph target missing.");
+      paragraph.scrollIntoView({ block: "center" });
+      const rect = paragraph.getBoundingClientRect();
+      document.querySelector(".editor-body").dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + 4,
+          clientY: rect.top + Math.max(2, rect.height / 2)
+        })
+      );
+      return true;
+    })()`,
+    userGesture: true
+  });
+  return await waitForChooser(client, null, "context_menu");
 }
 
 async function waitForComposer(client, expectedPreviewText) {
@@ -664,10 +1268,13 @@ async function clickComposerButton(client, text) {
   });
 }
 
-async function waitForComposerMissing(client) {
+async function waitForComposerMissing(client, requireEditorFocus = true) {
   await waitFor(client, "composer close", `(() => (
     !document.querySelector("[data-testid='comment-composer']") &&
-    document.activeElement?.getAttribute("aria-label") === "editable markdown"
+    (
+      !${JSON.stringify(requireEditorFocus)} ||
+      document.activeElement?.getAttribute("aria-label") === "editable markdown"
+    )
   ))()`);
 }
 
@@ -713,25 +1320,7 @@ async function pressEscape(client) {
 }
 
 async function openWholeDocumentComposer(client) {
-  await evaluate(client, {
-    expression: `(() => {
-      window.getSelection()?.removeAllRanges();
-      const editor = document.querySelector(".editor-body");
-      const rect = editor.getBoundingClientRect();
-      editor.dispatchEvent(new MouseEvent("contextmenu", {
-        bubbles: true,
-        cancelable: true,
-        clientX: Math.max(rect.left + 24, 360),
-        clientY: Math.min(rect.bottom - 24, 420)
-      }));
-      return true;
-    })()`,
-    userGesture: true
-  });
-  await waitFor(client, "document context menu", `(() => (
-    Boolean(document.querySelector("[aria-label='Patchmark document menu']"))
-  ))()`);
-  await clickButtonByText(client, "Add Comment to Document");
+  await clickButtonByText(client, "Comment on whole document");
 }
 
 async function selectDocument(client, title) {
@@ -764,7 +1353,11 @@ async function fillComposer(client, value) {
   });
 }
 
-async function waitForPersistedComment(fixtureDir, documentId, selectedText) {
+async function waitForPersistedComment(
+  fixtureDir,
+  documentId,
+  { commentText, selectedText = null }
+) {
   const commentsPath = join(
     fixtureDir,
     ".patchmark",
@@ -776,13 +1369,14 @@ async function waitForPersistedComment(fixtureDir, documentId, selectedText) {
     const comments = JSON.parse(readFileSync(commentsPath, "utf8"));
     const comment = comments.find(
       (candidate) =>
-        candidate.comment === "Fixture table-cell comment." &&
-        candidate.anchor?.selected_text === selectedText
+        candidate.comment === commentText &&
+        (selectedText === null ||
+          candidate.anchor?.selected_text === selectedText)
     );
     if (comment) {
       assert.equal(
         comments.filter(
-          (candidate) => candidate.comment === "Fixture table-cell comment."
+          (candidate) => candidate.comment === commentText
         ).length,
         1
       );
@@ -790,7 +1384,49 @@ async function waitForPersistedComment(fixtureDir, documentId, selectedText) {
     }
     await delay(50);
   }
-  throw new Error("Timed out waiting for the submitted table-cell comment.");
+  throw new Error(`Timed out waiting for submitted comment: ${commentText}`);
+}
+
+function readFixtureComments(fixtureDir, documentId) {
+  return JSON.parse(
+    readFileSync(
+      join(
+        fixtureDir,
+        ".patchmark",
+        "documents",
+        documentId,
+        "comments.json"
+      ),
+      "utf8"
+    )
+  );
+}
+
+async function waitForReadingBookmark(
+  fixtureDir,
+  documentId,
+  selectedText
+) {
+  const manifestPath = join(
+    fixtureDir,
+    ".patchmark",
+    "documents",
+    documentId,
+    "manifest.json"
+  );
+
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    const bookmark = JSON.parse(
+      readFileSync(manifestPath, "utf8")
+    ).reading_bookmark;
+
+    if (bookmark?.anchor?.selected_text === selectedText) {
+      return bookmark;
+    }
+    await delay(50);
+  }
+
+  throw new Error("Timed out waiting for the selected-text bookmark.");
 }
 
 async function waitForCreatedCommentCard(client, commentId) {

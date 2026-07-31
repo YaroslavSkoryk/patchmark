@@ -145,6 +145,7 @@ export function CommentRailRegressionHarness() {
             error={null}
             headings={[]}
             isBusy={false}
+            isDocumentCommentAvailable
             isProjectMode
             onAddComment={noopAsyncCommentForm}
             onCloseAddComment={noopVoid}
@@ -153,6 +154,7 @@ export function CommentRailRegressionHarness() {
             onEditReply={noopAsyncEditReply}
             onFindComment={noopAsyncComment}
             onMarkCommentForExport={noopAsyncId}
+            onOpenDocumentComment={noopVoid}
             onReopenComment={noopAsyncId}
             onReplyComment={noopAsyncReply}
             onReviewCommentPatches={noopVoidId}
