@@ -1,5 +1,6 @@
 import { resolveCanonicalCommentTarget } from "../comments/canonical-target-resolution.ts";
 import { getLastKnownCommentAnchorPositionRange } from "../comments/comment-anchor-position.ts";
+import { getActiveComments } from "../comments/comment-trash-operations.ts";
 import { parseMarkdownHeadings } from "../markdown/parse-headings.ts";
 import type {
   PatchmarkComment,
@@ -66,7 +67,7 @@ export function deriveReviewQueue({
     (evidence) =>
       evidence.projectId === projectId && evidence.documentId === documentId
   );
-  const queueComments = comments
+  const queueComments = getActiveComments(comments)
     .map((comment) => {
       const resolution = resolveCanonicalCommentTarget(comment, {
         headings,

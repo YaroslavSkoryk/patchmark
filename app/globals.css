@@ -2901,6 +2901,93 @@ button {
   font-weight: 700;
 }
 
+.comment-filter-bar,
+.comment-bulk-action-bar,
+.comment-trash-controls {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: flex-end;
+  margin-top: 10px;
+}
+
+.comment-filter-bar {
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 10px;
+}
+
+.comment-filter-bar label,
+.comment-trash-controls label {
+  display: grid;
+  min-width: 0;
+  flex: 1 1 130px;
+  gap: 4px;
+}
+
+.comment-filter-bar label > span,
+.comment-trash-controls label > span {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.comment-filter-bar input,
+.comment-filter-bar select,
+.comment-trash-controls select {
+  min-height: 36px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 7px 8px;
+}
+
+.comment-filter-bar > span {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 700;
+}
+
+.comment-bulk-action-bar {
+  position: sticky;
+  z-index: 12;
+  top: 0;
+  align-items: center;
+  border: 1px solid #d39c49;
+  background: #fff8e8;
+  box-shadow: 0 8px 20px rgba(81, 55, 15, 0.12);
+  padding: 10px;
+}
+
+.comment-bulk-action-bar strong {
+  flex: 1 1 100%;
+  color: #714700;
+}
+
+.comment-selection-notice {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.comment-selection-control {
+  display: flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 9px;
+  color: var(--text);
+  font-size: 0.8rem;
+  font-weight: 800;
+}
+
+.comment-selection-control input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent-strong);
+}
+
 .comments-empty,
 .comments-error {
   margin: 12px 0 0;
@@ -3071,6 +3158,128 @@ button {
 .comment-card-active {
   border-color: #9ecdb8;
   box-shadow: 0 8px 24px rgba(17, 45, 36, 0.08);
+}
+
+.comment-trash-section {
+  margin-top: 18px;
+  border: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.comment-trash-section > summary {
+  cursor: pointer;
+  padding: 11px;
+  font-weight: 800;
+}
+
+.comment-trash-section[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.comment-trash-controls {
+  padding: 10px;
+}
+
+.comment-trash-list {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 0 10px 10px;
+  list-style: none;
+}
+
+.trashed-comment-card {
+  display: grid;
+  gap: 9px;
+  border: 1px dashed #9c8f7c;
+  background: #fffdf8;
+  padding: 11px;
+}
+
+.trashed-comment-card > p {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.45;
+}
+
+.comment-trash-metadata,
+.comment-trash-summary {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+}
+
+.comment-trash-metadata div,
+.comment-trash-summary div {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.comment-trash-metadata dt,
+.comment-trash-summary dt {
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.comment-trash-metadata dd,
+.comment-trash-summary dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+}
+
+.dialog-backdrop {
+  position: fixed;
+  z-index: var(--layer-modal);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: rgba(16, 24, 21, 0.58);
+  padding: 20px;
+}
+
+.dialog-card {
+  display: grid;
+  width: min(620px, 100%);
+  max-height: calc(100dvh - 40px);
+  gap: 14px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 30px 80px rgba(22, 35, 29, 0.28);
+  padding: 18px;
+}
+
+.dialog-card h2,
+.dialog-card p {
+  margin: 0;
+}
+
+.comment-trash-warning,
+.comment-trash-blocker {
+  border: 1px solid #d39c49;
+  background: #fff5df;
+  color: #714700;
+  padding: 10px;
+}
+
+.comment-trash-blocker {
+  display: grid;
+  gap: 8px;
+  border-color: #c9665b;
+  background: #fff0ed;
+  color: #702b25;
+}
+
+.dialog-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .comment-card-quiet {
@@ -4348,6 +4557,33 @@ button {
 
   .mode-switcher button {
     min-width: 0;
+  }
+
+  .comment-filter-bar,
+  .comment-bulk-action-bar,
+  .comment-trash-controls,
+  .dialog-actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .comment-filter-bar label,
+  .comment-trash-controls label {
+    flex-basis: auto;
+  }
+
+  .comment-trash-metadata,
+  .comment-trash-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .dialog-backdrop {
+    align-items: stretch;
+    padding: 10px;
+  }
+
+  .dialog-card {
+    max-height: calc(100dvh - 20px);
   }
 
   .snapshot-dialog-backdrop {

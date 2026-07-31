@@ -846,6 +846,7 @@ async function clickCommentButton(pageClient, commentId, text) {
 }
 
 async function clickWithin(pageClient, selector, text) {
+  await waitForEnabledButton(pageClient, selector, text);
   await evaluate(pageClient, {
     expression: `(() => {
       const root = document.querySelector(${JSON.stringify(selector)});

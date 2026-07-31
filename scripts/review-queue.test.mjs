@@ -57,6 +57,20 @@ assert.equal(newQueue.proposal?.batchType, "section");
 assert.equal(newQueue.proposal?.sectionHeadingSnapshot, "Market Evidence");
 assert.equal(newQueue.proposal?.stopReason, "h2_boundary");
 assert.equal(newQueue.exclusionSummary.laterSections, 1);
+const trashedQueue = queue([
+  ...newComments,
+  {
+    ...selectedComment("PM-COMMENT-TRASHED", "Operations signal B."),
+    trashed_at: "2026-07-31T04:00:00.000Z",
+    trash_operation_id: "comment_trash_review_queue"
+  }
+]);
+assert.equal(
+  trashedQueue.comments.some(
+    (comment) => comment.commentId === "PM-COMMENT-TRASHED"
+  ),
+  false
+);
 
 const assistantReply = threadEntry({
   createdAt: "2026-07-21T02:00:00.000Z",
@@ -73,6 +87,28 @@ assertComment(awaitingHuman, "PM-COMMENT-0010", {
   state: "awaiting_human_review"
 });
 assert.equal(awaitingHuman.proposal, null);
+const awaitingHumanTrashed = queue([
+  {
+    ...selectedComment("PM-COMMENT-0010", "Market signal A.", {
+      thread: [assistantReply]
+    }),
+    trashed_at: "2026-07-31T04:00:00.000Z",
+    trash_operation_id: "comment_trash_guided_review"
+  }
+]);
+assert.equal(awaitingHumanTrashed.comments.length, 0);
+const awaitingHumanRestored = queue([
+  {
+    ...selectedComment("PM-COMMENT-0010", "Market signal A.", {
+      thread: [assistantReply]
+    }),
+    restored_at: "2026-07-31T05:00:00.000Z"
+  }
+]);
+assertComment(awaitingHumanRestored, "PM-COMMENT-0010", {
+  reasonCode: "assistant_reply",
+  state: "awaiting_human_review"
+});
 
 for (const status of ["pending", "accepted", "rejected"]) {
   const patchOnly = queue(
@@ -452,6 +488,8 @@ console.log(
       introductionBucket: introductionQueue.proposal?.sectionKey,
       maximumBatchSize: maximumQueue.proposal?.commentIds.length,
       noMutation: true,
+      trashExcluded: true,
+      trashRestoreReclassified: true,
       proposal: newQueue.proposal,
       queueCounts: newQueue.queueCounts,
       statesCovered: [

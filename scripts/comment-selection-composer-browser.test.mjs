@@ -1107,7 +1107,10 @@ function assertChooserInViewport(chooser) {
   assert.notEqual(chooser.style.pointerEvents, "none");
   assert.ok(Number(chooser.style.zIndex) >= 80);
   assert.ok(chooser.rect.left >= 8);
-  assert.ok(chooser.rect.top >= 8);
+  assert.ok(
+    chooser.rect.top >= 8,
+    `Chooser top must stay in the viewport: ${JSON.stringify(chooser)}`
+  );
   assert.ok(chooser.rect.right <= chooser.viewport.width - 8);
   assert.ok(chooser.rect.bottom <= chooser.viewport.height - 8);
 }

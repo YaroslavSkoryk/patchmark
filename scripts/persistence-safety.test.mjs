@@ -189,6 +189,88 @@ assert.equal(
   dependencyFailureCommitBefore
 );
 
+const commentTrashFailureFixture = await createCommittedFixture(
+  "comment-trash-failure"
+);
+const commentTrashCommentsBefore = commentTrashFailureFixture.root.read(
+  ".patchmark/comments.json"
+);
+const commentTrashCommitBefore = commentTrashFailureFixture.root.read(
+  ".patchmark/save-commit.json"
+);
+const commentTrashNextComments = commentTrashFailureFixture.comments.map(
+  (comment) => ({
+    ...comment,
+    trashed_at: "2026-07-31T04:00:00.000Z",
+    trash_operation_id: "comment_trash_fault_injection"
+  })
+);
+commentTrashFailureFixture.root.controller.failNext(
+  (path) => path === ".patchmark/comments.json"
+);
+await assert.rejects(() =>
+  saveProjectState({
+    comments: commentTrashNextComments,
+    project: commentTrashFailureFixture.project,
+    reason: "comment_trash_fault_injection",
+    rollbackOnFailure: true
+  })
+);
+assert.equal(
+  commentTrashFailureFixture.root.read(".patchmark/comments.json"),
+  commentTrashCommentsBefore
+);
+assert.equal(
+  commentTrashFailureFixture.root.read(".patchmark/save-commit.json"),
+  commentTrashCommitBefore
+);
+
+const commentRestoreFailureFixture = await createCommittedFixture(
+  "comment-restore-failure"
+);
+const committedTrashedComments = commentRestoreFailureFixture.comments.map(
+  (comment) => ({
+    ...comment,
+    trashed_at: "2026-07-31T04:00:00.000Z",
+    trash_operation_id: "comment_trash_before_restore_failure"
+  })
+);
+await saveProjectState({
+  comments: committedTrashedComments,
+  project: commentRestoreFailureFixture.project,
+  reason: "establish_trashed_comments",
+  rollbackOnFailure: true
+});
+const commentRestoreCommentsBefore =
+  commentRestoreFailureFixture.root.read(".patchmark/comments.json");
+const commentRestoreCommitBefore = commentRestoreFailureFixture.root.read(
+  ".patchmark/save-commit.json"
+);
+commentRestoreFailureFixture.root.controller.failNext(
+  (path) => path === ".patchmark/comments.json"
+);
+await assert.rejects(() =>
+  saveProjectState({
+    comments: committedTrashedComments.map((comment) => ({
+      ...comment,
+      trashed_at: undefined,
+      trash_operation_id: undefined,
+      restored_at: "2026-07-31T05:00:00.000Z"
+    })),
+    project: commentRestoreFailureFixture.project,
+    reason: "comment_restore_fault_injection",
+    rollbackOnFailure: true
+  })
+);
+assert.equal(
+  commentRestoreFailureFixture.root.read(".patchmark/comments.json"),
+  commentRestoreCommentsBefore
+);
+assert.equal(
+  commentRestoreFailureFixture.root.read(".patchmark/save-commit.json"),
+  commentRestoreCommitBefore
+);
+
 const interruptionStages = [
   {
     name: "lkg",
@@ -332,6 +414,8 @@ process.stdout.write(
     patchAcceptanceGeneration: patchAcceptanceResult.generation,
     dependencyPersistenceRestart: true,
     dependencyFailurePreservedCommit: true,
+    commentTrashFailureRolledBackAtomically: true,
+    commentRestoreFailureRolledBackAtomically: true,
     interruptionResults,
     malformedRecovery: true,
     staleTemporaryCleanup: true,

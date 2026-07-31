@@ -213,12 +213,16 @@ async function runLifecycleIntegrationTest() {
     path.join(projectPath, ".patchmark", "project.json"),
     "utf8"
   );
-  const secondComment = createComment(
-    "PM-COMMENT-SECOND",
-    "Identical paragraph.",
-    15,
-    35
-  );
+  const secondComment = {
+    ...createComment(
+      "PM-COMMENT-SECOND",
+      "Identical paragraph.",
+      15,
+      35
+    ),
+    trashed_at: "2026-07-17T01:00:00.000Z",
+    trash_operation_id: "comment_trash_lifecycle"
+  };
   await saveProjectState({
     comments: [secondComment],
     markdown: sharedMarkdown,
@@ -257,9 +261,15 @@ async function runLifecycleIntegrationTest() {
     firstLoaded.project,
     secondDocument.document_id
   );
-  assert.deepEqual(
-    (await readProjectComments(reopenedSecond.project)).map(({ id }) => id),
-    ["PM-COMMENT-SECOND"]
+  const reopenedSecondComments = await readProjectComments(
+    reopenedSecond.project
+  );
+  assert.deepEqual(reopenedSecondComments.map(({ id }) => id), [
+    "PM-COMMENT-SECOND"
+  ]);
+  assert.equal(
+    reopenedSecondComments[0].trash_operation_id,
+    "comment_trash_lifecycle"
   );
   assert.equal(reopenedSecond.markdown, sharedMarkdown);
   assert.equal(reopenedSecond.project.persistence.generation, secondGeneration);
@@ -347,6 +357,22 @@ async function runLifecycleIntegrationTest() {
     documents.find(({ document_id }) => document_id === beforeArchiveId).status,
     "active"
   );
+  await archiveProjectDocument({
+    documentId: secondDocument.document_id,
+    project: reopenedSecond.project
+  });
+  await restoreProjectDocument({
+    documentId: secondDocument.document_id,
+    project: reopenedSecond.project
+  });
+  const restoredSecond = await openProjectDocument(
+    reopenedSecond.project,
+    secondDocument.document_id
+  );
+  assert.equal(
+    (await readProjectComments(restoredSecond.project))[0].trash_operation_id,
+    "comment_trash_lifecycle"
+  );
 
   const movedPath = path.join(projectPath, "ready-to-eat-moved.md");
   fs.renameSync(path.join(projectPath, secondDocument.path), movedPath);
@@ -368,9 +394,13 @@ async function runLifecycleIntegrationTest() {
   });
   assert.equal(located.project.document.document_id, secondDocument.document_id);
   assert.equal(located.project.documentAvailability, "available");
-  assert.deepEqual(
-    (await readProjectComments(located.project)).map(({ id }) => id),
-    ["PM-COMMENT-SECOND"]
+  const locatedComments = await readProjectComments(located.project);
+  assert.deepEqual(locatedComments.map(({ id }) => id), [
+    "PM-COMMENT-SECOND"
+  ]);
+  assert.equal(
+    locatedComments[0].trash_operation_id,
+    "comment_trash_lifecycle"
   );
 
   const selectedInside = await root.getFileHandle("evidence.md");

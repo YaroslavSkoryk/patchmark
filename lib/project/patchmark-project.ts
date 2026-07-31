@@ -1,4 +1,5 @@
 import { type MarkdownFileHandle } from "../files/file-system-access.ts";
+import { normalizeCommentTrashMetadata } from "../comments/comment-trash-schema.ts";
 import {
   assertDocumentScope,
   assertUniqueDocumentLocalIds,
@@ -4613,7 +4614,8 @@ function normalizeComment(comment: unknown): PatchmarkComment {
     resolved_at:
       status === "resolved" && typeof comment.resolved_at === "string"
         ? comment.resolved_at
-        : undefined
+        : undefined,
+    ...normalizeCommentTrashMetadata(comment)
   };
 }
 

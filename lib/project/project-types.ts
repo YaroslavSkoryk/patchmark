@@ -354,6 +354,9 @@ export type PatchmarkComment = {
   created_at: string;
   updated_at: string;
   resolved_at?: string;
+  trashed_at?: string;
+  trash_operation_id?: string;
+  restored_at?: string;
 };
 
 export type PatchmarkPatchStatus =

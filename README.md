@@ -72,9 +72,14 @@ The Comments rail also keeps a permanent `Comment on whole document` action
 that requires no selection.
 The right-side Comments rail displays saved comments beside their approximate anchors.
 Comments can apply to selected Markdown text, a whole section, or the whole document.
-Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
+Comments can be resolved, reopened, edited, moved to document-scoped Trash,
+and restored without changing the Markdown document. Bulk selection is separate
+from ChatGPT focus marks, acts only on visible active comments, and commits one
+all-or-nothing soft-deletion mutation. Permanent deletion is not available.
 Cancelling the composer creates no comment or project write. See
 `docs/comment-creation.md` for selection, positioning, and accessibility details.
+See [`docs/bulk-comment-trash-and-restore.md`](docs/bulk-comment-trash-and-restore.md)
+for Trash metadata, Review Batch blockers, atomic persistence, and restoration.
 
 Unresolved selected-text comments can be repaired through a viewport-stable
 human Re-anchor workspace. It preserves scroll context, captures Visual or

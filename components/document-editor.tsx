@@ -85,6 +85,14 @@ import {
   type VisualTableAnchorProjection
 } from "@/lib/comments/comment-anchor-visual-projection";
 import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
+import {
+  buildCommentTrashSummary,
+  getActiveComments,
+  getTrashedComments,
+  isCommentTrashed,
+  moveCommentsToTrash,
+  restoreCommentsFromTrash
+} from "@/lib/comments/comment-trash-operations";
 import { DocumentActions } from "@/components/document-actions";
 import {
   SelectionActionsChooser,
@@ -796,6 +804,23 @@ export function DocumentEditor() {
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
   const [reviewBatches, setReviewBatches] = useState<PatchmarkReviewBatch[]>([]);
+  const activeComments = useMemo(() => getActiveComments(comments), [comments]);
+  const trashedComments = useMemo(
+    () => getTrashedComments(comments),
+    [comments]
+  );
+  const trashedCommentIds = useMemo(
+    () => new Set(trashedComments.map((comment) => comment.id)),
+    [trashedComments]
+  );
+  const activePatches = useMemo(
+    () =>
+      patches.filter(
+        (patch) =>
+          !patch.comment_id || !trashedCommentIds.has(patch.comment_id)
+      ),
+    [patches, trashedCommentIds]
+  );
   const [reviewQueueOverrides, setReviewQueueOverrides] =
     useState<PatchmarkReviewQueueOverrides | null>(null);
   const markdownRef = useRef(markdown);
@@ -1041,12 +1066,12 @@ export function DocumentEditor() {
       )
   );
   const pendingPatchCountsByCommentId = useMemo(
-    () => getPendingPatchCountsByCommentId(patches),
-    [patches]
+    () => getPendingPatchCountsByCommentId(activePatches),
+    [activePatches]
   );
   const pendingPatches = useMemo(
-    () => patches.filter((patch) => patch.status === "pending"),
-    [patches]
+    () => activePatches.filter((patch) => patch.status === "pending"),
+    [activePatches]
   );
   const shouldResolvePatchGroupAnchors = Boolean(
     patchGroupListDialog ||
@@ -1080,8 +1105,12 @@ export function DocumentEditor() {
   );
   const pendingPatchGroups = useMemo(
     () =>
-      patchGroups.filter((group) => group.status_summary.pending > 0),
-    [patchGroups]
+      patchGroups.filter(
+        (group) =>
+          group.status_summary.pending > 0 &&
+          (!group.comment_id || !trashedCommentIds.has(group.comment_id))
+      ),
+    [patchGroups, trashedCommentIds]
   );
   const patchGroupSummariesByCommentId = useMemo(
     () => getPatchGroupSummariesByCommentId(patchGroups, commentsById),
@@ -1477,7 +1506,7 @@ export function DocumentEditor() {
         return "";
       }
       const commentsById = new Map(
-        comments.map((comment) => [comment.id, comment])
+        activeComments.map((comment) => [comment.id, comment])
       );
       const selectedComments = selectedCommentIds.flatMap((commentId) => {
         const comment = commentsById.get(commentId);
@@ -1490,7 +1519,7 @@ export function DocumentEditor() {
         exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
         headings,
         markdown,
-        patches,
+        patches: activePatches,
         project: projectHandle,
         reviewBatchEnvelope: {
           review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
@@ -1502,10 +1531,10 @@ export function DocumentEditor() {
     },
     [
       activeDocumentIdentity,
-      comments,
+      activeComments,
       headings,
       markdown,
-      patches,
+      activePatches,
       projectHandle
     ]
   );
@@ -1522,22 +1551,22 @@ export function DocumentEditor() {
       buildPromptPreview: guidedReviewPromptPreviewBuilder,
       activeExportEvidence:
         createReviewBatchExportLifecycleEvidence(reviewBatches),
-      comments,
+      comments: activeComments,
       deferredCommentIds: deferredReviewCommentIds,
       documentGeneration: projectHandle.persistence.generation,
       documentId: activeDocumentIdentity.documentId,
       markdown,
-      patches,
+      patches: activePatches,
       projectId: activeDocumentIdentity.projectId
     });
   }, [
     activeDocumentIdentity,
-    comments,
+    activeComments,
     deferredReviewCommentIds,
     guidedReviewPromptPreviewBuilder,
     isGuidedReviewOpen,
     markdown,
-    patches,
+    activePatches,
     projectHandle,
     reviewBatches
   ]);
@@ -1549,12 +1578,12 @@ export function DocumentEditor() {
               activeBatchId: activeReviewBatch?.batch_id ?? null,
               pendingResponseBatchId:
                 pendingReviewResponseBatch?.batch_id ?? null,
-              comments,
+              comments: activeComments,
               deferredCommentIds: [...deferredReviewCommentIds].sort(),
               documentGeneration: projectHandle.persistence.generation,
               documentId: activeDocumentIdentity.documentId,
               markdown,
-              patches,
+              patches: activePatches,
               projectId: activeDocumentIdentity.projectId
             })
           )
@@ -1562,11 +1591,11 @@ export function DocumentEditor() {
     [
       activeDocumentIdentity,
       activeReviewBatch,
-      comments,
+      activeComments,
       deferredReviewCommentIds,
       isGuidedReviewOpen,
       markdown,
-      patches,
+      activePatches,
       pendingReviewResponseBatch,
       projectHandle
     ]
@@ -1876,7 +1905,7 @@ export function DocumentEditor() {
   }, [patchGroups, selectedPatchGroupId]);
 
   useEffect(() => {
-    const commentIds = new Set(comments.map((comment) => comment.id));
+    const commentIds = new Set(activeComments.map((comment) => comment.id));
 
     setActiveCommentState((currentState) => {
       if (currentState.kind === "comment") {
@@ -1905,7 +1934,7 @@ export function DocumentEditor() {
 
       return currentState;
     });
-  }, [comments, setActiveCommentState]);
+  }, [activeComments, setActiveCommentState]);
 
   useEffect(() => {
     if (
@@ -2256,12 +2285,12 @@ export function DocumentEditor() {
       const projectionStartedAt = performance.now();
       markEditPerformanceOperation(operationId, "visual_projection_start");
       const nextCommentPositions = measureCommentPositions({
-        comments,
+        comments: activeComments,
         container: editorDocumentRef.current,
         headings,
         markdown,
         mode,
-        patches,
+        patches: activePatches,
         workspace: documentWorkspaceRef.current
       });
 
@@ -2290,14 +2319,14 @@ export function DocumentEditor() {
 
       updateVisualCommentHighlights({
         activeCommentState,
-        comments,
+        comments: activeComments,
         container: editorDocumentRef.current,
         headings,
         markdown,
         mode,
-        patches,
+        patches: activePatches,
         previewComment: createReanchorPreviewComment({
-          comments,
+          comments: activeComments,
           proposal: reanchorSession?.previewProposal ?? null,
           targetCommentId: reanchorSession?.commentId ?? null
         })
@@ -2419,12 +2448,13 @@ export function DocumentEditor() {
   }, [
     activeCommentState,
     activeDocumentKey,
-    comments,
+    activeComments,
     documentVersion,
     headings,
     isReadingBookmarkEmphasized,
     markdown,
     mode,
+    activePatches,
     patches,
     projectHandle,
     readingBookmark,
@@ -2441,7 +2471,7 @@ export function DocumentEditor() {
     const animationFrameId = window.requestAnimationFrame(() => {
       const container = editorDocumentRef.current;
       const previewComment = createReanchorPreviewComment({
-        comments,
+        comments: activeComments,
         proposal: previewProposal,
         targetCommentId: reanchorSession.commentId
       });
@@ -2455,7 +2485,7 @@ export function DocumentEditor() {
         container,
         headings,
         markdown,
-        patches
+        patches: activePatches
       });
 
       if (range) {
@@ -2464,7 +2494,14 @@ export function DocumentEditor() {
     });
 
     return () => window.cancelAnimationFrame(animationFrameId);
-  }, [comments, headings, markdown, mode, patches, reanchorSession]);
+  }, [
+    activeComments,
+    activePatches,
+    headings,
+    markdown,
+    mode,
+    reanchorSession
+  ]);
 
   useEffect(() => {
     const activeCommentIds = getActiveCommentIds(activeCommentState);
@@ -2840,7 +2877,7 @@ export function DocumentEditor() {
     const validationStartedAt = performance.now();
     const affectedAnchorCount = countManualChangeSetIntersectingSelectedTextAnchors({
       changeSet,
-      comments,
+      comments: activeComments,
     });
     const safety = isSafeManualAnchorTransformChangeSet({
       affectedAnchorCount,
@@ -4668,7 +4705,7 @@ export function DocumentEditor() {
       batch: legacyBatch,
       comments,
       importId: legacyBatch.import_id,
-      patches
+      patches: activePatches
     });
     setIsCommentBusy(true);
     setCommentsError(null);
@@ -5023,7 +5060,9 @@ export function DocumentEditor() {
       const importedAt = new Date().toISOString();
       const importId = createCommentImportId(importedAt);
       const safeTimestamp = createFileSafeTimestamp(importedAt);
-      const knownCommentIds = new Set(comments.map((comment) => comment.id));
+      const knownCommentIds = new Set(
+        activeComments.map((comment) => comment.id)
+      );
       const unknownCommentIds = getUnknownImportCommentIds(
         parsedResponse,
         knownCommentIds
@@ -5579,10 +5618,215 @@ export function DocumentEditor() {
     await persistComments(nextComments, "Removed comment from ChatGPT export queue.");
   }
 
-  async function handleDeleteComment(commentId: string) {
-    const nextComments = comments.filter((comment) => comment.id !== commentId);
+  async function handlePrepareMoveCommentsToTrash(
+    commentIds: string[],
+    unsavedDraftCommentIds: string[]
+  ) {
+    if (!projectHandle || !activeDocumentIdentity) {
+      throw new Error("Comments require an active project document.");
+    }
 
-    await persistComments(nextComments, "Deleted comment.");
+    return buildCommentTrashSummary({
+      activeReanchorCommentId: reanchorSession?.commentId ?? null,
+      anchorStatuses: Object.fromEntries(
+        Object.entries(commentAnchorSummaries).map(([commentId, summary]) => [
+          commentId,
+          summary.status
+        ])
+      ),
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: activeDocumentIdentity.documentId,
+      patches,
+      projectId: activeDocumentIdentity.projectId,
+      reviewBatches,
+      unsavedDraftCommentIds
+    });
+  }
+
+  async function handleMoveCommentsToTrash({
+    commentIds,
+    expectedSelectionFingerprint,
+    unsavedDraftCommentIds
+  }: {
+    commentIds: string[];
+    expectedSelectionFingerprint: string;
+    unsavedDraftCommentIds: string[];
+  }) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error("Wait for the active document operation to finish.");
+    }
+
+    const operationDocumentId = activeDocumentIdentity.documentId;
+    const operationProjectId = activeDocumentIdentity.projectId;
+    const timestamp = new Date().toISOString();
+    const operationId = `comment_trash_${
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : timestamp.replaceAll(/[^0-9]/g, "")
+    }`;
+    const result = moveCommentsToTrash({
+      activeReanchorCommentId: reanchorSession?.commentId ?? null,
+      anchorStatuses: Object.fromEntries(
+        Object.entries(commentAnchorSummaries).map(([commentId, summary]) => [
+          commentId,
+          summary.status
+        ])
+      ),
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: operationDocumentId,
+      expectedSelectionFingerprint,
+      operationId,
+      patches,
+      projectId: operationProjectId,
+      reviewBatches,
+      timestamp,
+      unsavedDraftCommentIds
+    });
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      await saveProjectState({
+        comments: result.comments,
+        project: projectHandle,
+        reason: operationId,
+        rollbackOnFailure: true
+      });
+      if (
+        activeDocumentIdRef.current !== operationDocumentId ||
+        activeProjectIdRef.current !== operationProjectId
+      ) {
+        throw new Error(
+          "The active document changed before the Trash operation completed."
+        );
+      }
+
+      const selectedIds = new Set(commentIds);
+      commentsRef.current = result.comments;
+      setComments(result.comments);
+      setActiveCommentState((current) => {
+        if (
+          current.kind === "comment" &&
+          selectedIds.has(current.commentId)
+        ) {
+          return { kind: "none" };
+        }
+        if (current.kind === "anchor_group") {
+          const remaining = current.commentIds.filter(
+            (commentId) => !selectedIds.has(commentId)
+          );
+          return remaining.length === 0
+            ? { kind: "none" }
+            : remaining.length === 1
+              ? { kind: "comment", commentId: remaining[0] }
+              : { kind: "anchor_group", commentIds: remaining };
+        }
+        return current;
+      });
+      setCommentReplyRequest((current) =>
+        current && selectedIds.has(current.commentId) ? null : current
+      );
+      setDocumentLevelExportGuardDialog(null);
+      setMarkCommentFocusGuardDialog(null);
+      setPatchReviewCommentScopeId((current) =>
+        current && selectedIds.has(current) ? null : current
+      );
+      setPatchGroupListDialog((current) =>
+        current?.commentId && selectedIds.has(current.commentId) ? null : current
+      );
+      if (selectedPatch?.comment_id && selectedIds.has(selectedPatch.comment_id)) {
+        setSelectedPatchId(null);
+        setSelectedPatchGroupId(null);
+        setPatchReviewGroupScopeId(null);
+      }
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentIds.length} comment${
+          commentIds.length === 1 ? "" : "s"
+        } moved to Trash.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message: `${message} No comments were moved to Trash.`
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleRestoreCommentsFromTrash(commentIds: string[]) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error("Wait for the active document operation to finish.");
+    }
+
+    const operationDocumentId = activeDocumentIdentity.documentId;
+    const operationProjectId = activeDocumentIdentity.projectId;
+    const nextComments = restoreCommentsFromTrash({
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: operationDocumentId,
+      projectId: operationProjectId,
+      timestamp: new Date().toISOString()
+    });
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      await saveProjectState({
+        comments: nextComments,
+        project: projectHandle,
+        reason: `comment_restore:${commentIds.join(",")}`,
+        rollbackOnFailure: true
+      });
+      if (
+        activeDocumentIdRef.current !== operationDocumentId ||
+        activeProjectIdRef.current !== operationProjectId
+      ) {
+        throw new Error(
+          "The active document changed before the Restore operation completed."
+        );
+      }
+      commentsRef.current = nextComments;
+      setComments(nextComments);
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentIds.length} comment${
+          commentIds.length === 1 ? "" : "s"
+        } restored. Current anchors were re-evaluated.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message: `${message} No comments were restored.`
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
   }
 
   async function handleFindComment(comment: PatchmarkComment) {
@@ -7426,11 +7670,17 @@ export function DocumentEditor() {
           editorDocumentRef.current.getBoundingClientRect()
         )
       : null;
+    const canFitMenuInVisibleContainer = Boolean(
+      containerRect &&
+        Math.min(containerRect.right, window.innerWidth - 8) -
+          Math.max(containerRect.left, 8) >=
+          menuSize.width &&
+        Math.min(containerRect.bottom, window.innerHeight - 8) -
+          Math.max(containerRect.top, 8) >=
+          menuSize.height
+    );
     const bounds = createCommentAffordanceBounds({
-      containerRect:
-        containerRect && containerRect.width >= menuSize.width
-          ? containerRect
-          : null,
+      containerRect: canFitMenuInVisibleContainer ? containerRect : null,
       menuSize,
       viewportHeight: window.innerHeight,
       viewportWidth: window.innerWidth
@@ -7927,7 +8177,7 @@ export function DocumentEditor() {
     setMode(restoredUiState?.mode ?? "visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
     updateDocumentSwitchPerformanceMetadata(performanceOperationId, {
-      comments: projectComments.length,
+      comments: getActiveComments(projectComments).length,
       patches: projectPatches.length,
       versions: versions.length
     });
@@ -8622,7 +8872,8 @@ export function DocumentEditor() {
           activeCommentState={activeCommentState}
           anchorSummaries={commentAnchorSummaries}
           commentPositions={commentPositions}
-          comments={comments}
+          comments={activeComments}
+          documentId={activeDocumentIdentity?.documentId ?? null}
           defaultSectionLine={defaultCommentHeading?.line ?? null}
           error={commentsError}
           headings={headings}
@@ -8636,7 +8887,10 @@ export function DocumentEditor() {
           isProjectMode={isProjectMode}
           onAddComment={handleAddComment}
           onCloseAddComment={handleCommentComposerClosed}
-          onDeleteComment={handleDeleteComment}
+          onMoveCommentsToTrash={handleMoveCommentsToTrash}
+          onOpenReviewBatch={() => setIsGuidedReviewOpen(true)}
+          onPrepareMoveCommentsToTrash={handlePrepareMoveCommentsToTrash}
+          onRestoreCommentsFromTrash={handleRestoreCommentsFromTrash}
           onEditComment={handleEditComment}
           onEditReply={handleEditCommentReply}
           onFindComment={handleFindComment}
@@ -8654,9 +8908,11 @@ export function DocumentEditor() {
           pendingPatchGroupTotal={pendingPatchGroups.length}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           pendingPatchTotal={pendingPatches.length}
+          projectId={activeDocumentIdentity?.projectId ?? null}
           replyRequest={commentReplyRequest}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
+          trashedComments={trashedComments}
         />
       </aside>
 
@@ -9011,7 +9267,7 @@ export function DocumentEditor() {
         <GuidedReviewWizard
           activeBatch={activeReviewBatch}
           buildPromptPreview={guidedReviewPromptPreviewBuilder}
-          comments={comments}
+          comments={activeComments}
           deferredCommentIds={deferredReviewCommentIds}
           documentChangedSinceExport={Boolean(
             activeReviewBatch &&
@@ -11493,6 +11749,7 @@ function getFocusedCommentsForExport(
 ): PatchmarkComment[] {
   return comments.filter(
     (comment) =>
+      !comment.trashed_at &&
       comment.status === "open" &&
       (comment.export_state.focus_state === "in_focus" ||
         comment.export_state.focus_state === "awaiting_reply")
@@ -13815,6 +14072,12 @@ function orchestrateDocumentMutation({
   let unchangedCount = 0;
 
   const nextComments = comments.map((comment) => {
+    if (isCommentTrashed(comment)) {
+      if (patchContext?.linkedCommentId === comment.id) {
+        linkedCommentFound = true;
+      }
+      return comment;
+    }
     const classificationStartedAt = performance.now();
     const classification = classifyCommentDocumentMutation({
       comment,
@@ -16162,6 +16425,9 @@ function recoverPersistableStaleCommentAnchors({
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
+    if (isCommentTrashed(comment)) {
+      return comment;
+    }
     const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
 
     if (

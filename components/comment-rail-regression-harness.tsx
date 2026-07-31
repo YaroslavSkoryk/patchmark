@@ -141,6 +141,7 @@ export function CommentRailRegressionHarness() {
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
             comments={comments}
+            documentId="doc_comment_rail_regression"
             defaultSectionLine={null}
             error={null}
             headings={[]}
@@ -149,7 +150,10 @@ export function CommentRailRegressionHarness() {
             isProjectMode
             onAddComment={noopAsyncCommentForm}
             onCloseAddComment={noopVoid}
-            onDeleteComment={noopAsyncId}
+            onMoveCommentsToTrash={noopAsyncTrash}
+            onOpenReviewBatch={noopVoidId}
+            onPrepareMoveCommentsToTrash={noopAsyncTrashSummary}
+            onRestoreCommentsFromTrash={noopAsyncIds}
             onEditComment={noopAsyncEditComment}
             onEditReply={noopAsyncEditReply}
             onFindComment={noopAsyncComment}
@@ -167,9 +171,11 @@ export function CommentRailRegressionHarness() {
             pendingPatchCountsByCommentId={{}}
             pendingPatchGroupTotal={0}
             pendingPatchTotal={0}
+            projectId="prj_comment_rail_regression"
             replyRequest={null}
             selectedAnchorContextKind={null}
             selectedTextPreview={null}
+            trashedComments={[]}
           />
         </aside>
       </div>
@@ -240,6 +246,36 @@ async function noopAsyncCommentForm(values: CommentFormValues): Promise<void> {
 
 async function noopAsyncId(id: string): Promise<void> {
   void id;
+}
+
+async function noopAsyncIds(ids: string[]): Promise<void> {
+  void ids;
+}
+
+async function noopAsyncTrash(request: {
+  commentIds: string[];
+  expectedSelectionFingerprint: string;
+  unsavedDraftCommentIds: string[];
+}): Promise<void> {
+  void request;
+}
+
+async function noopAsyncTrashSummary(commentIds: string[]) {
+  return {
+    acceptedPatches: 0,
+    activeOrUnresolvedAnchors: 0,
+    blockedComments: 0,
+    blockers: [],
+    documentComments: 0,
+    linkedReviewBatchComments: 0,
+    pendingPatches: 0,
+    rejectedPatches: 0,
+    replies: 0,
+    selectedComments: commentIds.length,
+    selectionFingerprint: "regression",
+    stalePatches: 0,
+    unresolvedAnchors: 0
+  };
 }
 
 async function noopAsyncEditComment(
