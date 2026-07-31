@@ -93,6 +93,13 @@ import {
   moveCommentsToTrash,
   restoreCommentsFromTrash
 } from "@/lib/comments/comment-trash-operations";
+import {
+  buildPermanentDeletionSummary,
+  emptyCommentTrash,
+  permanentlyDeleteComments,
+  type CommentPermanentDeletionMode
+} from "@/lib/comments/comment-permanent-deletion-operations";
+import { getDeletedCommentTombstone } from "@/lib/comments/comment-deletion-tombstones";
 import { DocumentActions } from "@/components/document-actions";
 import {
   SelectionActionsChooser,
@@ -4771,6 +4778,19 @@ export function DocumentEditor() {
   }
 
   function handleReviewResponseComment(commentId: string) {
+    const deletedTombstone = projectHandle
+      ? getDeletedCommentTombstone(
+          projectHandle.manifest.comment_deletion_tombstones ?? [],
+          commentId
+        )
+      : null;
+    if (deletedTombstone) {
+      setSaveFeedback({
+        kind: "info",
+        message: "This comment was permanently deleted."
+      });
+      return;
+    }
     if (
       !pendingReviewResponseBatch ||
       !pendingReviewResponseBatch.ordered_comment_ids.includes(commentId) ||
@@ -5822,6 +5842,188 @@ export function DocumentEditor() {
       setSaveFeedback({
         kind: "error",
         message: `${message} No comments were restored.`
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handlePreparePermanentDeleteComments(
+    commentIds: string[],
+    unsavedDraftCommentIds: string[],
+    mode: CommentPermanentDeletionMode
+  ) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !reviewQueueOverrides
+    ) {
+      throw new Error("Permanent deletion requires an active project document.");
+    }
+
+    return buildPermanentDeletionSummary({
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: activeDocumentIdentity.documentId,
+      inFlightImport: false,
+      inFlightMutation: Boolean(reanchorSession),
+      mode,
+      patches: patchesRef.current,
+      projectId: activeDocumentIdentity.projectId,
+      reviewBatches,
+      reviewQueueOverrides,
+      tombstones: projectHandle.manifest.comment_deletion_tombstones ?? [],
+      unsavedDraftCommentIds
+    });
+  }
+
+  async function handlePermanentlyDeleteComments({
+    commentIds,
+    confirmationPhrase,
+    expectedSelectionFingerprint,
+    mode,
+    unsavedDraftCommentIds
+  }: {
+    commentIds: string[];
+    confirmationPhrase: string;
+    expectedSelectionFingerprint: string;
+    mode: CommentPermanentDeletionMode;
+    unsavedDraftCommentIds: string[];
+  }) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !reviewQueueOverrides ||
+      isCommentBusy ||
+      reanchorSession ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error("Wait for the active document operation to finish.");
+    }
+
+    const operationDocumentId = activeDocumentIdentity.documentId;
+    const operationProjectId = activeDocumentIdentity.projectId;
+    const timestamp = new Date().toISOString();
+    const operationId = `comment_delete_${
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : timestamp.replaceAll(/[^0-9]/g, "")
+    }`;
+    const sharedInput = {
+      comments: commentsRef.current,
+      confirmationPhrase,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: operationDocumentId,
+      inFlightImport: false,
+      inFlightMutation: false,
+      manifest: projectHandle.manifest,
+      operationId,
+      patches: patchesRef.current,
+      projectId: operationProjectId,
+      reviewBatches,
+      reviewQueueOverrides,
+      timestamp,
+      unsavedDraftCommentIds
+    };
+    const result =
+      mode === "empty_trash"
+        ? emptyCommentTrash({
+            ...sharedInput,
+            expectedTrashFingerprint: expectedSelectionFingerprint
+          })
+        : permanentlyDeleteComments({
+            ...sharedInput,
+            commentIds,
+            expectedSelectionFingerprint,
+            mode
+          });
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      await saveProjectState({
+        comments: result.comments,
+        manifest: result.manifest,
+        patches: result.patches,
+        project: projectHandle,
+        reason: operationId,
+        reviewQueueOverrides: result.reviewQueueOverrides,
+        rollbackOnFailure: true
+      });
+      if (
+        activeDocumentIdRef.current !== operationDocumentId ||
+        activeProjectIdRef.current !== operationProjectId
+      ) {
+        throw new Error(
+          "The active document changed before permanent deletion completed."
+        );
+      }
+
+      const deletedIds = new Set(commentIds);
+      commentsRef.current = result.comments;
+      patchesRef.current = result.patches;
+      setComments(result.comments);
+      setPatches(result.patches);
+      setReviewQueueOverrides(result.reviewQueueOverrides);
+      setActiveCommentState((current) => {
+        if (
+          current.kind === "comment" &&
+          deletedIds.has(current.commentId)
+        ) {
+          return { kind: "none" };
+        }
+        if (current.kind === "anchor_group") {
+          const remaining = current.commentIds.filter(
+            (commentId) => !deletedIds.has(commentId)
+          );
+          return remaining.length === 0
+            ? { kind: "none" }
+            : remaining.length === 1
+              ? { kind: "comment", commentId: remaining[0] }
+              : { kind: "anchor_group", commentIds: remaining };
+        }
+        return current;
+      });
+      setCommentReplyRequest((current) =>
+        current && deletedIds.has(current.commentId) ? null : current
+      );
+      setDocumentLevelExportGuardDialog(null);
+      setMarkCommentFocusGuardDialog(null);
+      setPatchReviewCommentScopeId((current) =>
+        current && deletedIds.has(current) ? null : current
+      );
+      setPatchGroupListDialog((current) =>
+        current?.commentId && deletedIds.has(current.commentId) ? null : current
+      );
+      if (selectedPatch?.comment_id && deletedIds.has(selectedPatch.comment_id)) {
+        setSelectedPatchId(null);
+        setSelectedPatchGroupId(null);
+        setPatchReviewGroupScopeId(null);
+      }
+      setSaveFeedback({
+        kind: "success",
+        message:
+          mode === "empty_trash"
+            ? `Trash emptied for ${
+                projectHandle.document?.display_title ??
+                projectHandle.manifest.project_name
+              }. ${result.summary.selectedComments} comment${
+                result.summary.selectedComments === 1 ? "" : "s"
+              } permanently deleted.`
+            : `${result.summary.selectedComments} comment${
+                result.summary.selectedComments === 1 ? "" : "s"
+              } permanently deleted. Accepted Markdown changes remain.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message: `${message} Trash remains unchanged.`
       });
       throw error;
     } finally {
@@ -8874,6 +9076,11 @@ export function DocumentEditor() {
           commentPositions={commentPositions}
           comments={activeComments}
           documentId={activeDocumentIdentity?.documentId ?? null}
+          documentTitle={
+            projectHandle?.document?.display_title ??
+            projectHandle?.manifest.project_name ??
+            "current document"
+          }
           defaultSectionLine={defaultCommentHeading?.line ?? null}
           error={commentsError}
           headings={headings}
@@ -8888,8 +9095,12 @@ export function DocumentEditor() {
           onAddComment={handleAddComment}
           onCloseAddComment={handleCommentComposerClosed}
           onMoveCommentsToTrash={handleMoveCommentsToTrash}
+          onPermanentlyDeleteComments={handlePermanentlyDeleteComments}
           onOpenReviewBatch={() => setIsGuidedReviewOpen(true)}
           onPrepareMoveCommentsToTrash={handlePrepareMoveCommentsToTrash}
+          onPreparePermanentDeleteComments={
+            handlePreparePermanentDeleteComments
+          }
           onRestoreCommentsFromTrash={handleRestoreCommentsFromTrash}
           onEditComment={handleEditComment}
           onEditReply={handleEditCommentReply}
@@ -9269,6 +9480,13 @@ export function DocumentEditor() {
           buildPromptPreview={guidedReviewPromptPreviewBuilder}
           comments={activeComments}
           deferredCommentIds={deferredReviewCommentIds}
+          deletedCommentIds={
+            new Set(
+              projectHandle?.manifest.comment_deletion_tombstones?.map(
+                (tombstone) => tombstone.comment_id
+              ) ?? []
+            )
+          }
           documentChangedSinceExport={Boolean(
             activeReviewBatch &&
               (activeReviewBatch.batch_record_generation !==

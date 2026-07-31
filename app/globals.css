@@ -3188,6 +3188,16 @@ button {
   list-style: none;
 }
 
+.trashed-comment-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.trashed-comment-actions > button {
+  flex: 1 1 150px;
+}
+
 .trashed-comment-card {
   display: grid;
   gap: 9px;
@@ -3265,6 +3275,46 @@ button {
   background: #fff5df;
   color: #714700;
   padding: 10px;
+}
+
+.destructive-action {
+  border-color: #a63e35;
+  background: #fff0ed;
+  color: #702b25;
+  font-weight: 800;
+}
+
+.destructive-action:not(:disabled):hover {
+  background: #ffe1dc;
+}
+
+.comment-permanent-deletion-dialog {
+  border-top: 5px solid #a63e35;
+}
+
+.comment-permanent-deletion-dialog
+  #comment-permanent-deletion-description {
+  display: grid;
+  gap: 8px;
+}
+
+.permanent-deletion-confirmation {
+  display: grid;
+  gap: 6px;
+}
+
+.permanent-deletion-confirmation input {
+  min-height: 40px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  padding: 8px 10px;
+}
+
+.permanent-deletion-confirmation-status {
+  min-height: 1.25em;
+  color: #702b25;
+  font-weight: 700;
 }
 
 .comment-trash-blocker {

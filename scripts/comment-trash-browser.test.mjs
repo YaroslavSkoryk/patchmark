@@ -362,10 +362,139 @@ try {
     false
   );
 
-  const bodyText = await evaluate(client, {
-    expression: `document.body.textContent ?? ""`
-  });
-  assert.doesNotMatch(bodyText, /Delete forever|Empty Trash|Permanently delete/i);
+  assert.equal(
+    await hasCommentButton(client, "PM-COMMENT-0001", "Delete forever"),
+    false,
+    "Active comments must not expose permanent deletion."
+  );
+  await clickButtonByText(client, "Select comments");
+  await clickCommentSelection(client, "PM-COMMENT-0001");
+  await clickCommentSelection(client, "PM-COMMENT-0002");
+  await clickButtonByText(client, "Move to Trash");
+  await waitForDialog(client, "Move 2 comments to Trash?");
+  await clickDialogButton(client, "Move 2 comments to Trash");
+  await waitForText(client, "Trash · 2", "permanent deletion fixture Trash");
+  await openTrashSection(client);
+  await clearFixtureWriteLog(client);
+  const permanentCancellationFingerprint = fingerprintDirectory(projectDir);
+  await clickTrashCardButton(client, "PM-COMMENT-0001", "Delete forever");
+  await waitForPermanentDeletionDialog(client, "Delete this comment forever?");
+  assert.match(
+    await getPermanentDeletionDialogText(client),
+    /Previously exported prompts, imported-response archives, downloaded files, and external backups may still contain copies/
+  );
+  assert.equal(await isPermanentDeletionConfirmDisabled(client), true);
+  await setPermanentDeletionConfirmation(client, "delete");
+  assert.equal(await isPermanentDeletionConfirmDisabled(client), true);
+  assert.match(
+    await getPermanentDeletionDialogText(client),
+    /Confirmation phrase does not match/
+  );
+  await setPermanentDeletionConfirmation(client, "DELETE");
+  assert.equal(await isPermanentDeletionConfirmDisabled(client), false);
+  await dispatchKey(client, "Escape");
+  await waitForNoPermanentDeletionDialog(client);
+  assert.equal(await getFixtureWriteCount(client), 0);
+  assert.equal(
+    fingerprintDirectory(projectDir),
+    permanentCancellationFingerprint,
+    "Cancelling permanent deletion must produce zero authoritative writes."
+  );
+
+  await clickTrashCardButton(client, "PM-COMMENT-0001", "Delete forever");
+  await waitForPermanentDeletionDialog(client, "Delete this comment forever?");
+  await setPermanentDeletionConfirmation(client, " DELETE ");
+  await clickPermanentDeletionDialogButton(client, "Delete forever");
+  await waitForText(client, "Trash · 1", "individual permanent deletion");
+  await waitForFixtureWritesToSettle(client);
+
+  const afterIndividualDeleteComments = readJson(
+    join(mainStore, "comments.json")
+  );
+  const afterIndividualDeletePatches = readJson(join(mainStore, "patches.json"));
+  const afterIndividualDeleteManifest = readJson(
+    join(mainStore, "manifest.json")
+  );
+  assert.equal(
+    afterIndividualDeleteComments.some(
+      (comment) => comment.id === "PM-COMMENT-0001"
+    ),
+    false
+  );
+  assert.equal(
+    afterIndividualDeletePatches.some(
+      (patch) => patch.comment_id === "PM-COMMENT-0001"
+    ),
+    false
+  );
+  assert.deepEqual(
+    afterIndividualDeleteManifest.comment_deletion_tombstones[0].patches,
+    [
+      { patch_id: "PM-PATCH-0001", status: "pending" },
+      { patch_id: "PM-PATCH-0002", status: "accepted" }
+    ]
+  );
+  const persistedTombstoneText = JSON.stringify(
+    afterIndividualDeleteManifest.comment_deletion_tombstones[0]
+  );
+  assert.doesNotMatch(persistedTombstoneText, /Review alpha evidence/);
+  assert.doesNotMatch(persistedTombstoneText, /Alpha evidence draft/);
+  assert.equal(
+    readFileSync(join(projectDir, "cleanup.md"), "utf8"),
+    immutableBefore.mainMarkdown
+  );
+  assert.deepEqual(
+    readJson(join(mainStore, "review-batches.json")),
+    immutableBefore.reviewBatches
+  );
+  assert.equal(
+    fingerprintDirectory(join(mainStore, "versions")),
+    immutableBefore.versions
+  );
+  assert.deepEqual(
+    readJson(join(secondStore, "comments.json")),
+    immutableBefore.secondComments
+  );
+
+  await clickButtonByText(client, "Empty Trash for Cleanup Review");
+  await waitForPermanentDeletionDialog(
+    client,
+    "Permanently delete 1 comment from Cleanup Review?"
+  );
+  assert.equal(await isPermanentDeletionConfirmDisabled(client), true);
+  await setPermanentDeletionConfirmation(client, "EMPTY TRASH");
+  await clickPermanentDeletionDialogButton(
+    client,
+    "Empty Trash for Cleanup Review"
+  );
+  await waitForText(client, "Trash · 0", "Empty Trash completion");
+  await waitForFixtureWritesToSettle(client);
+  assert.equal(readJson(join(mainStore, "comments.json")).length, 3);
+  assert.equal(
+    readJson(join(mainStore, "manifest.json"))
+      .comment_deletion_tombstones.length,
+    2
+  );
+  assert.equal(
+    readFileSync(join(projectDir, "cleanup.md"), "utf8"),
+    immutableBefore.mainMarkdown
+  );
+  assert.deepEqual(
+    readJson(join(secondStore, "comments.json")),
+    immutableBefore.secondComments
+  );
+
+  await client.call("Page.reload");
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitForText(client, "3 of 3 active", "restart active count");
+  await waitForText(client, "Trash · 0", "restart empty Trash");
+  assert.equal(
+    await evaluate(client, {
+      expression: `document.body.textContent?.includes("Review alpha evidence.")`
+    }),
+    false
+  );
 
   console.log(
     JSON.stringify(
@@ -375,12 +504,16 @@ try {
         activeRailAndCardsExcludedTrash: true,
         bulkRestoreAtomicUiFlow: true,
         connectedHistoryPreserved: true,
+        contentFreeTombstonesPersisted: true,
+        deleteForeverConfirmationAndCancellation: true,
         documentScopedSwitchClearsSelection: true,
         duplicateLocalIdIsolated: true,
+        emptyTrashDocumentScoped: true,
         filterAndSearchClearSelection: true,
         individualRestore: true,
-        noPermanentDeleteControls: true,
+        noActivePermanentDeleteControls: true,
         noWriteCancellationFingerprintStable: true,
+        permanentDeletionSurvivesRestart: true,
         productionResponsiveAndKeyboardDialog: true,
         staleAnchorRestoredForReanchor: true,
         trashSortDeterministic: true,
@@ -491,6 +624,22 @@ async function waitForNoTrashDialog(pageClient) {
   );
 }
 
+async function waitForPermanentDeletionDialog(pageClient, title) {
+  await waitFor(
+    pageClient,
+    `document.querySelector(".comment-permanent-deletion-dialog h2")?.textContent?.trim() === ${JSON.stringify(title)}`,
+    `permanent deletion dialog ${title}`
+  );
+}
+
+async function waitForNoPermanentDeletionDialog(pageClient) {
+  await waitFor(
+    pageClient,
+    `!document.querySelector(".comment-permanent-deletion-dialog")`,
+    "permanent deletion dialog close"
+  );
+}
+
 async function waitForFixtureWritesToSettle(pageClient) {
   await waitFor(
     pageClient,
@@ -589,6 +738,40 @@ async function hasEnabledTrashConfirm(pageClient) {
 async function getTrashDialogText(pageClient) {
   return evaluate(pageClient, {
     expression: `document.querySelector(".comment-trash-dialog")?.textContent ?? ""`
+  });
+}
+
+async function getPermanentDeletionDialogText(pageClient) {
+  return evaluate(pageClient, {
+    expression: `document.querySelector(".comment-permanent-deletion-dialog")?.textContent ?? ""`
+  });
+}
+
+async function isPermanentDeletionConfirmDisabled(pageClient) {
+  return evaluate(pageClient, {
+    expression: `Boolean(Array.from(document.querySelectorAll(".comment-permanent-deletion-dialog .destructive-action")).find((button) => button.textContent?.trim() !== "")?.disabled)`
+  });
+}
+
+async function setPermanentDeletionConfirmation(pageClient, value) {
+  await setFormControlValue(
+    pageClient,
+    `input[aria-label="Permanent deletion confirmation phrase"]`,
+    value,
+    "HTMLInputElement"
+  );
+}
+
+async function clickPermanentDeletionDialogButton(pageClient, text) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = Array.from(document.querySelectorAll(".comment-permanent-deletion-dialog button"))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)} && !candidate.disabled);
+      if (!button) throw new Error("Permanent deletion dialog button not found: " + ${JSON.stringify(text)});
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
   });
 }
 

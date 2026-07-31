@@ -8,6 +8,7 @@ import type {
 export function GuidedReviewResponseSummary({
   batch,
   comments,
+  deletedCommentIds,
   isBusy,
   onAcknowledge,
   onClose,
@@ -15,6 +16,7 @@ export function GuidedReviewResponseSummary({
 }: {
   batch: PatchmarkReviewBatch;
   comments: PatchmarkComment[];
+  deletedCommentIds: ReadonlySet<string>;
   isBusy: boolean;
   onAcknowledge: () => void;
   onClose: () => void;
@@ -51,6 +53,15 @@ export function GuidedReviewResponseSummary({
 
       {analysis ? (
         <>
+          {batch.ordered_comment_ids.some((commentId) =>
+            deletedCommentIds.has(commentId)
+          ) ? (
+            <p className="guided-review-warning" role="status">
+              This historical batch references a permanently deleted comment.
+              Its exact saved context pack and imported response may still
+              contain the original content.
+            </p>
+          ) : null}
           <p
             className={
               analysis.coverage_status === "complete"
@@ -103,6 +114,7 @@ export function GuidedReviewResponseSummary({
             {analysis.ordered_comment_outcomes.map((outcome) => (
               <ResponseOutcome
                 comment={commentsById.get(outcome.comment_id)}
+                permanentlyDeleted={deletedCommentIds.has(outcome.comment_id)}
                 isBusy={isBusy}
                 key={outcome.comment_id}
                 onReview={() => onReviewComment(outcome.comment_id)}
@@ -152,12 +164,14 @@ function ResponseOutcome({
   comment,
   isBusy,
   onReview,
-  outcome
+  outcome,
+  permanentlyDeleted
 }: {
   comment: PatchmarkComment | undefined;
   isBusy: boolean;
   onReview: () => void;
   outcome: ReviewResponseCommentOutcome;
+  permanentlyDeleted: boolean;
 }) {
   const contributionLabels = [
     formatContribution(outcome.reply_count, "reply", "replies"),
@@ -186,7 +200,13 @@ function ResponseOutcome({
           {outcome.addressed ? "Addressed" : "Unanswered"}
         </span>
       </header>
-      {comment ? <p>{comment.comment}</p> : null}
+      {permanentlyDeleted ? (
+        <p>
+          <strong>Permanently deleted</strong>
+        </p>
+      ) : comment ? (
+        <p>{comment.comment}</p>
+      ) : null}
       <p>
         {outcome.addressed
           ? contributionLabels.join(" · ")
@@ -198,7 +218,7 @@ function ResponseOutcome({
       <div className="guided-review-card-actions">
         <button
           aria-label={`Review comment ${outcome.comment_id}`}
-          disabled={isBusy || !comment}
+          disabled={isBusy || !comment || permanentlyDeleted}
           onClick={onReview}
           type="button"
         >

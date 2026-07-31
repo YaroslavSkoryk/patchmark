@@ -218,6 +218,7 @@ export type PatchmarkManifest = {
   current_version?: string;
   versions?: PatchmarkVersionEntry[];
   reading_bookmark?: PatchmarkReadingBookmark;
+  comment_deletion_tombstones?: PatchmarkCommentDeletionTombstone[];
   save_generation?: number;
   save_commit_id?: string;
 };
@@ -233,6 +234,23 @@ export type PatchmarkReadingBookmark = {
   anchor: PatchmarkReadingBookmarkAnchor;
   created_at: string;
   updated_at: string;
+};
+
+export type PatchmarkDeletedPatchTombstone = {
+  patch_id: string;
+  status: PatchmarkPatchStatus;
+};
+
+export type PatchmarkCommentDeletionTombstone = {
+  schema_version: 1;
+  project_id: string;
+  document_id: string;
+  comment_id: string;
+  permanently_deleted_at: string;
+  permanent_delete_operation_id: string;
+  original_status: PatchmarkCommentStatus;
+  had_accepted_patches: boolean;
+  patches: PatchmarkDeletedPatchTombstone[];
 };
 
 export type PatchmarkLegacyCommentAnchorHistoryEntry = {

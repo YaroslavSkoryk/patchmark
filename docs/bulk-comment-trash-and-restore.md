@@ -1,14 +1,15 @@
 # Bulk Comment Trash and Restore
 
-Patchmark uses document-scoped Trash instead of permanent comment deletion.
+Patchmark uses document-scoped Trash as the reversible first deletion stage.
 Moving a comment to Trash preserves its ID, open or resolved status, thread,
 anchors and re-anchor history, patch lineage and decisions, import provenance,
 Review Batch history, and source metadata.
 
 > Moving a comment to Trash hides its review records but never reverses Markdown changes already applied through accepted patches.
 
-Permanent deletion, Empty Trash, retention timers, automatic purge, and
-cross-document cleanup are explicitly deferred.
+Delete Forever and active-document Empty Trash are documented in
+`docs/permanent-comment-deletion.md`. Retention timers, automatic purge,
+project-wide deletion, and cross-document cleanup remain explicitly deferred.
 
 ## Schema and compatibility
 

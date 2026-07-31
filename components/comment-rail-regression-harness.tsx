@@ -142,6 +142,7 @@ export function CommentRailRegressionHarness() {
             commentPositions={commentPositions}
             comments={comments}
             documentId="doc_comment_rail_regression"
+            documentTitle="Comment Rail Regression"
             defaultSectionLine={null}
             error={null}
             headings={[]}
@@ -151,8 +152,12 @@ export function CommentRailRegressionHarness() {
             onAddComment={noopAsyncCommentForm}
             onCloseAddComment={noopVoid}
             onMoveCommentsToTrash={noopAsyncTrash}
+            onPermanentlyDeleteComments={noopAsyncPermanentDelete}
             onOpenReviewBatch={noopVoidId}
             onPrepareMoveCommentsToTrash={noopAsyncTrashSummary}
+            onPreparePermanentDeleteComments={
+              noopAsyncPermanentDeletionSummary
+            }
             onRestoreCommentsFromTrash={noopAsyncIds}
             onEditComment={noopAsyncEditComment}
             onEditReply={noopAsyncEditReply}
@@ -260,6 +265,16 @@ async function noopAsyncTrash(request: {
   void request;
 }
 
+async function noopAsyncPermanentDelete(request: {
+  commentIds: string[];
+  confirmationPhrase: string;
+  expectedSelectionFingerprint: string;
+  mode: "individual" | "selected" | "empty_trash";
+  unsavedDraftCommentIds: string[];
+}): Promise<void> {
+  void request;
+}
+
 async function noopAsyncTrashSummary(commentIds: string[]) {
   return {
     acceptedPatches: 0,
@@ -275,6 +290,33 @@ async function noopAsyncTrashSummary(commentIds: string[]) {
     selectionFingerprint: "regression",
     stalePatches: 0,
     unresolvedAnchors: 0
+  };
+}
+
+async function noopAsyncPermanentDeletionSummary(
+  commentIds: string[],
+  _unsavedDraftCommentIds: string[],
+  mode: "individual" | "selected" | "empty_trash"
+) {
+  return {
+    acceptedPatches: 0,
+    blockedComments: 0,
+    blockers: [],
+    confirmationPhrase:
+      mode === "empty_trash"
+        ? "EMPTY TRASH"
+        : commentIds.length === 1
+          ? "DELETE"
+          : `DELETE ${commentIds.length} COMMENTS`,
+    imports: 0,
+    pendingPatches: 0,
+    rejectedPatches: 0,
+    replies: 0,
+    reviewBatchReferences: 0,
+    selectedComments: commentIds.length,
+    selectionFingerprint: "regression-delete",
+    stalePatches: 0,
+    tombstones: commentIds.length
   };
 }
 

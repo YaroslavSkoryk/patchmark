@@ -271,6 +271,116 @@ assert.equal(
   commentRestoreCommitBefore
 );
 
+const permanentDeleteFailureFixture = await createCommittedFixture(
+  "comment-permanent-delete-failure"
+);
+const permanentlyDeletedComment = {
+  ...permanentDeleteFailureFixture.comments[0],
+  trashed_at: "2026-07-31T06:00:00.000Z",
+  trash_operation_id: "comment_trash_before_permanent_delete_failure"
+};
+const permanentlyDeletedPatch = {
+  ...createPatch("permanent deletion fault injection"),
+  comment_id: permanentlyDeletedComment.id
+};
+await saveProjectState({
+  comments: [permanentlyDeletedComment],
+  patches: [permanentlyDeletedPatch],
+  project: permanentDeleteFailureFixture.project,
+  reason: "establish_permanent_delete_fixture",
+  rollbackOnFailure: true
+});
+const permanentDeleteCommentsBefore =
+  permanentDeleteFailureFixture.root.read(".patchmark/comments.json");
+const permanentDeletePatchesBefore =
+  permanentDeleteFailureFixture.root.read(".patchmark/patches.json");
+const permanentDeleteManifestBefore =
+  permanentDeleteFailureFixture.root.read(".patchmark/manifest.json");
+const permanentDeleteCommitBefore =
+  permanentDeleteFailureFixture.root.read(".patchmark/save-commit.json");
+const permanentDeleteNextManifest = {
+  ...permanentDeleteFailureFixture.project.manifest,
+  comment_deletion_tombstones: [
+    {
+      schema_version: 1,
+      project_id:
+        permanentDeleteFailureFixture.project.manifest.project_id,
+      document_id:
+        permanentDeleteFailureFixture.project.manifest.document_id,
+      comment_id: permanentlyDeletedComment.id,
+      permanently_deleted_at: "2026-07-31T07:00:00.000Z",
+      permanent_delete_operation_id: "comment_delete_fault_injection",
+      original_status: permanentlyDeletedComment.status,
+      had_accepted_patches: false,
+      patches: [
+        {
+          patch_id: permanentlyDeletedPatch.id,
+          status: permanentlyDeletedPatch.status
+        }
+      ]
+    }
+  ]
+};
+permanentDeleteFailureFixture.root.controller.failNext(
+  (path) => path === ".patchmark/manifest.json"
+);
+await assert.rejects(() =>
+  saveProjectState({
+    comments: [],
+    manifest: permanentDeleteNextManifest,
+    patches: [],
+    project: permanentDeleteFailureFixture.project,
+    reason: "comment_delete_fault_injection",
+    rollbackOnFailure: true
+  })
+);
+assert.equal(
+  permanentDeleteFailureFixture.root.read(".patchmark/comments.json"),
+  permanentDeleteCommentsBefore
+);
+assert.equal(
+  permanentDeleteFailureFixture.root.read(".patchmark/patches.json"),
+  permanentDeletePatchesBefore
+);
+assert.equal(
+  permanentDeleteFailureFixture.root.read(".patchmark/manifest.json"),
+  permanentDeleteManifestBefore
+);
+assert.equal(
+  permanentDeleteFailureFixture.root.read(".patchmark/save-commit.json"),
+  permanentDeleteCommitBefore
+);
+const permanentDeleteDocumentBefore =
+  permanentDeleteFailureFixture.root.read("document.md");
+await saveProjectState({
+  comments: [],
+  manifest: permanentDeleteNextManifest,
+  patches: [],
+  project: permanentDeleteFailureFixture.project,
+  reason: "comment_delete_success_after_retry",
+  rollbackOnFailure: true
+});
+picker.root = permanentDeleteFailureFixture.root;
+const reopenedPermanentDeleteFixture = await openProjectFolder();
+assert.ok(reopenedPermanentDeleteFixture);
+assert.equal(
+  (await readProjectComments(reopenedPermanentDeleteFixture.project)).length,
+  0
+);
+assert.equal(
+  (await readProjectPatches(reopenedPermanentDeleteFixture.project)).length,
+  0
+);
+assert.equal(
+  reopenedPermanentDeleteFixture.project.manifest
+    .comment_deletion_tombstones?.[0]?.comment_id,
+  permanentlyDeletedComment.id
+);
+assert.equal(
+  permanentDeleteFailureFixture.root.read("document.md"),
+  permanentDeleteDocumentBefore
+);
+
 const interruptionStages = [
   {
     name: "lkg",
@@ -416,6 +526,8 @@ process.stdout.write(
     dependencyFailurePreservedCommit: true,
     commentTrashFailureRolledBackAtomically: true,
     commentRestoreFailureRolledBackAtomically: true,
+    permanentDeleteFailureRolledBackAtomically: true,
+    permanentDeleteRestartPersistence: true,
     interruptionResults,
     malformedRecovery: true,
     staleTemporaryCleanup: true,

@@ -34,6 +34,10 @@ import {
   getVisibleActiveComments,
   type CommentTrashSummary
 } from "@/lib/comments/comment-trash-operations";
+import type {
+  CommentPermanentDeletionMode,
+  CommentPermanentDeletionSummary
+} from "@/lib/comments/comment-permanent-deletion-operations";
 import {
   type CommentAnchorStatus,
   type PatchmarkComment,
@@ -93,6 +97,7 @@ type CommentsPanelProps = {
   commentPositions: Record<string, number>;
   comments: PatchmarkComment[];
   documentId: string | null;
+  documentTitle: string;
   defaultSectionLine: number | null;
   error: string | null;
   headings: MarkdownHeading[];
@@ -106,11 +111,23 @@ type CommentsPanelProps = {
     expectedSelectionFingerprint: string;
     unsavedDraftCommentIds: string[];
   }) => Promise<void>;
+  onPermanentlyDeleteComments: (request: {
+    commentIds: string[];
+    confirmationPhrase: string;
+    expectedSelectionFingerprint: string;
+    mode: CommentPermanentDeletionMode;
+    unsavedDraftCommentIds: string[];
+  }) => Promise<void>;
   onOpenReviewBatch: (batchId: string) => void;
   onPrepareMoveCommentsToTrash: (
     commentIds: string[],
     unsavedDraftCommentIds: string[]
   ) => Promise<CommentTrashSummary>;
+  onPreparePermanentDeleteComments: (
+    commentIds: string[],
+    unsavedDraftCommentIds: string[],
+    mode: CommentPermanentDeletionMode
+  ) => Promise<CommentPermanentDeletionSummary>;
   onRestoreCommentsFromTrash: (commentIds: string[]) => Promise<void>;
   onEditComment: (
     commentId: string,
@@ -165,6 +182,13 @@ type CommentTrashDialogState = {
   summary: CommentTrashSummary;
   unsavedDraftCommentIds: string[];
 };
+type CommentPermanentDeletionDialogState = {
+  commentIds: string[];
+  confirmationInput: string;
+  mode: CommentPermanentDeletionMode;
+  summary: CommentPermanentDeletionSummary;
+  unsavedDraftCommentIds: string[];
+};
 
 type FloatingLayoutItem =
   | {
@@ -190,6 +214,7 @@ export function CommentsPanel({
   commentPositions,
   comments,
   documentId,
+  documentTitle,
   defaultSectionLine,
   error,
   headings,
@@ -199,8 +224,10 @@ export function CommentsPanel({
   onAddComment,
   onCloseAddComment,
   onMoveCommentsToTrash,
+  onPermanentlyDeleteComments,
   onOpenReviewBatch,
   onPrepareMoveCommentsToTrash,
+  onPreparePermanentDeleteComments,
   onRestoreCommentsFromTrash,
   onEditComment,
   onEditReply,
@@ -257,12 +284,16 @@ export function CommentsPanel({
   const [selectionNotice, setSelectionNotice] = useState("");
   const [trashDialog, setTrashDialog] =
     useState<CommentTrashDialogState | null>(null);
+  const [permanentDeletionDialog, setPermanentDeletionDialog] =
+    useState<CommentPermanentDeletionDialogState | null>(null);
   const [trashFilter, setTrashFilter] = useState<TrashCommentFilter>("all");
   const [selectedTrashKeys, setSelectedTrashKeys] = useState<Set<string>>(
     () => new Set()
   );
   const moveToTrashButtonRef = useRef<HTMLButtonElement | null>(null);
+  const trashSummaryRef = useRef<HTMLElement | null>(null);
   const trashDialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const permanentDeletionReturnFocusRef = useRef<HTMLElement | null>(null);
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
   const visibleComments = useMemo(() => {
@@ -740,6 +771,77 @@ export function CommentsPanel({
     }
   }
 
+  async function openPermanentDeletionConfirmation({
+    commentIds,
+    mode,
+    returnFocusElement
+  }: {
+    commentIds: string[];
+    mode: CommentPermanentDeletionMode;
+    returnFocusElement?: HTMLElement | null;
+  }) {
+    if (commentIds.length === 0) {
+      return;
+    }
+    try {
+      const activeElement =
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement !== document.body
+          ? document.activeElement
+          : null;
+      permanentDeletionReturnFocusRef.current =
+        returnFocusElement ?? activeElement;
+      const unsavedDraftCommentIds = getUnsavedDraftCommentIds();
+      const summary = await onPreparePermanentDeleteComments(
+        commentIds,
+        unsavedDraftCommentIds,
+        mode
+      );
+      setPermanentDeletionDialog({
+        commentIds,
+        confirmationInput: "",
+        mode,
+        summary,
+        unsavedDraftCommentIds
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Could not prepare the permanent-deletion summary."
+      );
+    }
+  }
+
+  async function confirmPermanentDeletion() {
+    if (
+      !permanentDeletionDialog ||
+      permanentDeletionDialog.summary.blockers.length > 0
+    ) {
+      return;
+    }
+    try {
+      await onPermanentlyDeleteComments({
+        commentIds: permanentDeletionDialog.commentIds,
+        confirmationPhrase: permanentDeletionDialog.confirmationInput,
+        expectedSelectionFingerprint:
+          permanentDeletionDialog.summary.selectionFingerprint,
+        mode: permanentDeletionDialog.mode,
+        unsavedDraftCommentIds:
+          permanentDeletionDialog.unsavedDraftCommentIds
+      });
+      setPermanentDeletionDialog(null);
+      setSelectedTrashKeys(new Set());
+      window.requestAnimationFrame(() => trashSummaryRef.current?.focus());
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Permanent deletion failed. Trash remains unchanged."
+      );
+    }
+  }
+
   const addForm = isAdding ? (
     <form
       ref={addFormRef}
@@ -983,7 +1085,9 @@ export function CommentsPanel({
             getSelectionKey={getSelectionKey}
           />
           <details className="comment-trash-section">
-            <summary>Trash · {trashedComments.length}</summary>
+            <summary ref={trashSummaryRef} tabIndex={-1}>
+              Trash · {trashedComments.length}
+            </summary>
             <div className="comment-trash-controls">
               <label>
                 <span>Show</span>
@@ -1030,7 +1134,40 @@ export function CommentsPanel({
                   >
                     Restore selected · {selectedTrashCommentIds.length}
                   </button>
+                  <button
+                    className="destructive-action"
+                    type="button"
+                    disabled={isBusy || selectedTrashCommentIds.length === 0}
+                    onClick={(event) =>
+                      void openPermanentDeletionConfirmation({
+                        commentIds: selectedTrashCommentIds,
+                        mode:
+                          selectedTrashCommentIds.length === 1
+                            ? "individual"
+                            : "selected",
+                        returnFocusElement: event.currentTarget
+                      })
+                    }
+                  >
+                    Delete selected forever · {selectedTrashCommentIds.length}
+                  </button>
                 </>
+              ) : null}
+              {trashedComments.length > 0 ? (
+                <button
+                  className="destructive-action"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={(event) =>
+                    void openPermanentDeletionConfirmation({
+                      commentIds: trashedComments.map((comment) => comment.id),
+                      mode: "empty_trash",
+                      returnFocusElement: event.currentTarget
+                    })
+                  }
+                >
+                  Empty Trash for {documentTitle}
+                </button>
               ) : null}
             </div>
             {visibleTrashedComments.length === 0 ? (
@@ -1086,13 +1223,29 @@ export function CommentsPanel({
                             </dd>
                           </div>
                         </dl>
-                        <button
-                          type="button"
-                          disabled={isBusy}
-                          onClick={() => void restoreComments([comment.id])}
-                        >
-                          Restore
-                        </button>
+                        <div className="trashed-comment-actions">
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void restoreComments([comment.id])}
+                          >
+                            Restore
+                          </button>
+                          <button
+                            className="destructive-action"
+                            type="button"
+                            disabled={isBusy}
+                            onClick={(event) =>
+                              void openPermanentDeletionConfirmation({
+                                commentIds: [comment.id],
+                                mode: "individual",
+                                returnFocusElement: event.currentTarget
+                              })
+                            }
+                          >
+                            Delete forever
+                          </button>
+                        </div>
                       </article>
                     </li>
                   );
@@ -1111,6 +1264,26 @@ export function CommentsPanel({
                 );
               }}
               onConfirm={() => void confirmMoveCommentsToTrash()}
+              onOpenReviewBatch={onOpenReviewBatch}
+            />
+          ) : null}
+          {permanentDeletionDialog ? (
+            <CommentPermanentDeletionDialog
+              dialog={permanentDeletionDialog}
+              documentTitle={documentTitle}
+              isBusy={isBusy}
+              onCancel={() => {
+                setPermanentDeletionDialog(null);
+                window.requestAnimationFrame(() =>
+                  permanentDeletionReturnFocusRef.current?.focus()
+                );
+              }}
+              onChangeConfirmation={(confirmationInput) =>
+                setPermanentDeletionDialog((current) =>
+                  current ? { ...current, confirmationInput } : current
+                )
+              }
+              onConfirm={() => void confirmPermanentDeletion()}
               onOpenReviewBatch={onOpenReviewBatch}
             />
           ) : null}
@@ -2722,6 +2895,229 @@ function BulkCommentTrashDialog({
             <button type="button" disabled={isBusy} onClick={onConfirm}>
               Move {summary.selectedComments} comment
               {summary.selectedComments === 1 ? "" : "s"} to Trash
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CommentPermanentDeletionDialog({
+  dialog,
+  documentTitle,
+  isBusy,
+  onCancel,
+  onChangeConfirmation,
+  onConfirm,
+  onOpenReviewBatch
+}: {
+  dialog: CommentPermanentDeletionDialogState;
+  documentTitle: string;
+  isBusy: boolean;
+  onCancel: () => void;
+  onChangeConfirmation: (value: string) => void;
+  onConfirm: () => void;
+  onOpenReviewBatch: (batchId: string) => void;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const { summary } = dialog;
+  const isBlocked = summary.blockers.length > 0;
+  const phraseMatches =
+    dialog.confirmationInput.trim() === summary.confirmationPhrase;
+  const title =
+    dialog.mode === "empty_trash"
+      ? `Permanently delete ${summary.selectedComments} comment${
+          summary.selectedComments === 1 ? "" : "s"
+        } from ${documentTitle}?`
+      : summary.selectedComments === 1
+        ? "Delete this comment forever?"
+        : `Permanently delete ${summary.selectedComments} comments?`;
+
+  useEffect(() => {
+    cancelButtonRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="dialog-backdrop">
+      <section
+        ref={dialogRef}
+        aria-describedby="comment-permanent-deletion-description"
+        aria-labelledby="comment-permanent-deletion-title"
+        aria-modal="true"
+        className="dialog-card comment-permanent-deletion-dialog"
+        role="dialog"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+            return;
+          }
+          if (event.key !== "Tab" || !dialogRef.current) {
+            return;
+          }
+          const focusable = Array.from(
+            dialogRef.current.querySelectorAll<HTMLElement>(
+              "button:not([disabled]), input:not([disabled]), [href]"
+            )
+          );
+          const first = focusable[0];
+          const last = focusable.at(-1);
+          if (!first || !last) {
+            return;
+          }
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+      >
+        <h2 id="comment-permanent-deletion-title">
+          {isBlocked ? "Cannot permanently delete these comments" : title}
+        </h2>
+        <div id="comment-permanent-deletion-description">
+          <p>
+            This permanently removes comment threads, anchors, and review
+            proposal content from the active Patchmark document store.
+          </p>
+          <p>Accepted Markdown changes will remain.</p>
+          <p>
+            Previously exported prompts, imported-response archives, downloaded
+            files, and external backups may still contain copies.
+          </p>
+          <p>This cannot be undone inside Patchmark.</p>
+        </div>
+        <dl className="comment-trash-summary">
+          <div>
+            <dt>Comments</dt>
+            <dd>{summary.selectedComments}</dd>
+          </div>
+          <div>
+            <dt>Replies</dt>
+            <dd>{summary.replies}</dd>
+          </div>
+          <div>
+            <dt>Pending patches</dt>
+            <dd>{summary.pendingPatches}</dd>
+          </div>
+          <div>
+            <dt>Accepted patches</dt>
+            <dd>{summary.acceptedPatches}</dd>
+          </div>
+          <div>
+            <dt>Rejected patches</dt>
+            <dd>{summary.rejectedPatches}</dd>
+          </div>
+          <div>
+            <dt>Review Batch references</dt>
+            <dd>{summary.reviewBatchReferences}</dd>
+          </div>
+          <div>
+            <dt>Imports</dt>
+            <dd>{summary.imports}</dd>
+          </div>
+          <div>
+            <dt>Minimal tombstones</dt>
+            <dd>{summary.tombstones}</dd>
+          </div>
+        </dl>
+        {summary.blockers.map((blocker, index) => {
+          if (blocker.kind === "active_review_batch") {
+            return (
+              <div
+                className="comment-trash-blocker"
+                key={`${blocker.kind}:${blocker.batchId}`}
+                role="alert"
+              >
+                <p>
+                  {blocker.commentIds.length} comment
+                  {blocker.commentIds.length === 1 ? "" : "s"} belong to an
+                  exported Review Batch awaiting ChatGPT.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onCancel();
+                    onOpenReviewBatch(blocker.batchId);
+                  }}
+                >
+                  Open active Review Batch
+                </button>
+              </div>
+            );
+          }
+          const messages = {
+            corrupt_historical_reference: `Historical reference ${
+              blocker.kind === "corrupt_historical_reference"
+                ? blocker.reference
+                : ""
+            } cannot be preserved safely.`,
+            in_flight_import:
+              "Wait for the response import to finish before deleting.",
+            in_flight_mutation:
+              "Wait for the Trash, Restore, or re-anchor operation to finish.",
+            unsaved_draft:
+              "Save, cancel, or explicitly discard the associated local draft first."
+          };
+          return (
+            <p
+              className="comment-trash-blocker"
+              key={`${blocker.kind}:${index}`}
+              role="alert"
+            >
+              {messages[blocker.kind]}
+            </p>
+          );
+        })}
+        {!isBlocked ? (
+          <label className="permanent-deletion-confirmation">
+            <span>
+              Type <strong>{summary.confirmationPhrase}</strong> to confirm
+              (case-sensitive)
+            </span>
+            <input
+              aria-describedby="permanent-deletion-confirmation-status"
+              aria-label="Permanent deletion confirmation phrase"
+              autoComplete="off"
+              value={dialog.confirmationInput}
+              onChange={(event) => onChangeConfirmation(event.target.value)}
+            />
+          </label>
+        ) : null}
+        <p
+          id="permanent-deletion-confirmation-status"
+          aria-live="polite"
+          className="permanent-deletion-confirmation-status"
+        >
+          {!isBlocked && dialog.confirmationInput && !phraseMatches
+            ? "Confirmation phrase does not match."
+            : ""}
+        </p>
+        <div className="dialog-actions">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            disabled={isBusy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          {!isBlocked ? (
+            <button
+              className="destructive-action"
+              type="button"
+              disabled={isBusy || !phraseMatches}
+              onClick={onConfirm}
+            >
+              {dialog.mode === "empty_trash"
+                ? `Empty Trash for ${documentTitle}`
+                : summary.selectedComments === 1
+                  ? "Delete forever"
+                  : "Delete selected forever"}
             </button>
           ) : null}
         </div>

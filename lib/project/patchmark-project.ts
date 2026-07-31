@@ -1,5 +1,6 @@
 import { type MarkdownFileHandle } from "../files/file-system-access.ts";
 import { normalizeCommentTrashMetadata } from "../comments/comment-trash-schema.ts";
+import { normalizeCommentDeletionTombstones } from "../comments/comment-deletion-tombstones.ts";
 import {
   assertDocumentScope,
   assertUniqueDocumentLocalIds,
@@ -1034,6 +1035,7 @@ export async function saveProjectState({
   markdown,
   patches,
   reviewBatches,
+  reviewQueueOverrides,
   project,
   reason,
   allowSupersede = false,
@@ -1044,6 +1046,7 @@ export async function saveProjectState({
   markdown?: string;
   patches?: PatchmarkPatch[];
   reviewBatches?: PatchmarkReviewBatch[];
+  reviewQueueOverrides?: PatchmarkReviewQueueOverrides;
   project: PatchmarkProjectHandle;
   reason: string;
   allowSupersede?: boolean;
@@ -1056,6 +1059,7 @@ export async function saveProjectState({
     markdown,
     patches,
     reviewBatches,
+    reviewQueueOverrides,
     project,
     reason,
     rollbackOnFailure
@@ -4498,7 +4502,12 @@ function normalizeManifest(
     versions: Array.isArray(manifest.versions)
       ? manifest.versions.filter(isPatchmarkVersionEntry)
       : undefined,
-    reading_bookmark: normalizeReadingBookmark(manifest, identity)
+    reading_bookmark: normalizeReadingBookmark(manifest, identity),
+    comment_deletion_tombstones: normalizeCommentDeletionTombstones({
+      documentId,
+      projectId,
+      value: manifest.comment_deletion_tombstones
+    })
   };
 }
 

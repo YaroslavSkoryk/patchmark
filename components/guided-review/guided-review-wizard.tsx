@@ -76,6 +76,7 @@ export function GuidedReviewWizard({
   buildPromptPreview,
   comments,
   deferredCommentIds,
+  deletedCommentIds,
   documentChangedSinceExport,
   documentTitle,
   generationBlockedReason,
@@ -100,6 +101,7 @@ export function GuidedReviewWizard({
   buildPromptPreview: ReviewQueuePromptPreviewBuilder;
   comments: PatchmarkComment[];
   deferredCommentIds: ReadonlySet<string>;
+  deletedCommentIds: ReadonlySet<string>;
   documentChangedSinceExport: boolean;
   documentTitle: string;
   generationBlockedReason: string | null;
@@ -450,6 +452,7 @@ export function GuidedReviewWizard({
             <GuidedReviewResponseSummary
               batch={responseBatch}
               comments={comments}
+              deletedCommentIds={deletedCommentIds}
               isBusy={isBusy}
               onAcknowledge={() => void acknowledgeResponse()}
               onClose={onClose}
