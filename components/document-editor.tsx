@@ -211,8 +211,10 @@ import {
   type PendingPatchTargetMatchMethod
 } from "@/lib/patches/linked-patch-target-resolution";
 import {
+  AtomicTablePatchValidationError,
   CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
   createCanonicalTableContextsFromOccurrences,
+  createAtomicTableRepairPrompt,
   getCompleteTableOccurrencesForExport,
   replaceCompleteTableOccurrencesWithMarkers,
   validateAtomicTablePatchImport,
@@ -5046,19 +5048,12 @@ export function DocumentEditor() {
       );
     } catch (error) {
       const message = getProjectErrorMessage(error);
-      const dependencyRepairPrompt = createPatchDependencyRepairPrompt(error);
-      const repairPrompt =
-        error instanceof ReviewBatchDocumentSnapshotError ||
-        (error instanceof PatchDependencyValidationError &&
-          !error.repairPromptEligible)
-          ? ""
-          : dependencyRepairPrompt
-            ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
-            : CHATGPT_IMPORT_REPAIR_PROMPT;
+      const repairPrompt = createChatGptImportRepairPrompt(error);
       setChatGptImportDialog({
         ...chatGptImportDialog,
         error: message,
         errorCode:
+          error instanceof AtomicTablePatchValidationError ||
           error instanceof PatchDependencyValidationError ||
           error instanceof ReviewBatchDocumentSnapshotError
             ? error.code
@@ -5209,14 +5204,7 @@ export function DocumentEditor() {
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
-      const dependencyRepairPrompt = createPatchDependencyRepairPrompt(error);
-      const repairPrompt =
-        error instanceof PatchDependencyValidationError &&
-        !error.repairPromptEligible
-          ? ""
-          : dependencyRepairPrompt
-            ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${dependencyRepairPrompt}`
-            : CHATGPT_IMPORT_REPAIR_PROMPT;
+      const repairPrompt = createChatGptImportRepairPrompt(error);
       if (
         activeDocumentKeyRef.current ===
         createProjectDocumentKey(chatGptImportDialog)
@@ -5226,7 +5214,10 @@ export function DocumentEditor() {
           ...chatGptImportDialog,
           error: message,
           errorCode:
-            error instanceof PatchDependencyValidationError ? error.code : null,
+            error instanceof AtomicTablePatchValidationError ||
+            error instanceof PatchDependencyValidationError
+              ? error.code
+              : null,
           repairPrompt
         });
         setSaveFeedback({
@@ -11930,6 +11921,25 @@ function getProjectErrorMessage(error: unknown): string {
   }
 
   return "Project folder action failed. Your Markdown is still in Patchmark.";
+}
+
+function createChatGptImportRepairPrompt(error: unknown): string {
+  if (
+    error instanceof ReviewBatchDocumentSnapshotError ||
+    ((error instanceof AtomicTablePatchValidationError ||
+      error instanceof PatchDependencyValidationError) &&
+      !error.repairPromptEligible)
+  ) {
+    return "";
+  }
+
+  const specializedPrompt =
+    createAtomicTableRepairPrompt(error) ||
+    createPatchDependencyRepairPrompt(error);
+
+  return specializedPrompt
+    ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${specializedPrompt}`
+    : CHATGPT_IMPORT_REPAIR_PROMPT;
 }
 
 function createNextCommentId(comments: PatchmarkComment[]): string {

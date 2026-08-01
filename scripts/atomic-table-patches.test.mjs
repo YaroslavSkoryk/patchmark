@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import {
   ATOMIC_TABLE_IMPORT_ERROR,
+  AtomicTablePatchValidationError,
   CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
   createCanonicalTableContextsFromOccurrences,
   createPatchmarkTableMarker,
@@ -92,6 +93,10 @@ function assertRejected(patchProposals, markdown = documentMarkdown) {
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /Return exactly one `patch_proposal`/);
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /Patch 1 adds a header cell/);
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /complete four-column table/);
+  assert.match(
+    CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
+    /complete region containing several related tables/
+  );
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /\[\[PATCHMARK_TABLE:PM-TABLE-0001\]\]/);
   assert.match(CHATGPT_ATOMIC_TABLE_PROMPT_RULES, /Never copy a Patchmark table marker/);
   assert.match(
@@ -414,12 +419,21 @@ function assertRejected(patchProposals, markdown = documentMarkdown) {
 }
 
 {
-  assertRejected([
-    proposal({
-      original_text: "| Product | Price | Notes |",
-      suggested_text: "| Product | Minimum price | Maximum price | Notes |"
-    })
-  ]);
+  assert.throws(
+    () =>
+      validateAtomicTablePatchImport({
+        markdown: documentMarkdown,
+        patchProposals: [
+          proposal({
+            original_text: "| Product | Price | Notes |",
+            suggested_text: "| Product | Minimum price | Maximum price | Notes |"
+          })
+        ]
+      }),
+    (error) =>
+      error instanceof AtomicTablePatchValidationError &&
+      error.code === "incomplete_structural_region"
+  );
 }
 
 {

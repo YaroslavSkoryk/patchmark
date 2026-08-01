@@ -1,5 +1,7 @@
 # Patchmark
 
+Implementation notes for structural reply imports are documented in [Atomic structural patches](docs/atomic-structural-patches.md).
+
 Markdown-first document editor with Visual Mode and Markdown Mode.
 
 ## Getting Started

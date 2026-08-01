@@ -63,6 +63,8 @@
     "test:version-history-display": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/version-history-display.test.mjs",
     "test:version-history-browser": "node scripts/version-history-browser.test.mjs",
     "test:atomic-table-patches": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/atomic-table-patches.test.mjs",
+    "test:atomic-multi-table-import": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/atomic-multi-table-import.test.mjs",
+    "test:atomic-multi-table-import-browser": "node scripts/atomic-multi-table-import-browser.test.mjs",
     "test:table-anchor-patch-mapping": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/table-anchor-patch-mapping.test.mjs",
     "test:comment-anchor-changed-table-cell-mapping": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-changed-table-cell-mapping.test.mjs",
     "test:comment-anchor-table-row-recovery": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-table-row-recovery.test.mjs",
