@@ -56,11 +56,13 @@ import {
 } from "@/lib/performance/document-switch-performance";
 
 type MdxEditorClientProps = {
+  ariaLabel?: string;
   markdown: string;
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
   resetKey: number;
   selectionOnly?: boolean;
+  showToolbar?: boolean;
 };
 
 const clearHistoryAfterDocumentResetPlugin = realmPlugin({
@@ -75,11 +77,13 @@ const clearHistoryAfterDocumentResetPlugin = realmPlugin({
 });
 
 export function MdxEditorClient({
+  ariaLabel = "editable markdown",
   markdown,
   onMarkdownChange,
   readOnly = false,
   resetKey,
-  selectionOnly = false
+  selectionOnly = false,
+  showToolbar = true
 }: MdxEditorClientProps) {
   const visualMarkdown = useMemo(
     () => {
@@ -157,13 +161,19 @@ export function MdxEditorClient({
   useEffect(() => {
     const content = editorShellRef.current?.querySelector(".patchmark-prose");
 
-    if (!content || !selectionOnly) {
+    if (!content) {
       return;
     }
 
-    content.setAttribute("aria-readonly", "true");
-    return () => content.removeAttribute("aria-readonly");
-  }, [editorInstanceKey, selectionOnly, visualMarkdown]);
+    content.setAttribute("aria-label", ariaLabel);
+    if (readOnly || selectionOnly) {
+      content.setAttribute("aria-readonly", "true");
+    }
+    return () => {
+      content.removeAttribute("aria-label");
+      content.removeAttribute("aria-readonly");
+    };
+  }, [ariaLabel, editorInstanceKey, readOnly, selectionOnly, visualMarkdown]);
 
   useEffect(() => {
     if (renderError || visualMarkdown.trim().length === 0) {
@@ -321,7 +331,12 @@ export function MdxEditorClient({
   return (
     <div
       ref={editorShellRef}
-      className={selectionOnly ? "visual-editor-selection-only" : undefined}
+      className={[
+        selectionOnly ? "visual-editor-selection-only" : "",
+        showToolbar ? "" : "visual-editor-toolbar-hidden"
+      ]
+        .filter(Boolean)
+        .join(" ") || undefined}
       onBeforeInputCapture={preventSelectionOnlyMutation}
       onClickCapture={handleSelectionOnlyClick}
       onCutCapture={preventSelectionOnlyMutation}
@@ -345,7 +360,7 @@ export function MdxEditorClient({
             </button>
           </div>
           <textarea
-            aria-label="Visual Mode fallback Markdown editor"
+            aria-label={`${ariaLabel} fallback Markdown editor`}
             readOnly={readOnly}
             spellCheck={false}
             value={markdown}

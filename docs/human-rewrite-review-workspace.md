@@ -7,12 +7,33 @@
 Rewrite Workspace is a human-authoring workflow. It is separate from comment re-anchoring, patch rebasing, patch review, Guided Review, and automatic AI rewriting.
 
 - The left pane is a frozen `Current document text` reference.
-- The right pane is the editable `My rewrite` Markdown draft.
+- The right pane is the editable `My rewrite` Human Draft.
 - ChatGPT is an optional semantic reviewer, not the author or a truth-verification service.
 - Importing a review never changes the draft, document, comments, or patches.
 - Applying a rewrite never resolves comments or accepts patch proposals.
 
 The MVP supports one active document and one deterministic contiguous selection or complete canonical section. It does not support cross-document, multi-range, or whole-document rewrites.
+
+## Full-screen comparison and editor modes
+
+Rewrite Workspace is a full-screen application surface rather than a centered modal. It occupies the complete viewport, locks scrolling on the document behind it, and keeps its compact header, save state, Close control, intent field, and action bar reachable without scrolling through the draft. Desktop uses a fixed 50/50 comparison split. Each editor owns its vertical scroll; the panes are intentionally not scroll-synchronized.
+
+The shared `View both as` control changes both panes together:
+
+- `Visual` is the documented default. The frozen reference uses the normal Patchmark Visual schema in read-only selection mode, while the Human Draft uses an isolated editable instance with the normal toolbar and local undo/redo.
+- `Markdown` shows the exact canonical Markdown in both panes. The reference source is read-only and the Human Draft source is editable.
+
+> Visual and Markdown modes edit the same canonical Human Draft. Switching modes changes its representation, not its ownership or authorship.
+
+> The Current document text pane remains a frozen read-only reference in both modes.
+
+There are no per-mode draft copies and no rewrite-specific Markdown conversion engine. Visual transactions serialize through the same MDX editor and Markdown normalization used by the normal document editor, then update the rewrite session’s single `human_draft` string. Merely switching representation does not advance the draft revision or invalidate semantic review. A real serialized content change does both through the existing draft-hash rules.
+
+The normal Visual schema handles headings, paragraphs, emphasis, links, lists, blockquotes, code blocks, frontmatter, thematic breaks, supported JSX, images, and tables. Wide tables keep their columns and scroll inside their editor pane rather than expanding the workspace. If the normal Visual editor cannot safely represent Markdown, the raw Markdown remains intact and an explicit Visual-render warning opens the existing Markdown-safe fallback. The Human Draft stays editable as Markdown; unsupported nodes are never silently dropped.
+
+The Visual and Markdown editors are isolated from the authoritative document editor. Draft edits do not dirty or remount the document editor, create document history, transform comments or bookmarks, stale patches, or mutate Review Batches. Those effects remain exclusive to confirmed Apply.
+
+Mode changes return focus to the Human Draft. Markdown cursor selection is restored when deterministic; changing representation can reset the Visual editor’s local undo stack because the current normal editor remounts across mode changes. This limitation is explicit rather than simulated with a second history model.
 
 ## Entry and targeting
 
@@ -49,6 +70,8 @@ The schema stores:
 - immutable semantic-review request/response rounds.
 
 The human draft starts as a copy of the current text. Draft and intent changes use a debounced, ordered save pipeline: update memory, write a browser recovery copy, atomically commit the project record, and then remove only the matching recovery revision. The UI distinguishes `Saving to project…`, `Saved to project`, `Project save failed — recovery copy saved in this browser`, and `Unsaved changes · Recovery copy unavailable`. It never presents a recovery-only draft as project-saved.
+
+Visual and Markdown edits use that same save pipeline. Close, semantic-review export, impact analysis, and Apply first use the current canonical Human Draft and await its authoritative project save. Semantic review and Apply receive Markdown only—never rendered HTML, Lexical state, or editor-internal JSON. Refresh replaces the frozen base representation while preserving the Human Draft and the currently selected comparison mode.
 
 Saving a draft advances the project review-data generation but leaves Markdown, comments, bookmarks, patches, Review Batches, and Markdown Version History unchanged. Close offers `Keep draft and close`, `Discard draft`, and `Cancel`. Keeping flushes the project draft; discarding writes a content-minimized terminal project marker and does not modify Markdown or create Version History. Refresh and project resume derive their reminders from project data and show the document and heading snapshot before resuming.
 
@@ -145,9 +168,9 @@ The Version History mutation audit records human authorship, rewrite session ID,
 
 ## Accessibility and responsive behavior
 
-The full-screen dialog has labeled read-only and editable panes, visible focus, a focus trap, Escape close behavior, live draft-save status, non-color-only warnings, and focus restoration. Destructive discard requires confirmation.
+The full-screen dialog has an accessible title, labeled read-only and editable panes, an announced shared mode state, visible focus, a focus trap, live draft-save status, non-color-only warnings, and focus restoration. The read-only Visual reference blocks editing commands while remaining selectable. Escape closes temporary dialogs first but does not close the workspace or open its close confirmation while the user is editing; workspace exit requires the deliberate Close control. Destructive discard requires confirmation.
 
-Desktop uses side-by-side current and draft panes with a separate review area. At 900 px and below, `Current text`, `My rewrite`, and `Review` tabs expose one pane at a time without horizontal page overflow. Reduced-motion preferences disable workspace transitions.
+Desktop uses side-by-side current and draft panes with a compact independently scrolling review area. At 900 px and below, `Current text`, `My rewrite`, and `Review` tabs expose one pane at a time without horizontal page overflow; the shared mode control remains available. Reduced-motion preferences disable workspace transitions.
 
 ## Portability, privacy, and exports
 
@@ -157,4 +180,4 @@ Complete project copies, project assembly, document archive/restore, missing-fil
 
 Markdown-only copies and exports omit rewrite sessions. PDF exports also omit them. Deleting the complete project folder or its Patchmark metadata can delete the sessions; clearing browser storage cannot delete project-backed sessions. Browser recovery may temporarily contain recent unsynchronized text. Rewrite data is not claimed to be encrypted and is not written to unrelated logs.
 
-Explicit non-goals include automatic ChatGPT calls, automatic source research, independent factual verification, AI-generated replacement text, automatic suggestion acceptance, patch rebasing, multi-range or cross-document rewrites, and real-time collaboration.
+Explicit non-goals include linked pane scrolling, a draggable divider, independent left/right modes, a second Markdown conversion engine, preserving one Visual undo stack across editor remounts, automatic ChatGPT calls, automatic source research, independent factual verification, AI-generated replacement text, automatic suggestion acceptance, patch rebasing, multi-range or cross-document rewrites, and real-time collaboration.

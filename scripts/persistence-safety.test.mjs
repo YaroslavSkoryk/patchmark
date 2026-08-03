@@ -515,6 +515,51 @@ assert.equal(
 );
 setRewriteSessionStorageForTests(null);
 
+const sequentialRewriteFixture = await createCommittedFixture(
+  "sequential-rewrite-sessions"
+);
+setRewriteSessionStorageForTests(createMemoryRewriteSessionStorage());
+const sequentialRewriteCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: "local_rewrite_test",
+  project: sequentialRewriteFixture.project
+});
+const sequentialFirstSession = await createRewriteFixtureSession(
+  sequentialRewriteFixture,
+  "First session is discarded."
+);
+const sequentialFirstSaved = await sequentialRewriteCoordinator.persist(
+  sequentialFirstSession,
+  "sequential_rewrite_first"
+);
+await sequentialRewriteCoordinator.discard(sequentialFirstSaved.session);
+const sequentialSecondSession = await createRewriteFixtureSession(
+  sequentialRewriteFixture,
+  "Second session remains editable."
+);
+const sequentialSecondSaved = await sequentialRewriteCoordinator.persist(
+  sequentialSecondSession,
+  "sequential_rewrite_second"
+);
+assert.equal(sequentialSecondSaved.session.authoritative_revision, 1);
+const sequentialRewriteStore = JSON.parse(
+  sequentialRewriteFixture.root.read(".patchmark/rewrite-sessions.json")
+);
+assert.equal(
+  sequentialRewriteStore.sessions.find(
+    (session) =>
+      session.rewrite_session_id === sequentialFirstSession.rewrite_session_id
+  ).status,
+  "discarded"
+);
+assert.equal(
+  sequentialRewriteStore.sessions.find(
+    (session) =>
+      session.rewrite_session_id === sequentialSecondSession.rewrite_session_id
+  ).human_draft,
+  sequentialSecondSession.human_draft
+);
+setRewriteSessionStorageForTests(null);
+
 const identicalRecoveryFixture = await createCommittedFixture(
   "identical-rewrite-recovery"
 );
@@ -1056,6 +1101,7 @@ process.stdout.write(
     rewriteVersionHistoryIsolation: true,
     concurrentRewriteStaleWriteRejected: true,
     orderedRewriteSaves: true,
+    sequentialRewriteSessions: true,
     identicalRewriteRecoveryDeduplicated: true,
     newerRewriteRecoveryExplicitlyRecovered: true,
     recoveryOnlyFailureState: true,

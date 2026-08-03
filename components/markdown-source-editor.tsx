@@ -23,6 +23,8 @@ export type MarkdownMutationHint = {
 };
 
 type MarkdownSourceEditorProps = {
+  ariaLabel?: string;
+  id?: string;
   markdown: string;
   onMarkdownChange: (markdown: string, hint?: MarkdownMutationHint) => void;
   onSelectionChange?: (
@@ -34,6 +36,8 @@ type MarkdownSourceEditorProps = {
 };
 
 export function MarkdownSourceEditor({
+  ariaLabel = "Markdown Mode",
+  id,
   markdown,
   onMarkdownChange,
   onSelectionChange,
@@ -85,8 +89,9 @@ export function MarkdownSourceEditor({
   return (
     <textarea
       ref={textareaRef}
+      id={id}
       className="markdown-source-editor"
-      aria-label="Markdown Mode"
+      aria-label={ariaLabel}
       spellCheck={false}
       readOnly={readOnly}
       value={markdown}

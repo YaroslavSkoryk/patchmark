@@ -31,6 +31,8 @@ import {
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
 const screenshotPath = process.env.PATCHMARK_COMMENT_COMPOSER_SCREENSHOT;
+const rewriteWorkspaceScreenshotPath =
+  process.env.PATCHMARK_REWRITE_WORKSPACE_SCREENSHOT;
 const preambleTarget =
   "Preamble selection has no deterministic containing section.";
 const paragraphTarget =
@@ -123,13 +125,10 @@ async function run() {
       expression: `(() => {
         window.__patchmarkSelectionActionsEditorNode =
           document.querySelector("[aria-label='editable markdown']");
-        window.__patchmarkRewritePersistenceEvents = [];
-        window.addEventListener("patchmark:rewrite-persistence", (event) => {
-          window.__patchmarkRewritePersistenceEvents.push(event.detail);
-        });
         return Boolean(window.__patchmarkSelectionActionsEditorNode);
       })()`
     });
+    await installRewritePersistenceObserver(client);
 
     await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
@@ -179,37 +178,147 @@ async function run() {
       client,
       "Rewrite Workspace",
       `(() => {
-        const workspace = document.querySelector("[data-testid='rewrite-workspace']");
-        const current = workspace?.querySelector(".rewrite-current-pane pre")?.textContent;
-        const draft = workspace?.querySelector("#rewrite-human-draft")?.value;
-        return workspace ? {
-          current,
-          draft,
+        const backdrop = document.querySelector("[data-testid='rewrite-workspace']");
+        const workspace = backdrop?.querySelector(".rewrite-workspace");
+        const current = workspace?.querySelector("[aria-label='Current document text Visual reference']");
+        const draft = workspace?.querySelector("[aria-label='My rewrite Visual editor']");
+        if (!backdrop || !workspace || !current || !draft) return null;
+        const backdropRect = backdrop.getBoundingClientRect();
+        const workspaceRect = workspace.getBoundingClientRect();
+        const currentSurface = workspace.querySelector(".rewrite-current-pane .rewrite-editor-surface");
+        const draftSurface = workspace.querySelector(".rewrite-draft-pane .rewrite-editor-surface");
+        return {
+          current: current.textContent.trim(),
+          draft: draft.textContent.trim(),
+          currentEditable: current.getAttribute("contenteditable"),
+          currentReadOnly: current.getAttribute("aria-readonly"),
+          draftEditable: draft.getAttribute("contenteditable"),
+          activeMode: workspace.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim(),
+          backdropRect: {
+            height: Math.round(backdropRect.height),
+            left: Math.round(backdropRect.left),
+            top: Math.round(backdropRect.top),
+            width: Math.round(backdropRect.width)
+          },
+          workspaceRect: {
+            height: Math.round(workspaceRect.height),
+            left: Math.round(workspaceRect.left),
+            top: Math.round(workspaceRect.top),
+            width: Math.round(workspaceRect.width)
+          },
+          bodyOverflow: getComputedStyle(document.body).overflow,
+          workspaceOverflow: getComputedStyle(workspace).overflow,
+          bodyPanelOverflow: getComputedStyle(workspace.querySelector(".rewrite-workspace-body")).overflow,
+          currentOverflow: getComputedStyle(currentSurface).overflow,
+          draftOverflow: getComputedStyle(draftSurface).overflow,
+          hasPersistentActions: ["Close", "Review meaning with ChatGPT", "Apply rewrite"].every((label) =>
+            Array.from(workspace.querySelectorAll("button")).some((button) => button.textContent.trim() === label)
+          ),
           leftLabel: workspace.querySelector(".rewrite-current-pane")?.textContent,
           rightLabel: workspace.querySelector(".rewrite-draft-pane")?.textContent
-        } : null;
+        };
       })()`
     );
     const rewriteWorkspaceOpenLatencyMs = Date.now() - rewriteWorkspaceOpenStartedAt;
     assert.ok(rewriteWorkspaceOpenLatencyMs < 1000);
     assert.equal(rewriteWorkspace.current, paragraphTarget);
     assert.equal(rewriteWorkspace.draft, paragraphTarget);
+    assert.equal(rewriteWorkspace.activeMode, "Visual");
+    assert.notEqual(rewriteWorkspace.currentEditable, "true");
+    assert.equal(rewriteWorkspace.currentReadOnly, "true");
+    assert.equal(rewriteWorkspace.draftEditable, "true");
+    assert.deepEqual(rewriteWorkspace.backdropRect, {
+      height: 820,
+      left: 0,
+      top: 0,
+      width: 1500
+    });
+    assert.deepEqual(rewriteWorkspace.workspaceRect, rewriteWorkspace.backdropRect);
+    assert.equal(rewriteWorkspace.bodyOverflow, "hidden");
+    assert.equal(rewriteWorkspace.workspaceOverflow, "hidden");
+    assert.equal(rewriteWorkspace.bodyPanelOverflow, "hidden");
+    assert.match(rewriteWorkspace.currentOverflow, /auto/);
+    assert.match(rewriteWorkspace.draftOverflow, /auto/);
+    assert.equal(rewriteWorkspace.hasPersistentActions, true);
     assert.match(rewriteWorkspace.leftLabel, /Current document text/);
     assert.match(rewriteWorkspace.rightLabel, /My rewrite/);
-    const rewriteDraft = `${paragraphTarget} Human clarification.`;
-    const rewriteDraftSaveStartedAt = Date.now();
-    await evaluate(client, {
-      expression: `(() => {
-        const textarea = document.querySelector("#rewrite-human-draft");
-        const setter = Object.getOwnPropertyDescriptor(
-          HTMLTextAreaElement.prototype,
-          "value"
-        ).set;
-        setter.call(textarea, ${JSON.stringify(rewriteDraft)});
-        textarea.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
+    if (rewriteWorkspaceScreenshotPath) {
+      await saveScreenshot(client, rewriteWorkspaceScreenshotPath);
+    }
+    const markdownModeStartedAt = Date.now();
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    const markdownWorkspace = await waitFor(
+      client,
+      "Rewrite Workspace Markdown mode",
+      `(() => {
+        const current = document.querySelector("[aria-label='Current document text Markdown reference']");
+        const draft = document.querySelector("#rewrite-human-draft");
+        return current && draft ? {
+          current: current.value,
+          currentReadOnly: current.readOnly,
+          draft: draft.value,
+          draftReadOnly: draft.readOnly,
+          activeMode: document.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim()
+        } : null;
       })()`
-    });
+    );
+    const rewriteVisualToMarkdownLatencyMs = Date.now() - markdownModeStartedAt;
+    assert.ok(rewriteVisualToMarkdownLatencyMs < 1000);
+    assert.equal(markdownWorkspace.current, paragraphTarget);
+    assert.equal(markdownWorkspace.draft, paragraphTarget);
+    assert.equal(markdownWorkspace.currentReadOnly, true);
+    assert.equal(markdownWorkspace.draftReadOnly, false);
+    assert.equal(markdownWorkspace.activeMode, "Markdown");
+
+    const sourceRewriteDraft = `${paragraphTarget} Human clarification.`;
+    const rewriteDraftSaveStartedAt = Date.now();
+    await setRewriteMarkdownDraft(client, sourceRewriteDraft);
+    const visualModeStartedAt = Date.now();
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "Markdown draft represented visually",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Human clarification.")`
+    );
+    const rewriteMarkdownToVisualLatencyMs = Date.now() - visualModeStartedAt;
+    assert.ok(rewriteMarkdownToVisualLatencyMs < 1000);
+    await appendToRewriteVisualDraft(client, " Visual refinement.");
+    await waitFor(
+      client,
+      "Visual rewrite transaction",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
+    );
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    const rewriteDraft = await waitFor(
+      client,
+      "Visual rewrite serialized to Markdown",
+      `document.querySelector("#rewrite-human-draft")?.value ?? null`,
+      (value) =>
+        typeof value === "string" &&
+        value.includes("Human clarification.") &&
+        value.includes("Visual refinement.")
+    );
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "repeated Visual mode",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
+    );
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    assert.equal(
+      await waitFor(
+        client,
+        "stable repeated rewrite round trip",
+        `document.querySelector("#rewrite-human-draft")?.value ?? null`
+      ),
+      rewriteDraft
+    );
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "Visual mode before semantic review",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
+    );
     await waitFor(
       client,
       "project-saved rewrite draft",
@@ -224,6 +333,14 @@ async function run() {
     );
     assert.ok(rewriteAuthoritativeSaveMetrics.durationMs < 2000);
     assert.equal(rewriteAuthoritativeSaveMetrics.revision >= 1, true);
+    await pressEscape(client);
+    assert.equal(
+      await evaluate(client, {
+        expression: `Boolean(document.querySelector("[data-testid='rewrite-workspace']")) && !document.querySelector("[aria-label='Close Rewrite Workspace?']")`
+      }),
+      true,
+      "Escape must not close the full Rewrite Workspace or open its close confirmation."
+    );
     const rewritePromptStartedAt = Date.now();
     await clickRewriteWorkspaceButton(client, "Review meaning with ChatGPT");
     const promptText = await waitFor(
@@ -277,12 +394,21 @@ async function run() {
     ]) {
       assert.match(importedReview, new RegExp(category));
     }
+    await clickRewriteWorkspaceButton(client, "Markdown");
     assert.equal(
-      await evaluate(client, {
-        expression: `document.querySelector("#rewrite-human-draft")?.value`
-      }),
+      await waitFor(
+        client,
+        "reviewed rewrite in Markdown mode",
+        `document.querySelector("#rewrite-human-draft")?.value ?? null`
+      ),
       rewriteDraft,
       "Importing semantic review must not mutate the human draft."
+    );
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "reviewed rewrite in Visual mode",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
     );
     await waitFor(
       client,
@@ -302,15 +428,27 @@ async function run() {
         const workspace = document.querySelector("[data-testid='rewrite-workspace']");
         const tabs = workspace?.querySelectorAll(".rewrite-workspace-tabs [role='tab']");
         if (!workspace || tabs?.length !== 3) return null;
+        const rect = workspace.getBoundingClientRect();
+        const visibleSections = Array.from(
+          workspace.querySelectorAll(".rewrite-workspace-body > section")
+        ).filter((section) => getComputedStyle(section).display !== "none");
         return {
           activeTab: workspace.querySelector(".rewrite-workspace-tabs [aria-selected='true']")?.textContent,
+          activeMode: workspace.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim(),
+          height: Math.round(rect.height),
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-          tabLabels: Array.from(tabs).map((tab) => tab.textContent.trim())
+          tabLabels: Array.from(tabs).map((tab) => tab.textContent.trim()),
+          visibleSections: visibleSections.length,
+          width: Math.round(rect.width)
         };
       })()`
     );
     assert.deepEqual(narrowWorkspace.tabLabels, ["Current text", "My rewrite", "Review"]);
     assert.equal(narrowWorkspace.activeTab, "Review");
+    assert.equal(narrowWorkspace.activeMode, "Visual");
+    assert.equal(narrowWorkspace.height, 760);
+    assert.equal(narrowWorkspace.width, 430);
+    assert.equal(narrowWorkspace.visibleSections, 1);
     assert.equal(narrowWorkspace.horizontalOverflow, false);
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
@@ -343,6 +481,7 @@ async function run() {
     await waitForEditorShell(client);
     await clickButtonByText(client, "Open Project Folder");
     await waitForActiveDocument(client, "Action Plan");
+    await installRewritePersistenceObserver(client);
     await waitFor(
       client,
       "project-backed rewrite resume banner after IndexedDB clearing",
@@ -351,8 +490,23 @@ async function run() {
     await clickButtonByText(client, "Resume rewrite");
     await waitFor(
       client,
-      "resumed exact rewrite draft",
-      `document.querySelector("#rewrite-human-draft")?.value === ${JSON.stringify(rewriteDraft)}`
+      "resumed rewrite draft in Visual mode",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
+    );
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    assert.equal(
+      await waitFor(
+        client,
+        "resumed exact rewrite draft",
+        `document.querySelector("#rewrite-human-draft")?.value ?? null`
+      ),
+      rewriteDraft
+    );
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "resumed Visual rewrite before impact",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
     );
     assert.equal(
       await evaluate(client, {
@@ -405,6 +559,130 @@ async function run() {
     assert.equal(
       discardedRewriteStore.sessions.some((session) => session.status === "discarded"),
       true
+    );
+    initialFingerprint = fingerprintProject(fixtureDir);
+
+    await selectVisualText(client, tableTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, tableTarget);
+    await openSelectionChooser(client);
+    const rewriteTableVisualRenderStartedAt = Date.now();
+    await chooseSelectionAction(client, "rewrite_section");
+    const tableRewriteWorkspace = await waitFor(
+      client,
+      "table-heavy Visual rewrite workspace",
+      `(() => {
+        const currentSurface = document.querySelector(".rewrite-current-pane .rewrite-editor-surface");
+        const draftSurface = document.querySelector(".rewrite-draft-pane .rewrite-editor-surface");
+        const currentEditor = document.querySelector("[aria-label='Current document text Visual reference']");
+        const draftEditor = document.querySelector("[aria-label='My rewrite Visual editor']");
+        if (!currentSurface || !draftSurface || !currentEditor || !draftEditor) return null;
+        const currentTables = currentEditor.querySelectorAll("table");
+        const draftTables = draftEditor.querySelectorAll("table");
+        if (currentTables.length === 0 || draftTables.length === 0) return null;
+        return {
+          currentTables: currentTables.length,
+          draftTables: draftTables.length,
+          currentScrollable: currentSurface.scrollHeight > currentSurface.clientHeight,
+          draftScrollable: draftSurface.scrollHeight > draftSurface.clientHeight,
+          currentHorizontal: currentSurface.scrollWidth >= currentSurface.clientWidth,
+          draftHorizontal: draftSurface.scrollWidth >= draftSurface.clientWidth,
+          draftEditable: draftEditor.getAttribute("contenteditable")
+        };
+      })()`
+    );
+    const rewriteTableVisualRenderLatencyMs =
+      Date.now() - rewriteTableVisualRenderStartedAt;
+    assert.ok(rewriteTableVisualRenderLatencyMs < 5000);
+    assert.equal(tableRewriteWorkspace.currentTables >= 1, true);
+    assert.equal(tableRewriteWorkspace.draftTables >= 1, true);
+    assert.equal(tableRewriteWorkspace.currentScrollable, true);
+    assert.equal(tableRewriteWorkspace.draftScrollable, true);
+    assert.equal(tableRewriteWorkspace.currentHorizontal, true);
+    assert.equal(tableRewriteWorkspace.draftHorizontal, true);
+    assert.equal(tableRewriteWorkspace.draftEditable, "true");
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    const tableRewriteMarkdown = await waitFor(
+      client,
+      "table-heavy canonical Markdown",
+      `document.querySelector("#rewrite-human-draft")?.value ?? null`,
+      (value) =>
+        typeof value === "string" &&
+        value.includes("| Illustrative revenue logic | Operating objective |") &&
+        value.includes(tableTarget)
+    );
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "table-heavy repeated Visual mode",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.querySelectorAll("table").length > 0`
+    );
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    assert.equal(
+      await waitFor(
+        client,
+        "stable table Markdown round trip",
+        `document.querySelector("#rewrite-human-draft")?.value ?? null`
+      ),
+      tableRewriteMarkdown
+    );
+    const unsupportedRewriteMarkdown = `${tableRewriteMarkdown}\n\n<UnsupportedRewriteWidget />`;
+    const unsupportedSaveEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    await setRewriteMarkdownDraft(client, unsupportedRewriteMarkdown);
+    await waitFor(
+      client,
+      "unsupported Markdown authoritative save event",
+      `window.__patchmarkRewritePersistenceEvents?.length > ${unsupportedSaveEventCount}`
+    );
+    assert.match(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-save-state")?.textContent ?? ""`
+      }),
+      /Saved to project/
+    );
+    await clickRewriteWorkspaceButton(client, "Visual");
+    const unsupportedVisualState = await waitFor(
+      client,
+      "Markdown-safe unsupported Visual fallback",
+      `(() => {
+        const error = document.querySelector(".rewrite-draft-pane .visual-editor-error")?.textContent;
+        const fallback = document.querySelector(".rewrite-draft-pane .visual-editor-fallback textarea");
+        return error && fallback ? {
+          error,
+          fallbackReadOnly: fallback.readOnly,
+          rawMarkdown: fallback.value,
+          referenceStillVisual: document.querySelector("[aria-label='Current document text Visual reference']")?.querySelectorAll("table").length > 0
+        } : null;
+      })()`
+    );
+    assert.match(unsupportedVisualState.error, /could not render/i);
+    assert.equal(unsupportedVisualState.fallbackReadOnly, false);
+    assert.equal(unsupportedVisualState.rawMarkdown, unsupportedRewriteMarkdown);
+    assert.equal(unsupportedVisualState.referenceStillVisual, true);
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    assert.equal(
+      await waitFor(
+        client,
+        "unsupported Markdown preserved after fallback",
+        `document.querySelector("#rewrite-human-draft")?.value ?? null`
+      ),
+      unsupportedRewriteMarkdown
+    );
+    await clickRewriteWorkspaceButton(client, "Close");
+    await clickRewriteDialogButton(client, "Discard draft");
+    await waitFor(
+      client,
+      "table rewrite workspace discarded",
+      `!document.querySelector("[data-testid='rewrite-workspace']")`
+    );
+    assert.deepEqual(
+      fingerprintDocumentContent(fixtureDir),
+      initialDocumentContentFingerprint,
+      "Table and unsupported-Markdown draft work must not mutate the document before Apply."
     );
     initialFingerprint = fingerprintProject(fixtureDir);
 
@@ -811,6 +1089,7 @@ async function run() {
     await waitForEditorShell(client);
     await clickButtonByText(client, "Open Project Folder");
     await waitForActiveDocument(client, "Action Plan");
+    await installRewritePersistenceObserver(client);
     await waitForCreatedCommentCard(client, createdComment.id);
     assert.deepEqual(
       fingerprintProject(fixtureDir),
@@ -847,20 +1126,29 @@ async function run() {
     await waitFor(
       client,
       "rewrite workspace for apply",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.trim() === ${JSON.stringify(paragraphTarget)}`
+    );
+    const applySaveEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    await waitFor(
+      client,
+      "rewrite Markdown editor for apply",
       `document.querySelector("#rewrite-human-draft")?.value === ${JSON.stringify(paragraphTarget)}`
     );
-    await evaluate(client, {
-      expression: `(() => {
-        const textarea = document.querySelector("#rewrite-human-draft");
-        const setter = Object.getOwnPropertyDescriptor(
-          HTMLTextAreaElement.prototype,
-          "value"
-        ).set;
-        setter.call(textarea, ${JSON.stringify(appliedRewriteText)});
-        textarea.dispatchEvent(new Event("input", { bubbles: true }));
-        return true;
-      })()`
-    });
+    await setRewriteMarkdownDraft(client, appliedRewriteText);
+    await clickRewriteWorkspaceButton(client, "Visual");
+    await waitFor(
+      client,
+      "rewrite Visual editor for apply",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Applied human rewrite fixture.")`
+    );
+    await waitFor(
+      client,
+      "authoritative rewrite save event before apply",
+      `window.__patchmarkRewritePersistenceEvents?.length > ${applySaveEventCount}`
+    );
     await waitFor(
       client,
       "rewrite draft saved before apply",
@@ -977,6 +1265,53 @@ async function run() {
       /Before human rewrite/
     );
 
+    await selectDocument(client, "Notes");
+    await waitForActiveDocument(client, "Notes");
+    await waitForVisualEditor(client);
+    await selectVisualText(client, secondDocumentTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, secondDocumentTarget);
+    await openSelectionChooser(client);
+    await chooseSelectionAction(client, "rewrite_selected_text");
+    await waitFor(
+      client,
+      "Notes rewrite workspace in Visual mode",
+      `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.trim() === ${JSON.stringify(secondDocumentTarget)}`
+    );
+    await installRewritePersistenceObserver(client);
+    await clickRewriteWorkspaceButton(client, "Markdown");
+    const markdownAppliedRewrite = `${secondDocumentTarget} Markdown-mode apply fixture.`;
+    await setRewriteMarkdownDraft(client, markdownAppliedRewrite);
+    await waitFor(
+      client,
+      "Markdown-mode rewrite save",
+      `window.__patchmarkRewritePersistenceEvents?.length > 0`
+    );
+    await waitFor(
+      client,
+      "Markdown-mode rewrite saved label",
+      `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
+    );
+    await clickRewriteWorkspaceButton(client, "Apply rewrite");
+    await waitFor(
+      client,
+      "Markdown-mode impact confirmation",
+      `document.querySelector("[aria-label='Apply human rewrite?']")?.textContent?.includes("Applying this rewrite affects")`
+    );
+    await clickRewriteDialogButton(client, "Apply rewrite");
+    await waitFor(
+      client,
+      "Markdown-mode human rewrite applied",
+      `!document.querySelector("[data-testid='rewrite-workspace']") && document.querySelector(".document-save-banner-success")?.textContent?.includes("Human rewrite applied")`
+    );
+    await waitForFixtureFile(
+      join(fixtureDir, "notes.md"),
+      (contents) => contents.includes(markdownAppliedRewrite),
+      "Markdown-mode applied rewrite"
+    );
+
     console.log(
       JSON.stringify(
         {
@@ -989,6 +1324,9 @@ async function run() {
           chooserOpenLatencyMs,
           composerOpenLatencyMs,
           rewriteWorkspaceOpenLatencyMs,
+          rewriteVisualToMarkdownLatencyMs,
+          rewriteMarkdownToVisualLatencyMs,
+          rewriteTableVisualRenderLatencyMs,
           rewriteDraftSaveLatencyMs,
           rewritePromptLatencyMs,
           rewriteImpactLatencyMs,
@@ -998,12 +1336,18 @@ async function run() {
           editorRemounted: false,
           rewriteWorkspacePassiveWorkflow: true,
           rewriteWorkspaceApplyPersistence: true,
+          rewriteWorkspaceMarkdownApplyPersistence: true,
+          rewriteWorkspaceFullscreen: true,
+          rewriteWorkspaceTableRoundTrip: true,
+          rewriteWorkspaceUnsupportedMarkdownSafe: true,
           sectionCommentId: sectionComment.id,
           documentCommentId: documentComment.id,
           bookmarkKind: bookmark.anchor.kind,
           createdCommentId: createdComment.id,
           existingAnchorAudit,
-          screenshotPath: screenshotPath ?? null
+          screenshotPath: screenshotPath ?? null,
+          rewriteWorkspaceScreenshotPath:
+            rewriteWorkspaceScreenshotPath ?? null
         },
         null,
         2
@@ -1160,6 +1504,11 @@ function createActionMarkdown() {
     `Long-scroll fixture paragraph ${index + 1}. `.repeat(8),
     ""
   ]).flat();
+  const scenarioRows = Array.from({ length: 110 }, (_, index) =>
+    `| Scenario ${index + 1} with a deliberately descriptive label | ${
+      40 + index * 12
+    }–${70 + index * 16} units/week | Preserve source-linked assumptions and operational constraints | Track demand, margin, capacity, and delivery reliability before advancing | Decision gate ${index + 1} requires explicit human review |`
+  );
 
   return [
     preambleTarget,
@@ -1179,10 +1528,11 @@ function createActionMarkdown() {
     ...filler,
     "## 10. Growth Path and Scenarios",
     "",
-    "| Illustrative revenue logic | How to read it |",
-    "| --- | --- |",
-    `| ${leftEdgeTarget} | ${rightEdgeTarget} |`,
-    `| ${tableTarget} | The first 3–6 months should produce the data needed for a real break-even model. |`,
+    "| Illustrative revenue logic | Operating objective | Indicative scale | Learning carried forward | Decision gate |",
+    "| --- | --- | --- | --- | --- |",
+    `| ${leftEdgeTarget} | Controlled launch | 20–50 units/week | Observe real unit economics | ${rightEdgeTarget} |`,
+    `| ${tableTarget} | Establish repeat demand | 60–150 units/week | The first 3–6 months should produce the data needed for a real break-even model. | Founder workload remains acceptable |`,
+    ...scenarioRows,
     "",
     "## 11. Production, Capacity, and Operations",
     "",
@@ -1670,6 +2020,39 @@ async function clickRewriteDialogButton(client, label) {
   });
 }
 
+async function setRewriteMarkdownDraft(client, markdown) {
+  await evaluate(client, {
+    expression: `(() => {
+      const textarea = document.querySelector("#rewrite-human-draft");
+      if (!textarea) throw new Error("Rewrite Markdown editor missing.");
+      textarea.focus();
+      textarea.setSelectionRange(0, textarea.value.length);
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await client.call("Input.insertText", { text: markdown });
+}
+
+async function appendToRewriteVisualDraft(client, text) {
+  await evaluate(client, {
+    expression: `(() => {
+      const editor = document.querySelector("[aria-label='My rewrite Visual editor']");
+      if (!editor) throw new Error("Rewrite Visual editor missing.");
+      editor.focus();
+      const range = document.createRange();
+      range.selectNodeContents(editor);
+      range.collapse(false);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await client.call("Input.insertText", { text });
+}
+
 async function chooseSelectionAction(client, actionId) {
   await evaluate(client, {
     expression: `(() => {
@@ -2007,6 +2390,21 @@ async function saveScreenshot(client, path) {
     fromSurface: true
   });
   writeFileSync(path, Buffer.from(result.data, "base64"));
+}
+
+async function installRewritePersistenceObserver(client) {
+  await evaluate(client, {
+    expression: `(() => {
+      window.__patchmarkRewritePersistenceEvents = [];
+      if (!window.__patchmarkRewritePersistenceObserverInstalled) {
+        window.addEventListener("patchmark:rewrite-persistence", (event) => {
+          window.__patchmarkRewritePersistenceEvents.push(event.detail);
+        });
+        window.__patchmarkRewritePersistenceObserverInstalled = true;
+      }
+      return true;
+    })()`
+  });
 }
 
 async function waitFor(

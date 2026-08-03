@@ -88,6 +88,7 @@ export function createRewriteSessionPersistenceCoordinator({
   localProjectInstanceId: string;
   project: PatchmarkProjectHandle;
 }) {
+  let authoritativeSessionId: string | null = null;
   let authoritativeRevision = 0;
   let recoveryRevision = 0;
   let queuedOperations = 0;
@@ -127,6 +128,7 @@ export function createRewriteSessionPersistenceCoordinator({
     ]);
 
     if (activeProjectSession) {
+      authoritativeSessionId = activeProjectSession.rewrite_session_id;
       authoritativeRevision = activeProjectSession.authoritative_revision;
       recoveryRevision = Math.max(
         recoveryRevision,
@@ -264,6 +266,7 @@ export function createRewriteSessionPersistenceCoordinator({
     session: RewriteSession,
     reason: string
   ): Promise<RewriteProjectSaveResult> {
+    selectAuthoritativeSession(session);
     const ownedSession = {
       ...session,
       local_project_instance_id: localProjectInstanceId,
@@ -350,6 +353,7 @@ export function createRewriteSessionPersistenceCoordinator({
     session: RewriteSession;
     versionId: string;
   }): Promise<RewriteTerminalSession> {
+    selectAuthoritativeSession(session);
     const appliedAt = new Date().toISOString();
     await preserveRecovery(session).catch(() => undefined);
     const terminal = createTerminalSession({
@@ -378,6 +382,7 @@ export function createRewriteSessionPersistenceCoordinator({
   }
 
   async function discard(session: RewriteSession): Promise<RewriteTerminalSession> {
+    selectAuthoritativeSession(session);
     const discardedAt = new Date().toISOString();
     const recoverySaved = await preserveRecovery(session)
       .then(() => true)
@@ -417,6 +422,19 @@ export function createRewriteSessionPersistenceCoordinator({
         local_project_instance_id: localProjectInstanceId
       }
     });
+  }
+
+  function selectAuthoritativeSession(session: RewriteSession): void {
+    if (authoritativeSessionId === session.rewrite_session_id) {
+      return;
+    }
+    if (queuedOperations > 0) {
+      throw new Error(
+        "A different Human Rewrite session is still finishing a project save."
+      );
+    }
+    authoritativeSessionId = session.rewrite_session_id;
+    authoritativeRevision = session.authoritative_revision;
   }
 
   function enqueue<T>(operation: (queueLength: number) => Promise<T>): Promise<T> {

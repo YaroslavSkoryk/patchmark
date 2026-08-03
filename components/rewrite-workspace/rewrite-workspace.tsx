@@ -9,6 +9,12 @@ import {
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
+import type { MarkdownSelection } from "@/components/markdown-source-editor";
+import {
+  RewriteComparisonEditor,
+  type RewriteEditorMode
+} from "@/components/rewrite-workspace/rewrite-comparison-editor";
+import { RewriteModeControl } from "@/components/rewrite-workspace/rewrite-mode-control";
 import {
   buildRewriteReviewRequest,
   cancelAwaitingRewriteReview,
@@ -76,7 +82,7 @@ export function RewriteWorkspace({
 }: RewriteWorkspaceProps) {
   const workspaceRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-  const draftRef = useRef<HTMLTextAreaElement | null>(null);
+  const draftPaneRef = useRef<HTMLElement | null>(null);
   const saveRequestRef = useRef(0);
   const persistOnUnmountRef = useRef(true);
   const latestDraftRef = useRef(session.human_draft);
@@ -89,6 +95,14 @@ export function RewriteWorkspace({
   const [saveState, setSaveState] = useState<SaveState>(
     initialPersistenceSource === "project" ? "saved" : "recovery_only"
   );
+  const [editorMode, setEditorMode] = useState<RewriteEditorMode>("visual");
+  const [draftSelection, setDraftSelection] = useState<MarkdownSelection>({
+    end: 0,
+    start: 0
+  });
+  const [draftSelectionRequest, setDraftSelectionRequest] = useState<
+    (MarkdownSelection & { nonce: number }) | null
+  >(null);
   const [activeTab, setActiveTab] = useState<WorkspaceTab>("draft");
   const [isCloseDialogOpen, setIsCloseDialogOpen] = useState(false);
   const [promptRound, setPromptRound] = useState<RewriteReviewRound | null>(
@@ -185,11 +199,6 @@ export function RewriteWorkspace({
 
     function handleKeyDown(event: KeyboardEvent) {
       if (document.querySelector(".rewrite-dialog")) {
-        return;
-      }
-      if (event.key === "Escape") {
-        event.preventDefault();
-        setIsCloseDialogOpen(true);
         return;
       }
       if (event.key !== "Tab" || !workspaceRef.current) {
@@ -407,9 +416,10 @@ export function RewriteWorkspace({
 
   async function handleDiscardDraft() {
     setError(null);
-    persistOnUnmountRef.current = false;
     try {
-      await onDiscard(workingSession);
+      const savedSession = await commitLocalDraft();
+      persistOnUnmountRef.current = false;
+      await onDiscard(savedSession);
     } catch (discardError) {
       persistOnUnmountRef.current = true;
       setError(getErrorMessage(discardError));
@@ -426,6 +436,32 @@ export function RewriteWorkspace({
     }
   }
 
+  function handleEditorModeChange(nextMode: RewriteEditorMode) {
+    if (nextMode === editorMode) {
+      return;
+    }
+    if (nextMode === "markdown") {
+      setDraftSelectionRequest({
+        ...draftSelection,
+        nonce: Date.now()
+      });
+    }
+    setEditorMode(nextMode);
+    window.requestAnimationFrame(() => {
+      window.setTimeout(() => {
+        const editor = draftPaneRef.current?.querySelector<HTMLElement>(
+          '.patchmark-prose, textarea:not([readonly])'
+        );
+        editor?.focus({ preventScroll: true });
+      }, 0);
+    });
+  }
+
+  function handleHumanDraftChange(nextDraft: string) {
+    setHumanDraft(nextDraft);
+    setImpact(null);
+  }
+
   function locateDraftExcerpt(item: RewriteSuggestedDraftEdit) {
     const start = humanDraft.indexOf(item.draft_excerpt);
     if (start === -1) {
@@ -433,10 +469,16 @@ export function RewriteWorkspace({
       return;
     }
     setActiveTab("draft");
-    window.requestAnimationFrame(() => {
-      draftRef.current?.focus();
-      draftRef.current?.setSelectionRange(start, start + item.draft_excerpt.length);
+    setDraftSelection({
+      end: start + item.draft_excerpt.length,
+      start
     });
+    setDraftSelectionRequest({
+      end: start + item.draft_excerpt.length,
+      nonce: Date.now(),
+      start
+    });
+    setEditorMode("markdown");
   }
 
   return createPortal(
@@ -482,6 +524,11 @@ export function RewriteWorkspace({
           </span>
         </div>
 
+        <RewriteModeControl
+          mode={editorMode}
+          onChange={handleEditorModeChange}
+        />
+
         <div aria-label="Rewrite workspace views" className="rewrite-workspace-tabs" role="tablist">
           {(["current", "draft", "review"] as WorkspaceTab[]).map((tab) => (
             <button
@@ -506,39 +553,60 @@ export function RewriteWorkspace({
               </div>
               <span>{workingSession.base_text.length.toLocaleString()} characters</span>
             </header>
-            <pre tabIndex={0}>{workingSession.base_text}</pre>
+            <RewriteComparisonEditor
+              ariaLabel={
+                editorMode === "visual"
+                  ? "Current document text Visual reference"
+                  : "Current document text Markdown reference"
+              }
+              markdown={workingSession.base_text}
+              mode={editorMode}
+              onMarkdownChange={() => undefined}
+              readOnly
+              resetKey={0}
+            />
           </section>
 
-          <section aria-label="My rewrite" className="rewrite-text-pane rewrite-draft-pane">
+          <section
+            ref={draftPaneRef}
+            aria-label="My rewrite"
+            className="rewrite-text-pane rewrite-draft-pane"
+          >
             <header>
               <div>
                 <span>Human-authored draft</span>
                 <h3>My rewrite</h3>
               </div>
-              <span>{humanDraft.length.toLocaleString()} characters</span>
+              <div className="rewrite-pane-header-actions">
+                <span>{humanDraft.length.toLocaleString()} characters</span>
+                <button
+                  className="rewrite-clear-draft"
+                  type="button"
+                  onClick={() => {
+                    if (window.confirm("Clear your rewrite draft? The current document text will remain unchanged.")) {
+                      handleHumanDraftChange("");
+                    }
+                  }}
+                >
+                  Clear my rewrite
+                </button>
+              </div>
             </header>
-            <label htmlFor="rewrite-human-draft">Editable Markdown replacement</label>
-            <textarea
-              ref={draftRef}
+            <RewriteComparisonEditor
+              ariaLabel={
+                editorMode === "visual"
+                  ? "My rewrite Visual editor"
+                  : "My rewrite Markdown editor"
+              }
               id="rewrite-human-draft"
-              value={humanDraft}
-              onChange={(event) => {
-                setHumanDraft(event.target.value);
-                setImpact(null);
-              }}
+              markdown={humanDraft}
+              mode={editorMode}
+              onMarkdownChange={handleHumanDraftChange}
+              onSelectionChange={setDraftSelection}
+              readOnly={false}
+              resetKey={0}
+              selectionRequest={draftSelectionRequest}
             />
-            <button
-              className="rewrite-clear-draft"
-              type="button"
-              onClick={() => {
-                if (window.confirm("Clear your rewrite draft? The current document text will remain unchanged.")) {
-                  setHumanDraft("");
-                  setImpact(null);
-                }
-              }}
-            >
-              Clear my rewrite
-            </button>
           </section>
 
           <section aria-label="Rewrite review" className="rewrite-review-pane">
