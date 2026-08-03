@@ -16,7 +16,13 @@ The MVP supports one active document and one deterministic contiguous selection 
 
 ## Full-screen comparison and editor modes
 
-Rewrite Workspace is a full-screen application surface rather than a centered modal. It occupies the complete viewport, locks scrolling on the document behind it, and keeps its compact header, save state, Close control, intent field, and action bar reachable without scrolling through the draft. Desktop uses a fixed 50/50 comparison split. Each editor owns its vertical scroll; the panes are intentionally not scroll-synchronized.
+Rewrite Workspace is a full-screen application surface rather than a centered modal. It occupies the complete viewport, locks scrolling on the document behind it, and uses compact primary navigation for two mounted screens: `Rewrite` and `ChatGPT Review`.
+
+> The Rewrite screen dedicates the viewport to comparing and editing the frozen current text and Human Draft. Semantic-review controls and results live on the separate ChatGPT Review screen.
+
+The Rewrite screen keeps the project/document/target breadcrumb, save state, Close control, shared mode control, pane headers, and compact action bar reachable without scrolling through the draft. Desktop uses an equal 50/50 comparison split based on `minmax(0, 1fr)`. The comparison fills all height left between the compact header and action bar. Each editor owns its vertical scroll; the panes are intentionally not scroll-synchronized, and impact analysis remains a temporary Apply confirmation rather than permanent workspace content.
+
+The ChatGPT Review screen uses one comfortable-width vertically scrolling page for the intent note, prompt export, semantic-response import, current review, historical rounds, findings, and suggested draft edits. Opening it keeps the Rewrite screen mounted but hidden, so the isolated draft editor, current mode, canonical draft, local editor history, and pane scroll positions are not reconstructed. The hidden screen is removed from layout and the accessibility tree through the native `hidden` state.
 
 The shared `View both as` control changes both panes together:
 
@@ -29,7 +35,13 @@ The shared `View both as` control changes both panes together:
 
 There are no per-mode draft copies and no rewrite-specific Markdown conversion engine. Visual transactions serialize through the same MDX editor and Markdown normalization used by the normal document editor, then update the rewrite session’s single `human_draft` string. Merely switching representation does not advance the draft revision or invalidate semantic review. A real serialized content change does both through the existing draft-hash rules.
 
-The normal Visual schema handles headings, paragraphs, emphasis, links, lists, blockquotes, code blocks, frontmatter, thematic breaks, supported JSX, images, and tables. Wide tables keep their columns and scroll inside their editor pane rather than expanding the workspace. If the normal Visual editor cannot safely represent Markdown, the raw Markdown remains intact and an explicit Visual-render warning opens the existing Markdown-safe fallback. The Human Draft stays editable as Markdown; unsupported nodes are never silently dropped.
+The normal Visual schema handles headings, paragraphs, emphasis, links, lists, blockquotes, code blocks, frontmatter, thematic breaks, supported JSX, images, and tables. Rewrite-pane wrappers opt out of the normal reading-width constraint and use all available pane width with `min-width: 0` and `max-width: 100%`. Paragraphs, headings, links, URLs, identifiers, inline code, and code blocks wrap within the assigned pane instead of increasing its min-content width.
+
+Visual tables retain every column, use the pane width with fixed table layout, and wrap cell content vertically. Markdown mode uses soft textarea wrapping plus `pre-wrap`, aggressive overflow wrapping, and hidden horizontal overflow. A long Markdown table row can therefore occupy multiple display lines while remaining one canonical Markdown line.
+
+> Long lines and table content wrap visually within each pane. Display wrapping does not insert line breaks or otherwise change canonical Markdown.
+
+Wrapping is presentation-only: it does not change the Human Draft string or hash, create a project save, invalidate semantic review, alter table pipes or alignment markers, or mutate fenced code content. If the normal Visual editor cannot safely represent Markdown, the raw Markdown remains intact and an explicit Visual-render warning opens the existing Markdown-safe fallback. The Human Draft stays editable as Markdown; unsupported nodes are never silently dropped.
 
 The Visual and Markdown editors are isolated from the authoritative document editor. Draft edits do not dirty or remount the document editor, create document history, transform comments or bookmarks, stale patches, or mutate Review Batches. Those effects remain exclusive to confirmed Apply.
 
@@ -89,7 +101,7 @@ Every save validates the expected authoritative session revision and current pro
 
 ## Manual semantic review
 
-`Review meaning with ChatGPT` creates a manual prompt. Patchmark makes no API call and exports no unrelated documents.
+The complete semantic-review workflow lives on the `ChatGPT Review` screen. Its project-backed intent note retains the existing autosave and request-hash semantics. `Review meaning with ChatGPT` creates a manual prompt, and `Import semantic review` validates and stores a response. Patchmark makes no API call and exports no unrelated documents. The compact `ChatGPT Review` action on the Rewrite screen only navigates to this screen; it does not bypass the established persistence or protocol path.
 
 Each request is committed to the authoritative project session before the prompt is presented as durably prepared. It records:
 
@@ -170,7 +182,7 @@ The Version History mutation audit records human authorship, rewrite session ID,
 
 The full-screen dialog has an accessible title, labeled read-only and editable panes, an announced shared mode state, visible focus, a focus trap, live draft-save status, non-color-only warnings, and focus restoration. The read-only Visual reference blocks editing commands while remaining selectable. Escape closes temporary dialogs first but does not close the workspace or open its close confirmation while the user is editing; workspace exit requires the deliberate Close control. Destructive discard requires confirmation.
 
-Desktop uses side-by-side current and draft panes with a compact independently scrolling review area. At 900 px and below, `Current text`, `My rewrite`, and `Review` tabs expose one pane at a time without horizontal page overflow; the shared mode control remains available. Reduced-motion preferences disable workspace transitions.
+Desktop uses side-by-side current and draft panes with no permanent review body below them. At 900 px and below, the primary `Rewrite | ChatGPT Review` navigation remains distinct from the secondary `Current text | My rewrite` navigation inside Rewrite. One comparison pane is exposed at a time, the shared mode control remains available only on Rewrite, the action bar remains fixed, and text, tables, and the Visual toolbar wrap without horizontal page or pane overflow. Reduced-motion preferences disable workspace transitions.
 
 ## Portability, privacy, and exports
 

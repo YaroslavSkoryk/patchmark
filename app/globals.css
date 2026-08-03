@@ -4800,9 +4800,12 @@ button {
 }
 
 .rewrite-workspace-header {
+  display: grid;
+  grid-template-columns: minmax(280px, 1fr) auto auto;
   flex: 0 0 auto;
+  align-items: center;
   border-bottom: 1px solid var(--border);
-  padding: 10px 16px;
+  padding: 8px 16px;
 }
 
 .rewrite-workspace-header h2,
@@ -4813,10 +4816,10 @@ button {
 }
 
 .rewrite-workspace-header p {
-  max-width: 820px;
+  max-width: 680px;
   margin: 3px 0 0;
   color: var(--muted);
-  font-size: 0.88rem;
+  font-size: 0.82rem;
 }
 
 .rewrite-workspace-header span,
@@ -4842,22 +4845,59 @@ button {
   gap: 12px;
 }
 
+.rewrite-workspace-navigation {
+  display: inline-grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface-muted);
+  padding: 3px;
+}
+
+.rewrite-workspace-navigation button {
+  min-height: 32px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  padding: 5px 12px;
+  color: var(--muted);
+}
+
+.rewrite-workspace-navigation button[aria-selected="true"] {
+  background: var(--accent-strong);
+  color: #ffffff;
+}
+
 .rewrite-save-failed {
   color: #9d2e20 !important;
 }
 
 .rewrite-workspace-identity {
   display: flex;
-  min-height: 36px;
+  min-height: 40px;
   flex: 0 0 auto;
   align-items: center;
+  justify-content: space-between;
   gap: 10px;
   border-bottom: 1px solid var(--border);
   background: var(--surface-muted);
-  padding: 7px 16px;
+  padding: 5px 16px;
 }
 
-.rewrite-workspace-identity > * + *::before {
+.rewrite-workspace-breadcrumb {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 10px;
+}
+
+.rewrite-workspace-breadcrumb > * {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.rewrite-workspace-breadcrumb > * + *::before {
   content: "·";
   margin-right: 10px;
   color: var(--muted);
@@ -4869,12 +4909,12 @@ button {
 
 .rewrite-mode-control-row {
   display: flex;
-  min-height: 44px;
+  min-height: 0;
   flex: 0 0 auto;
   align-items: center;
   gap: 10px;
-  border-bottom: 1px solid var(--border);
-  padding: 5px 16px;
+  border: 0;
+  padding: 0;
 }
 
 .rewrite-mode-control-row > span:first-child {
@@ -4908,18 +4948,54 @@ button {
   color: #ffffff;
 }
 
+.rewrite-review-screen-status,
+.rewrite-compact-review-status {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 750;
+  white-space: nowrap;
+}
+
+.rewrite-workspace-screens {
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.rewrite-workspace-screen {
+  width: 100%;
+  height: 100%;
+  min-width: 0;
+  min-height: 0;
+}
+
+.rewrite-workspace-screen[hidden] {
+  display: none !important;
+}
+
+.rewrite-workspace-rewrite-screen {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
 .rewrite-workspace-body {
   display: grid;
+  width: 100%;
+  max-width: 100%;
   min-height: 0;
   flex: 1;
   overflow: hidden;
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  grid-template-rows: minmax(190px, 1fr) minmax(88px, 14dvh);
+  grid-template-rows: minmax(0, 1fr);
 }
 
 .rewrite-text-pane,
 .rewrite-review-pane {
   display: flex;
+  width: 100%;
+  max-width: 100%;
   min-width: 0;
   min-height: 0;
   flex-direction: column;
@@ -4941,10 +5017,12 @@ button {
 
 .rewrite-editor-surface {
   width: 100%;
+  max-width: 100%;
   min-width: 0;
   min-height: 0;
   flex: 1;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   overscroll-behavior: contain;
 }
 
@@ -4953,13 +5031,18 @@ button {
 }
 
 .rewrite-editor-surface > .markdown-source-editor {
+  display: block;
+  width: 100%;
+  max-width: 100%;
   height: 100%;
   min-height: 0;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
   padding: 20px 22px 42px;
   line-height: 1.55;
   white-space: pre-wrap;
-  overflow-wrap: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 .rewrite-editor-surface[data-read-only="true"] > .markdown-source-editor {
@@ -4968,14 +5051,24 @@ button {
 }
 
 .rewrite-editor-surface > .visual-editor-shell,
-.rewrite-editor-surface .patchmark-mdx-editor {
+.rewrite-editor-surface > .visual-editor-shell > div,
+.rewrite-editor-surface .patchmark-mdx-editor,
+.rewrite-editor-surface .patchmark-mdx-editor > div {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 100%;
 }
 
 .rewrite-editor-surface .patchmark-prose {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
   min-height: 100%;
-  overflow-x: auto;
+  overflow-x: hidden;
+  overflow-wrap: anywhere;
   padding: 20px 24px 48px;
+  word-break: break-word;
 }
 
 .rewrite-editor-surface[data-read-only="true"] .patchmark-prose {
@@ -4983,9 +5076,43 @@ button {
 }
 
 .rewrite-editor-surface .patchmark-prose table {
-  width: max-content;
-  min-width: 100%;
+  display: table;
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  table-layout: fixed;
+}
+
+.rewrite-editor-surface .patchmark-prose th,
+.rewrite-editor-surface .patchmark-prose td {
+  min-width: 0 !important;
   max-width: none;
+  overflow-wrap: anywhere;
+  vertical-align: top;
+  white-space: normal;
+  word-break: break-word;
+}
+
+.rewrite-editor-surface .patchmark-prose p,
+.rewrite-editor-surface .patchmark-prose h1,
+.rewrite-editor-surface .patchmark-prose h2,
+.rewrite-editor-surface .patchmark-prose h3,
+.rewrite-editor-surface .patchmark-prose h4,
+.rewrite-editor-surface .patchmark-prose h5,
+.rewrite-editor-surface .patchmark-prose h6,
+.rewrite-editor-surface .patchmark-prose li,
+.rewrite-editor-surface .patchmark-prose blockquote,
+.rewrite-editor-surface .patchmark-prose a,
+.rewrite-editor-surface .patchmark-prose pre,
+.rewrite-editor-surface .patchmark-prose code {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.rewrite-editor-surface .patchmark-prose pre,
+.rewrite-editor-surface .patchmark-prose code {
+  white-space: pre-wrap;
 }
 
 .rewrite-editor-surface .visual-editor-fallback {
@@ -5000,6 +5127,12 @@ button {
   position: sticky;
   z-index: 2;
   top: 0;
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: hidden;
+  flex-wrap: wrap;
+  white-space: normal;
 }
 
 .rewrite-editor-surface .mdxeditor-toolbar button {
@@ -5033,7 +5166,6 @@ button {
 }
 
 .rewrite-review-pane {
-  grid-column: 1 / -1;
   border-top: 1px solid var(--border);
 }
 
@@ -5114,8 +5246,10 @@ button {
   grid-template-columns: minmax(240px, 0.45fr) minmax(0, 1fr);
   align-items: center;
   gap: 10px;
-  border-top: 1px solid var(--border);
-  padding: 8px 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
 }
 
 .rewrite-intent-panel > label {
@@ -5241,6 +5375,72 @@ button {
   padding: 8px 16px;
 }
 
+.rewrite-workspace-rewrite-footer {
+  min-height: 50px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.rewrite-workspace-rewrite-footer > div:first-child {
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.rewrite-workspace-review-screen {
+  overflow-x: hidden;
+  overflow-y: auto;
+  background: var(--surface-muted);
+}
+
+.rewrite-review-screen-content {
+  display: grid;
+  width: min(1080px, 100%);
+  max-width: 100%;
+  min-width: 0;
+  gap: 16px;
+  margin: 0 auto;
+  padding: 22px 20px 40px;
+}
+
+.rewrite-review-screen-header {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.rewrite-review-screen-header h3 {
+  margin: 3px 0 0;
+  font-size: 1.4rem;
+}
+
+.rewrite-review-screen-header > div:last-child {
+  display: grid;
+  gap: 3px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-align: right;
+}
+
+.rewrite-review-screen-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 9px;
+}
+
+.rewrite-review-screen-content > .rewrite-review-pane {
+  min-height: 260px;
+  overflow: visible;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+
+.rewrite-review-screen-content .rewrite-review-content,
+.rewrite-review-screen-content .rewrite-review-empty {
+  overflow: visible;
+}
+
 .rewrite-workspace-footer > div,
 .rewrite-dialog-actions,
 .rewrite-review-section li > div {
@@ -5356,8 +5556,24 @@ button {
   }
 
   .rewrite-workspace-header {
-    align-items: flex-start;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: center;
     gap: 8px;
+  }
+
+  .rewrite-workspace-title {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .rewrite-workspace-navigation {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .rewrite-workspace-header-actions {
+    grid-column: 2;
+    grid-row: 1;
   }
 
   .rewrite-workspace-header p {
@@ -5365,8 +5581,8 @@ button {
   }
 
   .rewrite-workspace-header-actions {
-    width: 100%;
-    justify-content: space-between;
+    width: auto;
+    justify-content: flex-end;
   }
 
   .rewrite-mode-control-row {
@@ -5376,7 +5592,7 @@ button {
   .rewrite-workspace-tabs {
     display: grid;
     flex: 0 0 auto;
-    grid-template-columns: repeat(3, 1fr);
+    grid-template-columns: repeat(2, 1fr);
     border-bottom: 1px solid var(--border);
   }
 
@@ -5406,8 +5622,7 @@ button {
   }
 
   .rewrite-workspace-body[data-active-tab="current"] > .rewrite-current-pane,
-  .rewrite-workspace-body[data-active-tab="draft"] > .rewrite-draft-pane,
-  .rewrite-workspace-body[data-active-tab="review"] > .rewrite-review-pane {
+  .rewrite-workspace-body[data-active-tab="draft"] > .rewrite-draft-pane {
     display: flex;
   }
 
@@ -5432,8 +5647,13 @@ button {
   }
 
   .rewrite-workspace-identity {
-    overflow-x: auto;
-    white-space: nowrap;
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .rewrite-workspace-breadcrumb {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
   }
 
   .rewrite-impact-summary dl {
@@ -5459,6 +5679,11 @@ button {
   .rewrite-workspace-header {
     padding-top: 7px;
     padding-bottom: 7px;
+  }
+
+  .rewrite-workspace-navigation button {
+    min-height: 30px;
+    padding: 4px 8px;
   }
 
   .rewrite-workspace-header h2 {
@@ -5530,6 +5755,20 @@ button {
 
   .rewrite-workspace-footer > div:first-child {
     flex: 1 1 280px;
+  }
+
+  .rewrite-review-screen-content {
+    gap: 12px;
+    padding: 14px 10px 28px;
+  }
+
+  .rewrite-review-screen-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .rewrite-review-screen-header > div:last-child {
+    text-align: left;
   }
 }
 

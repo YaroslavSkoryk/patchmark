@@ -93,6 +93,7 @@ export function MarkdownSourceEditor({
       className="markdown-source-editor"
       aria-label={ariaLabel}
       spellCheck={false}
+      wrap="soft"
       readOnly={readOnly}
       value={markdown}
       onBeforeInput={(event) => {

@@ -66,7 +66,8 @@ type SaveState =
   | "saved_recovery_unavailable"
   | "recovery_only"
   | "failed";
-type WorkspaceTab = "current" | "draft" | "review";
+type RewritePaneTab = "current" | "draft";
+type WorkspaceScreen = "rewrite" | "review";
 
 export function RewriteWorkspace({
   isApplying,
@@ -103,7 +104,8 @@ export function RewriteWorkspace({
   const [draftSelectionRequest, setDraftSelectionRequest] = useState<
     (MarkdownSelection & { nonce: number }) | null
   >(null);
-  const [activeTab, setActiveTab] = useState<WorkspaceTab>("draft");
+  const [activePaneTab, setActivePaneTab] = useState<RewritePaneTab>("draft");
+  const [activeScreen, setActiveScreen] = useState<WorkspaceScreen>("rewrite");
   const [isCloseDialogOpen, setIsCloseDialogOpen] = useState(false);
   const [promptRound, setPromptRound] = useState<RewriteReviewRound | null>(
     () =>
@@ -287,7 +289,7 @@ export function RewriteWorkspace({
       );
       if (awaitingRound) {
         setPromptRound(awaitingRound);
-        setActiveTab("review");
+        setActiveScreen("review");
         return;
       }
       const request = await buildRewriteReviewRequest(savedSession);
@@ -305,7 +307,7 @@ export function RewriteWorkspace({
           (round) => round.rewrite_review_id === request.rewrite_review_id
         ) ?? null
       );
-      setActiveTab("review");
+      setActiveScreen("review");
     } catch (reviewError) {
       setError(getErrorMessage(reviewError));
     }
@@ -345,7 +347,7 @@ export function RewriteWorkspace({
       setPromptRound(null);
       setImportText("");
       setIsImportOpen(false);
-      setActiveTab("review");
+      setActiveScreen("review");
     } catch (importError) {
       setError(getErrorMessage(importError));
     }
@@ -468,7 +470,8 @@ export function RewriteWorkspace({
       setError("That reviewed excerpt is not present in the current human draft.");
       return;
     }
-    setActiveTab("draft");
+    setActiveScreen("rewrite");
+    setActivePaneTab("draft");
     setDraftSelection({
       end: start + item.draft_excerpt.length,
       start
@@ -492,13 +495,39 @@ export function RewriteWorkspace({
         role="dialog"
       >
         <header className="rewrite-workspace-header">
-          <div>
+          <div className="rewrite-workspace-title">
             <span>Human-authored document change</span>
             <h2>Rewrite Workspace</h2>
             <p id="rewrite-workspace-description">
               You write the replacement. ChatGPT can compare meaning, but it never
               edits or applies your draft automatically.
             </p>
+          </div>
+          <div
+            aria-label="Rewrite workspace screens"
+            className="rewrite-workspace-navigation"
+            role="tablist"
+          >
+            <button
+              aria-controls="rewrite-workspace-rewrite-screen"
+              aria-selected={activeScreen === "rewrite"}
+              id="rewrite-workspace-rewrite-tab"
+              role="tab"
+              type="button"
+              onClick={() => setActiveScreen("rewrite")}
+            >
+              Rewrite
+            </button>
+            <button
+              aria-controls="rewrite-workspace-review-screen"
+              aria-selected={activeScreen === "review"}
+              id="rewrite-workspace-review-tab"
+              role="tab"
+              type="button"
+              onClick={() => setActiveScreen("review")}
+            >
+              ChatGPT Review
+            </button>
           </div>
           <div className="rewrite-workspace-header-actions">
             <span aria-live="polite" className={`rewrite-save-state rewrite-save-${saveState}`}>
@@ -515,128 +544,209 @@ export function RewriteWorkspace({
         </header>
 
         <div className="rewrite-workspace-identity">
-          <span>{workingSession.document_title_snapshot}</span>
-          <strong>
-            {workingSession.target.heading_snapshot ?? "Selected document text"}
-          </strong>
-          <span>
-            {workingSession.target.kind === "section" ? "Complete section" : "Selected text"}
-          </span>
-        </div>
-
-        <RewriteModeControl
-          mode={editorMode}
-          onChange={handleEditorModeChange}
-        />
-
-        <div aria-label="Rewrite workspace views" className="rewrite-workspace-tabs" role="tablist">
-          {(["current", "draft", "review"] as WorkspaceTab[]).map((tab) => (
-            <button
-              aria-selected={activeTab === tab}
-              className={activeTab === tab ? "active" : undefined}
-              key={tab}
-              onClick={() => setActiveTab(tab)}
-              role="tab"
-              type="button"
-            >
-              {tab === "current" ? "Current text" : tab === "draft" ? "My rewrite" : "Review"}
-            </button>
-          ))}
-        </div>
-
-        <div className="rewrite-workspace-body" data-active-tab={activeTab}>
-          <section aria-label="Current document text" className="rewrite-text-pane rewrite-current-pane">
-            <header>
-              <div>
-                <span>Read-only reference</span>
-                <h3>Current document text</h3>
-              </div>
-              <span>{workingSession.base_text.length.toLocaleString()} characters</span>
-            </header>
-            <RewriteComparisonEditor
-              ariaLabel={
-                editorMode === "visual"
-                  ? "Current document text Visual reference"
-                  : "Current document text Markdown reference"
-              }
-              markdown={workingSession.base_text}
+          <div className="rewrite-workspace-breadcrumb">
+            <span>{workingSession.document_title_snapshot}</span>
+            <strong>
+              {workingSession.target.heading_snapshot ?? "Selected document text"}
+            </strong>
+            <span>
+              {workingSession.target.kind === "section" ? "Complete section" : "Selected text"}
+            </span>
+          </div>
+          {activeScreen === "rewrite" ? (
+            <RewriteModeControl
               mode={editorMode}
-              onMarkdownChange={() => undefined}
-              readOnly
-              resetKey={0}
+              onChange={handleEditorModeChange}
             />
+          ) : (
+            <span className="rewrite-review-screen-status">
+              {getCompactReviewStatus(currentReview, importedRounds.length)}
+            </span>
+          )}
+        </div>
+
+        <div className="rewrite-workspace-screens">
+          <section
+            aria-labelledby="rewrite-workspace-rewrite-tab"
+            className="rewrite-workspace-screen rewrite-workspace-rewrite-screen"
+            hidden={activeScreen !== "rewrite"}
+            id="rewrite-workspace-rewrite-screen"
+            role="tabpanel"
+          >
+            <div
+              aria-label="Rewrite comparison panes"
+              className="rewrite-workspace-tabs"
+              role="tablist"
+            >
+              {(["current", "draft"] as RewritePaneTab[]).map((tab) => (
+                <button
+                  aria-controls={`rewrite-${tab}-pane`}
+                  aria-selected={activePaneTab === tab}
+                  className={activePaneTab === tab ? "active" : undefined}
+                  key={tab}
+                  onClick={() => setActivePaneTab(tab)}
+                  role="tab"
+                  type="button"
+                >
+                  {tab === "current" ? "Current text" : "My rewrite"}
+                </button>
+              ))}
+            </div>
+
+            <div className="rewrite-workspace-body" data-active-tab={activePaneTab}>
+              <section
+                aria-label="Current document text"
+                className="rewrite-text-pane rewrite-current-pane"
+                id="rewrite-current-pane"
+              >
+                <header>
+                  <div>
+                    <span>Read-only reference</span>
+                    <h3>Current document text</h3>
+                  </div>
+                  <span>{workingSession.base_text.length.toLocaleString()} characters</span>
+                </header>
+                <RewriteComparisonEditor
+                  ariaLabel={
+                    editorMode === "visual"
+                      ? "Current document text Visual reference"
+                      : "Current document text Markdown reference"
+                  }
+                  markdown={workingSession.base_text}
+                  mode={editorMode}
+                  onMarkdownChange={() => undefined}
+                  readOnly
+                  resetKey={0}
+                />
+              </section>
+
+              <section
+                ref={draftPaneRef}
+                aria-label="My rewrite"
+                className="rewrite-text-pane rewrite-draft-pane"
+                id="rewrite-draft-pane"
+              >
+                <header>
+                  <div>
+                    <span>Human-authored draft</span>
+                    <h3>My rewrite</h3>
+                  </div>
+                  <div className="rewrite-pane-header-actions">
+                    <span>{humanDraft.length.toLocaleString()} characters</span>
+                    <button
+                      className="rewrite-clear-draft"
+                      type="button"
+                      onClick={() => {
+                        if (window.confirm("Clear your rewrite draft? The current document text will remain unchanged.")) {
+                          handleHumanDraftChange("");
+                        }
+                      }}
+                    >
+                      Clear my rewrite
+                    </button>
+                  </div>
+                </header>
+                <RewriteComparisonEditor
+                  ariaLabel={
+                    editorMode === "visual"
+                      ? "My rewrite Visual editor"
+                      : "My rewrite Markdown editor"
+                  }
+                  id="rewrite-human-draft"
+                  markdown={humanDraft}
+                  mode={editorMode}
+                  onMarkdownChange={handleHumanDraftChange}
+                  onSelectionChange={setDraftSelection}
+                  readOnly={false}
+                  resetKey={0}
+                  selectionRequest={draftSelectionRequest}
+                />
+              </section>
+            </div>
+
+            <footer className="rewrite-workspace-footer rewrite-workspace-rewrite-footer">
+              <div>
+                <button type="button" onClick={() => setActiveScreen("review")}>
+                  ChatGPT Review
+                </button>
+                <span className="rewrite-compact-review-status">
+                  {getCompactReviewStatus(currentReview, importedRounds.length)}
+                </span>
+              </div>
+              <div>
+                <button
+                  disabled={isApplying || isAnalyzing || !humanDraft.trim()}
+                  type="button"
+                  onClick={() => void handleAnalyzeImpact()}
+                >
+                  {isAnalyzing ? "Analyzing impact…" : "Apply rewrite"}
+                </button>
+              </div>
+            </footer>
           </section>
 
           <section
-            ref={draftPaneRef}
-            aria-label="My rewrite"
-            className="rewrite-text-pane rewrite-draft-pane"
+            aria-labelledby="rewrite-workspace-review-tab"
+            className="rewrite-workspace-screen rewrite-workspace-review-screen"
+            hidden={activeScreen !== "review"}
+            id="rewrite-workspace-review-screen"
+            role="tabpanel"
           >
-            <header>
-              <div>
-                <span>Human-authored draft</span>
-                <h3>My rewrite</h3>
-              </div>
-              <div className="rewrite-pane-header-actions">
-                <span>{humanDraft.length.toLocaleString()} characters</span>
+            <div className="rewrite-review-screen-content">
+              <header className="rewrite-review-screen-header">
+                <div>
+                  <span>Relative to the supplied current text</span>
+                  <h3>ChatGPT Review</h3>
+                </div>
+                <div>
+                  <span>{getCompactReviewStatus(currentReview, importedRounds.length)}</span>
+                  <span>{getSaveLabel(saveState)}</span>
+                </div>
+              </header>
+
+              <section className="rewrite-intent-panel">
+                <label htmlFor="rewrite-intent-note">
+                  What are you trying to improve or change? <span>Optional</span>
+                </label>
+                <textarea
+                  id="rewrite-intent-note"
+                  placeholder="For example: preserve the conclusions but simplify the explanation."
+                  value={intentNote}
+                  onChange={(event) => setIntentNote(event.target.value)}
+                />
+              </section>
+
+              <div className="rewrite-review-screen-actions">
                 <button
-                  className="rewrite-clear-draft"
+                  disabled={isApplying || isAnalyzing}
                   type="button"
-                  onClick={() => {
-                    if (window.confirm("Clear your rewrite draft? The current document text will remain unchanged.")) {
-                      handleHumanDraftChange("");
-                    }
-                  }}
+                  onClick={() => void handleExportReview()}
                 >
-                  Clear my rewrite
+                  Review meaning with ChatGPT
+                </button>
+                <button type="button" onClick={() => setIsImportOpen(true)}>
+                  Import semantic review
                 </button>
               </div>
-            </header>
-            <RewriteComparisonEditor
-              ariaLabel={
-                editorMode === "visual"
-                  ? "My rewrite Visual editor"
-                  : "My rewrite Markdown editor"
-              }
-              id="rewrite-human-draft"
-              markdown={humanDraft}
-              mode={editorMode}
-              onMarkdownChange={handleHumanDraftChange}
-              onSelectionChange={setDraftSelection}
-              readOnly={false}
-              resetKey={0}
-              selectionRequest={draftSelectionRequest}
-            />
-          </section>
 
-          <section aria-label="Rewrite review" className="rewrite-review-pane">
-            <header>
-              <div>
-                <span>Relative to the supplied current text</span>
-                <h3>ChatGPT review</h3>
-              </div>
-              <span>{importedRounds.length} round{importedRounds.length === 1 ? "" : "s"}</span>
-            </header>
-            <ReviewPanel
-              currentReview={currentReview}
-              humanDraftHash={workingSession.human_draft_sha256}
-              importedRounds={importedRounds}
-              onLocate={locateDraftExcerpt}
-            />
+              <section aria-label="Rewrite review" className="rewrite-review-pane">
+                <header>
+                  <div>
+                    <span>Semantic findings</span>
+                    <h3>Current and previous reviews</h3>
+                  </div>
+                  <span>{importedRounds.length} round{importedRounds.length === 1 ? "" : "s"}</span>
+                </header>
+                <ReviewPanel
+                  currentReview={currentReview}
+                  humanDraftHash={workingSession.human_draft_sha256}
+                  importedRounds={importedRounds}
+                  onLocate={locateDraftExcerpt}
+                />
+              </section>
+            </div>
           </section>
         </div>
-
-        <section className="rewrite-intent-panel">
-          <label htmlFor="rewrite-intent-note">
-            What are you trying to improve or change? <span>Optional</span>
-          </label>
-          <textarea
-            id="rewrite-intent-note"
-            placeholder="For example: preserve the conclusions but simplify the explanation."
-            value={intentNote}
-            onChange={(event) => setIntentNote(event.target.value)}
-          />
-        </section>
 
         {error ? (
           <div className="rewrite-workspace-error" role="alert">
@@ -663,30 +773,6 @@ export function RewriteWorkspace({
             <span>Project save failed and the browser recovery copy is unavailable.</span>
           </div>
         ) : null}
-
-        <footer className="rewrite-workspace-footer">
-          <div>
-            <button
-              disabled={isApplying || isAnalyzing}
-              type="button"
-              onClick={() => void handleExportReview()}
-            >
-              Review meaning with ChatGPT
-            </button>
-            <button type="button" onClick={() => setIsImportOpen(true)}>
-              Import semantic review
-            </button>
-          </div>
-          <div>
-            <button
-              disabled={isApplying || isAnalyzing || !humanDraft.trim()}
-              type="button"
-              onClick={() => void handleAnalyzeImpact()}
-            >
-              {isAnalyzing ? "Analyzing impact…" : "Apply rewrite"}
-            </button>
-          </div>
-        </footer>
 
         {promptRound ? (
           <WorkspaceDialog title="Manual ChatGPT review prompt" onClose={() => setPromptRound(null)}>
@@ -1032,6 +1118,22 @@ function getSaveLabel(state: SaveState): string {
   }
   if (state === "failed") return "Unsaved changes · Recovery copy unavailable";
   return "Saved to project";
+}
+
+function getCompactReviewStatus(
+  currentReview: RewriteReviewRound | null,
+  importedRoundCount: number
+): string {
+  if (currentReview) {
+    const previousRoundCount = Math.max(0, importedRoundCount - 1);
+    return previousRoundCount === 0
+      ? "1 current review"
+      : `1 current review · ${previousRoundCount} previous`;
+  }
+  if (importedRoundCount > 0) {
+    return `${importedRoundCount} previous review${importedRoundCount === 1 ? "" : "s"}`;
+  }
+  return "No review";
 }
 
 function formatEnum(value: string): string {

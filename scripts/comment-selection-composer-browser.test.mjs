@@ -33,12 +33,22 @@ const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
 const screenshotPath = process.env.PATCHMARK_COMMENT_COMPOSER_SCREENSHOT;
 const rewriteWorkspaceScreenshotPath =
   process.env.PATCHMARK_REWRITE_WORKSPACE_SCREENSHOT;
+const rewriteWorkspaceReviewScreenshotPath =
+  process.env.PATCHMARK_REWRITE_REVIEW_SCREENSHOT;
+const rewriteWorkspaceTableScreenshotPath =
+  process.env.PATCHMARK_REWRITE_TABLE_SCREENSHOT;
 const preambleTarget =
   "Preamble selection has no deterministic containing section.";
 const paragraphTarget =
   "Paragraph selection remains available without using a context menu.";
 const tableTarget =
   "Break-even must be calculated after ingredient cost, packaging, labor, delivery, utilities, admin, accounting, tax/VAT handling, staff, and facility costs.";
+const longRewriteUrl =
+  "https://example.com/source/" + "long-path-segment-".repeat(18) + "final";
+const longRewriteIdentifier =
+  "PATCHMARK_REWRITE_IDENTIFIER_" + "UNBROKEN_SEGMENT_".repeat(22) + "END";
+const longRewriteCodeLine =
+  "const rewriteWorkspaceConstraint = \"" + "code-content-".repeat(28) + "\";";
 const leftEdgeTarget = "Left edge selection target.";
 const rightEdgeTarget = "Right edge selection target.";
 const keyboardTarget =
@@ -187,6 +197,15 @@ async function run() {
         const workspaceRect = workspace.getBoundingClientRect();
         const currentSurface = workspace.querySelector(".rewrite-current-pane .rewrite-editor-surface");
         const draftSurface = workspace.querySelector(".rewrite-draft-pane .rewrite-editor-surface");
+        const bodyPanel = workspace.querySelector(".rewrite-workspace-body");
+        const currentPane = workspace.querySelector(".rewrite-current-pane");
+        const draftPane = workspace.querySelector(".rewrite-draft-pane");
+        const actionBar = workspace.querySelector(".rewrite-workspace-rewrite-footer");
+        const reviewScreen = workspace.querySelector(".rewrite-workspace-review-screen");
+        const currentPaneRect = currentPane.getBoundingClientRect();
+        const draftPaneRect = draftPane.getBoundingClientRect();
+        const bodyPanelRect = bodyPanel.getBoundingClientRect();
+        const actionBarRect = actionBar.getBoundingClientRect();
         return {
           current: current.textContent.trim(),
           draft: draft.textContent.trim(),
@@ -194,6 +213,8 @@ async function run() {
           currentReadOnly: current.getAttribute("aria-readonly"),
           draftEditable: draft.getAttribute("contenteditable"),
           activeMode: workspace.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim(),
+          activeScreen: workspace.querySelector("[aria-label='Rewrite workspace screens'] [aria-selected='true']")?.textContent.trim(),
+          screenLabels: Array.from(workspace.querySelectorAll("[aria-label='Rewrite workspace screens'] [role='tab']")).map((tab) => tab.textContent.trim()),
           backdropRect: {
             height: Math.round(backdropRect.height),
             left: Math.round(backdropRect.left),
@@ -208,11 +229,23 @@ async function run() {
           },
           bodyOverflow: getComputedStyle(document.body).overflow,
           workspaceOverflow: getComputedStyle(workspace).overflow,
-          bodyPanelOverflow: getComputedStyle(workspace.querySelector(".rewrite-workspace-body")).overflow,
-          currentOverflow: getComputedStyle(currentSurface).overflow,
-          draftOverflow: getComputedStyle(draftSurface).overflow,
-          hasPersistentActions: ["Close", "Review meaning with ChatGPT", "Apply rewrite"].every((label) =>
-            Array.from(workspace.querySelectorAll("button")).some((button) => button.textContent.trim() === label)
+          bodyPanelOverflow: getComputedStyle(bodyPanel).overflow,
+          currentOverflowX: getComputedStyle(currentSurface).overflowX,
+          currentOverflowY: getComputedStyle(currentSurface).overflowY,
+          draftOverflowX: getComputedStyle(draftSurface).overflowX,
+          draftOverflowY: getComputedStyle(draftSurface).overflowY,
+          bodyPanelHeight: Math.round(bodyPanelRect.height),
+          editorSurfaceHeight: Math.round(currentSurface.getBoundingClientRect().height),
+          actionBarHeight: Math.round(actionBarRect.height),
+          paneWidthDifference: Math.abs(Math.round(currentPaneRect.width - draftPaneRect.width)),
+          reviewVisible: reviewScreen.getClientRects().length > 0,
+          horizontalOverflow: workspace.scrollWidth > workspace.clientWidth ||
+            currentSurface.scrollWidth > currentSurface.clientWidth + 1 ||
+            draftSurface.scrollWidth > draftSurface.clientWidth + 1,
+          hasPersistentActions: ["Close", "ChatGPT Review", "Apply rewrite"].every((label) =>
+            Array.from(workspace.querySelectorAll("button")).some((button) =>
+              button.textContent.trim() === label && button.getClientRects().length > 0
+            )
           ),
           leftLabel: workspace.querySelector(".rewrite-current-pane")?.textContent,
           rightLabel: workspace.querySelector(".rewrite-draft-pane")?.textContent
@@ -224,6 +257,8 @@ async function run() {
     assert.equal(rewriteWorkspace.current, paragraphTarget);
     assert.equal(rewriteWorkspace.draft, paragraphTarget);
     assert.equal(rewriteWorkspace.activeMode, "Visual");
+    assert.equal(rewriteWorkspace.activeScreen, "Rewrite");
+    assert.deepEqual(rewriteWorkspace.screenLabels, ["Rewrite", "ChatGPT Review"]);
     assert.notEqual(rewriteWorkspace.currentEditable, "true");
     assert.equal(rewriteWorkspace.currentReadOnly, "true");
     assert.equal(rewriteWorkspace.draftEditable, "true");
@@ -237,8 +272,16 @@ async function run() {
     assert.equal(rewriteWorkspace.bodyOverflow, "hidden");
     assert.equal(rewriteWorkspace.workspaceOverflow, "hidden");
     assert.equal(rewriteWorkspace.bodyPanelOverflow, "hidden");
-    assert.match(rewriteWorkspace.currentOverflow, /auto/);
-    assert.match(rewriteWorkspace.draftOverflow, /auto/);
+    assert.equal(rewriteWorkspace.currentOverflowX, "hidden");
+    assert.equal(rewriteWorkspace.currentOverflowY, "auto");
+    assert.equal(rewriteWorkspace.draftOverflowX, "hidden");
+    assert.equal(rewriteWorkspace.draftOverflowY, "auto");
+    assert.ok(rewriteWorkspace.bodyPanelHeight >= 580);
+    assert.ok(rewriteWorkspace.editorSurfaceHeight >= 520);
+    assert.ok(rewriteWorkspace.actionBarHeight <= 56);
+    assert.ok(rewriteWorkspace.paneWidthDifference <= 1);
+    assert.equal(rewriteWorkspace.reviewVisible, false);
+    assert.equal(rewriteWorkspace.horizontalOverflow, false);
     assert.equal(rewriteWorkspace.hasPersistentActions, true);
     assert.match(rewriteWorkspace.leftLabel, /Current document text/);
     assert.match(rewriteWorkspace.rightLabel, /My rewrite/);
@@ -282,12 +325,15 @@ async function run() {
     );
     const rewriteMarkdownToVisualLatencyMs = Date.now() - visualModeStartedAt;
     assert.ok(rewriteMarkdownToVisualLatencyMs < 1000);
+    const rewriteVisualTypingStartedAt = Date.now();
     await appendToRewriteVisualDraft(client, " Visual refinement.");
     await waitFor(
       client,
       "Visual rewrite transaction",
       `document.querySelector("[aria-label='My rewrite Visual editor']")?.textContent?.includes("Visual refinement.")`
     );
+    const rewriteVisualTypingLatencyMs = Date.now() - rewriteVisualTypingStartedAt;
+    assert.ok(rewriteVisualTypingLatencyMs < 1000);
     await clickRewriteWorkspaceButton(client, "Markdown");
     const rewriteDraft = await waitFor(
       client,
@@ -341,6 +387,110 @@ async function run() {
       true,
       "Escape must not close the full Rewrite Workspace or open its close confirmation."
     );
+    const screenSwitchSaveEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    const rewriteSelectionBeforeReview = await evaluate(client, {
+      expression: `(() => {
+        window.__patchmarkRewriteDraftEditorNode =
+          document.querySelector("[aria-label='My rewrite Visual editor']");
+        const walker = document.createTreeWalker(
+          window.__patchmarkRewriteDraftEditorNode,
+          NodeFilter.SHOW_TEXT
+        );
+        let node = walker.nextNode();
+        while (node && !node.textContent.includes("Visual refinement.")) {
+          node = walker.nextNode();
+        }
+        if (!node) return null;
+        const start = node.textContent.indexOf("Visual refinement.");
+        const range = document.createRange();
+        range.setStart(node, start);
+        range.setEnd(node, start + "Visual refinement.".length);
+        const selection = window.getSelection();
+        selection.removeAllRanges();
+        selection.addRange(range);
+        return selection.toString();
+      })()`
+    });
+    assert.equal(rewriteSelectionBeforeReview, "Visual refinement.");
+    const rewriteToReviewStartedAt = Date.now();
+    await clickRewriteWorkspaceButton(client, "ChatGPT Review");
+    const reviewScreen = await waitFor(
+      client,
+      "ChatGPT Review workspace screen",
+      `(() => {
+        const reviewScreen = document.querySelector("#rewrite-workspace-review-screen");
+        const rewriteScreen = document.querySelector("#rewrite-workspace-rewrite-screen");
+        return reviewScreen && !reviewScreen.hidden ? {
+          activeScreen: document.querySelector("[aria-label='Rewrite workspace screens'] [aria-selected='true']")?.textContent.trim(),
+          draftEditorMounted: document.querySelector("[aria-label='My rewrite Visual editor']") === window.__patchmarkRewriteDraftEditorNode,
+          hasIntent: Boolean(document.querySelector("#rewrite-intent-note")),
+          hasImport: Array.from(reviewScreen.querySelectorAll("button")).some((button) => button.textContent.trim() === "Import semantic review"),
+          hasPromptExport: Array.from(reviewScreen.querySelectorAll("button")).some((button) => button.textContent.trim() === "Review meaning with ChatGPT"),
+          modeControlVisible: document.querySelector("[aria-label='Rewrite comparison mode']")?.getClientRects().length > 0,
+          rewriteHidden: rewriteScreen.hidden,
+          visibleComparisonPanes: Array.from(document.querySelectorAll(".rewrite-text-pane")).filter((pane) => pane.getClientRects().length > 0).length
+        } : null;
+      })()`
+    );
+    const rewriteToReviewLatencyMs = Date.now() - rewriteToReviewStartedAt;
+    assert.ok(rewriteToReviewLatencyMs < 1000);
+    assert.equal(reviewScreen.activeScreen, "ChatGPT Review");
+    assert.equal(reviewScreen.draftEditorMounted, true);
+    assert.equal(reviewScreen.hasIntent, true);
+    assert.equal(reviewScreen.hasImport, true);
+    assert.equal(reviewScreen.hasPromptExport, true);
+    assert.equal(reviewScreen.modeControlVisible, false);
+    assert.equal(reviewScreen.rewriteHidden, true);
+    assert.equal(reviewScreen.visibleComparisonPanes, 0);
+    if (rewriteWorkspaceReviewScreenshotPath) {
+      await saveScreenshot(client, rewriteWorkspaceReviewScreenshotPath);
+    }
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      screenSwitchSaveEventCount,
+      "Opening ChatGPT Review must not create a canonical draft revision."
+    );
+    const reviewToRewriteStartedAt = Date.now();
+    await clickRewriteWorkspaceButton(client, "Rewrite");
+    await waitFor(
+      client,
+      "mounted Rewrite screen restored",
+      `(() => {
+        const screen = document.querySelector("#rewrite-workspace-rewrite-screen");
+        const draft = document.querySelector("[aria-label='My rewrite Visual editor']");
+        const selection = window.getSelection();
+        return !screen?.hidden && draft === window.__patchmarkRewriteDraftEditorNode && draft.textContent.includes("Visual refinement.") ? {
+          selectedText: selection.toString(),
+          selectionInDraft: draft.contains(selection.anchorNode)
+        } : null;
+      })()`
+    );
+    const reviewToRewriteLatencyMs = Date.now() - reviewToRewriteStartedAt;
+    assert.ok(reviewToRewriteLatencyMs < 1000);
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim()`
+      }),
+      "Visual"
+    );
+    const restoredRewriteSelection = await evaluate(client, {
+      expression: `(() => {
+        const draft = document.querySelector("[aria-label='My rewrite Visual editor']");
+        const selection = window.getSelection();
+        return {
+          selectedText: selection.toString(),
+          selectionInDraft: draft.contains(selection.anchorNode)
+        };
+      })()`
+    });
+    assert.equal(restoredRewriteSelection.selectedText, "Visual refinement.");
+    assert.equal(restoredRewriteSelection.selectionInDraft, true);
+    await clickRewriteWorkspaceButton(client, "ChatGPT Review");
     const rewritePromptStartedAt = Date.now();
     await clickRewriteWorkspaceButton(client, "Review meaning with ChatGPT");
     const promptText = await waitFor(
@@ -394,6 +544,7 @@ async function run() {
     ]) {
       assert.match(importedReview, new RegExp(category));
     }
+    await clickRewriteWorkspaceButton(client, "Rewrite");
     await clickRewriteWorkspaceButton(client, "Markdown");
     assert.equal(
       await waitFor(
@@ -415,41 +566,60 @@ async function run() {
       "project-saved semantic rewrite review",
       `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
     );
+    await clickRewriteWorkspaceButton(client, "ChatGPT Review");
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
       height: 760,
       mobile: false,
       width: 430
     });
-    const narrowWorkspace = await waitFor(
+    const narrowReviewScreen = await waitFor(
       client,
-      "narrow rewrite workspace tabs",
+      "narrow ChatGPT Review screen",
       `(() => {
         const workspace = document.querySelector("[data-testid='rewrite-workspace']");
-        const tabs = workspace?.querySelectorAll(".rewrite-workspace-tabs [role='tab']");
-        if (!workspace || tabs?.length !== 3) return null;
+        const primaryTabs = workspace?.querySelectorAll("[aria-label='Rewrite workspace screens'] [role='tab']");
+        const reviewScreen = workspace?.querySelector("#rewrite-workspace-review-screen");
+        if (!workspace || primaryTabs?.length !== 2 || reviewScreen?.hidden) return null;
         const rect = workspace.getBoundingClientRect();
-        const visibleSections = Array.from(
-          workspace.querySelectorAll(".rewrite-workspace-body > section")
-        ).filter((section) => getComputedStyle(section).display !== "none");
         return {
-          activeTab: workspace.querySelector(".rewrite-workspace-tabs [aria-selected='true']")?.textContent,
-          activeMode: workspace.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim(),
+          activeScreen: workspace.querySelector("[aria-label='Rewrite workspace screens'] [aria-selected='true']")?.textContent.trim(),
           height: Math.round(rect.height),
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-          tabLabels: Array.from(tabs).map((tab) => tab.textContent.trim()),
-          visibleSections: visibleSections.length,
+          primaryLabels: Array.from(primaryTabs).map((tab) => tab.textContent.trim()),
+          visibleComparisonPanes: Array.from(workspace.querySelectorAll(".rewrite-text-pane")).filter((pane) => pane.getClientRects().length > 0).length,
           width: Math.round(rect.width)
         };
       })()`
     );
-    assert.deepEqual(narrowWorkspace.tabLabels, ["Current text", "My rewrite", "Review"]);
-    assert.equal(narrowWorkspace.activeTab, "Review");
-    assert.equal(narrowWorkspace.activeMode, "Visual");
-    assert.equal(narrowWorkspace.height, 760);
-    assert.equal(narrowWorkspace.width, 430);
-    assert.equal(narrowWorkspace.visibleSections, 1);
-    assert.equal(narrowWorkspace.horizontalOverflow, false);
+    assert.deepEqual(narrowReviewScreen.primaryLabels, ["Rewrite", "ChatGPT Review"]);
+    assert.equal(narrowReviewScreen.activeScreen, "ChatGPT Review");
+    assert.equal(narrowReviewScreen.height, 760);
+    assert.equal(narrowReviewScreen.width, 430);
+    assert.equal(narrowReviewScreen.visibleComparisonPanes, 0);
+    assert.equal(narrowReviewScreen.horizontalOverflow, false);
+    await clickRewriteWorkspaceButton(client, "Rewrite");
+    const narrowRewriteScreen = await waitFor(
+      client,
+      "narrow Rewrite screen pane tabs",
+      `(() => {
+        const workspace = document.querySelector("[data-testid='rewrite-workspace']");
+        const paneTabs = workspace?.querySelectorAll(".rewrite-workspace-tabs [role='tab']");
+        if (!workspace || paneTabs?.length !== 2) return null;
+        return {
+          activeMode: workspace.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim(),
+          activePane: workspace.querySelector(".rewrite-workspace-tabs [aria-selected='true']")?.textContent.trim(),
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          paneLabels: Array.from(paneTabs).map((tab) => tab.textContent.trim()),
+          visiblePanes: Array.from(workspace.querySelectorAll(".rewrite-workspace-body > section")).filter((pane) => pane.getClientRects().length > 0).length
+        };
+      })()`
+    );
+    assert.deepEqual(narrowRewriteScreen.paneLabels, ["Current text", "My rewrite"]);
+    assert.equal(narrowRewriteScreen.activePane, "My rewrite");
+    assert.equal(narrowRewriteScreen.activeMode, "Visual");
+    assert.equal(narrowRewriteScreen.visiblePanes, 1);
+    assert.equal(narrowRewriteScreen.horizontalOverflow, false);
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
       height: 820,
@@ -574,21 +744,58 @@ async function run() {
       client,
       "table-heavy Visual rewrite workspace",
       `(() => {
+        const workspace = document.querySelector("[data-testid='rewrite-workspace']");
+        const body = workspace?.querySelector(".rewrite-workspace-body");
+        const currentPane = workspace?.querySelector(".rewrite-current-pane");
+        const draftPane = workspace?.querySelector(".rewrite-draft-pane");
         const currentSurface = document.querySelector(".rewrite-current-pane .rewrite-editor-surface");
         const draftSurface = document.querySelector(".rewrite-draft-pane .rewrite-editor-surface");
         const currentEditor = document.querySelector("[aria-label='Current document text Visual reference']");
         const draftEditor = document.querySelector("[aria-label='My rewrite Visual editor']");
-        if (!currentSurface || !draftSurface || !currentEditor || !draftEditor) return null;
+        const toolbar = draftSurface?.querySelector(".mdxeditor-toolbar");
+        if (!workspace || !body || !currentPane || !draftPane || !currentSurface || !draftSurface || !currentEditor || !draftEditor || !toolbar) return null;
+        const toolbarButtons = Array.from(toolbar.querySelectorAll("button"));
+        if (toolbarButtons.length < 8) return null;
         const currentTables = currentEditor.querySelectorAll("table");
         const draftTables = draftEditor.querySelectorAll("table");
         if (currentTables.length === 0 || draftTables.length === 0) return null;
+        const currentTable = currentTables[0];
+        const draftTable = draftTables[0];
+        const currentCell = currentTable.querySelector("th, td");
+        const currentPaneRect = currentPane.getBoundingClientRect();
+        const draftPaneRect = draftPane.getBoundingClientRect();
+        const bodyRect = body.getBoundingClientRect();
+        const currentTableRect = currentTable.getBoundingClientRect();
+        const draftTableRect = draftTable.getBoundingClientRect();
         return {
           currentTables: currentTables.length,
           draftTables: draftTables.length,
           currentScrollable: currentSurface.scrollHeight > currentSurface.clientHeight,
           draftScrollable: draftSurface.scrollHeight > draftSurface.clientHeight,
-          currentHorizontal: currentSurface.scrollWidth >= currentSurface.clientWidth,
-          draftHorizontal: draftSurface.scrollWidth >= draftSurface.clientWidth,
+          currentHorizontalOverflow: currentSurface.scrollWidth > currentSurface.clientWidth + 1,
+          draftHorizontalOverflow: draftSurface.scrollWidth > draftSurface.clientWidth + 1,
+          currentEditorHorizontalOverflow: currentEditor.scrollWidth > currentEditor.clientWidth + 1,
+          draftEditorHorizontalOverflow: draftEditor.scrollWidth > draftEditor.clientWidth + 1,
+          workspaceHorizontalOverflow: workspace.scrollWidth > workspace.clientWidth + 1,
+          pageHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+          paneWidthDifference: Math.abs(Math.round(currentPaneRect.width - draftPaneRect.width)),
+          bodyHeight: Math.round(bodyRect.height),
+          editorSurfaceHeight: Math.round(currentSurface.getBoundingClientRect().height),
+          currentTableFitsPane: currentTableRect.width <= currentSurface.clientWidth + 1,
+          draftTableFitsPane: draftTableRect.width <= draftSurface.clientWidth + 1,
+          currentTableLayout: getComputedStyle(currentTable).tableLayout,
+          currentCellWhiteSpace: getComputedStyle(currentCell).whiteSpace,
+          currentCellOverflowWrap: getComputedStyle(currentCell).overflowWrap,
+          toolbarHorizontalOverflow: toolbar.scrollWidth > toolbar.clientWidth + 1,
+          toolbarFlexWrap: getComputedStyle(toolbar).flexWrap,
+          toolbarButtonCount: toolbarButtons.length,
+          visibleToolbarButtonCount: toolbarButtons.filter((button) => button.getClientRects().length > 0).length,
+          longUrlVisible: currentEditor.textContent.includes(${JSON.stringify(longRewriteUrl)}),
+          longUrlDestinationPreserved: Array.from(currentEditor.querySelectorAll("a")).some((link) =>
+            link.textContent === ${JSON.stringify(longRewriteUrl)} && link.href === ${JSON.stringify(longRewriteUrl)}
+          ),
+          longIdentifierVisible: currentEditor.textContent.includes(${JSON.stringify(longRewriteIdentifier)}),
+          longCodeVisible: currentEditor.textContent.includes(${JSON.stringify(longRewriteCodeLine)}),
           draftEditable: draftEditor.getAttribute("contenteditable")
         };
       })()`
@@ -600,9 +807,97 @@ async function run() {
     assert.equal(tableRewriteWorkspace.draftTables >= 1, true);
     assert.equal(tableRewriteWorkspace.currentScrollable, true);
     assert.equal(tableRewriteWorkspace.draftScrollable, true);
-    assert.equal(tableRewriteWorkspace.currentHorizontal, true);
-    assert.equal(tableRewriteWorkspace.draftHorizontal, true);
+    assert.equal(tableRewriteWorkspace.currentHorizontalOverflow, false);
+    assert.equal(tableRewriteWorkspace.draftHorizontalOverflow, false);
+    assert.equal(tableRewriteWorkspace.currentEditorHorizontalOverflow, false);
+    assert.equal(tableRewriteWorkspace.draftEditorHorizontalOverflow, false);
+    assert.equal(tableRewriteWorkspace.workspaceHorizontalOverflow, false);
+    assert.equal(tableRewriteWorkspace.pageHorizontalOverflow, false);
+    assert.ok(tableRewriteWorkspace.paneWidthDifference <= 1);
+    assert.ok(tableRewriteWorkspace.bodyHeight >= 580);
+    assert.ok(tableRewriteWorkspace.editorSurfaceHeight >= 520);
+    assert.equal(tableRewriteWorkspace.currentTableFitsPane, true);
+    assert.equal(tableRewriteWorkspace.draftTableFitsPane, true);
+    assert.equal(tableRewriteWorkspace.currentTableLayout, "fixed");
+    assert.equal(tableRewriteWorkspace.currentCellWhiteSpace, "normal");
+    assert.equal(tableRewriteWorkspace.currentCellOverflowWrap, "anywhere");
+    assert.equal(tableRewriteWorkspace.toolbarHorizontalOverflow, false);
+    assert.equal(tableRewriteWorkspace.toolbarFlexWrap, "wrap");
+    assert.ok(tableRewriteWorkspace.toolbarButtonCount >= 8);
+    assert.equal(
+      tableRewriteWorkspace.visibleToolbarButtonCount,
+      tableRewriteWorkspace.toolbarButtonCount
+    );
+    assert.equal(tableRewriteWorkspace.longUrlVisible, true);
+    assert.equal(tableRewriteWorkspace.longUrlDestinationPreserved, true);
+    assert.equal(tableRewriteWorkspace.longIdentifierVisible, true);
+    assert.equal(tableRewriteWorkspace.longCodeVisible, true);
     assert.equal(tableRewriteWorkspace.draftEditable, "true");
+    if (rewriteWorkspaceTableScreenshotPath) {
+      await saveScreenshot(client, rewriteWorkspaceTableScreenshotPath);
+    }
+    await waitFor(
+      client,
+      "table-heavy rewrite saved before screen-state check",
+      `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
+    );
+    const tableScreenSwitchSaveEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    const tableScreenState = await evaluate(client, {
+      expression: `(() => {
+        const currentSurface = document.querySelector(".rewrite-current-pane .rewrite-editor-surface");
+        const draftSurface = document.querySelector(".rewrite-draft-pane .rewrite-editor-surface");
+        window.__patchmarkTableDraftEditorNode = document.querySelector("[aria-label='My rewrite Visual editor']");
+        currentSurface.scrollTop = Math.min(320, currentSurface.scrollHeight - currentSurface.clientHeight);
+        draftSurface.scrollTop = Math.min(360, draftSurface.scrollHeight - draftSurface.clientHeight);
+        return {
+          currentScrollTop: currentSurface.scrollTop,
+          draftScrollTop: draftSurface.scrollTop
+        };
+      })()`
+    });
+    assert.ok(tableScreenState.currentScrollTop > 0);
+    assert.ok(tableScreenState.draftScrollTop > 0);
+    await clickRewriteWorkspaceButton(client, "ChatGPT Review");
+    await waitFor(
+      client,
+      "table-heavy review screen",
+      `!document.querySelector("#rewrite-workspace-review-screen")?.hidden`
+    );
+    await clickRewriteWorkspaceButton(client, "Rewrite");
+    const restoredTableScreenState = await waitFor(
+      client,
+      "table-heavy mounted Rewrite state",
+      `(() => {
+        const currentSurface = document.querySelector(".rewrite-current-pane .rewrite-editor-surface");
+        const draftSurface = document.querySelector(".rewrite-draft-pane .rewrite-editor-surface");
+        const draftEditor = document.querySelector("[aria-label='My rewrite Visual editor']");
+        return draftEditor === window.__patchmarkTableDraftEditorNode ? {
+          currentScrollTop: currentSurface.scrollTop,
+          draftScrollTop: draftSurface.scrollTop,
+          activeMode: document.querySelector("[aria-label='Rewrite comparison mode'] [aria-pressed='true']")?.textContent.trim()
+        } : null;
+      })()`
+    );
+    assert.equal(restoredTableScreenState.activeMode, "Visual");
+    assert.equal(
+      Math.round(restoredTableScreenState.currentScrollTop),
+      Math.round(tableScreenState.currentScrollTop)
+    );
+    assert.equal(
+      Math.round(restoredTableScreenState.draftScrollTop),
+      Math.round(tableScreenState.draftScrollTop)
+    );
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      tableScreenSwitchSaveEventCount,
+      "Switching workspace screens must not create a canonical draft revision."
+    );
+    const rewriteTableMarkdownRenderStartedAt = Date.now();
     await clickRewriteWorkspaceButton(client, "Markdown");
     const tableRewriteMarkdown = await waitFor(
       client,
@@ -612,6 +907,65 @@ async function run() {
         typeof value === "string" &&
         value.includes("| Illustrative revenue logic | Operating objective |") &&
         value.includes(tableTarget)
+    );
+    const rewriteTableMarkdownRenderLatencyMs =
+      Date.now() - rewriteTableMarkdownRenderStartedAt;
+    assert.ok(rewriteTableMarkdownRenderLatencyMs < 1000);
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      tableScreenSwitchSaveEventCount,
+      "Changing Visual and Markdown presentation must not create a canonical draft revision."
+    );
+    const tableMarkdownLayout = await evaluate(client, {
+      expression: `(() => {
+        const current = document.querySelector("[aria-label='Current document text Markdown reference']");
+        const draft = document.querySelector("#rewrite-human-draft");
+        const style = getComputedStyle(draft);
+        window.__patchmarkTableMarkdownEditorNode = draft;
+        return {
+          currentHorizontalOverflow: current.scrollWidth > current.clientWidth + 1,
+          draftHorizontalOverflow: draft.scrollWidth > draft.clientWidth + 1,
+          draftWrap: draft.wrap,
+          overflowX: style.overflowX,
+          overflowWrap: style.overflowWrap,
+          whiteSpace: style.whiteSpace,
+          wordBreak: style.wordBreak
+        };
+      })()`
+    });
+    assert.equal(tableMarkdownLayout.currentHorizontalOverflow, false);
+    assert.equal(tableMarkdownLayout.draftHorizontalOverflow, false);
+    assert.equal(tableMarkdownLayout.draftWrap, "soft");
+    assert.equal(tableMarkdownLayout.overflowX, "hidden");
+    assert.equal(tableMarkdownLayout.overflowWrap, "anywhere");
+    assert.equal(tableMarkdownLayout.whiteSpace, "pre-wrap");
+    assert.equal(tableMarkdownLayout.wordBreak, "break-word");
+    const markdownScreenSwitchSaveEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    await clickRewriteWorkspaceButton(client, "ChatGPT Review");
+    await clickRewriteWorkspaceButton(client, "Rewrite");
+    assert.equal(
+      await waitFor(
+        client,
+        "mounted canonical Markdown after screen switch",
+        `(() => {
+          const draft = document.querySelector("#rewrite-human-draft");
+          return draft === window.__patchmarkTableMarkdownEditorNode ? draft.value : null;
+        })()`
+      ),
+      tableRewriteMarkdown
+    );
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      markdownScreenSwitchSaveEventCount,
+      "Soft wrapping and workspace navigation must not change canonical Markdown."
     );
     await clickRewriteWorkspaceButton(client, "Visual");
     await waitFor(
@@ -1324,9 +1678,13 @@ async function run() {
           chooserOpenLatencyMs,
           composerOpenLatencyMs,
           rewriteWorkspaceOpenLatencyMs,
+          rewriteToReviewLatencyMs,
+          reviewToRewriteLatencyMs,
           rewriteVisualToMarkdownLatencyMs,
           rewriteMarkdownToVisualLatencyMs,
+          rewriteVisualTypingLatencyMs,
           rewriteTableVisualRenderLatencyMs,
+          rewriteTableMarkdownRenderLatencyMs,
           rewriteDraftSaveLatencyMs,
           rewritePromptLatencyMs,
           rewriteImpactLatencyMs,
@@ -1338,8 +1696,20 @@ async function run() {
           rewriteWorkspaceApplyPersistence: true,
           rewriteWorkspaceMarkdownApplyPersistence: true,
           rewriteWorkspaceFullscreen: true,
+          rewriteWorkspaceReviewSeparated: true,
+          rewriteWorkspaceMountedScreenState: true,
+          rewriteWorkspaceNoHorizontalOverflow: true,
           rewriteWorkspaceTableRoundTrip: true,
           rewriteWorkspaceUnsupportedMarkdownSafe: true,
+          rewriteWorkspaceMeasurements: {
+            bodyPanelHeight: rewriteWorkspace.bodyPanelHeight,
+            editorSurfaceHeight: rewriteWorkspace.editorSurfaceHeight,
+            actionBarHeight: rewriteWorkspace.actionBarHeight,
+            paneWidthDifference: rewriteWorkspace.paneWidthDifference,
+            tableBodyHeight: tableRewriteWorkspace.bodyHeight,
+            tableEditorSurfaceHeight: tableRewriteWorkspace.editorSurfaceHeight,
+            toolbarButtonCount: tableRewriteWorkspace.toolbarButtonCount
+          },
           sectionCommentId: sectionComment.id,
           documentCommentId: documentComment.id,
           bookmarkKind: bookmark.anchor.kind,
@@ -1347,7 +1717,11 @@ async function run() {
           existingAnchorAudit,
           screenshotPath: screenshotPath ?? null,
           rewriteWorkspaceScreenshotPath:
-            rewriteWorkspaceScreenshotPath ?? null
+            rewriteWorkspaceScreenshotPath ?? null,
+          rewriteWorkspaceReviewScreenshotPath:
+            rewriteWorkspaceReviewScreenshotPath ?? null,
+          rewriteWorkspaceTableScreenshotPath:
+            rewriteWorkspaceTableScreenshotPath ?? null
         },
         null,
         2
@@ -1527,6 +1901,14 @@ function createActionMarkdown() {
     "",
     ...filler,
     "## 10. Growth Path and Scenarios",
+    "",
+    `Long source URL: [${longRewriteUrl}](${longRewriteUrl})`,
+    "",
+    longRewriteIdentifier,
+    "",
+    "```js",
+    longRewriteCodeLine,
+    "```",
     "",
     "| Illustrative revenue logic | Operating objective | Indicative scale | Learning carried forward | Decision gate |",
     "| --- | --- | --- | --- | --- |",
