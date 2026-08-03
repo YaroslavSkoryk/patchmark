@@ -714,6 +714,11 @@ export async function convertLegacyProject({
     manifest_revision: 1,
     documents: [document]
   });
+  await remapLegacyRewriteSessionSnapshot({
+    documentId,
+    projectId: manifest.project_id,
+    snapshot: legacySnapshot
+  });
 
   const migrations = await metadata.getDirectoryHandle("migrations", { create: true });
   const migration = await migrations.getDirectoryHandle(migrationId, { create: true });
@@ -1557,6 +1562,120 @@ function validateLegacySnapshot(snapshot: Map<string, string>): void {
   const patches = parseJsonArray(snapshot.get("patches.json") ?? "", "patches.json");
   assertUniqueObjectIds(comments, "comment");
   assertUniqueObjectIds(patches, "patch");
+}
+
+async function remapLegacyRewriteSessionSnapshot({
+  documentId,
+  projectId,
+  snapshot
+}: {
+  documentId: string;
+  projectId: string;
+  snapshot: Map<string, string>;
+}): Promise<void> {
+  await remapLegacyRewriteSessionSnapshotFile({
+    commitPath: "save-commit.json",
+    documentId,
+    projectId,
+    sessionPath: "rewrite-sessions.json",
+    snapshot
+  });
+  await remapLegacyRewriteSessionSnapshotFile({
+    commitPath: "recovery/save-commit.json.lkg",
+    documentId,
+    projectId,
+    sessionPath: "recovery/rewrite-sessions.json.lkg",
+    snapshot
+  });
+}
+
+async function remapLegacyRewriteSessionSnapshotFile({
+  commitPath,
+  documentId,
+  projectId,
+  sessionPath,
+  snapshot
+}: {
+  commitPath: string;
+  documentId: string;
+  projectId: string;
+  sessionPath: string;
+  snapshot: Map<string, string>;
+}): Promise<void> {
+  const sessionText = snapshot.get(sessionPath);
+  if (!sessionText) {
+    return;
+  }
+  const value = parseJsonObject(sessionText, sessionPath);
+  if (!Array.isArray(value.sessions)) {
+    throw new Error(`Legacy .patchmark/${sessionPath} is invalid.`);
+  }
+  const remapped = {
+    ...value,
+    project_id: projectId,
+    document_id: documentId,
+    sessions: value.sessions.map((session) => {
+      if (!isRecord(session)) {
+        throw new Error(`Legacy .patchmark/${sessionPath} contains an invalid session.`);
+      }
+      return {
+        ...session,
+        project_id: projectId,
+        document_id: documentId
+      };
+    })
+  };
+  const remappedText = `${JSON.stringify(remapped, null, 2)}\n`;
+  snapshot.set(sessionPath, remappedText);
+  const commitText = snapshot.get(commitPath);
+  if (!commitText) {
+    return;
+  }
+  const commit = parseJsonObject(commitText, commitPath);
+  if (!isRecord(commit.files) || !isRecord(commit.files.rewrite_sessions)) {
+    return;
+  }
+  snapshot.set(
+    commitPath,
+    `${JSON.stringify(
+      {
+        ...commit,
+        files: {
+          ...commit.files,
+          rewrite_sessions: {
+            ...commit.files.rewrite_sessions,
+            bytes: new TextEncoder().encode(remappedText).byteLength,
+            sha256: await createPortableSha256(remappedText)
+          }
+        }
+      },
+      null,
+      2
+    )}\n`
+  );
+}
+
+function parseJsonObject(text: string, path: string): Record<string, unknown> {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error(`Legacy .patchmark/${path} is invalid JSON.`);
+  }
+  if (!isRecord(value)) {
+    throw new Error(`Legacy .patchmark/${path} must contain an object.`);
+  }
+  return value;
+}
+
+async function createPortableSha256(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(text)
+  );
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
 }
 
 function getJsonArrayCount(snapshot: Map<string, string>, path: string): number {

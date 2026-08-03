@@ -11,10 +11,13 @@ export type SelectionActionId =
   | "selected_text"
   | "section"
   | "document"
-  | "bookmark";
+  | "bookmark"
+  | "rewrite_selected_text"
+  | "rewrite_section";
 
 export type SelectionActionOption = {
   description: string;
+  group: "Comment" | "Rewrite" | "Reading";
   id: SelectionActionId;
   label: string;
   unavailableReason?: string;
@@ -79,13 +82,13 @@ export function SelectionActionsChooser({
         ref={compactButtonRef}
         type="button"
         aria-keyshortcuts="Alt+Shift+M"
-        aria-label="Choose comment scope"
+        aria-label="Choose text actions"
         className="comment-selection-action"
         data-testid="comment-selection-action"
         onClick={onOpen}
         onMouseDown={(event) => event.preventDefault()}
         style={{ left: x, top: y }}
-        title="Choose comment scope (Alt+Shift+M)"
+        title="Choose comment, rewrite, or bookmark action (Alt+Shift+M)"
       >
         + Comment
       </button>
@@ -141,7 +144,7 @@ export function SelectionActionsChooser({
   return (
     <div
       ref={chooserRef}
-      aria-label="Choose comment scope"
+      aria-label="Choose text actions"
       aria-modal="false"
       className="selection-actions-chooser"
       data-chooser-trigger={trigger}
@@ -159,7 +162,7 @@ export function SelectionActionsChooser({
       style={{ left: x, top: y }}
     >
       <header className="selection-actions-header">
-        <span>Comment on…</span>
+        <span>Selection actions</span>
         <button
           type="button"
           aria-label="Close comment scope chooser"
@@ -194,14 +197,17 @@ export function SelectionActionsChooser({
       ) : null}
 
       <div
-        aria-label="Comment scope and bookmark actions"
+        aria-label="Comment, rewrite, and bookmark actions"
         className="selection-actions-options"
         role="group"
       >
-        {options.map((option) =>
-          option.unavailableReason ? (
+        {options.map((option, index) => (
+          <div className="selection-action-group-item" key={option.id}>
+            {options[index - 1]?.group !== option.group ? (
+              <span className="selection-action-group-label">{option.group}</span>
+            ) : null}
+            {option.unavailableReason ? (
             <div
-              key={option.id}
               className="selection-action-unavailable"
               data-selection-action-unavailable={option.id}
               role="status"
@@ -209,9 +215,8 @@ export function SelectionActionsChooser({
               <strong>{option.label} unavailable</strong>
               <span>{option.unavailableReason}</span>
             </div>
-          ) : (
+            ) : (
             <button
-              key={option.id}
               type="button"
               data-selection-action-option={option.id}
               onClick={() => onActivate(option.id)}
@@ -219,8 +224,9 @@ export function SelectionActionsChooser({
               <strong>{option.label}</strong>
               <span>{option.description}</span>
             </button>
-          )
-        )}
+            )}
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -229,12 +235,14 @@ export function SelectionActionsChooser({
 export function createSelectionActionOptions({
   bookmarkUnavailableReason,
   commentsUnavailableReason,
+  rewriteUnavailableReason,
   sectionLabel,
   selectedTextAvailable,
   selectionUnavailableReason
 }: {
   bookmarkUnavailableReason: string | null;
   commentsUnavailableReason: string | null;
+  rewriteUnavailableReason: string | null;
   sectionLabel: string | null;
   selectedTextAvailable: boolean;
   selectionUnavailableReason: string | null;
@@ -242,6 +250,7 @@ export function createSelectionActionOptions({
   return [
     {
       description: "Anchor the comment to the captured range.",
+      group: "Comment",
       id: "selected_text",
       label: "Selected text",
       unavailableReason:
@@ -255,6 +264,7 @@ export function createSelectionActionOptions({
         ? `Comment on ${sectionLabel}.`
         : "Comment on the containing section.",
       id: "section",
+      group: "Comment",
       label: "Current section",
       unavailableReason:
         commentsUnavailableReason ??
@@ -264,12 +274,38 @@ export function createSelectionActionOptions({
     },
     {
       description: "Create a comment anchored to this document.",
+      group: "Comment",
       id: "document",
       label: "Whole document",
       unavailableReason: commentsUnavailableReason ?? undefined
     },
     {
+      description: "Open a frozen reference beside your editable human draft.",
+      group: "Rewrite",
+      id: "rewrite_selected_text",
+      label: "Rewrite selected text",
+      unavailableReason:
+        rewriteUnavailableReason ??
+        (!selectedTextAvailable
+          ? selectionUnavailableReason ?? "Select document text first."
+          : undefined)
+    },
+    {
+      description: sectionLabel
+        ? `Rewrite the complete ${sectionLabel} section.`
+        : "Rewrite the complete containing section.",
+      group: "Rewrite",
+      id: "rewrite_section",
+      label: "Rewrite current section",
+      unavailableReason:
+        rewriteUnavailableReason ??
+        (!sectionLabel
+          ? "No containing section could be identified."
+          : undefined)
+    },
+    {
       description: "Continue reading from this captured location.",
+      group: "Reading",
       id: "bookmark",
       label: "Set reading bookmark",
       unavailableReason: bookmarkUnavailableReason ?? undefined

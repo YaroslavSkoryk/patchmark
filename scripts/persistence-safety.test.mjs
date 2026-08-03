@@ -2,14 +2,37 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import {
   createProjectFromMarkdown,
+  discardPreparedProjectMutationSnapshot,
   getProjectPersistenceDebugState,
   openProjectFolder,
+  prepareProjectMutationSnapshot,
   readProjectComments,
   readProjectPatches,
+  readProjectRewriteSessionRecords,
   resetProjectPersistenceDebugState,
   restoreProjectLastKnownGood,
+  saveProjectRewriteSessionRecord,
+  saveProjectStateWithRewriteSessionRecord,
   saveProjectState
 } from "../lib/project/patchmark-project.ts";
+import {
+  buildRewriteReviewRequest,
+  createRewriteSession,
+  importRewriteReview,
+  updateRewriteDraft
+} from "../lib/rewrite-workspace/rewrite-review-protocol.ts";
+import {
+  createRewriteSessionPersistenceCoordinator,
+  RewriteSessionPersistenceError
+} from "../lib/rewrite-workspace/rewrite-session-persistence.ts";
+import {
+  createMemoryRewriteSessionStorage,
+  readLegacyRewriteSessions,
+  readRewriteRecoveryCopies,
+  saveLegacyRewriteSessionForTests,
+  saveRewriteRecoveryCopy,
+  setRewriteSessionStorageForTests
+} from "../lib/rewrite-workspace/rewrite-session-storage.ts";
 
 const picker = { root: null };
 globalThis.window = {
@@ -381,6 +404,469 @@ assert.equal(
   permanentDeleteDocumentBefore
 );
 
+const authoritativeRewriteFixture = await createCommittedFixture(
+  "authoritative-rewrite"
+);
+const authoritativeRewriteSession = await createReviewedRewriteSession(
+  authoritativeRewriteFixture
+);
+const authoritativeContentBefore = snapshotPaths(authoritativeRewriteFixture.root, [
+  "document.md",
+  ".patchmark/comments.json",
+  ".patchmark/patches.json"
+]);
+const authoritativeVersionsBefore =
+  authoritativeRewriteFixture.project.manifest.versions?.length ?? 0;
+const authoritativeRewriteSave = await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: authoritativeRewriteFixture.project,
+  reason: "save_human_rewrite_draft",
+  record: authoritativeRewriteSession
+});
+assert.equal(authoritativeRewriteSave.record.status, "draft");
+assert.equal(authoritativeRewriteSave.record.authoritative_revision, 1);
+assert.equal(
+  authoritativeRewriteSave.record.authoritative_generation,
+  authoritativeRewriteSave.commit.generation
+);
+assert.equal(authoritativeRewriteSave.commit.changedFiles.includes("rewrite_sessions"), true);
+assert.equal(authoritativeRewriteSave.commit.changedFiles.includes("document"), false);
+assert.deepEqual(
+  snapshotPaths(authoritativeRewriteFixture.root, Object.keys(authoritativeContentBefore)),
+  authoritativeContentBefore,
+  "Saving a Human Rewrite draft must not alter document content stores."
+);
+assert.equal(
+  authoritativeRewriteFixture.project.manifest.versions?.length ?? 0,
+  authoritativeVersionsBefore
+);
+const authoritativeStore = JSON.parse(
+  authoritativeRewriteFixture.root.read(".patchmark/rewrite-sessions.json")
+);
+assert.equal(authoritativeStore.sessions[0].human_draft, authoritativeRewriteSession.human_draft);
+assert.equal(authoritativeStore.sessions[0].review_rounds.length, 1);
+picker.root = authoritativeRewriteFixture.root;
+const reopenedAuthoritativeRewrite = await openProjectFolder();
+assert.ok(reopenedAuthoritativeRewrite);
+const reopenedRewriteRecords = await readProjectRewriteSessionRecords(
+  reopenedAuthoritativeRewrite.project
+);
+assert.equal(reopenedRewriteRecords[0].human_draft, authoritativeRewriteSession.human_draft);
+assert.equal(reopenedRewriteRecords[0].review_rounds[0].status, "imported");
+
+const concurrentRewriteFixture = await createCommittedFixture("concurrent-rewrite");
+picker.root = concurrentRewriteFixture.root;
+const concurrentWindowA = await openProjectFolder();
+const concurrentWindowB = await openProjectFolder();
+assert.ok(concurrentWindowA && concurrentWindowB);
+const concurrentSessionA = await createRewriteFixtureSession(concurrentRewriteFixture, "Window A");
+const concurrentSessionB = await createRewriteFixtureSession(concurrentRewriteFixture, "Window B");
+await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: concurrentWindowA.project,
+  reason: "concurrent_window_a",
+  record: concurrentSessionA
+});
+await assert.rejects(
+  saveProjectRewriteSessionRecord({
+    expectedRevision: 0,
+    project: concurrentWindowB.project,
+    reason: "concurrent_window_b",
+    record: concurrentSessionB
+  }),
+  /changed in another Patchmark window|project changed before this save could finish/
+);
+assert.equal(
+  JSON.parse(concurrentRewriteFixture.root.read(".patchmark/rewrite-sessions.json"))
+    .sessions[0].human_draft,
+  concurrentSessionA.human_draft
+);
+
+const orderedRewriteFixture = await createCommittedFixture("ordered-rewrite");
+setRewriteSessionStorageForTests(createMemoryRewriteSessionStorage());
+const orderedRewriteCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: "local_rewrite_test",
+  project: orderedRewriteFixture.project
+});
+const orderedRewriteFirst = await createRewriteFixtureSession(
+  orderedRewriteFixture,
+  "First queued draft."
+);
+const orderedRewriteSecond = await updateRewriteDraft({
+  humanDraft: `${orderedRewriteFirst.base_text}\n\nSecond queued draft.`,
+  intentNote: orderedRewriteFirst.intent_note,
+  session: orderedRewriteFirst
+});
+orderedRewriteFixture.root.controller.delayNext(
+  (path) => path.includes(".patchmark-tmp-") && path.endsWith("rewrite-sessions.json"),
+  40
+);
+const [orderedFirstResult, orderedSecondResult] = await Promise.all([
+  orderedRewriteCoordinator.persist(orderedRewriteFirst, "ordered_rewrite_first"),
+  orderedRewriteCoordinator.persist(orderedRewriteSecond, "ordered_rewrite_second")
+]);
+assert.equal(orderedFirstResult.queueLength, 1);
+assert.equal(orderedSecondResult.queueLength, 2);
+assert.equal(orderedSecondResult.session.authoritative_revision, 2);
+assert.equal(
+  JSON.parse(orderedRewriteFixture.root.read(".patchmark/rewrite-sessions.json"))
+    .sessions[0].human_draft,
+  orderedRewriteSecond.human_draft
+);
+setRewriteSessionStorageForTests(null);
+
+const identicalRecoveryFixture = await createCommittedFixture(
+  "identical-rewrite-recovery"
+);
+const identicalRecoveryStorage = createMemoryRewriteSessionStorage();
+setRewriteSessionStorageForTests(identicalRecoveryStorage);
+const identicalRecoverySession = await createRewriteFixtureSession(
+  identicalRecoveryFixture,
+  "Identical project and browser draft."
+);
+const identicalRecoveryProjectSave = await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: identicalRecoveryFixture.project,
+  reason: "identical_recovery_project_save",
+  record: identicalRecoverySession
+});
+await saveRewriteRecoveryCopy({
+  basedOnAuthoritativeRevision:
+    identicalRecoveryProjectSave.record.authoritative_revision,
+  recoveryRevision: 2,
+  session: identicalRecoveryProjectSave.record
+});
+const identicalRecoveryLoad = await createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: identicalRecoverySession.local_project_instance_id,
+  project: identicalRecoveryFixture.project
+}).load();
+assert.equal(identicalRecoveryLoad.conflict, null);
+assert.equal(identicalRecoveryLoad.source, "project");
+assert.deepEqual(
+  await readRewriteRecoveryCopies({
+    documentId: identicalRecoverySession.document_id,
+    localProjectInstanceId: identicalRecoverySession.local_project_instance_id,
+    projectId: identicalRecoverySession.project_id
+  }),
+  []
+);
+
+const newerRecoveryFixture = await createCommittedFixture("newer-rewrite-recovery");
+const newerRecoveryStorage = createMemoryRewriteSessionStorage();
+setRewriteSessionStorageForTests(newerRecoveryStorage);
+const newerRecoverySession = await createRewriteFixtureSession(
+  newerRecoveryFixture,
+  "Project draft before a browser-only edit."
+);
+const newerRecoveryProjectSave = await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: newerRecoveryFixture.project,
+  reason: "newer_recovery_project_save",
+  record: newerRecoverySession
+});
+const browserOnlyNewerSession = await updateRewriteDraft({
+  humanDraft: `${newerRecoveryProjectSave.record.human_draft}\n\nNewer browser-only edit.`,
+  intentNote: newerRecoveryProjectSave.record.intent_note,
+  session: newerRecoveryProjectSave.record
+});
+await saveRewriteRecoveryCopy({
+  basedOnAuthoritativeRevision:
+    newerRecoveryProjectSave.record.authoritative_revision,
+  recoveryRevision: 3,
+  session: browserOnlyNewerSession
+});
+const newerRecoveryCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: newerRecoverySession.local_project_instance_id,
+  project: newerRecoveryFixture.project
+});
+const newerRecoveryLoad = await newerRecoveryCoordinator.load();
+assert.equal(newerRecoveryLoad.conflict?.kind, "newer_recovery");
+assert.equal(newerRecoveryLoad.session?.human_draft, newerRecoverySession.human_draft);
+const recoveredBrowserSession = await newerRecoveryCoordinator.resolveConflict(
+  newerRecoveryLoad.conflict,
+  "recovery"
+);
+assert.equal(recoveredBrowserSession?.human_draft, browserOnlyNewerSession.human_draft);
+assert.equal(recoveredBrowserSession?.authoritative_revision, 2);
+
+const recoveryOnlyFixture = await createCommittedFixture("recovery-only-rewrite");
+const recoveryOnlyStorage = createMemoryRewriteSessionStorage();
+setRewriteSessionStorageForTests(recoveryOnlyStorage);
+const recoveryOnlyCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: "local_rewrite_test",
+  project: recoveryOnlyFixture.project
+});
+const recoveryOnlySession = await createRewriteFixtureSession(
+  recoveryOnlyFixture,
+  "Recovery survives the failed project save."
+);
+recoveryOnlyFixture.root.controller.failNext(
+  (path) => path === ".patchmark/rewrite-sessions.json"
+);
+await assert.rejects(
+  recoveryOnlyCoordinator.persist(recoveryOnlySession, "injected_rewrite_failure"),
+  (error) =>
+    error instanceof RewriteSessionPersistenceError && error.recoverySaved === true
+);
+assert.equal(
+  (await readRewriteRecoveryCopies({
+    documentId: recoveryOnlySession.document_id,
+    localProjectInstanceId: recoveryOnlySession.local_project_instance_id,
+    projectId: recoveryOnlySession.project_id
+  }))[0]?.session.human_draft,
+  recoveryOnlySession.human_draft
+);
+const recoveredProjectSave = await recoveryOnlyCoordinator.persist(
+  recoveryOnlySession,
+  "retry_rewrite_project_save"
+);
+assert.equal(recoveredProjectSave.session.authoritative_revision, 1);
+assert.deepEqual(
+  await readRewriteRecoveryCopies({
+    documentId: recoveryOnlySession.document_id,
+    localProjectInstanceId: recoveryOnlySession.local_project_instance_id,
+    projectId: recoveryOnlySession.project_id
+  }),
+  []
+);
+
+recoveryOnlyFixture.root.controller.failNext(
+  (path) => path === ".patchmark/rewrite-sessions.json"
+);
+await assert.rejects(
+  recoveryOnlyCoordinator.discard(recoveredProjectSave.session),
+  (error) =>
+    error instanceof RewriteSessionPersistenceError && error.recoverySaved === true
+);
+assert.equal(
+  (await readProjectRewriteSessionRecords(recoveryOnlyFixture.project))[0].status,
+  "draft"
+);
+
+const bothWritesFailFixture = await createCommittedFixture("rewrite-both-writes-fail");
+const unavailableRecoveryStorage = createMemoryRewriteSessionStorage();
+setRewriteSessionStorageForTests({
+  ...unavailableRecoveryStorage,
+  async put() {
+    throw new Error("Injected browser recovery failure.");
+  }
+});
+const bothWritesFailSession = await createRewriteFixtureSession(
+  bothWritesFailFixture,
+  "Unsaved in-memory draft"
+);
+const bothWritesFailCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: "local_rewrite_test",
+  project: bothWritesFailFixture.project
+});
+bothWritesFailFixture.root.controller.failNext(
+  (path) => path === ".patchmark/rewrite-sessions.json"
+);
+await assert.rejects(
+  bothWritesFailCoordinator.persist(bothWritesFailSession, "both_writes_fail"),
+  (error) =>
+    error instanceof RewriteSessionPersistenceError && error.recoverySaved === false
+);
+assert.equal(bothWritesFailFixture.root.has(".patchmark/rewrite-sessions.json"), false);
+
+const legacyMigrationFixture = await createCommittedFixture("legacy-rewrite-migration");
+const legacyMigrationStorage = createMemoryRewriteSessionStorage();
+setRewriteSessionStorageForTests(legacyMigrationStorage);
+const legacyMigrationSession = await createReviewedRewriteSession(legacyMigrationFixture);
+await saveLegacyRewriteSessionForTests(legacyMigrationSession);
+const legacyMigrationCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: legacyMigrationSession.local_project_instance_id,
+  project: legacyMigrationFixture.project
+});
+const legacyMigrationResult = await legacyMigrationCoordinator.load();
+assert.equal(legacyMigrationResult.notice, "legacy_migrated");
+assert.equal(legacyMigrationResult.source, "project");
+assert.equal(legacyMigrationResult.session?.human_draft, legacyMigrationSession.human_draft);
+assert.equal(legacyMigrationResult.session?.review_rounds.length, 1);
+assert.deepEqual(
+  await readLegacyRewriteSessions({
+    documentId: legacyMigrationSession.document_id,
+    localProjectInstanceId: legacyMigrationSession.local_project_instance_id,
+    projectId: legacyMigrationSession.project_id
+  }),
+  []
+);
+
+const terminalRewriteFixture = await createCommittedFixture("terminal-rewrite");
+const terminalStorage = createMemoryRewriteSessionStorage();
+setRewriteSessionStorageForTests(terminalStorage);
+const terminalSession = await createRewriteFixtureSession(
+  terminalRewriteFixture,
+  "This stale browser draft must not return."
+);
+const activeTerminalSave = await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: terminalRewriteFixture.project,
+  reason: "terminal_fixture_active",
+  record: terminalSession
+});
+await saveRewriteRecoveryCopy({
+  basedOnAuthoritativeRevision: activeTerminalSave.record.authoritative_revision,
+  recoveryRevision: 2,
+  session: activeTerminalSave.record
+});
+await saveProjectRewriteSessionRecord({
+  expectedRevision: activeTerminalSave.record.authoritative_revision,
+  project: terminalRewriteFixture.project,
+  reason: "terminal_fixture_discard",
+  record: {
+    schema_version: 1,
+    rewrite_session_id: activeTerminalSave.record.rewrite_session_id,
+    local_project_instance_id: activeTerminalSave.record.local_project_instance_id,
+    project_id: activeTerminalSave.record.project_id,
+    document_id: activeTerminalSave.record.document_id,
+    status: "discarded",
+    authoritative_revision: activeTerminalSave.record.authoritative_revision,
+    authoritative_generation: activeTerminalSave.record.authoritative_generation,
+    human_draft_sha256: activeTerminalSave.record.human_draft_sha256,
+    updated_at: "2026-08-02T03:00:00.000Z",
+    discarded_at: "2026-08-02T03:00:00.000Z"
+  }
+});
+const terminalCoordinator = createRewriteSessionPersistenceCoordinator({
+  localProjectInstanceId: terminalSession.local_project_instance_id,
+  project: terminalRewriteFixture.project
+});
+setRewriteSessionStorageForTests({
+  ...terminalStorage,
+  async delete() {
+    throw new Error("Injected terminal recovery cleanup failure.");
+  }
+});
+const terminalLoad = await terminalCoordinator.load();
+assert.equal(terminalLoad.session, null);
+assert.equal(terminalLoad.source, "none");
+assert.equal(
+  (await readRewriteRecoveryCopies({
+    documentId: terminalSession.document_id,
+    localProjectInstanceId: terminalSession.local_project_instance_id,
+    projectId: terminalSession.project_id
+  })).length,
+  1,
+  "A failed recovery cleanup may leave bytes behind, but a terminal project record must still block resurrection."
+);
+setRewriteSessionStorageForTests(null);
+
+const humanRewriteFailureFixture = await createCommittedFixture(
+  "human-rewrite-failure"
+);
+const humanRewriteFailureSession = await createRewriteFixtureSession(
+  humanRewriteFailureFixture,
+  "The authoritative draft must survive an apply failure."
+);
+const humanRewriteFailureActive = await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: humanRewriteFailureFixture.project,
+  reason: "human_rewrite_failure_active_session",
+  record: humanRewriteFailureSession
+});
+const humanRewriteFilesBefore = Object.fromEntries(
+  [
+    "document.md",
+    ".patchmark/comments.json",
+    ".patchmark/patches.json",
+    ".patchmark/manifest.json",
+    ".patchmark/save-commit.json",
+    ".patchmark/rewrite-sessions.json"
+  ].map((path) => [path, humanRewriteFailureFixture.root.read(path)])
+);
+const preparedHumanRewriteSnapshot = await prepareProjectMutationSnapshot({
+  audit: {
+    author_type: "human",
+    mutation_type: "human_rewrite",
+    rewrite_session_id: "rewrite_session_fault_injection",
+    target_kind: "selection",
+    heading_snapshot: "human-rewrite-failure",
+    base_text_sha256: "a".repeat(64),
+    applied_text_sha256: "b".repeat(64),
+    semantic_review_status: "not_reviewed"
+  },
+  markdown: humanRewriteFailureFixture.markdown,
+  project: humanRewriteFailureFixture.project,
+  reason: "before human rewrite rewrite_session_fault_injection"
+});
+const preparedHumanRewriteSnapshotPath =
+  `.patchmark/versions/${preparedHumanRewriteSnapshot.snapshotFileName}`;
+assert.equal(
+  humanRewriteFailureFixture.root.has(preparedHumanRewriteSnapshotPath),
+  true
+);
+humanRewriteFailureFixture.root.controller.failNext(
+  (path) => path === ".patchmark/manifest.json"
+);
+await assert.rejects(() =>
+  saveProjectStateWithRewriteSessionRecord({
+    comments: [createComment("human rewrite transformed comment")],
+    expectedRevision:
+      humanRewriteFailureActive.record.authoritative_revision,
+    manifest: preparedHumanRewriteSnapshot.manifest,
+    markdown: `${humanRewriteFailureFixture.markdown}\nHuman rewrite.\n`,
+    patches: [
+      {
+        ...createPatch("human rewrite overlapping patch"),
+        status: "stale",
+        human_rewrite_impact: {
+          rewrite_session_id: "rewrite_session_fault_injection",
+          applied_at: "2026-08-02T01:00:00.000Z",
+          target_kind: "selection",
+          heading_snapshot: "human-rewrite-failure",
+          reason: "overlapping_human_rewrite"
+        }
+      }
+    ],
+    project: humanRewriteFailureFixture.project,
+    reason: "apply_human_rewrite:rewrite_session_fault_injection",
+    rewriteSessionRecord: {
+      schema_version: 1,
+      rewrite_session_id: humanRewriteFailureActive.record.rewrite_session_id,
+      local_project_instance_id:
+        humanRewriteFailureActive.record.local_project_instance_id,
+      project_id: humanRewriteFailureActive.record.project_id,
+      document_id: humanRewriteFailureActive.record.document_id,
+      status: "applied",
+      authoritative_revision:
+        humanRewriteFailureActive.record.authoritative_revision,
+      authoritative_generation:
+        humanRewriteFailureActive.record.authoritative_generation,
+      human_draft_sha256: humanRewriteFailureActive.record.human_draft_sha256,
+      updated_at: "2026-08-02T01:00:00.000Z",
+      applied_at: "2026-08-02T01:00:00.000Z",
+      version_id: preparedHumanRewriteSnapshot.version.id
+    }
+  })
+);
+for (const [path, contents] of Object.entries(humanRewriteFilesBefore)) {
+  assert.equal(
+    humanRewriteFailureFixture.root.read(path),
+    contents,
+    `${path} must remain authoritative after a failed human rewrite.`
+  );
+}
+assert.equal(
+  humanRewriteFailureFixture.project.manifest.versions?.some(
+    (version) => version.id === preparedHumanRewriteSnapshot.version.id
+  ) ?? false,
+  false
+);
+assert.equal(
+  (await readProjectRewriteSessionRecords(humanRewriteFailureFixture.project))[0]
+    .status,
+  "draft"
+);
+await discardPreparedProjectMutationSnapshot({
+  project: humanRewriteFailureFixture.project,
+  snapshotFileName: preparedHumanRewriteSnapshot.snapshotFileName
+});
+assert.equal(
+  humanRewriteFailureFixture.root.has(preparedHumanRewriteSnapshotPath),
+  false
+);
+
 const interruptionStages = [
   {
     name: "lkg",
@@ -468,6 +954,43 @@ assert.ok(
   "Restore must retain the questionable malformed file."
 );
 
+const malformedRewriteFixture = await createCommittedFixture("malformed-rewrite");
+const malformedRewriteFirst = await createRewriteFixtureSession(
+  malformedRewriteFixture,
+  "Last-known-good rewrite draft."
+);
+const malformedRewriteFirstSave = await saveProjectRewriteSessionRecord({
+  expectedRevision: 0,
+  project: malformedRewriteFixture.project,
+  reason: "malformed_rewrite_first",
+  record: malformedRewriteFirst
+});
+const malformedRewriteSecond = await updateRewriteDraft({
+  humanDraft: `${malformedRewriteFirst.human_draft}\n\nNewer draft that will be corrupted.`,
+  intentNote: malformedRewriteFirst.intent_note,
+  session: malformedRewriteFirstSave.record
+});
+await saveProjectRewriteSessionRecord({
+  expectedRevision: malformedRewriteFirstSave.record.authoritative_revision,
+  project: malformedRewriteFixture.project,
+  reason: "malformed_rewrite_second",
+  record: malformedRewriteSecond
+});
+malformedRewriteFixture.root.writeDirect(
+  ".patchmark/rewrite-sessions.json",
+  '{"truncated":'
+);
+picker.root = malformedRewriteFixture.root;
+const malformedRewriteOpen = await openProjectFolder();
+assert.ok(malformedRewriteOpen?.recovery?.canRestore);
+const restoredMalformedRewrite = await restoreProjectLastKnownGood(
+  malformedRewriteOpen.project
+);
+const restoredRewriteRecords = await readProjectRewriteSessionRecords(
+  restoredMalformedRewrite.project
+);
+assert.equal(restoredRewriteRecords[0].human_draft, malformedRewriteFirst.human_draft);
+
 const staleTemporaryFixture = await createCommittedFixture("stale-temporary");
 staleTemporaryFixture.root.writeDirect(
   ".patchmark/.patchmark-tmp-stale-comments.json",
@@ -528,13 +1051,101 @@ process.stdout.write(
     commentRestoreFailureRolledBackAtomically: true,
     permanentDeleteFailureRolledBackAtomically: true,
     permanentDeleteRestartPersistence: true,
+    authoritativeRewritePersistence: true,
+    authoritativeRewriteRestart: true,
+    rewriteVersionHistoryIsolation: true,
+    concurrentRewriteStaleWriteRejected: true,
+    orderedRewriteSaves: true,
+    identicalRewriteRecoveryDeduplicated: true,
+    newerRewriteRecoveryExplicitlyRecovered: true,
+    recoveryOnlyFailureState: true,
+    rewriteDiscardFailurePreservesDraft: true,
+    bothRewriteStoresFailureState: true,
+    legacyRewriteMigration: true,
+    terminalRewriteResurrectionBlocked: true,
+    humanRewriteFailureRolledBackAtomically: true,
     interruptionResults,
     malformedRecovery: true,
+    malformedRewriteRecovery: true,
     staleTemporaryCleanup: true,
     legacyBaselineGeneration: legacyCommit.generation,
     commitHashesVerified: true
   }, null, 2)}\n`
 );
+}
+
+function snapshotPaths(root, paths) {
+  return Object.fromEntries(paths.map((path) => [path, root.read(path)]));
+}
+
+async function createRewriteFixtureSession(fixture, draftSuffix = "Project-backed draft") {
+  const projectId =
+    fixture.project.projectManifest?.project_id ?? fixture.project.manifest.project_id;
+  const documentId =
+    fixture.project.document?.document_id ?? fixture.project.manifest.document_id;
+  assert.ok(projectId && documentId);
+  const baseText = "Initial document.";
+  const baseStart = fixture.markdown.indexOf(baseText);
+  const session = await createRewriteSession({
+    baseDocumentGeneration: fixture.project.persistence.generation,
+    baseText,
+    documentId,
+    documentTitle: fixture.project.document?.title ?? fixture.project.manifest.project_name,
+    localProjectInstanceId: "local_rewrite_test",
+    markdown: fixture.markdown,
+    projectId,
+    projectTitle:
+      fixture.project.projectManifest?.project_title ?? fixture.project.manifest.project_name,
+    target: {
+      kind: "selection",
+      heading_snapshot: fixture.project.manifest.project_name,
+      heading_level: 1,
+      heading_path: [fixture.project.manifest.project_name],
+      base_start: baseStart,
+      base_end: baseStart + baseText.length,
+      context_before: fixture.markdown.slice(Math.max(0, baseStart - 64), baseStart),
+      context_after: fixture.markdown.slice(baseStart + baseText.length, baseStart + baseText.length + 64)
+    }
+  });
+  return updateRewriteDraft({
+    humanDraft: `${baseText}\n\n${draftSuffix}`,
+    intentNote: "Preserve meaning while improving clarity.",
+    session
+  });
+}
+
+async function createReviewedRewriteSession(fixture) {
+  const session = await createRewriteFixtureSession(
+    fixture,
+    "A semantic review is stored with this draft."
+  );
+  const request = await buildRewriteReviewRequest(session);
+  const round = request.session.review_rounds.at(-1);
+  assert.ok(round);
+  return importRewriteReview({
+    responseText: JSON.stringify({
+      protocol: "patchmark.human_rewrite_review_import",
+      protocol_version: 1,
+      rewrite_session_id: request.session.rewrite_session_id,
+      rewrite_review_id: round.rewrite_review_id,
+      project_id: round.request_project_id,
+      document_id: round.request_document_id,
+      base_text_sha256: round.base_text_sha256,
+      human_draft_sha256: round.human_draft_sha256,
+      overall_assessment: "meaning_preserved",
+      summary: "The draft preserves the source meaning.",
+      meaning_preserved: [],
+      meaning_changed: [],
+      omitted_points: [],
+      new_claims: [],
+      contradictions: [],
+      certainty_changes: [],
+      source_impacts: [],
+      ambiguities: [],
+      suggested_draft_edits: []
+    }),
+    session: request.session
+  }).session;
 }
 
 async function createInitializedFixture(name) {

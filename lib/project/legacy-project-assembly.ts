@@ -421,6 +421,22 @@ export async function inspectLegacyProjectAssemblySource(
         )
       );
     }
+    for (const fileName of ["rewrite-sessions.json"]) {
+      const recovery = firstTree.files.get(
+        `${metadataDirectoryName}/recovery/${fileName}.lkg`
+      );
+      if (!recovery) {
+        continue;
+      }
+      const current = firstTree.files.get(`${metadataDirectoryName}/${fileName}`);
+      if (current) {
+        authoritativeMetadataText.set(
+          `recovery/imported-questionable-current/${fileName}`,
+          decodeText(current)
+        );
+      }
+      authoritativeMetadataText.set(fileName, decodeText(recovery));
+    }
     authoritativeMetadataText.set(
       "recovery/imported-questionable-current/document.md",
       decodeText(currentMarkdownBytes)
@@ -760,10 +776,11 @@ async function copyImportedDocument(
     entry.document.document_id,
     { create: true }
   );
+  const assembledMetadataFiles = await createAssembledMetadataFiles(plan, entry);
   for (const path of entry.source.metadataDirectories) {
     await getDirectoryHandleAtPath(store, path, { create: true });
   }
-  for (const [path, bytes] of entry.source.metadataFiles) {
+  for (const [path, bytes] of assembledMetadataFiles) {
     await writeBytes(await getFileHandleAtInternalPath(store, path, { create: true }), bytes);
   }
   await writeJsonFile(store, ownershipFileName, {
@@ -799,7 +816,8 @@ async function verifyStagedAssembly(plan: LegacyProjectAssemblyPlan): Promise<vo
       `${entry.source.summary.sourceLabel} Markdown`
     );
     const store = await documents.getDirectoryHandle(entry.document.document_id);
-    for (const [path, expected] of entry.source.metadataFiles) {
+    const assembledMetadataFiles = await createAssembledMetadataFiles(plan, entry);
+    for (const [path, expected] of assembledMetadataFiles) {
       assertEqualBytes(
         await readFileBytes(await getFileHandleAtInternalPath(store, path)),
         expected,
@@ -826,6 +844,101 @@ async function verifyStagedAssembly(plan: LegacyProjectAssemblyPlan): Promise<vo
       throw new Error("Portable import provenance contains an absolute source path.");
     }
   }
+}
+
+async function createAssembledMetadataFiles(
+  plan: LegacyProjectAssemblyPlan,
+  entry: LegacyProjectAssemblyPlanEntry
+): Promise<Map<string, Uint8Array>> {
+  const files = new Map(entry.source.metadataFiles);
+  await remapRewriteSessionFile({
+    commitPath: "save-commit.json",
+    documentId: entry.document.document_id,
+    files,
+    projectId: plan.manifest.project_id,
+    sessionPath: "rewrite-sessions.json"
+  });
+  await remapRewriteSessionFile({
+    commitPath: "recovery/save-commit.json.lkg",
+    documentId: entry.document.document_id,
+    files,
+    projectId: plan.manifest.project_id,
+    sessionPath: "recovery/rewrite-sessions.json.lkg"
+  });
+  return files;
+}
+
+async function remapRewriteSessionFile({
+  commitPath,
+  documentId,
+  files,
+  projectId,
+  sessionPath
+}: {
+  commitPath: string;
+  documentId: string;
+  files: Map<string, Uint8Array>;
+  projectId: string;
+  sessionPath: string;
+}): Promise<void> {
+  const sessionBytes = files.get(sessionPath);
+  if (!sessionBytes) {
+    return;
+  }
+  const value = parseJson(decodeText(sessionBytes), sessionPath);
+  if (!isRecord(value) || !Array.isArray(value.sessions)) {
+    throw new Error(`Legacy project ${sessionPath} is invalid.`);
+  }
+  const remapped = {
+    ...value,
+    project_id: projectId,
+    document_id: documentId,
+    sessions: value.sessions.map((session) => {
+      if (!isRecord(session)) {
+        throw new Error(`Legacy project ${sessionPath} contains an invalid session.`);
+      }
+      return {
+        ...session,
+        project_id: projectId,
+        document_id: documentId
+      };
+    })
+  };
+  const remappedBytes = encodeText(`${JSON.stringify(remapped, null, 2)}\n`);
+  files.set(sessionPath, remappedBytes);
+
+  const commitBytes = files.get(commitPath);
+  if (!commitBytes) {
+    return;
+  }
+  const commit = parseJson(decodeText(commitBytes), commitPath);
+  if (!isRecord(commit) || !isRecord(commit.files)) {
+    throw new Error(`Legacy project ${commitPath} is invalid.`);
+  }
+  const rewriteDescriptor = commit.files.rewrite_sessions;
+  if (!isRecord(rewriteDescriptor)) {
+    return;
+  }
+  files.set(
+    commitPath,
+    encodeText(
+      `${JSON.stringify(
+        {
+          ...commit,
+          files: {
+            ...commit.files,
+            rewrite_sessions: {
+              ...rewriteDescriptor,
+              bytes: remappedBytes.byteLength,
+              sha256: await createSha256(remappedBytes)
+            }
+          }
+        },
+        null,
+        2
+      )}\n`
+    )
+  );
 }
 
 async function verifyReopenedAssembly(

@@ -131,6 +131,12 @@ import {
 } from "@/components/snapshot-dialog";
 import { VersionHistoryPanel } from "@/components/version-history-panel";
 import { VisualMarkdownEditor } from "@/components/visual-markdown-editor";
+import {
+  RewriteRecoveryConflictBanner,
+  RewriteResumeBanner,
+  RewriteWorkspace,
+  type RewriteWorkspaceImpactResult
+} from "@/components/rewrite-workspace/rewrite-workspace";
 import { downloadMarkdown } from "@/lib/files/download-markdown";
 import {
   canSaveMarkdownFilePicker,
@@ -193,6 +199,30 @@ import {
   setDocumentReadingBookmark
 } from "@/lib/reading-bookmarks/reading-bookmark";
 import {
+  analyzeRewriteImpact,
+  markPendingPatchesAfterHumanRewrite,
+  type RewriteCommentSimulation,
+  type RewriteImpactAnalysis
+} from "@/lib/rewrite-workspace/rewrite-impact-analysis";
+import {
+  createRewriteSession,
+  getCurrentRewriteReview
+} from "@/lib/rewrite-workspace/rewrite-review-protocol";
+import {
+  captureRewriteTarget,
+  refreshRewriteTarget,
+  resolveRewriteTarget,
+  resolveRewriteTargetForRefresh
+} from "@/lib/rewrite-workspace/rewrite-target-resolution";
+import {
+  createRewriteSessionPersistenceCoordinator,
+  RewriteSessionPersistenceError,
+  type RewriteProjectSaveResult,
+  type RewriteRecoveryConflict,
+  type RewriteSessionPersistenceCoordinator
+} from "@/lib/rewrite-workspace/rewrite-session-persistence";
+import type { RewriteSession } from "@/lib/rewrite-workspace/rewrite-session-types";
+import {
   createAppliedPatchReviewContent,
   createPatchReviewSnippetPreview,
   dedupePatchReviewTextMatches,
@@ -243,6 +273,7 @@ import {
   createProjectFromMarkdown,
   createNewProjectDocument,
   createProjectSnapshot,
+  discardPreparedProjectMutationSnapshot,
   deleteProjectDocumentGroup,
   getActiveProjectDocument,
   getProjectDocumentIdentity,
@@ -260,6 +291,7 @@ import {
   openProjectFolder,
   openProjectFolderHandle,
   openProjectDocument,
+  prepareProjectMutationSnapshot,
   readProjectVersionMarkdown,
   readProjectVersionMarkdownByRef,
   readProjectComments,
@@ -338,6 +370,7 @@ import {
 } from "@/lib/storage/document-draft-storage";
 import {
   compareEntryIdentity,
+  createContentSha256,
   createLocalProjectInstanceId,
   createLocalStandaloneFileId,
   deleteDocumentRecovery,
@@ -576,6 +609,7 @@ type DocumentMutationSource =
   | "composition"
   | "cut"
   | "formatter"
+  | "human_rewrite"
   | "manual_source"
   | "manual_visual"
   | "move"
@@ -935,6 +969,18 @@ export function DocumentEditor() {
     useState<HumanReanchorProposal | null>(null);
   const [reanchorWorkspaceStyle, setReanchorWorkspaceStyle] =
     useState<ReanchorWorkspaceStyle | null>(null);
+  const [rewriteSession, setRewriteSession] = useState<RewriteSession | null>(null);
+  const [rewriteDraftAvailable, setRewriteDraftAvailable] =
+    useState<RewriteSession | null>(null);
+  const [rewritePersistenceSource, setRewritePersistenceSource] =
+    useState<"project" | "recovery_only">("project");
+  const [rewriteRecoveryConflict, setRewriteRecoveryConflict] =
+    useState<RewriteRecoveryConflict | null>(null);
+  const [isRewriteBusy, setIsRewriteBusy] = useState(false);
+  const rewriteSessionLoadRequestRef = useRef(0);
+  const rewritePersistenceCoordinatorRef =
+    useRef<RewriteSessionPersistenceCoordinator | null>(null);
+  const rewriteReturnFocusRef = useRef<HTMLElement | null>(null);
   const [commentPositions, setCommentPositions] = useState<Record<string, number>>(
     {}
   );
@@ -1456,6 +1502,19 @@ export function DocumentEditor() {
         : isCommentBusy
           ? "Another comment operation is in progress."
           : null,
+    rewriteUnavailableReason: !isProjectMode
+      ? "Rewrite Workspace requires Project Folder Mode."
+      : !localProjectInstanceId
+        ? "Device-local project identity is not available yet."
+        : isProjectRecoveryReadOnly || documentRecoveryPresentation?.kind === "conflict"
+          ? "Resolve project recovery before starting a rewrite."
+          : isDirty
+            ? "Save or discard the current document changes before starting a rewrite."
+            : isSaving || isCommentBusy || isRewriteBusy
+              ? "Another document operation is in progress."
+              : rewriteDraftAvailable
+                ? "A rewrite draft already exists for this document. Resume or discard it first."
+                : null,
     sectionLabel: selectionActionsSectionLabel,
     selectedTextAvailable: Boolean(selectionActions?.selectedDraft),
     selectionUnavailableReason:
@@ -1680,6 +1739,8 @@ export function DocumentEditor() {
 
   useEffect(() => {
     if (!projectHandle || !localProjectInstanceId) {
+      setRewriteDraftAvailable(null);
+      setRewriteSession(null);
       return;
     }
     const identity = getProjectDocumentIdentity(projectHandle);
@@ -1698,6 +1759,53 @@ export function DocumentEditor() {
       .then(setRecentProject)
       .catch(() => undefined);
   }, [localProjectInstanceId, projectDocuments, projectHandle]);
+
+  useEffect(() => {
+    const requestId = rewriteSessionLoadRequestRef.current + 1;
+    rewriteSessionLoadRequestRef.current = requestId;
+    setRewriteSession(null);
+    setRewriteRecoveryConflict(null);
+    rewritePersistenceCoordinatorRef.current = null;
+    if (!activeDocumentIdentity || !localProjectInstanceId || !projectHandle) {
+      setRewriteDraftAvailable(null);
+      return;
+    }
+    const coordinator = createRewriteSessionPersistenceCoordinator({
+      localProjectInstanceId,
+      project: projectHandle
+    });
+    rewritePersistenceCoordinatorRef.current = coordinator;
+    void coordinator
+      .load()
+      .then((result) => {
+        if (requestId === rewriteSessionLoadRequestRef.current) {
+          setRewriteDraftAvailable(result.session);
+          setRewriteRecoveryConflict(result.conflict);
+          setRewritePersistenceSource(
+            result.source === "recovery_only" ? "recovery_only" : "project"
+          );
+          if (result.notice === "legacy_migrated") {
+            setSaveFeedback({
+              kind: "success",
+              message: "Rewrite draft moved into the project."
+            });
+          } else if (result.notice === "project_copy_rebound") {
+            setSaveFeedback({
+              kind: "success",
+              message: "Project rewrite draft ownership was updated for this project copy."
+            });
+          }
+        }
+      })
+      .catch((loadError) => {
+        if (requestId === rewriteSessionLoadRequestRef.current) {
+          setRewriteDraftAvailable(null);
+          setDeviceRecoveryWarning(
+            `Human Rewrite project data could not be loaded safely. ${getProjectErrorMessage(loadError)}`
+          );
+        }
+      });
+  }, [activeDocumentIdentity, localProjectInstanceId, projectHandle]);
 
   useEffect(
     () => () => {
@@ -7516,6 +7624,454 @@ export function DocumentEditor() {
     });
   }
 
+  async function handleStartRewrite(
+    actionId: Extract<SelectionActionId, "rewrite_selected_text" | "rewrite_section">,
+    actionState: SelectionActionsState
+  ) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !localProjectInstanceId ||
+      isDirty ||
+      isProjectRecoveryReadOnly ||
+      documentRecoveryPresentation?.kind === "conflict" ||
+      isSaving ||
+      isCommentBusy ||
+      isRewriteBusy ||
+      rewriteDraftAvailable
+    ) {
+      setSaveFeedback({
+        kind: "info",
+        message: rewriteDraftAvailable
+          ? "A rewrite draft already exists for this document. Resume or discard it first."
+          : "Save the document and resolve any recovery state before starting a rewrite."
+      });
+      return;
+    }
+    const range = getDraftMarkdownRange(actionState.selectedDraft);
+    const kind = actionId === "rewrite_section" ? "section" : "selection";
+    setIsRewriteBusy(true);
+    setSaveFeedback(null);
+    let createdSession: RewriteSession | null = null;
+    try {
+      const captured = captureRewriteTarget({
+        end: range?.end,
+        headingLine: actionState.targetHeadingLine,
+        kind,
+        markdown,
+        start: range?.start
+      });
+      const nextSession = await createRewriteSession({
+        baseDocumentGeneration: projectHandle.persistence.generation,
+        baseText: captured.text,
+        documentId: activeDocumentIdentity.documentId,
+        documentTitle:
+          projectHandle.document?.display_title ?? projectHandle.manifest.project_name,
+        localProjectInstanceId,
+        markdown,
+        projectId: activeDocumentIdentity.projectId,
+        projectTitle: getProjectTitle(projectHandle),
+        target: captured.target
+      });
+      createdSession = nextSession;
+      const persisted = await persistRewriteSessionToProject(
+        nextSession,
+        "create_human_rewrite_session"
+      );
+      rewriteReturnFocusRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setRewritePersistenceSource("project");
+      setRewriteDraftAvailable(persisted.session);
+      setRewriteSession(persisted.session);
+      setSelectionActions(null);
+      setVisualSelectionDraft(null);
+      setMarkdownSelection({ start: 0, end: 0 });
+    } catch (rewriteError) {
+      if (
+        rewriteError instanceof RewriteSessionPersistenceError &&
+        rewriteError.recoverySaved
+      ) {
+        setRewritePersistenceSource("recovery_only");
+        if (createdSession) {
+          setRewriteDraftAvailable(createdSession);
+          setRewriteSession(createdSession);
+          setSelectionActions(null);
+          setVisualSelectionDraft(null);
+          setMarkdownSelection({ start: 0, end: 0 });
+        }
+        setSaveFeedback({
+          kind: "error",
+          message:
+            "The rewrite draft could not be moved into the project. It remains available only in this browser."
+        });
+      } else {
+        setSaveFeedback({ kind: "error", message: getProjectErrorMessage(rewriteError) });
+      }
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  async function handleDiscardRewriteSession(session: RewriteSession) {
+    setIsRewriteBusy(true);
+    try {
+      const coordinator = requireRewritePersistenceCoordinator(session);
+      await coordinator.discard(session);
+      setRewriteSession(null);
+      setRewriteDraftAvailable(null);
+      setRewriteRecoveryConflict(null);
+      setSaveFeedback({
+        kind: "info",
+        message: "Discarded the project rewrite draft. The document was not changed."
+      });
+      window.requestAnimationFrame(() => rewriteReturnFocusRef.current?.focus());
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  async function handleResolveRewriteRecoveryConflict(
+    choice: "project" | "recovery"
+  ) {
+    if (!rewriteRecoveryConflict || !rewritePersistenceCoordinatorRef.current) {
+      return;
+    }
+    setIsRewriteBusy(true);
+    try {
+      const resolved = await rewritePersistenceCoordinatorRef.current.resolveConflict(
+        rewriteRecoveryConflict,
+        choice
+      );
+      setRewriteDraftAvailable(resolved);
+      setRewriteSession(null);
+      setRewriteRecoveryConflict(null);
+      setRewritePersistenceSource("project");
+      setSaveFeedback({
+        kind: "success",
+        message:
+          choice === "project"
+            ? "Using the project-backed Human Rewrite draft."
+            : "The browser recovery draft was saved as a new project revision."
+      });
+    } catch (conflictError) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(conflictError)
+      });
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  async function persistRewriteSessionToProject(
+    session: RewriteSession,
+    reason: string
+  ): Promise<RewriteProjectSaveResult> {
+    const coordinator = requireRewritePersistenceCoordinator(session);
+    const startedAt = performance.now();
+    const result = await coordinator.persist(session, reason);
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("patchmark:rewrite-persistence", {
+          detail: {
+            durationMs: performance.now() - startedAt,
+            queueLength: result.queueLength,
+            reason,
+            revision: result.session.authoritative_revision
+          }
+        })
+      );
+    }
+    setRewritePersistenceSource("project");
+    return result;
+  }
+
+  function requireRewritePersistenceCoordinator(
+    session: RewriteSession
+  ): RewriteSessionPersistenceCoordinator {
+    const coordinator = rewritePersistenceCoordinatorRef.current;
+    if (
+      !coordinator ||
+      !activeDocumentIdentity ||
+      session.project_id !== activeDocumentIdentity.projectId ||
+      session.document_id !== activeDocumentIdentity.documentId
+    ) {
+      throw new Error("The Human Rewrite persistence owner is no longer active.");
+    }
+    return coordinator;
+  }
+
+  async function createRewriteImpactResult(
+    session: RewriteSession
+  ): Promise<
+    RewriteWorkspaceImpactResult & {
+      mutation?: DocumentMutationResult;
+      nextMarkdown?: string;
+      resolved?: { end: number; start: number; text: string };
+    }
+  > {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      session.project_id !== activeDocumentIdentity.projectId ||
+      session.document_id !== activeDocumentIdentity.documentId ||
+      session.local_project_instance_id !== localProjectInstanceId
+    ) {
+      throw new Error("This rewrite session does not belong to the active project document.");
+    }
+    const resolved = resolveRewriteTarget({
+      baseText: session.base_text,
+      markdown,
+      target: session.target
+    });
+    if (
+      !resolved ||
+      (await createContentSha256(resolved.text)) !== session.base_text_sha256
+    ) {
+      return {
+        status: "stale",
+        message:
+          "This text changed after the rewrite session began. Refresh the reference text before applying."
+      };
+    }
+    const nextMarkdown = `${markdown.slice(0, resolved.start)}${session.human_draft}${markdown.slice(resolved.end)}`;
+    const bookmarkAdapter = readingBookmark
+      ? createReadingBookmarkAnchorAdapter(readingBookmark)
+      : null;
+    const simulatedComments = bookmarkAdapter
+      ? [...comments, bookmarkAdapter]
+      : comments;
+    const mutation = orchestrateDocumentMutation({
+      comments: simulatedComments,
+      createdAt: new Date().toISOString(),
+      edits: [
+        {
+          oldStart: resolved.start,
+          oldEnd: resolved.end,
+          insertedText: session.human_draft
+        }
+      ],
+      newMarkdown: nextMarkdown,
+      oldMarkdown: markdown,
+      source: "human_rewrite"
+    });
+    const simulations = mutation.commentImpacts.map<RewriteCommentSimulation>(
+      (impactItem) => ({
+        commentId: impactItem.commentId,
+        outcome: impactItem.outcome,
+        validationStatus: impactItem.validation.status
+      })
+    );
+    const bookmarkSimulation = bookmarkAdapter
+      ? simulations.find((item) => item.commentId === bookmarkAdapter.id) ?? null
+      : null;
+    return {
+      status: "ready",
+      analysis: analyzeRewriteImpact({
+        bookmark: readingBookmark,
+        bookmarkSimulation,
+        commentSimulation: simulations,
+        comments,
+        markdown,
+        patches,
+        reviewBatches,
+        target: resolved
+      }),
+      mutation,
+      nextMarkdown,
+      resolved
+    };
+  }
+
+  async function handleRefreshRewriteReference(
+    session: RewriteSession
+  ): Promise<RewriteSession> {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      session.project_id !== activeDocumentIdentity.projectId ||
+      session.document_id !== activeDocumentIdentity.documentId ||
+      session.local_project_instance_id !== localProjectInstanceId
+    ) {
+      throw new Error("This rewrite session no longer belongs to the active document.");
+    }
+    const resolved = resolveRewriteTargetForRefresh({
+      baseText: session.base_text,
+      markdown,
+      target: session.target
+    });
+    if (!resolved) {
+      throw new Error(
+        "Patchmark could not uniquely resolve the current target. Keep the draft and start a new rewrite from the intended text."
+      );
+    }
+    const now = new Date().toISOString();
+    const [baseDocumentSha256, baseTextSha256] = await Promise.all([
+      createContentSha256(markdown),
+      createContentSha256(resolved.text)
+    ]);
+    const refreshed: RewriteSession = {
+      ...session,
+      target: refreshRewriteTarget({ markdown, resolved, target: session.target }),
+      base_document_generation: projectHandle.persistence.generation,
+      base_document_sha256: baseDocumentSha256,
+      base_text_sha256: baseTextSha256,
+      base_text: resolved.text,
+      reference_history: [
+        ...session.reference_history,
+        {
+          base_document_generation: session.base_document_generation,
+          base_document_sha256: session.base_document_sha256,
+          base_text_sha256: session.base_text_sha256,
+          base_text: session.base_text,
+          refreshed_at: now
+        }
+      ],
+      review_rounds: session.review_rounds.map((round) =>
+        round.status === "awaiting_response"
+          ? { ...round, status: "cancelled" as const, cancelled_at: now }
+          : round
+      ),
+      stale_reference: false,
+      updated_at: now
+    };
+    const persisted = await persistRewriteSessionToProject(
+      refreshed,
+      "refresh_human_rewrite_reference"
+    );
+    setRewriteDraftAvailable(persisted.session);
+    setRewriteSession(persisted.session);
+    return persisted.session;
+  }
+
+  async function handleApplyHumanRewrite(
+    session: RewriteSession,
+    previewAnalysis: RewriteImpactAnalysis
+  ): Promise<void> {
+    void previewAnalysis;
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isDirty ||
+      isSaving ||
+      isCommentBusy ||
+      isProjectRecoveryReadOnly ||
+      documentRecoveryPresentation?.kind === "conflict" ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error(
+        "Handle unsaved document changes, recovery conflicts, and in-flight operations before applying the rewrite."
+      );
+    }
+    if (!session.human_draft.trim()) {
+      throw new Error("My rewrite cannot be empty in this version of Patchmark.");
+    }
+    setIsRewriteBusy(true);
+    setSaveStatus("saving");
+    let preparedSnapshot: Awaited<ReturnType<typeof prepareProjectMutationSnapshot>> | null = null;
+    let authoritativeCommitSucceeded = false;
+    try {
+      const currentImpact = await createRewriteImpactResult(session);
+      if (currentImpact.status === "stale") {
+        throw new Error(currentImpact.message);
+      }
+      if (
+        !currentImpact.mutation ||
+        !currentImpact.nextMarkdown ||
+        !currentImpact.resolved
+      ) {
+        throw new Error("Patchmark could not prepare the rewrite mutation.");
+      }
+      const appliedAt = new Date().toISOString();
+      const appliedTextSha256 = await createContentSha256(session.human_draft);
+      preparedSnapshot = await prepareProjectMutationSnapshot({
+        audit: {
+          author_type: "human",
+          mutation_type: "human_rewrite",
+          rewrite_session_id: session.rewrite_session_id,
+          target_kind: session.target.kind,
+          heading_snapshot: session.target.heading_snapshot,
+          base_text_sha256: session.base_text_sha256,
+          applied_text_sha256: appliedTextSha256,
+          semantic_review_status: getCurrentRewriteReview(session)
+            ? "reviewed"
+            : "not_reviewed"
+        },
+        markdown,
+        project: projectHandle,
+        reason: `before human rewrite ${session.rewrite_session_id}`
+      });
+      const bookmarkAdapter = readingBookmark
+        ? createReadingBookmarkAnchorAdapter(readingBookmark)
+        : null;
+      const persistedComments = bookmarkAdapter
+        ? currentImpact.mutation.comments.filter(
+            (comment) => comment.id !== bookmarkAdapter.id
+          )
+        : currentImpact.mutation.comments;
+      const transformedBookmark = bookmarkAdapter
+        ? currentImpact.mutation.comments.find(
+            (comment) => comment.id === bookmarkAdapter.id
+          ) ?? bookmarkAdapter
+        : null;
+      const nextManifest =
+        transformedBookmark &&
+        (transformedBookmark.anchor.kind === "section" ||
+          transformedBookmark.anchor.kind === "selected_text")
+          ? setDocumentReadingBookmark({
+              anchor: transformedBookmark.anchor,
+              document: activeDocumentIdentity,
+              manifest: preparedSnapshot.manifest,
+              timestamp: appliedAt
+            }).manifest
+          : preparedSnapshot.manifest;
+      const nextPatches = markPendingPatchesAfterHumanRewrite({
+        analysis: currentImpact.analysis,
+        appliedAt,
+        patches,
+        session
+      });
+      const coordinator = requireRewritePersistenceCoordinator(session);
+      await coordinator.commitApplied({
+        comments: persistedComments,
+        manifest: nextManifest,
+        markdown: currentImpact.nextMarkdown,
+        patches: nextPatches,
+        session,
+        versionId: preparedSnapshot.version.id
+      });
+      authoritativeCommitSucceeded = true;
+      setMarkdown(currentImpact.nextMarkdown);
+      setBaselineMarkdown(currentImpact.nextMarkdown);
+      setRestoredMarkdown(null);
+      setComments(persistedComments);
+      setPatches(nextPatches);
+      setVersionEntries(projectHandle.manifest.versions ?? []);
+      setDocumentVersion((currentVersion) => currentVersion + 1);
+      setRewriteSession(null);
+      setRewriteDraftAvailable(null);
+      setRewriteRecoveryConflict(null);
+      setRewritePersistenceSource("project");
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Human rewrite applied." });
+      jumpToMarkdownSelection(
+        currentImpact.resolved.start,
+        currentImpact.resolved.start + session.human_draft.length
+      );
+    } catch (applyError) {
+      if (preparedSnapshot && !authoritativeCommitSucceeded) {
+        await discardPreparedProjectMutationSnapshot({
+          project: projectHandle,
+          snapshotFileName: preparedSnapshot.snapshotFileName
+        });
+      }
+      setSaveStatus("failed");
+      throw applyError;
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
   function handleSelectionAction(actionId: SelectionActionId) {
     const current = selectionActionsRef.current;
 
@@ -7526,6 +8082,14 @@ export function DocumentEditor() {
 
     if (actionId === "bookmark") {
       void handleSetReadingBookmarkFromSelectionActions(current);
+      return;
+    }
+
+    if (
+      actionId === "rewrite_selected_text" ||
+      actionId === "rewrite_section"
+    ) {
+      void handleStartRewrite(actionId, current);
       return;
     }
 
@@ -8736,6 +9300,42 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
+        {rewriteRecoveryConflict && !rewriteSession ? (
+          <RewriteRecoveryConflictBanner
+            conflict={rewriteRecoveryConflict}
+            onCancel={() => {
+              setSaveFeedback({
+                kind: "info",
+                message: "Recovery decision postponed. No draft was changed."
+              });
+            }}
+            onRecover={() => void handleResolveRewriteRecoveryConflict("recovery")}
+            onUseProject={() => void handleResolveRewriteRecoveryConflict("project")}
+          />
+        ) : null}
+
+        {rewriteDraftAvailable && !rewriteSession && !rewriteRecoveryConflict ? (
+          <RewriteResumeBanner
+            session={rewriteDraftAvailable}
+            onResume={() => {
+              rewriteReturnFocusRef.current =
+                document.activeElement instanceof HTMLElement
+                  ? document.activeElement
+                  : null;
+              setRewriteSession(rewriteDraftAvailable);
+            }}
+            onDiscard={() => {
+              if (
+                window.confirm(
+                  "Discard this rewrite draft? The document and review stores will not be changed."
+                )
+              ) {
+                void handleDiscardRewriteSession(rewriteDraftAvailable);
+              }
+            }}
+          />
+        ) : null}
+
         {requestedProjectDocumentId ? (
           <div className="document-switch-loading" role="status">
             Opening {projectDocuments.find(
@@ -9804,6 +10404,28 @@ export function DocumentEditor() {
           reviewablePatchCount={reviewablePatches.length}
         />
       ) : null}
+      {rewriteSession ? (
+        <RewriteWorkspace
+          initialPersistenceSource={rewritePersistenceSource}
+          isApplying={isRewriteBusy}
+          session={rewriteSession}
+          onAnalyzeImpact={createRewriteImpactResult}
+          onApply={handleApplyHumanRewrite}
+          onClose={() => {
+            setRewriteSession(null);
+            window.requestAnimationFrame(() =>
+              rewriteReturnFocusRef.current?.focus()
+            );
+          }}
+          onDiscard={handleDiscardRewriteSession}
+          onPersistSession={persistRewriteSessionToProject}
+          onRefreshReference={handleRefreshRewriteReference}
+          onSessionChange={(nextSession) => {
+            setRewriteSession(nextSession);
+            setRewriteDraftAvailable(nextSession);
+          }}
+        />
+      ) : null}
     </section>
   );
 }
@@ -10120,7 +10742,7 @@ function PatchGroupPatchCard({
         <div className="patch-group-patch-heading">
           <strong>{patchTitle}</strong>
           <span className={`patch-status-badge patch-status-badge-${displayState}`}>
-            {getPatchStatusBadgeLabel(displayState)}
+            {getPatchStatusBadgeLabel(displayState, patch)}
           </span>
         </div>
         <span>
@@ -10145,7 +10767,7 @@ function PatchGroupPatchCard({
       </div>
       <p>{patch.reason}</p>
       <button type="button" onClick={() => onReviewPatch(patch)}>
-        {getPatchReviewButtonLabel(displayState)}
+        {getPatchReviewButtonLabel(displayState, patch)}
       </button>
     </article>
   );
@@ -10311,10 +10933,10 @@ function PatchReviewDialog({
               <span
                 className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
               >
-                {getPatchStatusBadgeLabel(patchDisplayState)}
+                {getPatchStatusBadgeLabel(patchDisplayState, patch)}
               </span>
             </div>
-            <p>{getPatchReviewIntro(patchDisplayState)}</p>
+            <p>{getPatchReviewIntro(patchDisplayState, patch)}</p>
           </div>
           <button type="button" onClick={onClose}>
             Close
@@ -10516,7 +11138,7 @@ function PatchReviewDialog({
                   <span
                     className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
                   >
-                    {getPatchStatusBadgeLabel(patchDisplayState)}
+                    {getPatchStatusBadgeLabel(patchDisplayState, patch)}
                   </span>
                 </dd>
               </div>
@@ -14133,7 +14755,9 @@ function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {
   }
 
   if (patch.status === "stale") {
-    return "Stale";
+    return patch.human_rewrite_impact
+      ? "Needs review after human rewrite"
+      : "Stale";
   }
 
   return "Pending";
@@ -14671,6 +15295,7 @@ function isManualDocumentMutationSource(source: DocumentMutationSource): boolean
     source === "composition" ||
     source === "cut" ||
     source === "formatter" ||
+    source === "human_rewrite" ||
     source === "manual_source" ||
     source === "manual_visual" ||
     source === "move" ||
@@ -14693,6 +15318,10 @@ function getMarkdownChangeSetSource(
 
   if (source === "patch_apply") {
     return "patch_apply";
+  }
+
+  if (source === "human_rewrite") {
+    return "manual_source";
   }
 
   return source;
@@ -17282,7 +17911,10 @@ function getPatchDisplayState(
   return "pending";
 }
 
-function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
+function getPatchStatusBadgeLabel(
+  displayState: PatchDisplayState,
+  patch?: PatchmarkPatch
+): string {
   if (displayState === "applied") {
     return "APPLIED";
   }
@@ -17300,13 +17932,18 @@ function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "STALE BEFORE APPLY";
+    return patch?.human_rewrite_impact
+      ? "NEEDS REVIEW AFTER HUMAN REWRITE"
+      : "STALE BEFORE APPLY";
   }
 
   return "PENDING";
 }
 
-function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
+function getPatchReviewButtonLabel(
+  displayState: PatchDisplayState,
+  patch?: PatchmarkPatch
+): string {
   if (displayState === "applied" || displayState === "applied_evolved") {
     return "View applied patch";
   }
@@ -17316,7 +17953,9 @@ function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "View stale patch";
+    return patch?.human_rewrite_impact
+      ? "Review after human rewrite"
+      : "View stale patch";
   }
 
   return "Review patch";
@@ -17344,7 +17983,10 @@ function formatPatchTitleSource(
   return "Technical fallback";
 }
 
-function getPatchReviewIntro(displayState: PatchDisplayState): string {
+function getPatchReviewIntro(
+  displayState: PatchDisplayState,
+  patch?: PatchmarkPatch
+): string {
   if (displayState === "applied") {
     return "This patch has already been applied. Review is read-only.";
   }
@@ -17358,7 +18000,9 @@ function getPatchReviewIntro(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "This patch went stale before apply. Review is read-only.";
+    return patch?.human_rewrite_impact
+      ? "This proposal overlaps a later human rewrite and needs review against the current document. It cannot be applied automatically."
+      : "This patch went stale before apply. Review is read-only.";
   }
 
   if (displayState === "needs_review") {
@@ -17384,7 +18028,9 @@ function getPatchLifecycleDetail(patch: PatchmarkPatch): string | null {
   }
 
   if (patch.status === "stale") {
-    return "Stale patch";
+    return patch.human_rewrite_impact
+      ? "Needs review after human rewrite"
+      : "Stale patch";
   }
 
   return null;

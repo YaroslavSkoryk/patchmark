@@ -105,6 +105,36 @@ function createVersionHistoryEntry({
   const relatedPatch = findPatchForVersion(version, patches);
   const detailItems = createBaseDetails(version);
 
+  if (version.mutation?.mutation_type === "human_rewrite") {
+    return {
+      dateLabel: formatVersionHistoryDate(version.created_at),
+      detailItems: [
+        ...detailItems,
+        { label: "Authorship", value: "Human-authored" },
+        { label: "Rewrite session ID", value: version.mutation.rewrite_session_id },
+        { label: "Target", value: version.mutation.target_kind },
+        ...(version.mutation.heading_snapshot
+          ? [{ label: "Heading snapshot", value: version.mutation.heading_snapshot }]
+          : []),
+        {
+          label: "Semantic review",
+          value:
+            version.mutation.semantic_review_status === "reviewed"
+              ? "Reviewed against current reference"
+              : "Not reviewed"
+        }
+      ],
+      targetHeading: version.mutation.heading_snapshot ?? undefined,
+      title: version.mutation.heading_snapshot
+        ? `Before human rewrite: ${formatVersionTargetHeading(
+            version.mutation.heading_snapshot
+          )}`
+        : "Before human rewrite",
+      typeLabel: "Human rewrite safety snapshot",
+      version
+    };
+  }
+
   if (relatedPatch) {
     const patchTitle = getVersionPatchTitle(relatedPatch, version);
 
@@ -216,6 +246,12 @@ function createBaseDetails(
     { label: "Exact reason", value: version.reason },
     ...(version.content_hash
       ? [{ label: "Content hash", value: version.content_hash }]
+      : []),
+    ...(version.mutation
+      ? [
+          { label: "Base text hash", value: version.mutation.base_text_sha256 },
+          { label: "Applied text hash", value: version.mutation.applied_text_sha256 }
+        ]
       : [])
   ];
 }

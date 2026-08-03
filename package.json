@@ -60,6 +60,8 @@
     "test:comment-thread-reply-edit": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-thread-reply-edit.test.mjs",
     "test:reading-bookmark": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/reading-bookmark.test.mjs",
     "test:reading-bookmark-browser": "node scripts/reading-bookmark-browser.test.mjs",
+    "test:human-rewrite-workspace": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/human-rewrite-workspace.test.mjs",
+    "test:human-rewrite-workspace-browser": "node scripts/comment-selection-composer-browser.test.mjs",
     "test:version-history-display": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/version-history-display.test.mjs",
     "test:version-history-browser": "node scripts/version-history-browser.test.mjs",
     "test:atomic-table-patches": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/atomic-table-patches.test.mjs",

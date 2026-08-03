@@ -15,9 +15,11 @@ import {
   openProjectFolder,
   readProjectComments,
   readProjectPatches,
+  readProjectRewriteSessionRecords,
   listProjectVersions,
   resolveDocumentPathFromFileHandle,
   restoreProjectDocument,
+  saveProjectRewriteSessionRecord,
   saveProjectState,
   switchProjectDocument,
   updateProjectDocumentMetadata
@@ -30,6 +32,10 @@ import {
   validateRegisteredDocumentPath,
   writeProjectManifestAtomic
 } from "../lib/project/multi-document-project.ts";
+import {
+  createRewriteSession,
+  updateRewriteDraft
+} from "../lib/rewrite-workspace/rewrite-review-protocol.ts";
 import {
   NodeDirectoryHandle,
   createNodeHandleController
@@ -57,7 +63,10 @@ try {
       switchSaveBarrier: true,
       archiveRestore: true,
       missingLocate: true,
+      rewriteArchiveRestore: true,
+      rewriteMissingLocate: true,
       folderPortability: true,
+      rewriteFolderPortability: true,
       migrationFaultBoundaries: true
     }, null, 2)}\n`
   );
@@ -235,6 +244,19 @@ async function runLifecycleIntegrationTest() {
     registryBeforeDocumentEdits,
     "Ordinary document persistence must not rewrite the project registry."
   );
+  const secondRewriteSession = await createDocumentRewriteSession({
+    draft: "Identical paragraph with a saved human clarification.",
+    loaded: secondLoaded,
+    localProjectInstanceId: "multi_document_lifecycle",
+    markdown: sharedMarkdown,
+    selectedText: "Identical paragraph."
+  });
+  await saveProjectRewriteSessionRecord({
+    expectedRevision: 0,
+    project: secondLoaded.project,
+    reason: "second_document_rewrite_state",
+    record: secondRewriteSession
+  });
   const secondGeneration = secondLoaded.project.persistence.generation;
 
   const firstLoaded = await openProjectDocument(
@@ -373,6 +395,10 @@ async function runLifecycleIntegrationTest() {
     (await readProjectComments(restoredSecond.project))[0].trash_operation_id,
     "comment_trash_lifecycle"
   );
+  assert.equal(
+    (await readProjectRewriteSessionRecords(restoredSecond.project))[0].human_draft,
+    secondRewriteSession.human_draft
+  );
 
   const movedPath = path.join(projectPath, "ready-to-eat-moved.md");
   fs.renameSync(path.join(projectPath, secondDocument.path), movedPath);
@@ -402,6 +428,10 @@ async function runLifecycleIntegrationTest() {
     locatedComments[0].trash_operation_id,
     "comment_trash_lifecycle"
   );
+  assert.equal(
+    (await readProjectRewriteSessionRecords(located.project))[0].human_draft,
+    secondRewriteSession.human_draft
+  );
 
   const selectedInside = await root.getFileHandle("evidence.md");
   assert.equal(
@@ -428,6 +458,14 @@ async function runLifecycleIntegrationTest() {
   assert.deepEqual(
     movedProject.project.projectManifest.documents.map(({ document_id }) => document_id),
     located.project.projectManifest.documents.map(({ document_id }) => document_id)
+  );
+  const movedSecond = await openProjectDocument(
+    movedProject.project,
+    secondDocument.document_id
+  );
+  assert.equal(
+    (await readProjectRewriteSessionRecords(movedSecond.project))[0].human_draft,
+    secondRewriteSession.human_draft
   );
   const ownershipTarget = movedProject.project.projectManifest.documents.find(
     ({ document_id }) => document_id !== movedProject.project.document.document_id
@@ -492,6 +530,46 @@ async function runLifecycleIntegrationTest() {
     false,
     "Manifest-last ordering must not register an interrupted document."
   );
+}
+
+async function createDocumentRewriteSession({
+  draft,
+  loaded,
+  localProjectInstanceId,
+  markdown = loaded.markdown,
+  selectedText
+}) {
+  const identity = {
+    projectId: loaded.project.projectManifest.project_id,
+    documentId: loaded.project.document.document_id
+  };
+  const start = markdown.indexOf(selectedText);
+  assert.ok(start >= 0);
+  const session = await createRewriteSession({
+    baseDocumentGeneration: loaded.project.persistence.generation,
+    baseText: selectedText,
+    documentId: identity.documentId,
+    documentTitle: loaded.project.document.display_title,
+    localProjectInstanceId,
+    markdown,
+    projectId: identity.projectId,
+    projectTitle: loaded.project.projectManifest.title,
+    target: {
+      kind: "selection",
+      heading_snapshot: loaded.project.document.display_title,
+      heading_level: 1,
+      heading_path: [loaded.project.document.display_title],
+      base_start: start,
+      base_end: start + selectedText.length,
+      context_before: markdown.slice(Math.max(0, start - 64), start),
+      context_after: markdown.slice(start + selectedText.length, start + selectedText.length + 64)
+    }
+  });
+  return updateRewriteDraft({
+    humanDraft: draft,
+    intentNote: "Keep this draft scoped to the second document.",
+    session
+  });
 }
 
 async function runMigrationFailureTests() {

@@ -68,7 +68,8 @@ import {
   type PatchmarkSaveCommit,
   type PatchmarkSuggestedUserAction,
   type PatchmarkSourceReference,
-  type PatchmarkVersionEntry
+  type PatchmarkVersionEntry,
+  type PatchmarkVersionMutationAudit
 } from "./project-types.ts";
 import {
   incrementDocumentSwitchPerformanceCounter,
@@ -87,6 +88,11 @@ import {
   serializeReviewQueueOverrides
 } from "../review-queue/review-queue-override-schema.ts";
 import type { PatchmarkReviewQueueOverrides } from "../review-queue/review-queue-override-types.ts";
+import {
+  parseRewriteProjectSessionStore,
+  serializeRewriteProjectSessionStore
+} from "../rewrite-workspace/rewrite-project-session-schema.ts";
+import type { RewriteProjectSessionRecord } from "../rewrite-workspace/rewrite-session-types.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
@@ -95,6 +101,7 @@ const commentsFileName = "comments.json";
 const patchesFileName = "patches.json";
 const reviewBatchesFileName = "review-batches.json";
 const reviewQueueOverridesFileName = "review-queue-overrides.json";
+const rewriteSessionsFileName = "rewrite-sessions.json";
 const saveCommitFileName = "save-commit.json";
 const recoveryDirectoryName = "recovery";
 const saveCommitFormatVersion = 1;
@@ -158,10 +165,12 @@ type PatchmarkProjectPersistenceState = {
   patchesReference?: PatchmarkPatch[];
   reviewBatchesReference?: PatchmarkReviewBatch[];
   reviewQueueOverridesReference?: PatchmarkReviewQueueOverrides;
+  rewriteSessionsReference?: RewriteProjectSessionRecord[];
   commentsRaw?: string;
   patchesRaw?: string;
   reviewBatchesRaw?: string;
   reviewQueueOverridesRaw?: string;
+  rewriteSessionsRaw?: string;
   readSource: "current" | "current_readonly" | "lkg";
   recovery?: PatchmarkProjectRecoveryState;
   debug: PatchmarkPersistenceDebugState;
@@ -214,6 +223,7 @@ export type ProjectCommitFileKey =
   | "patches"
   | "review_batches"
   | "review_queue_overrides"
+  | "rewrite_sessions"
   | "manifest";
 
 type PreparedProjectFile = {
@@ -237,6 +247,10 @@ type ProjectCommitRequest = {
   reviewQueueOverridesUpdate?: (
     overrides: PatchmarkReviewQueueOverrides
   ) => PatchmarkReviewQueueOverrides;
+  rewriteSessions?: RewriteProjectSessionRecord[];
+  rewriteSessionsUpdate?: (
+    sessions: RewriteProjectSessionRecord[]
+  ) => RewriteProjectSessionRecord[];
   manifest?: PatchmarkManifest;
   manifestUpdate?: (manifest: PatchmarkManifest) => PatchmarkManifest;
   reason: string;
@@ -1036,6 +1050,7 @@ export async function saveProjectState({
   patches,
   reviewBatches,
   reviewQueueOverrides,
+  rewriteSessions,
   project,
   reason,
   allowSupersede = false,
@@ -1047,6 +1062,7 @@ export async function saveProjectState({
   patches?: PatchmarkPatch[];
   reviewBatches?: PatchmarkReviewBatch[];
   reviewQueueOverrides?: PatchmarkReviewQueueOverrides;
+  rewriteSessions?: RewriteProjectSessionRecord[];
   project: PatchmarkProjectHandle;
   reason: string;
   allowSupersede?: boolean;
@@ -1060,6 +1076,7 @@ export async function saveProjectState({
     patches,
     reviewBatches,
     reviewQueueOverrides,
+    rewriteSessions,
     project,
     reason,
     rollbackOnFailure
@@ -1083,11 +1100,13 @@ export async function updateProjectManifestMetadata({
 }
 
 export async function createProjectSnapshot({
+  audit,
   allowDuplicate = false,
   project,
   markdown,
   reason = "manual snapshot"
 }: {
+  audit?: PatchmarkVersionMutationAudit;
   allowDuplicate?: boolean;
   project: PatchmarkProjectHandle;
   markdown: string;
@@ -1114,9 +1133,90 @@ export async function createProjectSnapshot({
     };
   }
 
+  const prepared = await prepareProjectSnapshot({
+    audit,
+    contentHash,
+    markdown,
+    project,
+    reason
+  });
+  await commitProjectState({
+    manifest: prepared.manifest,
+    project,
+    reason: "create_snapshot"
+  });
+
+  return {
+    created: true,
+    version: prepared.version,
+    project
+  };
+}
+
+export async function prepareProjectMutationSnapshot({
+  audit,
+  markdown,
+  project,
+  reason
+}: {
+  audit: PatchmarkVersionMutationAudit;
+  markdown: string;
+  project: PatchmarkProjectHandle;
+  reason: string;
+}): Promise<{
+  manifest: PatchmarkManifest;
+  snapshotFileName: string;
+  version: PatchmarkVersionEntry;
+}> {
+  return prepareProjectSnapshot({
+    audit,
+    contentHash: await createMarkdownHash(markdown),
+    markdown,
+    project,
+    reason
+  });
+}
+
+export async function discardPreparedProjectMutationSnapshot({
+  project,
+  snapshotFileName
+}: {
+  project: PatchmarkProjectHandle;
+  snapshotFileName: string;
+}): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    const versionsDirectoryHandle =
+      await metadataDirectoryHandle.getDirectoryHandle("versions");
+    await versionsDirectoryHandle.removeEntry?.(snapshotFileName);
+  } catch {
+    return;
+  }
+}
+
+async function prepareProjectSnapshot({
+  audit,
+  contentHash,
+  markdown,
+  project,
+  reason
+}: {
+  audit?: PatchmarkVersionMutationAudit;
+  contentHash: string | undefined;
+  markdown: string;
+  project: PatchmarkProjectHandle;
+  reason: string;
+}): Promise<{
+  manifest: PatchmarkManifest;
+  snapshotFileName: string;
+  version: PatchmarkVersionEntry;
+}> {
   const createdAt = new Date().toISOString();
   const snapshotId = createSnapshotId(createdAt);
-  const snapshotFile = `.patchmark/versions/${snapshotId}.md`;
+  const snapshotFileName = `${snapshotId}.md`;
+  const snapshotFile = `.patchmark/versions/${snapshotFileName}`;
   const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
     metadataDirectoryName,
     { create: true }
@@ -1126,35 +1226,25 @@ export async function createProjectSnapshot({
       create: true
     });
   const snapshotFileHandle = await versionsDirectoryHandle.getFileHandle(
-    `${snapshotId}.md`,
+    snapshotFileName,
     { create: true }
   );
-  const versionEntry: PatchmarkVersionEntry = {
+  const version: PatchmarkVersionEntry = {
     id: snapshotId,
     file: snapshotFile,
     created_at: createdAt,
     reason,
-    content_hash: contentHash
+    content_hash: contentHash,
+    ...(audit ? { mutation: audit } : {})
   };
   const manifest: PatchmarkManifest = {
     ...project.manifest,
     updated_at: createdAt,
     current_version: snapshotId,
-    versions: [...versions, versionEntry]
+    versions: [...(project.manifest.versions ?? []), version]
   };
-
   await writeTextFile(snapshotFileHandle, markdown);
-  await commitProjectState({
-    manifest,
-    project,
-    reason: "create_snapshot"
-  });
-
-  return {
-    created: true,
-    version: versionEntry,
-      project
-  };
+  return { manifest, snapshotFileName, version };
 }
 
 async function isSameAsLatestSnapshot({
@@ -1545,6 +1635,235 @@ export async function commitProjectReviewQueueOverridesUpdate({
   );
 }
 
+export class RewriteProjectSessionConflictError extends Error {
+  constructor(message = "This rewrite draft changed in another Patchmark window.") {
+    super(message);
+    this.name = "RewriteProjectSessionConflictError";
+  }
+}
+
+export async function readProjectRewriteSessionRecords(
+  project: PatchmarkProjectHandle
+): Promise<RewriteProjectSessionRecord[]> {
+  if (project.persistence.rewriteSessionsReference) {
+    return project.persistence.rewriteSessionsReference;
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const hasCommittedSessions = Boolean(project.persistence.files.rewrite_sessions);
+  let text = project.persistence.rewriteSessionsRaw;
+  if (text === undefined && hasCommittedSessions) {
+    const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
+    text = await readTextFile(
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? `${rewriteSessionsFileName}.lkg`
+          : rewriteSessionsFileName
+      )
+    );
+  }
+  const records = hasCommittedSessions
+    ? parseRewriteProjectSessionStore({
+        identity,
+        text:
+          text ??
+          serializeRewriteProjectSessionStore({ identity, sessions: [] })
+      }).sessions
+    : [];
+  project.persistence.rewriteSessionsReference = records;
+  project.persistence.rewriteSessionsRaw = undefined;
+  return records;
+}
+
+export async function saveProjectRewriteSessionRecord({
+  expectedRevision,
+  project,
+  record,
+  reason
+}: {
+  expectedRevision: number;
+  project: PatchmarkProjectHandle;
+  record: RewriteProjectSessionRecord;
+  reason: string;
+}): Promise<{
+  commit: PatchmarkProjectCommitResult;
+  record: RewriteProjectSessionRecord;
+  sessions: RewriteProjectSessionRecord[];
+}> {
+  return saveProjectStateWithRewriteSessionRecord({
+    expectedRevision,
+    project,
+    reason,
+    rewriteSessionRecord: record
+  });
+}
+
+export async function saveProjectStateWithRewriteSessionRecord({
+  comments,
+  expectedRevision,
+  manifest,
+  markdown,
+  patches,
+  project,
+  reason,
+  rewriteSessionRecord
+}: {
+  comments?: PatchmarkComment[];
+  expectedRevision: number;
+  manifest?: PatchmarkManifest;
+  markdown?: string;
+  patches?: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+  reason: string;
+  rewriteSessionRecord: RewriteProjectSessionRecord;
+}): Promise<{
+  commit: PatchmarkProjectCommitResult;
+  record: RewriteProjectSessionRecord;
+  sessions: RewriteProjectSessionRecord[];
+}> {
+  const identity = getProjectDocumentIdentity(project);
+  if (
+    rewriteSessionRecord.project_id !== identity.projectId ||
+    rewriteSessionRecord.document_id !== identity.documentId
+  ) {
+    throw new Error("The Human Rewrite session does not belong to this project document.");
+  }
+  return withRewriteProjectLock(identity, async () => {
+    await assertProjectCommitStillCurrent(project);
+    const currentSessions = await readCurrentRewriteSessionRecordsFromDisk(project);
+    const current = currentSessions.find(
+      (candidate) =>
+        candidate.rewrite_session_id === rewriteSessionRecord.rewrite_session_id
+    );
+    const currentRevision = current?.authoritative_revision ?? 0;
+    if (currentRevision !== expectedRevision) {
+      throw new RewriteProjectSessionConflictError();
+    }
+    const nextRecord = {
+      ...rewriteSessionRecord,
+      authoritative_revision: currentRevision + 1,
+      authoritative_generation: project.persistence.generation + 1
+    } as RewriteProjectSessionRecord;
+    const nextSessions = [
+      ...currentSessions.filter(
+        (candidate) =>
+          candidate.rewrite_session_id !== rewriteSessionRecord.rewrite_session_id
+      ),
+      nextRecord
+    ];
+    const commit = await saveProjectState({
+      comments,
+      manifest,
+      markdown,
+      patches,
+      project,
+      reason,
+      rewriteSessions: nextSessions,
+      rollbackOnFailure: true
+    });
+    return { commit, record: nextRecord, sessions: nextSessions };
+  });
+}
+
+export async function verifyProjectRewriteSessionRecord({
+  project,
+  session
+}: {
+  project: PatchmarkProjectHandle;
+  session: RewriteProjectSessionRecord;
+}): Promise<boolean> {
+  const records = await readCurrentRewriteSessionRecordsFromDisk(project);
+  const current = records.find(
+    (candidate) => candidate.rewrite_session_id === session.rewrite_session_id
+  );
+  return Boolean(
+    current &&
+      current.status === session.status &&
+      current.authoritative_revision === session.authoritative_revision &&
+      current.human_draft_sha256 === session.human_draft_sha256
+  );
+}
+
+async function readCurrentRewriteSessionRecordsFromDisk(
+  project: PatchmarkProjectHandle
+): Promise<RewriteProjectSessionRecord[]> {
+  if (!project.persistence.files.rewrite_sessions) {
+    return [];
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const text = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    rewriteSessionsFileName
+  );
+  if (text === null) {
+    return [];
+  }
+  return parseRewriteProjectSessionStore({ identity, text }).sessions;
+}
+
+async function assertProjectCommitStillCurrent(
+  project: PatchmarkProjectHandle
+): Promise<void> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const currentText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    saveCommitFileName
+  );
+  if (!project.persistence.commit && currentText === null) {
+    return;
+  }
+  if (!project.persistence.commit || currentText === null) {
+    throw new RewriteProjectSessionConflictError();
+  }
+  const details: string[] = [];
+  const current = parseSaveCommitForValidation(currentText, details);
+  if (
+    !current ||
+    details.length > 0 ||
+    current.commit_id !== project.persistence.commit.commit_id ||
+    current.generation !== project.persistence.generation
+  ) {
+    throw new RewriteProjectSessionConflictError();
+  }
+}
+
+const rewriteProjectLocks = new Map<string, Promise<void>>();
+
+async function withRewriteProjectLock<T>(
+  identity: ProjectDocumentIdentity,
+  operation: () => Promise<T>
+): Promise<T> {
+  const key = `patchmark-human-rewrite:${identity.projectId}:${identity.documentId}`;
+  const lockManager = typeof navigator !== "undefined"
+    ? (navigator as Navigator & {
+        locks?: { request: <R>(name: string, callback: () => Promise<R>) => Promise<R> };
+      }).locks
+    : undefined;
+  if (lockManager) {
+    return lockManager.request(key, operation);
+  }
+  const previous = rewriteProjectLocks.get(key) ?? Promise.resolve();
+  let resolveTail!: () => void;
+  const tail = new Promise<void>((resolve) => {
+    resolveTail = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => tail);
+  rewriteProjectLocks.set(key, queued);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    resolveTail();
+    if (rewriteProjectLocks.get(key) === queued) {
+      rewriteProjectLocks.delete(key);
+    }
+  }
+}
+
 export async function readProjectPatches(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkPatch[]> {
@@ -1770,6 +2089,9 @@ export async function restoreProjectLastKnownGood(
     if (!lkg.commit.files.review_queue_overrides) {
       await removeReviewQueueOverridesFileIfPresent(project.directoryHandle);
     }
+    if (!lkg.commit.files.rewrite_sessions) {
+      await removeRewriteSessionsFileIfPresent(project.directoryHandle);
+    }
   } finally {
     await cleanupPreparedFiles(preparedFiles);
   }
@@ -1795,6 +2117,9 @@ export async function restoreProjectLastKnownGood(
         : undefined,
       reviewQueueOverridesRaw: lkg.commit.files.review_queue_overrides
         ? lkg.texts.review_queue_overrides
+        : undefined,
+      rewriteSessionsRaw: lkg.commit.files.rewrite_sessions
+        ? lkg.texts.rewrite_sessions
         : undefined,
       readSource: "current",
       debug: createEmptyPersistenceDebugState()
@@ -1836,6 +2161,8 @@ async function commitProjectState({
   reviewBatchesUpdate,
   reviewQueueOverrides,
   reviewQueueOverridesUpdate,
+  rewriteSessions,
+  rewriteSessionsUpdate,
   rollbackOnFailure = false,
   project,
   reason
@@ -1880,6 +2207,8 @@ async function commitProjectState({
         reviewBatchesUpdate,
         reviewQueueOverrides,
         reviewQueueOverridesUpdate,
+        rewriteSessions,
+        rewriteSessionsUpdate,
         rollbackOnFailure,
         project,
         queue,
@@ -1908,6 +2237,8 @@ async function executeProjectCommit({
   reviewBatchesUpdate,
   reviewQueueOverrides,
   reviewQueueOverridesUpdate,
+  rewriteSessions,
+  rewriteSessionsUpdate,
   rollbackOnFailure,
   project,
   queue,
@@ -1934,6 +2265,7 @@ async function executeProjectCommit({
     patches: "skipped",
     review_batches: "skipped",
     review_queue_overrides: "skipped",
+    rewrite_sessions: "skipped",
     manifest: "skipped"
   };
 
@@ -2106,6 +2438,53 @@ async function executeProjectCommit({
     }
   }
 
+  const rewriteIdentity = getProjectDocumentIdentity(project);
+  const emptyRewriteSessionsText = serializeRewriteProjectSessionStore({
+    identity: rewriteIdentity,
+    sessions: []
+  });
+  const currentRewriteSessions =
+    persistence.rewriteSessionsReference ??
+    (persistence.files.rewrite_sessions
+      ? parseRewriteProjectSessionStore({
+          identity: rewriteIdentity,
+          text: persistence.rewriteSessionsRaw ?? emptyRewriteSessionsText
+        }).sessions
+      : []);
+  const requestedRewriteSessions = rewriteSessionsUpdate
+    ? rewriteSessionsUpdate(currentRewriteSessions)
+    : rewriteSessions;
+  if (requestedRewriteSessions !== undefined) {
+    if (requestedRewriteSessions === persistence.rewriteSessionsReference) {
+      debug.lastFileResults.rewrite_sessions = "unchanged";
+    } else {
+      const rewriteSessionsText = serializeRewriteProjectSessionStore({
+        identity: rewriteIdentity,
+        sessions: requestedRewriteSessions
+      });
+      serializedFiles.push("rewrite_sessions");
+      debug.serializationCount += 1;
+      const rewriteSessionsCommit = await createPersistedFileCommit(
+        `${metadataDirectoryName}/${rewriteSessionsFileName}`,
+        rewriteSessionsText
+      );
+      const currentRewriteSessionsCommit =
+        persistence.files.rewrite_sessions ??
+        (await createPersistedFileCommit(
+          `${metadataDirectoryName}/${rewriteSessionsFileName}`,
+          emptyRewriteSessionsText
+        ));
+      if (rewriteSessionsCommit.sha256 === currentRewriteSessionsCommit.sha256) {
+        persistence.rewriteSessionsReference = requestedRewriteSessions;
+        debug.lastFileResults.rewrite_sessions = "unchanged";
+      } else {
+        changedFiles.push("rewrite_sessions");
+        desiredTexts.rewrite_sessions = rewriteSessionsText;
+        debug.lastFileResults.rewrite_sessions = "changed";
+      }
+    }
+  }
+
   const manifestChanged =
     requestedManifest !== undefined &&
     createManifestMeaningfulKey(requestedManifest) !==
@@ -2141,11 +2520,16 @@ async function executeProjectCommit({
   const includeCurrentReviewQueueOverrides = Boolean(
     persistence.files.review_queue_overrides
   );
+  const includeCurrentRewriteSessions = Boolean(
+    persistence.files.rewrite_sessions
+  );
   const currentTexts = await readCurrentProjectTexts(
     project.directoryHandle,
     includeCurrentReviewBatches,
     includeCurrentReviewQueueOverrides,
-    emptyReviewQueueOverridesText
+    emptyReviewQueueOverridesText,
+    includeCurrentRewriteSessions,
+    emptyRewriteSessionsText
   );
   const currentDescriptors = await createProjectFileDescriptors(
     currentTexts,
@@ -2189,10 +2573,13 @@ async function executeProjectCommit({
   const includeNextReviewQueueOverrides =
     includeCurrentReviewQueueOverrides ||
     changedFiles.includes("review_queue_overrides");
+  const includeNextRewriteSessions =
+    includeCurrentRewriteSessions || changedFiles.includes("rewrite_sessions");
   const nextDescriptors = await createProjectFileDescriptors(
     nextTexts,
     includeNextReviewBatches,
-    includeNextReviewQueueOverrides
+    includeNextReviewQueueOverrides,
+    includeNextRewriteSessions
   );
   const saveCommit: PatchmarkSaveCommit = {
     format_version: saveCommitFormatVersion,
@@ -2274,6 +2661,7 @@ async function executeProjectCommit({
         currentTexts,
         includeCurrentReviewBatches,
         includeCurrentReviewQueueOverrides,
+        includeCurrentRewriteSessions,
         onWrite: (bytes) => recordPersistenceWrite(project, bytes)
       });
       if (!rollbackSucceeded) {
@@ -2310,6 +2698,11 @@ async function executeProjectCommit({
   if (requestedReviewQueueOverrides !== undefined) {
     persistence.reviewQueueOverridesReference = requestedReviewQueueOverrides;
     persistence.reviewQueueOverridesRaw = undefined;
+  }
+
+  if (requestedRewriteSessions !== undefined) {
+    persistence.rewriteSessionsReference = requestedRewriteSessions;
+    persistence.rewriteSessionsRaw = undefined;
   }
 
   const bytesWritten = debug.bytesWritten - bytesWrittenBeforeCommit;
@@ -2974,6 +3367,10 @@ async function createOpenedProjectHandle({
     metadataDirectoryHandle,
     reviewQueueOverridesFileName
   );
+  const rewriteSessionsText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    rewriteSessionsFileName
+  );
   const commitText = await readOptionalTextFile(
     metadataDirectoryHandle,
     saveCommitFileName
@@ -2989,6 +3386,7 @@ async function createOpenedProjectHandle({
     new TextEncoder().encode(patchesText ?? "").byteLength +
     new TextEncoder().encode(reviewBatchesText ?? "").byteLength +
     new TextEncoder().encode(reviewQueueOverridesText ?? "").byteLength +
+    new TextEncoder().encode(rewriteSessionsText ?? "").byteLength +
     new TextEncoder().encode(commitText ?? "").byteLength;
   incrementDocumentSwitchPerformanceCounter(
     performanceOperationId,
@@ -3022,11 +3420,17 @@ async function createOpenedProjectHandle({
   const committedReviewQueueOverrides = Boolean(
     currentCommit?.files.review_queue_overrides
   );
+  const committedRewriteSessions = Boolean(
+    currentCommit?.files.rewrite_sessions
+  );
   if (committedReviewBatches && reviewBatchesText === null) {
     currentDetails.push("Missing .patchmark/review-batches.json.");
   }
   if (committedReviewQueueOverrides && reviewQueueOverridesText === null) {
     currentDetails.push("Missing .patchmark/review-queue-overrides.json.");
+  }
+  if (committedRewriteSessions && rewriteSessionsText === null) {
+    currentDetails.push("Missing .patchmark/rewrite-sessions.json.");
   }
   const emptyReviewQueueOverridesText = currentManifest
     ? serializeReviewQueueOverrides({
@@ -3034,6 +3438,12 @@ async function createOpenedProjectHandle({
         overrides: createEmptyReviewQueueOverrides(
           getManifestDocumentIdentity(currentManifest)
         )
+      })
+    : "{}\n";
+  const emptyRewriteSessionsText = currentManifest
+    ? serializeRewriteProjectSessionStore({
+        identity: getManifestDocumentIdentity(currentManifest),
+        sessions: []
       })
     : "{}\n";
 
@@ -3049,6 +3459,9 @@ async function createOpenedProjectHandle({
           review_queue_overrides: committedReviewQueueOverrides
             ? reviewQueueOverridesText ?? emptyReviewQueueOverridesText
             : emptyReviewQueueOverridesText,
+          rewrite_sessions: committedRewriteSessions
+            ? rewriteSessionsText ?? emptyRewriteSessionsText
+            : emptyRewriteSessionsText,
           manifest: manifestText
         }
       : null;
@@ -3111,6 +3524,12 @@ async function createOpenedProjectHandle({
       identity: getManifestDocumentIdentity(currentManifest),
       text: currentTexts.review_queue_overrides
     });
+    validateRewriteSessionTextForIdentity({
+      commit: currentCommit,
+      details: currentDetails,
+      identity: getManifestDocumentIdentity(currentManifest),
+      text: currentTexts.rewrite_sessions
+    });
     recordDocumentSwitchPerformanceDuration(
       performanceOperationId,
       "validate_target_integrity",
@@ -3121,7 +3540,8 @@ async function createOpenedProjectHandle({
       "content_hashes_computed",
       4 +
         (committedReviewBatches ? 1 : 0) +
-        (committedReviewQueueOverrides ? 1 : 0)
+        (committedReviewQueueOverrides ? 1 : 0) +
+        (committedRewriteSessions ? 1 : 0)
     );
     markDocumentSwitchPerformance(
       performanceOperationId,
@@ -3148,6 +3568,9 @@ async function createOpenedProjectHandle({
             : undefined,
           reviewQueueOverridesRaw: committedReviewQueueOverrides
             ? currentTexts.review_queue_overrides
+            : undefined,
+          rewriteSessionsRaw: committedRewriteSessions
+            ? currentTexts.rewrite_sessions
             : undefined,
           readSource: "current",
           debug: createEmptyPersistenceDebugState()
@@ -3190,6 +3613,9 @@ async function createOpenedProjectHandle({
         reviewQueueOverridesRaw: lkg.commit.files.review_queue_overrides
           ? lkg.texts.review_queue_overrides
           : undefined,
+        rewriteSessionsRaw: lkg.commit.files.rewrite_sessions
+          ? lkg.texts.rewrite_sessions
+          : undefined,
         readSource: "lkg",
         recovery,
         debug: createEmptyPersistenceDebugState()
@@ -3219,7 +3645,8 @@ async function createOpenedProjectHandle({
   const descriptors = await createProjectFileDescriptors(
     currentTexts,
     committedReviewBatches,
-    committedReviewQueueOverrides
+    committedReviewQueueOverrides,
+    committedRewriteSessions
   );
   const project: PatchmarkProjectHandle = {
     directoryHandle,
@@ -3237,6 +3664,9 @@ async function createOpenedProjectHandle({
         : undefined,
       reviewQueueOverridesRaw: committedReviewQueueOverrides
         ? reviewQueueOverridesText ?? undefined
+        : undefined,
+      rewriteSessionsRaw: committedRewriteSessions
+        ? rewriteSessionsText ?? undefined
         : undefined,
       readSource: "current_readonly",
       recovery,
@@ -3278,6 +3708,7 @@ async function createLegacyPersistenceState({
     patches: resolvedPatchesText,
     review_batches: "[]\n",
     review_queue_overrides: reviewQueueOverridesText ?? "{}\n",
+    rewrite_sessions: "{\"schema_version\":1,\"project_id\":\"\",\"document_id\":\"\",\"sessions\":[]}\n",
     manifest: manifestText
   };
 
@@ -3298,7 +3729,9 @@ async function readCurrentProjectTexts(
   directoryHandle: PatchmarkDirectoryHandle,
   includeReviewBatches: boolean,
   includeReviewQueueOverrides: boolean,
-  emptyReviewQueueOverridesText: string
+  emptyReviewQueueOverridesText: string,
+  includeRewriteSessions: boolean,
+  emptyRewriteSessionsText: string
 ): Promise<Record<ProjectCommitFileKey, string>> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
@@ -3309,7 +3742,8 @@ async function readCurrentProjectTexts(
     patches,
     manifest,
     reviewBatches,
-    reviewQueueOverrides
+    reviewQueueOverrides,
+    rewriteSessions
   ] = await Promise.all([
     readTextFile(await directoryHandle.getFileHandle(documentFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(commentsFileName)),
@@ -3326,7 +3760,12 @@ async function readCurrentProjectTexts(
             reviewQueueOverridesFileName
           )
         )
-      : Promise.resolve(emptyReviewQueueOverridesText)
+      : Promise.resolve(emptyReviewQueueOverridesText),
+    includeRewriteSessions
+      ? readTextFile(
+          await metadataDirectoryHandle.getFileHandle(rewriteSessionsFileName)
+        )
+      : Promise.resolve(emptyRewriteSessionsText)
   ]);
   return {
     document,
@@ -3334,6 +3773,7 @@ async function readCurrentProjectTexts(
     patches,
     review_batches: reviewBatches,
     review_queue_overrides: reviewQueueOverrides,
+    rewrite_sessions: rewriteSessions,
     manifest
   };
 }
@@ -3351,6 +3791,11 @@ async function readCurrentFileCommit(
       overrides: createEmptyReviewQueueOverrides(
         getProjectDocumentIdentity(project)
       )
+    }),
+    Boolean(project.persistence.files.rewrite_sessions),
+    serializeRewriteProjectSessionStore({
+      identity: getProjectDocumentIdentity(project),
+      sessions: []
     })
   );
   return createPersistedFileCommit(getProjectFilePath(key), texts[key]);
@@ -3359,7 +3804,8 @@ async function readCurrentFileCommit(
 async function createProjectFileDescriptors(
   texts: Record<ProjectCommitFileKey, string>,
   includeReviewBatches: boolean,
-  includeReviewQueueOverrides = false
+  includeReviewQueueOverrides = false,
+  includeRewriteSessions = false
 ): Promise<PatchmarkSaveCommit["files"]> {
   const [document, comments, patches, manifest] = await Promise.all(
     (["document", "comments", "patches", "manifest"] as const).map((key) =>
@@ -3378,6 +3824,12 @@ async function createProjectFileDescriptors(
         texts.review_queue_overrides
       )
     : undefined;
+  const rewriteSessions = includeRewriteSessions
+    ? await createPersistedFileCommit(
+        getProjectFilePath("rewrite_sessions"),
+        texts.rewrite_sessions
+      )
+    : undefined;
   return {
     document,
     comments,
@@ -3386,7 +3838,8 @@ async function createProjectFileDescriptors(
     ...(reviewBatches ? { review_batches: reviewBatches } : {}),
     ...(reviewQueueOverrides
       ? { review_queue_overrides: reviewQueueOverrides }
-      : {})
+      : {}),
+    ...(rewriteSessions ? { rewrite_sessions: rewriteSessions } : {})
   };
 }
 
@@ -3441,6 +3894,9 @@ function getProjectFilePath(key: ProjectCommitFileKey): string {
   if (key === "review_queue_overrides") {
     return `${metadataDirectoryName}/${reviewQueueOverridesFileName}`;
   }
+  if (key === "rewrite_sessions") {
+    return `${metadataDirectoryName}/${rewriteSessionsFileName}`;
+  }
   return `${metadataDirectoryName}/${manifestFileName}`;
 }
 
@@ -3460,6 +3916,9 @@ function getProjectFileName(key: ProjectCommitFileKey): string {
   if (key === "review_queue_overrides") {
     return reviewQueueOverridesFileName;
   }
+  if (key === "rewrite_sessions") {
+    return rewriteSessionsFileName;
+  }
   return manifestFileName;
 }
 
@@ -3475,6 +3934,9 @@ function getCommittedProjectFileKeys(
       : []),
     ...(commit.files.review_queue_overrides
       ? (["review_queue_overrides"] as ProjectCommitFileKey[])
+      : []),
+    ...(commit.files.rewrite_sessions
+      ? (["rewrite_sessions"] as ProjectCommitFileKey[])
       : []),
     "manifest"
   ];
@@ -3529,6 +3991,24 @@ async function removeReviewQueueOverridesFileIfPresent(
   }
 }
 
+async function removeRewriteSessionsFileIfPresent(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    if (!metadataDirectoryHandle.removeEntry) {
+      return;
+    }
+    await metadataDirectoryHandle.removeEntry(rewriteSessionsFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
+}
+
 function createLegacyBaselineCommit({
   descriptors,
   manifest
@@ -3542,7 +4022,8 @@ function createLegacyBaselineCommit({
     descriptors.patches.sha256,
     descriptors.manifest.sha256,
     descriptors.review_batches?.sha256,
-    descriptors.review_queue_overrides?.sha256
+    descriptors.review_queue_overrides?.sha256,
+    descriptors.rewrite_sessions?.sha256
   ]
     .filter((hash): hash is string => Boolean(hash))
     .map((hash) => hash.slice(0, 8))
@@ -3747,6 +4228,7 @@ async function rollbackAttemptedProjectInstalls({
   currentTexts,
   includeCurrentReviewBatches,
   includeCurrentReviewQueueOverrides,
+  includeCurrentRewriteSessions,
   onWrite
 }: {
   attemptedInstalls: PreparedProjectFile[];
@@ -3754,6 +4236,7 @@ async function rollbackAttemptedProjectInstalls({
   currentTexts: Record<ProjectCommitFileKey, string>;
   includeCurrentReviewBatches: boolean;
   includeCurrentReviewQueueOverrides: boolean;
+  includeCurrentRewriteSessions: boolean;
   onWrite: (bytes: number) => void;
 }): Promise<boolean> {
   let succeeded = true;
@@ -3770,7 +4253,9 @@ async function rollbackAttemptedProjectInstalls({
         (prepared.key === "review_batches" &&
           !includeCurrentReviewBatches) ||
         (prepared.key === "review_queue_overrides" &&
-          !includeCurrentReviewQueueOverrides);
+          !includeCurrentReviewQueueOverrides) ||
+        (prepared.key === "rewrite_sessions" &&
+          !includeCurrentRewriteSessions);
       if (shouldRemove) {
         await prepared.directoryHandle
           .removeEntry?.(prepared.targetFileName)
@@ -3890,12 +4375,23 @@ async function readValidLastKnownGoodGeneration(
           identity: lkgIdentity,
           overrides: createEmptyReviewQueueOverrides(lkgIdentity)
         });
+    const rewriteSessions = commit.files.rewrite_sessions
+      ? await readTextFile(
+          await recoveryDirectoryHandle.getFileHandle(
+            `${rewriteSessionsFileName}.lkg`
+          )
+        )
+      : serializeRewriteProjectSessionStore({
+          identity: lkgIdentity,
+          sessions: []
+        });
     const texts = {
       document,
       comments,
       patches,
       review_batches: reviewBatches,
       review_queue_overrides: reviewQueueOverrides,
+      rewrite_sessions: rewriteSessions,
       manifest
     };
 
@@ -3912,6 +4408,12 @@ async function readValidLastKnownGoodGeneration(
       details,
       identity: lkgIdentity,
       text: texts.review_queue_overrides
+    });
+    validateRewriteSessionTextForIdentity({
+      commit,
+      details,
+      identity: lkgIdentity,
+      text: texts.rewrite_sessions
     });
     return details.length === 0
       ? { commit, manifest: normalizedManifest, texts }
@@ -3990,6 +4492,31 @@ function validateReviewQueueOverridesTextForIdentity({
   }
 }
 
+function validateRewriteSessionTextForIdentity({
+  commit,
+  details,
+  identity,
+  text
+}: {
+  commit: PatchmarkSaveCommit;
+  details: string[];
+  identity: ProjectDocumentIdentity;
+  text: string;
+}): void {
+  if (!commit.files.rewrite_sessions) {
+    return;
+  }
+  try {
+    parseRewriteProjectSessionStore({ identity, text });
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/rewrite-sessions.json is invalid."
+    );
+  }
+}
+
 function getManifestDocumentIdentity(
   manifest: PatchmarkManifest
 ): ProjectDocumentIdentity {
@@ -4011,7 +4538,8 @@ async function validateCommittedProjectTexts(
   const descriptors = await createProjectFileDescriptors(
     texts,
     Boolean(commit.files.review_batches),
-    Boolean(commit.files.review_queue_overrides)
+    Boolean(commit.files.review_queue_overrides),
+    Boolean(commit.files.rewrite_sessions)
   );
 
   for (const key of getCommittedProjectFileKeys(commit)) {
@@ -4043,6 +4571,15 @@ function validatePersistedJson(
     } catch {
       details.push(`${getProjectFilePath(key)} contains malformed JSON.`);
     }
+  }
+
+  try {
+    const value = JSON.parse(texts.rewrite_sessions);
+    if (!isRecord(value)) {
+      details.push(`${getProjectFilePath("rewrite_sessions")} must contain a JSON object.`);
+    }
+  } catch {
+    details.push(`${getProjectFilePath("rewrite_sessions")} contains malformed JSON.`);
   }
 
   try {
@@ -4132,6 +4669,11 @@ function isPatchmarkSaveCommit(value: unknown): value is PatchmarkSaveCommit {
       isPersistedFileCommit(
         files.review_queue_overrides,
         getProjectFilePath("review_queue_overrides")
+      )) &&
+    (files.rewrite_sessions === undefined ||
+      isPersistedFileCommit(
+        files.rewrite_sessions,
+        getProjectFilePath("rewrite_sessions")
       ))
   );
 }
@@ -4255,6 +4797,7 @@ async function preserveQuestionableCurrentProjectFiles(
       patchesFileName,
       reviewBatchesFileName,
       reviewQueueOverridesFileName,
+      rewriteSessionsFileName,
       manifestFileName,
       saveCommitFileName
     ].map((fileName) => ({
@@ -4585,7 +5128,25 @@ function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry
     typeof value.file === "string" &&
     typeof value.created_at === "string" &&
     typeof value.reason === "string" &&
-    (value.content_hash === undefined || typeof value.content_hash === "string")
+    (value.content_hash === undefined || typeof value.content_hash === "string") &&
+    (value.mutation === undefined || isPatchmarkVersionMutationAudit(value.mutation))
+  );
+}
+
+function isPatchmarkVersionMutationAudit(
+  value: unknown
+): value is PatchmarkVersionMutationAudit {
+  return Boolean(
+    isRecord(value) &&
+      value.author_type === "human" &&
+      value.mutation_type === "human_rewrite" &&
+      typeof value.rewrite_session_id === "string" &&
+      (value.target_kind === "selection" || value.target_kind === "section") &&
+      (value.heading_snapshot === null || typeof value.heading_snapshot === "string") &&
+      typeof value.base_text_sha256 === "string" &&
+      typeof value.applied_text_sha256 === "string" &&
+      (value.semantic_review_status === "reviewed" ||
+        value.semantic_review_status === "not_reviewed")
   );
 }
 
@@ -5225,7 +5786,33 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
     reanchor_reason:
       patch.reanchor_reason === "table_row_normalized_match"
         ? patch.reanchor_reason
-        : undefined
+        : undefined,
+    human_rewrite_impact: normalizeHumanRewritePatchImpact(
+      patch.human_rewrite_impact
+    )
+  };
+}
+
+function normalizeHumanRewritePatchImpact(
+  value: unknown
+): PatchmarkPatch["human_rewrite_impact"] {
+  if (
+    !isRecord(value) ||
+    typeof value.rewrite_session_id !== "string" ||
+    typeof value.applied_at !== "string" ||
+    (value.target_kind !== "selection" && value.target_kind !== "section") ||
+    (value.heading_snapshot !== null &&
+      typeof value.heading_snapshot !== "string") ||
+    value.reason !== "overlapping_human_rewrite"
+  ) {
+    return undefined;
+  }
+  return {
+    rewrite_session_id: value.rewrite_session_id,
+    applied_at: value.applied_at,
+    target_kind: value.target_kind,
+    heading_snapshot: value.heading_snapshot,
+    reason: value.reason
   };
 }
 

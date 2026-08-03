@@ -113,11 +113,20 @@ async function run() {
     await waitForActiveDocument(client, "Action Plan");
     await waitForVisualEditor(client);
 
-    const initialFingerprint = fingerprintProject(fixtureDir);
+    let initialFingerprint = fingerprintProject(fixtureDir);
+    const initialDocumentContentFingerprint = fingerprintDocumentContent(fixtureDir);
+    const initialDocumentManifestReviewState = readDocumentManifestReviewState(
+      fixtureDir,
+      "doc_action"
+    );
     await evaluate(client, {
       expression: `(() => {
         window.__patchmarkSelectionActionsEditorNode =
           document.querySelector("[aria-label='editable markdown']");
+        window.__patchmarkRewritePersistenceEvents = [];
+        window.addEventListener("patchmark:rewrite-persistence", (event) => {
+          window.__patchmarkRewritePersistenceEvents.push(event.detail);
+        });
         return Boolean(window.__patchmarkSelectionActionsEditorNode);
       })()`
     });
@@ -157,6 +166,247 @@ async function run() {
       initialFingerprint,
       "Opening and cancelling the shared chooser must not write project files."
     );
+
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    const rewriteWorkspaceOpenStartedAt = Date.now();
+    await chooseSelectionAction(client, "rewrite_selected_text");
+    const rewriteWorkspace = await waitFor(
+      client,
+      "Rewrite Workspace",
+      `(() => {
+        const workspace = document.querySelector("[data-testid='rewrite-workspace']");
+        const current = workspace?.querySelector(".rewrite-current-pane pre")?.textContent;
+        const draft = workspace?.querySelector("#rewrite-human-draft")?.value;
+        return workspace ? {
+          current,
+          draft,
+          leftLabel: workspace.querySelector(".rewrite-current-pane")?.textContent,
+          rightLabel: workspace.querySelector(".rewrite-draft-pane")?.textContent
+        } : null;
+      })()`
+    );
+    const rewriteWorkspaceOpenLatencyMs = Date.now() - rewriteWorkspaceOpenStartedAt;
+    assert.ok(rewriteWorkspaceOpenLatencyMs < 1000);
+    assert.equal(rewriteWorkspace.current, paragraphTarget);
+    assert.equal(rewriteWorkspace.draft, paragraphTarget);
+    assert.match(rewriteWorkspace.leftLabel, /Current document text/);
+    assert.match(rewriteWorkspace.rightLabel, /My rewrite/);
+    const rewriteDraft = `${paragraphTarget} Human clarification.`;
+    const rewriteDraftSaveStartedAt = Date.now();
+    await evaluate(client, {
+      expression: `(() => {
+        const textarea = document.querySelector("#rewrite-human-draft");
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        ).set;
+        setter.call(textarea, ${JSON.stringify(rewriteDraft)});
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`
+    });
+    await waitFor(
+      client,
+      "project-saved rewrite draft",
+      `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
+    );
+    const rewriteDraftSaveLatencyMs = Date.now() - rewriteDraftSaveStartedAt;
+    assert.ok(rewriteDraftSaveLatencyMs < 2000);
+    const rewriteAuthoritativeSaveMetrics = await waitFor(
+      client,
+      "rewrite authoritative save metrics",
+      `window.__patchmarkRewritePersistenceEvents?.at(-1) ?? null`
+    );
+    assert.ok(rewriteAuthoritativeSaveMetrics.durationMs < 2000);
+    assert.equal(rewriteAuthoritativeSaveMetrics.revision >= 1, true);
+    const rewritePromptStartedAt = Date.now();
+    await clickRewriteWorkspaceButton(client, "Review meaning with ChatGPT");
+    const promptText = await waitFor(
+      client,
+      "manual rewrite review prompt",
+      `document.querySelector("[aria-label='Semantic review prompt']")?.value ?? null`
+    );
+    const rewritePromptLatencyMs = Date.now() - rewritePromptStartedAt;
+    assert.ok(rewritePromptLatencyMs < 1000);
+    assert.match(promptText, /patchmark\.human_rewrite_review_request/);
+    assert.match(promptText, /patchmark\.human_rewrite_review_import/);
+    assert.match(promptText, /rewrite_session_/);
+    assert.match(promptText, /rewrite_review_/);
+    const requestPayloadMatch = /Request payload:\s*```json\s*([\s\S]*?)\s*```/.exec(promptText);
+    assert.ok(requestPayloadMatch, "Rewrite review request payload missing.");
+    const requestPayload = JSON.parse(requestPayloadMatch[1]);
+    await clickRewriteDialogButton(client, "Done");
+    await clickRewriteWorkspaceButton(client, "Import semantic review");
+    const semanticReviewResponse = createRewriteSemanticReviewResponse(requestPayload);
+    await evaluate(client, {
+      expression: `(() => {
+        const textarea = document.querySelector("[aria-label='Semantic review response JSON']");
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        ).set;
+        setter.call(textarea, ${JSON.stringify(JSON.stringify(semanticReviewResponse))});
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`
+    });
+    await clickRewriteDialogButton(client, "Import review");
+    const importedReview = await waitFor(
+      client,
+      "current semantic rewrite review",
+      `(() => {
+        const review = document.querySelector(".rewrite-review-pane")?.textContent ?? "";
+        return review.includes("Current draft review") ? review : null;
+      })()`
+    );
+    for (const category of [
+      "Meaning preserved",
+      "Meaning changed",
+      "Important omissions",
+      "New claims",
+      "Contradictions",
+      "Certainty changes",
+      "Source and citation impact",
+      "Ambiguities",
+      "Suggested edits"
+    ]) {
+      assert.match(importedReview, new RegExp(category));
+    }
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector("#rewrite-human-draft")?.value`
+      }),
+      rewriteDraft,
+      "Importing semantic review must not mutate the human draft."
+    );
+    await waitFor(
+      client,
+      "project-saved semantic rewrite review",
+      `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
+    );
+    await client.call("Emulation.setDeviceMetricsOverride", {
+      deviceScaleFactor: 1,
+      height: 760,
+      mobile: false,
+      width: 430
+    });
+    const narrowWorkspace = await waitFor(
+      client,
+      "narrow rewrite workspace tabs",
+      `(() => {
+        const workspace = document.querySelector("[data-testid='rewrite-workspace']");
+        const tabs = workspace?.querySelectorAll(".rewrite-workspace-tabs [role='tab']");
+        if (!workspace || tabs?.length !== 3) return null;
+        return {
+          activeTab: workspace.querySelector(".rewrite-workspace-tabs [aria-selected='true']")?.textContent,
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          tabLabels: Array.from(tabs).map((tab) => tab.textContent.trim())
+        };
+      })()`
+    );
+    assert.deepEqual(narrowWorkspace.tabLabels, ["Current text", "My rewrite", "Review"]);
+    assert.equal(narrowWorkspace.activeTab, "Review");
+    assert.equal(narrowWorkspace.horizontalOverflow, false);
+    await client.call("Emulation.setDeviceMetricsOverride", {
+      deviceScaleFactor: 1,
+      height: 820,
+      mobile: false,
+      width: 1500
+    });
+    await clickRewriteWorkspaceButton(client, "Close");
+    await clickRewriteDialogButton(client, "Keep draft and close");
+    assert.deepEqual(
+      fingerprintDocumentContent(fixtureDir),
+      initialDocumentContentFingerprint,
+      "Saving and reviewing a rewrite draft must not change Markdown or document review content."
+    );
+    assert.deepEqual(
+      readDocumentManifestReviewState(fixtureDir, "doc_action"),
+      initialDocumentManifestReviewState,
+      "Saving a rewrite draft must not change bookmarks, deletion history, or Version History."
+    );
+    const savedRewriteStore = readRewriteSessionStore(fixtureDir, "doc_action");
+    const savedRewriteSession = savedRewriteStore.sessions.find(
+      (session) => session.status === "draft"
+    );
+    assert.ok(savedRewriteSession);
+    assert.equal(savedRewriteSession.human_draft, rewriteDraft);
+    assert.equal(savedRewriteSession.review_rounds.length, 1);
+    assert.equal(savedRewriteSession.review_rounds[0].status, "imported");
+    await clearRewriteIndexedDb(client);
+    await client.call("Page.reload", { ignoreCache: true });
+    await waitForEditorShell(client);
+    await clickButtonByText(client, "Open Project Folder");
+    await waitForActiveDocument(client, "Action Plan");
+    await waitFor(
+      client,
+      "project-backed rewrite resume banner after IndexedDB clearing",
+      `document.querySelector(".rewrite-resume-banner")?.textContent?.includes("Rewrite draft available")`
+    );
+    await clickButtonByText(client, "Resume rewrite");
+    await waitFor(
+      client,
+      "resumed exact rewrite draft",
+      `document.querySelector("#rewrite-human-draft")?.value === ${JSON.stringify(rewriteDraft)}`
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector("[data-testid='rewrite-workspace']")?.textContent?.includes("Current draft review")`
+      }),
+      true,
+      "The imported review must survive clearing IndexedDB."
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-workspace-warning")?.textContent?.includes("browser recovery copy") ?? false`
+      }),
+      false,
+      "A project-backed resume must not be labeled recovery-only."
+    );
+    const rewriteImpactStartedAt = Date.now();
+    await clickRewriteWorkspaceButton(client, "Apply rewrite");
+    const impactText = await waitFor(
+      client,
+      "rewrite impact preview",
+      `document.querySelector("[aria-label='Apply human rewrite?']")?.textContent ?? null`
+    );
+    const rewriteImpactLatencyMs = Date.now() - rewriteImpactStartedAt;
+    assert.ok(rewriteImpactLatencyMs < 1000);
+    assert.match(impactText, /Applying this rewrite affects/);
+    assert.match(impactText, /pending patch proposals/);
+    assert.match(impactText, /will not resolve comments or accept patches/);
+    await clickRewriteDialogButton(client, "Cancel");
+    await clickRewriteWorkspaceButton(client, "Close");
+    await clickRewriteDialogButton(client, "Discard draft");
+    await waitFor(
+      client,
+      "rewrite workspace discarded",
+      `!document.querySelector("[data-testid='rewrite-workspace']") && !document.querySelector(".rewrite-resume-banner")`
+    );
+    assert.deepEqual(
+      fingerprintDocumentContent(fixtureDir),
+      initialDocumentContentFingerprint,
+      "The complete passive rewrite workflow must leave Markdown and document review content unchanged."
+    );
+    assert.deepEqual(
+      readDocumentManifestReviewState(fixtureDir, "doc_action"),
+      initialDocumentManifestReviewState
+    );
+    const discardedRewriteStore = readRewriteSessionStore(fixtureDir, "doc_action");
+    assert.equal(
+      discardedRewriteStore.sessions.some((session) => session.status === "draft"),
+      false
+    );
+    assert.equal(
+      discardedRewriteStore.sessions.some((session) => session.status === "discarded"),
+      true
+    );
+    initialFingerprint = fingerprintProject(fixtureDir);
 
     await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
@@ -573,6 +823,160 @@ async function run() {
     assert.equal(existingAnchorAudit.linkCommentPresent, true);
     assert.equal(existingAnchorAudit.multiBlockCommentPresent, true);
 
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    await chooseSelectionAction(client, "bookmark");
+    await waitForReadingBookmark(
+      fixtureDir,
+      "doc_action",
+      paragraphTarget
+    );
+
+    const appliedRewriteText = `${paragraphTarget} Applied human rewrite fixture.`;
+    await selectVisualText(client, paragraphTarget, {
+      dispatchMouseUp: true,
+      scrollBlock: "center"
+    });
+    await waitForSelectionAction(client, paragraphTarget);
+    await openSelectionChooser(client);
+    await chooseSelectionAction(client, "rewrite_selected_text");
+    await waitFor(
+      client,
+      "rewrite workspace for apply",
+      `document.querySelector("#rewrite-human-draft")?.value === ${JSON.stringify(paragraphTarget)}`
+    );
+    await evaluate(client, {
+      expression: `(() => {
+        const textarea = document.querySelector("#rewrite-human-draft");
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        ).set;
+        setter.call(textarea, ${JSON.stringify(appliedRewriteText)});
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`
+    });
+    await waitFor(
+      client,
+      "rewrite draft saved before apply",
+      `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
+    );
+    await clickRewriteWorkspaceButton(client, "Apply rewrite");
+    const applyImpactText = await waitFor(
+      client,
+      "rewrite apply confirmation",
+      `document.querySelector("[aria-label='Apply human rewrite?']")?.textContent ?? null`
+    );
+    assert.match(applyImpactText, /1 comment in this range/);
+    assert.match(applyImpactText, /1 pending patch proposals/);
+    assert.match(applyImpactText, /1 reading bookmark/);
+    const rewriteApplyStartedAt = Date.now();
+    await clickRewriteDialogButton(client, "Apply rewrite");
+    await waitFor(
+      client,
+      "human rewrite applied",
+      `!document.querySelector("[data-testid='rewrite-workspace']") && document.querySelector(".document-save-banner-success")?.textContent?.includes("Human rewrite applied")`
+    );
+    const rewriteApplyLatencyMs = Date.now() - rewriteApplyStartedAt;
+    assert.ok(rewriteApplyLatencyMs < 5000);
+    await waitForFixtureFile(
+      join(fixtureDir, "action-plan.md"),
+      (contents) => contents.includes(appliedRewriteText),
+      "applied rewrite Markdown"
+    );
+    const appliedComments = readFixtureComments(fixtureDir, "doc_action");
+    const preservedComment = appliedComments.find(
+      (comment) => comment.id === "PM-COMMENT-0001"
+    );
+    assert.equal(preservedComment.status, "open");
+    assert.equal(preservedComment.comment, "Existing anchor fixture PM-COMMENT-0001.");
+    assert.equal(preservedComment.anchor.kind, "selected_text");
+    const persistedPatches = JSON.parse(
+      readFileSync(
+        join(
+          fixtureDir,
+          ".patchmark",
+          "documents",
+          "doc_action",
+          "patches.json"
+        ),
+        "utf8"
+      )
+    );
+    assert.equal(persistedPatches[0].status, "stale");
+    assert.equal(
+      persistedPatches[0].human_rewrite_impact.reason,
+      "overlapping_human_rewrite"
+    );
+    const appliedManifest = JSON.parse(
+      readFileSync(
+        join(
+          fixtureDir,
+          ".patchmark",
+          "documents",
+          "doc_action",
+          "manifest.json"
+        ),
+        "utf8"
+      )
+    );
+    assert.equal(appliedManifest.reading_bookmark.anchor.kind, "selected_text");
+    assert.equal(appliedManifest.versions.length, 1);
+    assert.equal(appliedManifest.versions[0].mutation.author_type, "human");
+    assert.equal(
+      appliedManifest.versions[0].mutation.mutation_type,
+      "human_rewrite"
+    );
+    assert.equal(
+      existsSync(
+        join(
+          fixtureDir,
+          ".patchmark",
+          "documents",
+          "doc_action",
+          appliedManifest.versions[0].file.replace(".patchmark/", "")
+        )
+      ),
+      true
+    );
+    const appliedRewriteStore = readRewriteSessionStore(fixtureDir, "doc_action");
+    assert.equal(
+      appliedRewriteStore.sessions.some((session) => session.status === "draft"),
+      false
+    );
+    assert.equal(
+      appliedRewriteStore.sessions.some((session) => session.status === "applied"),
+      true
+    );
+    await clearRewriteIndexedDb(client);
+    await client.call("Page.reload", { ignoreCache: true });
+    await waitForEditorShell(client);
+    await clickButtonByText(client, "Open Project Folder");
+    await waitForActiveDocument(client, "Action Plan");
+    await waitFor(
+      client,
+      "applied rewrite after restart",
+      `document.querySelector(".editor-body")?.textContent?.includes(${JSON.stringify("Applied human rewrite fixture.")})`
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `Boolean(document.querySelector(".rewrite-resume-banner"))`
+      }),
+      false,
+      "Applied rewrite sessions must not return as active drafts after restart."
+    );
+    assert.match(
+      await evaluate(client, {
+        expression: `document.querySelector("[aria-label='Version History']")?.textContent ?? ""`
+      }),
+      /Before human rewrite/
+    );
+
     console.log(
       JSON.stringify(
         {
@@ -584,7 +988,16 @@ async function run() {
           selectionLatencyMs: paragraphChooser.selectionLatencyMs,
           chooserOpenLatencyMs,
           composerOpenLatencyMs,
+          rewriteWorkspaceOpenLatencyMs,
+          rewriteDraftSaveLatencyMs,
+          rewritePromptLatencyMs,
+          rewriteImpactLatencyMs,
+          rewriteApplyLatencyMs,
+          rewriteAuthoritativeSaveMetrics,
+          rewriteSurvivesIndexedDbClearing: true,
           editorRemounted: false,
+          rewriteWorkspacePassiveWorkflow: true,
+          rewriteWorkspaceApplyPersistence: true,
           sectionCommentId: sectionComment.id,
           documentCommentId: documentComment.id,
           bookmarkKind: bookmark.anchor.kind,
@@ -605,6 +1018,85 @@ async function run() {
     rmSync(userDataDir, { force: true, recursive: true });
     rmSync(fixtureDir, { force: true, recursive: true });
   }
+}
+
+function createRewriteSemanticReviewResponse(requestPayload) {
+  return {
+    protocol: "patchmark.human_rewrite_review_import",
+    protocol_version: 1,
+    rewrite_session_id: requestPayload.rewrite_session_id,
+    rewrite_review_id: requestPayload.rewrite_review_id,
+    project_id: requestPayload.project_id,
+    document_id: requestPayload.document_id,
+    base_text_sha256: requestPayload.base_text_sha256,
+    human_draft_sha256: requestPayload.human_draft_sha256,
+    overall_assessment: "review_recommended",
+    summary: "The human clarification adds a small amount of meaning.",
+    meaning_preserved: [
+      {
+        point: "The original selection remains intact.",
+        current_text_evidence: requestPayload.current_text,
+        rewrite_evidence: requestPayload.current_text
+      }
+    ],
+    meaning_changed: [
+      {
+        topic: "Clarification",
+        current_meaning: "No explicit clarification.",
+        rewrite_meaning: "A human clarification is present.",
+        assessment: "deliberate",
+        severity: "low"
+      }
+    ],
+    omitted_points: [
+      {
+        point: "No important point appears omitted.",
+        importance: "low",
+        reason: "The current text remains verbatim."
+      }
+    ],
+    new_claims: [
+      {
+        claim: "Human clarification.",
+        relative_support: "not_present_in_current_text",
+        note: "This sentence is new relative to the supplied current text."
+      }
+    ],
+    contradictions: [
+      {
+        issue: "No direct contradiction detected.",
+        severity: "low"
+      }
+    ],
+    certainty_changes: [
+      {
+        topic: "Selection certainty",
+        from: "unchanged",
+        to: "unchanged",
+        impact: "No material certainty shift detected."
+      }
+    ],
+    source_impacts: [
+      {
+        claim_or_source: "Human clarification.",
+        impact: "source_support_changed",
+        note: "The new sentence has no source marker in the supplied text."
+      }
+    ],
+    ambiguities: [
+      {
+        issue: "The clarification is generic.",
+        suggestion: "The human may make it more specific."
+      }
+    ],
+    suggested_draft_edits: [
+      {
+        draft_excerpt: "Human clarification.",
+        suggested_text: "Specific human clarification.",
+        reason: "A specific description may read more clearly."
+      }
+    ]
+  };
 }
 
 function createFixture() {
@@ -629,6 +1121,7 @@ function createFixture() {
       now,
       path: "action-plan.md",
       position: 1000,
+      patches: createExistingPatches(now),
       root,
       withBookmark: true
     }),
@@ -640,6 +1133,7 @@ function createFixture() {
       now,
       path: "notes.md",
       position: 2000,
+      patches: [],
       root,
       withBookmark: false
     })
@@ -726,6 +1220,20 @@ function createExistingComments(markdown, now) {
   ];
 }
 
+function createExistingPatches(now) {
+  return [
+    {
+      id: "PM-PATCH-0001",
+      status: "pending",
+      target_heading: "Action Plan",
+      original_text: paragraphTarget,
+      suggested_text: `${paragraphTarget} ChatGPT-proposed expansion.`,
+      reason: "Expand the opening action-plan paragraph.",
+      created_at: now
+    }
+  ];
+}
+
 function createComment({ id, now, selectedText, start }) {
   return {
     id,
@@ -753,6 +1261,7 @@ function createDocumentStore({
   markdown,
   now,
   path,
+  patches,
   position,
   root,
   withBookmark
@@ -763,7 +1272,7 @@ function createDocumentStore({
     mkdirSync(join(store, directory), { recursive: true });
   }
   writeFileSync(join(store, "comments.json"), serializeJson(comments));
-  writeFileSync(join(store, "patches.json"), "[]\n");
+  writeFileSync(join(store, "patches.json"), serializeJson(patches));
   writeFileSync(join(store, "tasks.json"), "[]\n");
   writeFileSync(join(store, "review-batches.json"), "[]\n");
   writeFileSync(join(store, "review-queue-overrides.json"), "{}\n");
@@ -1120,13 +1629,45 @@ function assertCompleteChooser(chooser) {
     "selected_text",
     "section",
     "document",
+    "rewrite_selected_text",
+    "rewrite_section",
     "bookmark"
   ]);
   assert.deepEqual(chooser.unavailableIds, []);
   assert.match(chooser.text, /Selected text/);
   assert.match(chooser.text, /Current section/);
   assert.match(chooser.text, /Whole document/);
+  assert.match(chooser.text, /Rewrite selected text/);
+  assert.match(chooser.text, /Rewrite current section/);
   assert.match(chooser.text, /Set reading bookmark/);
+}
+
+async function clickRewriteWorkspaceButton(client, label) {
+  await evaluate(client, {
+    expression: `(() => {
+      const button = Array.from(
+        document.querySelectorAll("[data-testid='rewrite-workspace'] button")
+      ).find((candidate) => candidate.textContent.trim() === ${JSON.stringify(label)});
+      if (!button) throw new Error("Rewrite Workspace button missing: ${escapeJs(label)}");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function clickRewriteDialogButton(client, label) {
+  await evaluate(client, {
+    expression: `(() => {
+      const dialogs = Array.from(document.querySelectorAll(".rewrite-dialog"));
+      const button = dialogs.flatMap((dialog) => Array.from(dialog.querySelectorAll("button")))
+        .find((candidate) => candidate.textContent.trim() === ${JSON.stringify(label)});
+      if (!button) throw new Error("Rewrite dialog button missing: ${escapeJs(label)}");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
 }
 
 async function chooseSelectionAction(client, actionId) {
@@ -1487,6 +2028,18 @@ async function waitFor(
   );
 }
 
+async function waitForFixtureFile(path, predicate, label) {
+  let latest = "";
+  for (let attempt = 0; attempt < 180; attempt += 1) {
+    latest = existsSync(path) ? readFileSync(path, "utf8") : "";
+    if (predicate(latest)) {
+      return latest;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for ${label}.\n${latest.slice(0, 1000)}`);
+}
+
 function fingerprintProject(root) {
   return Object.fromEntries(
     listFiles(root).map((path) => {
@@ -1497,6 +2050,78 @@ function fingerprintProject(root) {
       ];
     })
   );
+}
+
+function fingerprintDocumentContent(root) {
+  return Object.fromEntries(
+    listFiles(root)
+      .filter((path) => {
+        const projectPath = relative(root, path);
+        return (
+          !projectPath.includes("/.patchmark-tmp-") &&
+          !projectPath.includes("/recovery/") &&
+          !projectPath.endsWith("save-commit.json") &&
+          !projectPath.endsWith("rewrite-sessions.json") &&
+          !projectPath.endsWith("manifest.json")
+        );
+      })
+      .map((path) => {
+        const projectPath = relative(root, path);
+        const content = readFileSync(path);
+        return [
+          projectPath,
+          createHash("sha256").update(content).digest("hex")
+        ];
+      })
+  );
+}
+
+function readDocumentManifestReviewState(root, documentId) {
+  const manifest = JSON.parse(
+    readFileSync(
+      join(root, ".patchmark", "documents", documentId, "manifest.json"),
+      "utf8"
+    )
+  );
+  const readingBookmark = manifest.reading_bookmark
+    ? structuredClone(manifest.reading_bookmark)
+    : null;
+  if (readingBookmark?.anchor) {
+    delete readingBookmark.anchor.action_context;
+  }
+  return {
+    comment_deletion_tombstones: manifest.comment_deletion_tombstones ?? [],
+    current_version: manifest.current_version ?? null,
+    reading_bookmark: readingBookmark,
+    reading_bookmarks: manifest.reading_bookmarks ?? null,
+    versions: manifest.versions ?? []
+  };
+}
+
+function readRewriteSessionStore(root, documentId) {
+  return JSON.parse(
+    readFileSync(
+      join(
+        root,
+        ".patchmark",
+        "documents",
+        documentId,
+        "rewrite-sessions.json"
+      ),
+      "utf8"
+    )
+  );
+}
+
+async function clearRewriteIndexedDb(client) {
+  await evaluate(client, {
+    expression: `new Promise((resolve, reject) => {
+      const request = indexedDB.deleteDatabase("patchmark-rewrite-state");
+      request.onsuccess = () => resolve(true);
+      request.onerror = () => reject(request.error);
+      request.onblocked = () => resolve(false);
+    })`
+  });
 }
 
 function listFiles(root) {

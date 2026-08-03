@@ -8,6 +8,18 @@ export type PatchmarkVersionEntry = {
   created_at: string;
   reason: string;
   content_hash?: string;
+  mutation?: PatchmarkVersionMutationAudit;
+};
+
+export type PatchmarkVersionMutationAudit = {
+  author_type: "human";
+  mutation_type: "human_rewrite";
+  rewrite_session_id: string;
+  target_kind: "selection" | "section";
+  heading_snapshot: string | null;
+  base_text_sha256: string;
+  applied_text_sha256: string;
+  semantic_review_status: "reviewed" | "not_reviewed";
 };
 
 export type PatchmarkCommentType =
@@ -327,6 +339,7 @@ export type PatchmarkSaveCommit = {
     manifest: PatchmarkPersistedFileCommit;
     review_batches?: PatchmarkPersistedFileCommit;
     review_queue_overrides?: PatchmarkPersistedFileCommit;
+    rewrite_sessions?: PatchmarkPersistedFileCommit;
   };
 };
 
@@ -428,6 +441,13 @@ export type PatchmarkPatch = {
   previous_original_text?: string;
   reanchored_at?: string;
   reanchor_reason?: "table_row_normalized_match";
+  human_rewrite_impact?: {
+    rewrite_session_id: string;
+    applied_at: string;
+    target_kind: "selection" | "section";
+    heading_snapshot: string | null;
+    reason: "overlapping_human_rewrite";
+  };
 };
 
 export type PatchmarkPatchGroup = {

@@ -24,9 +24,21 @@ import {
   openProjectFolderHandle,
   readProjectComments,
   readProjectPatches,
+  readProjectRewriteSessionRecords,
   readProjectVersionMarkdown,
+  saveProjectRewriteSessionRecord,
   saveProjectState
 } from "../lib/project/patchmark-project.ts";
+import {
+  buildRewriteReviewRequest,
+  createRewriteSession,
+  updateRewriteDraft
+} from "../lib/rewrite-workspace/rewrite-review-protocol.ts";
+import { createRewriteSessionPersistenceCoordinator } from "../lib/rewrite-workspace/rewrite-session-persistence.ts";
+import {
+  createMemoryRewriteSessionStorage,
+  setRewriteSessionStorageForTests
+} from "../lib/rewrite-workspace/rewrite-session-storage.ts";
 import { getDocumentReadingBookmark } from "../lib/reading-bookmarks/reading-bookmark.ts";
 import { parsePersistedProjectDocumentIdentity } from "../lib/project/document-scoped-identity.ts";
 import {
@@ -59,11 +71,14 @@ try {
       sourceChangeDetection: true,
       failureInjection: true,
       destinationPortability: true,
+      copiedRewriteLocalOwnershipRebound: true,
       destinationOnlyDeletion: true,
       documentSpecificExports: true,
       assembledBookmarkOwnershipRebound: true,
+      assembledRewriteOwnershipRebound: true,
       legacyConversionRegression: true,
       convertedBookmarkOwnershipRebound: true,
+      convertedRewriteOwnershipRebound: true,
       manifestLastCommit: true,
       provenanceWithoutAbsolutePaths: true,
       interruptedTransactionRecovery: true,
@@ -92,6 +107,10 @@ async function runSuccessfulAssemblyScenario() {
     newline: "\n"
   });
   await commitLegacyFixture(researchPath);
+  const researchRewriteSession = await addLegacyRewriteSession(
+    researchPath,
+    "READY_TO_EAT_UNIQUE_MARKER"
+  );
   fs.mkdirSync(destinationPath);
 
   const sourceTreesBefore = new Map([
@@ -110,7 +129,7 @@ async function runSuccessfulAssemblyScenario() {
   assert.equal(action.summary.replies, 1);
   assert.equal(action.summary.patches, 2);
   assert.equal(action.summary.versions, 2);
-  assert.equal(research.summary.saveGeneration, 1);
+  assert.equal(research.summary.saveGeneration, 2);
   assert.ok(action.summary.warnings.some((warning) => warning.includes("future_field")));
   assert.deepEqual(findLegacyProjectIdentityCollisions([action, research]), []);
 
@@ -239,7 +258,7 @@ async function runSuccessfulAssemblyScenario() {
     ["snapshot-ACTION-1", "snapshot-ACTION-2"]
   );
   assert.equal(loadedAction.project.persistence.generation, 0);
-  assert.equal(loadedResearch.project.persistence.generation, 1);
+  assert.equal(loadedResearch.project.persistence.generation, 2);
   const assembledBookmark = getDocumentReadingBookmark({
     document: getProjectDocumentIdentity(loadedAction.project),
     manifest: loadedAction.project.manifest
@@ -255,6 +274,28 @@ async function runSuccessfulAssemblyScenario() {
       manifest: loadedResearch.project.manifest
     }),
     null
+  );
+  const assembledRewriteRecords = await readProjectRewriteSessionRecords(
+    loadedResearch.project
+  );
+  assert.equal(assembledRewriteRecords.length, 1);
+  assert.equal(assembledRewriteRecords[0].status, "draft");
+  assert.equal(assembledRewriteRecords[0].project_id, plan.manifest.project_id);
+  assert.equal(
+    assembledRewriteRecords[0].document_id,
+    researchDocument.document_id
+  );
+  assert.equal(
+    assembledRewriteRecords[0].human_draft,
+    researchRewriteSession.human_draft
+  );
+  assert.equal(
+    assembledRewriteRecords[0].review_rounds[0].request_project_id,
+    researchRewriteSession.review_rounds[0].request_project_id
+  );
+  assert.equal(
+    assembledRewriteRecords[0].review_rounds[0].request_document_id,
+    researchRewriteSession.review_rounds[0].request_document_id
   );
   assert.deepEqual(getProjectDocumentExportIdentity(loadedAction.project), {
     project_name: "Crust Chant",
@@ -285,7 +326,7 @@ async function runSuccessfulAssemblyScenario() {
     loadedAction.project,
     researchDocument.document_id
   );
-  assert.equal(researchAfterActionEdit.project.persistence.generation, 1);
+  assert.equal(researchAfterActionEdit.project.persistence.generation, 2);
   assert.doesNotMatch(researchAfterActionEdit.markdown, /Destination-only edit/);
 
   const portablePath = path.join(temporaryRoot, "success-portable-copy");
@@ -296,6 +337,23 @@ async function runSuccessfulAssemblyScenario() {
     portable.project,
     researchDocument.document_id
   );
+  setRewriteSessionStorageForTests(createMemoryRewriteSessionStorage());
+  const copiedRewriteLoad = await createRewriteSessionPersistenceCoordinator({
+    localProjectInstanceId: "portable_project_copy",
+    project: portableResearch.project
+  }).load();
+  assert.equal(copiedRewriteLoad.notice, "project_copy_rebound");
+  assert.equal(
+    copiedRewriteLoad.session?.local_project_instance_id,
+    "portable_project_copy"
+  );
+  assert.equal(
+    (await readProjectRewriteSessionRecords(loadedResearch.project))[0]
+      .local_project_instance_id,
+    researchRewriteSession.local_project_instance_id,
+    "Rebinding the copied project must not write to the source project."
+  );
+  setRewriteSessionStorageForTests(null);
   assert.match(portableResearch.markdown, /READY_TO_EAT_UNIQUE_MARKER/);
 
   fs.rmSync(destinationPath, { force: true, recursive: true });
@@ -902,6 +960,10 @@ async function runLegacyConversionRegression() {
     title: "Conversion Regression"
   });
   addLegacyReadingBookmark(sourcePath, "CONVERSION_MARKER");
+  const sourceRewriteSession = await addLegacyRewriteSession(
+    sourcePath,
+    "CONVERSION_MARKER"
+  );
   const before = snapshotTree(sourcePath);
   const root = new NodeDirectoryHandle(sourcePath);
   const stages = [];
@@ -934,6 +996,26 @@ async function runLegacyConversionRegression() {
   assert.deepEqual(
     parsePersistedProjectDocumentIdentity(convertedBookmark.document),
     getProjectDocumentIdentity(reopened.project)
+  );
+  const convertedRewriteRecords = await readProjectRewriteSessionRecords(
+    reopened.project
+  );
+  assert.equal(convertedRewriteRecords.length, 1);
+  assert.equal(
+    convertedRewriteRecords[0].project_id,
+    getProjectDocumentIdentity(reopened.project).projectId
+  );
+  assert.equal(
+    convertedRewriteRecords[0].document_id,
+    getProjectDocumentIdentity(reopened.project).documentId
+  );
+  assert.equal(
+    convertedRewriteRecords[0].human_draft,
+    sourceRewriteSession.human_draft
+  );
+  assert.equal(
+    convertedRewriteRecords[0].review_rounds[0].request_project_id,
+    sourceRewriteSession.review_rounds[0].request_project_id
   );
 }
 
@@ -1218,6 +1300,46 @@ async function commitLegacyFixture(projectPath) {
     project: loaded.project,
     reason: "fixture_committed_generation"
   });
+}
+
+async function addLegacyRewriteSession(projectPath, selectedText) {
+  const loaded = await openProjectFolderHandle(new NodeDirectoryHandle(projectPath));
+  const identity = getProjectDocumentIdentity(loaded.project);
+  const start = loaded.markdown.indexOf(selectedText);
+  assert.ok(start >= 0);
+  const session = await createRewriteSession({
+    baseDocumentGeneration: loaded.project.persistence.generation,
+    baseText: selectedText,
+    documentId: identity.documentId,
+    documentTitle: loaded.project.manifest.project_name,
+    localProjectInstanceId: "legacy_assembly_source",
+    markdown: loaded.markdown,
+    projectId: identity.projectId,
+    projectTitle: loaded.project.manifest.project_name,
+    target: {
+      kind: "selection",
+      heading_snapshot: loaded.project.manifest.project_name,
+      heading_level: 1,
+      heading_path: [loaded.project.manifest.project_name],
+      base_start: start,
+      base_end: start + selectedText.length,
+      context_before: loaded.markdown.slice(Math.max(0, start - 64), start),
+      context_after: loaded.markdown.slice(start + selectedText.length, start + selectedText.length + 64)
+    }
+  });
+  const drafted = await updateRewriteDraft({
+    humanDraft: `${selectedText} with a portable human clarification`,
+    intentNote: "Carry this draft with the complete project.",
+    session
+  });
+  const request = await buildRewriteReviewRequest(drafted);
+  const saved = await saveProjectRewriteSessionRecord({
+    expectedRevision: 0,
+    project: loaded.project,
+    reason: "legacy_fixture_rewrite_session",
+    record: request.session
+  });
+  return saved.record;
 }
 
 function createDocumentRequest(source, destinationPath) {
