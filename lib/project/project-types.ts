@@ -396,6 +396,26 @@ export type PatchmarkPatchStatus =
   | "rejected"
   | "stale";
 
+export type PatchmarkPatchTargetProvenance = {
+  schema_version: 1;
+  document_id: string;
+  patch_key: string;
+  base_document_sha256: string;
+  base_start: number;
+  base_end: number;
+  current_start: number;
+  current_end: number;
+  original_text_fingerprint: string;
+  target_heading?: string;
+  heading_ancestry: string[];
+  base_occurrence_count: 1;
+  resolution_method:
+    | "exact_full_text"
+    | "heading_scoped_full_text"
+    | "normalized_full_text";
+  mapping_state: "mapped" | "requires_revalidation";
+};
+
 export type PatchmarkPatch = {
   id: string;
   status: PatchmarkPatchStatus;
@@ -410,6 +430,7 @@ export type PatchmarkPatch = {
   depends_on_patch_keys_snapshot?: string[];
   display_title?: string;
   target_heading?: string;
+  target_provenance?: PatchmarkPatchTargetProvenance;
   original_text: string;
   suggested_text: string;
   suggested_text_sources?: PatchmarkSourceReference[];

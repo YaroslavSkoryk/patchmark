@@ -100,6 +100,12 @@ export type RewriteSemanticReviewResponse = {
   suggested_draft_edits: RewriteSuggestedDraftEdit[];
 };
 
+export type RewriteReviewSupersessionReason =
+  | "prompt_regenerated"
+  | "outdated_prompt_format"
+  | "draft_changed"
+  | "intent_changed";
+
 export type RewriteReviewRound = {
   rewrite_review_id: string;
   request_project_id: string;
@@ -109,10 +115,19 @@ export type RewriteReviewRound = {
   intent_note_sha256: string;
   prompt_sha256: string;
   prompt_text: string;
+  prompt_byte_length?: number;
   exported_at: string;
-  status: "awaiting_response" | "cancelled" | "imported";
+  prompt_schema_version?: number;
+  response_schema_fingerprint?: string;
+  prompt_created_at?: string;
+  prompt_generator_version?: string;
+  status: "awaiting_response" | "cancelled" | "imported" | "superseded";
   cancelled_at?: string;
   imported_at?: string;
+  superseded_at?: string;
+  superseded_reason?: RewriteReviewSupersessionReason;
+  superseded_by_review_request_id?: string;
+  supersedes_review_request_id?: string;
   response?: RewriteSemanticReviewResponse;
 };
 

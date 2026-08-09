@@ -6,6 +6,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type RefObject,
   type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
@@ -18,10 +19,19 @@ import { RewriteModeControl } from "@/components/rewrite-workspace/rewrite-mode-
 import {
   buildRewriteReviewRequest,
   cancelAwaitingRewriteReview,
+  createRewriteReviewPersistenceError,
+  createRewriteReviewRepairPrompt,
+  getAwaitingRewriteReview,
   getCurrentRewriteReview,
+  getRewriteReviewPromptFormat,
   importRewriteReview,
+  regenerateRewriteReviewRequest,
   updateRewriteDraft
 } from "@/lib/rewrite-workspace/rewrite-review-protocol";
+import {
+  RewriteReviewValidationError,
+  type RewriteReviewValidationIssue
+} from "@/lib/rewrite-workspace/rewrite-review-schema";
 import type { RewriteImpactAnalysis } from "@/lib/rewrite-workspace/rewrite-impact-analysis";
 import {
   RewriteSessionPersistenceError,
@@ -30,9 +40,11 @@ import {
 } from "@/lib/rewrite-workspace/rewrite-session-persistence";
 import type {
   RewriteReviewRound,
+  RewriteReviewSupersessionReason,
   RewriteSession,
   RewriteSuggestedDraftEdit
 } from "@/lib/rewrite-workspace/rewrite-session-types";
+import { createContentSha256 } from "@/lib/storage/document-recovery-storage";
 
 export type RewriteWorkspaceImpactResult =
   | { status: "ready"; analysis: RewriteImpactAnalysis }
@@ -52,7 +64,8 @@ type RewriteWorkspaceProps = {
   onRefreshReference: (session: RewriteSession) => Promise<RewriteSession>;
   onPersistSession: (
     session: RewriteSession,
-    reason: string
+    reason: string,
+    recoveryFallbackSession?: RewriteSession
   ) => Promise<RewriteProjectSaveResult>;
   onSessionChange: (session: RewriteSession) => void;
   session: RewriteSession;
@@ -68,6 +81,18 @@ type SaveState =
   | "failed";
 type RewritePaneTab = "current" | "draft";
 type WorkspaceScreen = "rewrite" | "review";
+type RewriteReviewImportFailure = {
+  error: RewriteReviewValidationError;
+  repairPrompt: string | null;
+};
+type RewriteReviewRegenerationConfirmation = {
+  expectedReviewRequestId: string;
+  reason: RewriteReviewSupersessionReason;
+};
+type RewriteHistoricalImportConfirmation = {
+  responseText: string;
+  reviewRequestId: string;
+};
 
 export function RewriteWorkspace({
   isApplying,
@@ -84,6 +109,8 @@ export function RewriteWorkspace({
   const workspaceRef = useRef<HTMLElement | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const draftPaneRef = useRef<HTMLElement | null>(null);
+  const importErrorSummaryRef = useRef<HTMLDivElement | null>(null);
+  const reviewGenerationRef = useRef(false);
   const saveRequestRef = useRef(0);
   const persistOnUnmountRef = useRef(true);
   const latestDraftRef = useRef(session.human_draft);
@@ -107,17 +134,22 @@ export function RewriteWorkspace({
   const [activePaneTab, setActivePaneTab] = useState<RewritePaneTab>("draft");
   const [activeScreen, setActiveScreen] = useState<WorkspaceScreen>("rewrite");
   const [isCloseDialogOpen, setIsCloseDialogOpen] = useState(false);
-  const [promptRound, setPromptRound] = useState<RewriteReviewRound | null>(
-    () =>
-      [...session.review_rounds]
-        .reverse()
-        .find((round) => round.status === "awaiting_response") ?? null
-  );
+  const [promptRound, setPromptRound] = useState<RewriteReviewRound | null>(null);
+  const [isGeneratingReview, setIsGeneratingReview] = useState(false);
+  const [regenerationConfirmation, setRegenerationConfirmation] =
+    useState<RewriteReviewRegenerationConfirmation | null>(null);
   const [isImportOpen, setIsImportOpen] = useState(false);
   const [importText, setImportText] = useState("");
+  const [historicalImportConfirmation, setHistoricalImportConfirmation] =
+    useState<RewriteHistoricalImportConfirmation | null>(null);
+  const [importFailure, setImportFailure] =
+    useState<RewriteReviewImportFailure | null>(null);
+  const [importAnnouncement, setImportAnnouncement] = useState("");
+  const [repairCopyStatus, setRepairCopyStatus] = useState("");
   const [impact, setImpact] = useState<RewriteImpactAnalysis | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [intentNoteSha256, setIntentNoteSha256] = useState<string | null>(null);
   const currentReview = useMemo(
     () => getCurrentRewriteReview(workingSession),
     [workingSession]
@@ -125,6 +157,57 @@ export function RewriteWorkspace({
   const importedRounds = useMemo(
     () => workingSession.review_rounds.filter((round) => round.response),
     [workingSession.review_rounds]
+  );
+  const awaitingReview = useMemo(
+    () => getAwaitingRewriteReview(workingSession),
+    [workingSession]
+  );
+  const awaitingPromptFormat = awaitingReview
+    ? getRewriteReviewPromptFormat(awaitingReview)
+    : null;
+  const supersededReviews = useMemo(
+    () =>
+      [...workingSession.review_rounds]
+        .filter((round) => round.status === "superseded")
+        .reverse(),
+    [workingSession.review_rounds]
+  );
+  const latestSupersededReview = supersededReviews[0] ?? null;
+  const draftChangedSinceExport = Boolean(
+    awaitingReview &&
+      (humanDraft !== workingSession.human_draft ||
+        workingSession.human_draft_sha256 !== awaitingReview.human_draft_sha256)
+  );
+  const intentChangedSinceExport = Boolean(
+    awaitingReview &&
+      (intentNote !== workingSession.intent_note ||
+        (intentNoteSha256 !== null &&
+          intentNoteSha256 !== awaitingReview.intent_note_sha256))
+  );
+  const reviewRequestStatus = getReviewRequestStatus({
+    awaitingReview,
+    currentReview,
+    draftChangedSinceExport,
+    importedRounds,
+    intentChangedSinceExport,
+    latestSupersededReview
+  });
+  const activeRegenerationReason = awaitingReview
+    ? getReviewRegenerationReason({
+        draftChangedSinceExport,
+        intentChangedSinceExport,
+        promptFormat: awaitingPromptFormat
+      })
+    : null;
+  const failedReviewRound = importFailure?.error.reviewRequestId
+    ? workingSession.review_rounds.find(
+        (round) => round.rewrite_review_id === importFailure.error.reviewRequestId
+      ) ?? null
+    : null;
+  const canRegenerateFailedReviewRequest = Boolean(
+    awaitingReview &&
+      failedReviewRound?.status === "awaiting_response" &&
+      failedReviewRound.rewrite_review_id === awaitingReview.rewrite_review_id
   );
   latestDraftRef.current = humanDraft;
   latestIntentRef.current = intentNote;
@@ -167,6 +250,26 @@ export function RewriteWorkspace({
   }, [humanDraft, intentNote, onSessionChange, workingSession]);
 
   useEffect(() => {
+    if (!importFailure) {
+      return;
+    }
+    importErrorSummaryRef.current?.focus();
+  }, [importFailure]);
+
+  useEffect(() => {
+    let isCurrent = true;
+    setIntentNoteSha256(null);
+    void createContentSha256(intentNote).then((hash) => {
+      if (isCurrent) {
+        setIntentNoteSha256(hash);
+      }
+    });
+    return () => {
+      isCurrent = false;
+    };
+  }, [intentNote]);
+
+  useEffect(() => {
     if (
       humanDraft === workingSession.human_draft &&
       intentNote === workingSession.intent_note
@@ -175,6 +278,9 @@ export function RewriteWorkspace({
     }
     setSaveState("idle");
     const timeoutId = window.setTimeout(() => {
+      if (reviewGenerationRef.current) {
+        return;
+      }
       void commitLocalDraft().catch(() => undefined);
     }, 650);
     return () => window.clearTimeout(timeoutId);
@@ -280,37 +386,112 @@ export function RewriteWorkspace({
     };
   }, []);
 
-  async function handleExportReview() {
+  function handleViewPrompt(round: RewriteReviewRound) {
+    setPromptRound(round);
+    setActiveScreen("review");
+  }
+
+  function requestReviewRegeneration(reason: RewriteReviewSupersessionReason) {
+    const activeRequest = getAwaitingRewriteReview(workingSession);
+    if (!activeRequest) {
+      setError("There is no awaiting semantic-review request to regenerate.");
+      return;
+    }
+    setRegenerationConfirmation({
+      expectedReviewRequestId: activeRequest.rewrite_review_id,
+      reason
+    });
+  }
+
+  async function handleGenerateReviewPrompt() {
+    if (reviewGenerationRef.current) {
+      return;
+    }
+    reviewGenerationRef.current = true;
+    setIsGeneratingReview(true);
     setError(null);
     try {
-      const savedSession = await commitLocalDraft();
-      const awaitingRound = savedSession.review_rounds.find(
-        (round) => round.status === "awaiting_response"
-      );
-      if (awaitingRound) {
-        setPromptRound(awaitingRound);
-        setActiveScreen("review");
-        return;
+      const draftSession = await updateRewriteDraft({
+        humanDraft,
+        intentNote,
+        session: workingSession
+      });
+      if (getAwaitingRewriteReview(draftSession)) {
+        throw new Error(
+          "A semantic-review request is already awaiting a response. View it or deliberately regenerate it."
+        );
       }
-      const request = await buildRewriteReviewRequest(savedSession);
+      const request = await buildRewriteReviewRequest(draftSession);
       const persisted = await onPersistSessionRef.current(
         request.session,
-        "export_human_rewrite_review_prompt"
+        "export_human_rewrite_review_prompt",
+        draftSession
       );
-      setWorkingSession(persisted.session);
-      onSessionChange(persisted.session);
-      setSaveState(
-        persisted.recoveryAvailable ? "saved" : "saved_recovery_unavailable"
-      );
-      setPromptRound(
-        persisted.session.review_rounds.find(
-          (round) => round.rewrite_review_id === request.rewrite_review_id
-        ) ?? null
-      );
-      setActiveScreen("review");
+      publishPersistedReviewRequest(persisted, request.rewrite_review_id);
     } catch (reviewError) {
       setError(getErrorMessage(reviewError));
+    } finally {
+      reviewGenerationRef.current = false;
+      setIsGeneratingReview(false);
     }
+  }
+
+  async function handleRegenerateReviewPrompt() {
+    if (!regenerationConfirmation || reviewGenerationRef.current) {
+      return;
+    }
+    reviewGenerationRef.current = true;
+    setIsGeneratingReview(true);
+    setError(null);
+    try {
+      const draftSession = await updateRewriteDraft({
+        humanDraft,
+        intentNote,
+        session: workingSession
+      });
+      const request = await regenerateRewriteReviewRequest({
+        expectedReviewRequestId:
+          regenerationConfirmation.expectedReviewRequestId,
+        reason: regenerationConfirmation.reason,
+        session: draftSession
+      });
+      const persisted = await onPersistSessionRef.current(
+        request.session,
+        `regenerate_human_rewrite_review_prompt:${regenerationConfirmation.reason}`,
+        draftSession
+      );
+      publishPersistedReviewRequest(persisted, request.rewrite_review_id);
+      setRegenerationConfirmation(null);
+    } catch (reviewError) {
+      setError(
+        reviewError instanceof RewriteSessionPersistenceError
+          ? "The updated review prompt could not be saved to the project. The previous request remains active."
+          : getErrorMessage(reviewError)
+      );
+    } finally {
+      reviewGenerationRef.current = false;
+      setIsGeneratingReview(false);
+    }
+  }
+
+  function publishPersistedReviewRequest(
+    persisted: RewriteProjectSaveResult,
+    rewriteReviewId: string
+  ) {
+    setWorkingSession(persisted.session);
+    onSessionChange(persisted.session);
+    setSaveState(
+      persisted.recoveryAvailable ? "saved" : "saved_recovery_unavailable"
+    );
+    setPromptRound(
+      persisted.session.review_rounds.find(
+        (round) => round.rewrite_review_id === rewriteReviewId
+      ) ?? null
+    );
+    setActiveScreen("review");
+    setIsImportOpen(false);
+    setImportFailure(null);
+    setHistoricalImportConfirmation(null);
   }
 
   async function handleCancelAwaitingReview() {
@@ -327,12 +508,47 @@ export function RewriteWorkspace({
     setPromptRound(null);
   }
 
-  async function handleImportReview() {
+  async function handleImportReview(confirmHistorical = false) {
     setError(null);
+    setImportFailure(null);
+    setRepairCopyStatus("");
+    setImportAnnouncement("");
+    const responseText = confirmHistorical && historicalImportConfirmation
+      ? historicalImportConfirmation.responseText
+      : importText;
+    let preflight: ReturnType<typeof importRewriteReview>;
     try {
-      const savedSession = await commitLocalDraft();
+      preflight = importRewriteReview({
+        responseText,
+        session: workingSession
+      });
+    } catch (importError) {
+      await showImportFailure(importError, workingSession);
+      return;
+    }
+    if (preflight.historical && !confirmHistorical) {
+      setHistoricalImportConfirmation({
+        responseText,
+        reviewRequestId: preflight.response.rewrite_review_id
+      });
+      return;
+    }
+
+    let savedSession: RewriteSession;
+    try {
+      savedSession = await commitLocalDraft();
+    } catch (saveError) {
+      setError(null);
+      await showImportFailure(
+        createRewriteReviewPersistenceError(saveError),
+        workingSession
+      );
+      return;
+    }
+
+    try {
       const imported = importRewriteReview({
-        responseText: importText,
+        responseText,
         session: savedSession
       });
       const persisted = await onPersistSessionRef.current(
@@ -346,10 +562,57 @@ export function RewriteWorkspace({
       );
       setPromptRound(null);
       setImportText("");
+      setImportFailure(null);
+      setHistoricalImportConfirmation(null);
       setIsImportOpen(false);
       setActiveScreen("review");
+      const storedRound = persisted.session.review_rounds.find(
+        (round) => round.rewrite_review_id === imported.response.rewrite_review_id
+      );
+      setImportAnnouncement(
+        imported.current
+          ? "Semantic review imported for the current Human Draft."
+          : storedRound?.status === "superseded"
+            ? "Semantic review imported historically for its superseded request. The active request remains unchanged."
+          : "Semantic review imported as a review of an earlier Human Draft."
+      );
     } catch (importError) {
-      setError(getErrorMessage(importError));
+      const displayedError =
+        importError instanceof RewriteReviewValidationError
+          ? importError
+          : createRewriteReviewPersistenceError(importError);
+      await showImportFailure(displayedError, savedSession);
+    }
+  }
+
+  async function showImportFailure(
+    importError: unknown,
+    sessionForRepair: RewriteSession
+  ) {
+    const displayedError =
+      importError instanceof RewriteReviewValidationError
+        ? importError
+        : createRewriteReviewPersistenceError(importError);
+    const repairPrompt = await createRewriteReviewRepairPrompt({
+      error: displayedError,
+      responseText: historicalImportConfirmation?.responseText ?? importText,
+      session: sessionForRepair
+    });
+    setImportFailure({ error: displayedError, repairPrompt });
+    setHistoricalImportConfirmation(null);
+  }
+
+  async function handleCopyRepairPrompt() {
+    if (!importFailure?.repairPrompt) {
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(importFailure.repairPrompt);
+      setRepairCopyStatus("Complete repair prompt copied.");
+    } catch {
+      setRepairCopyStatus(
+        "Clipboard access failed. Open the complete repair prompt and copy it manually."
+      );
     }
   }
 
@@ -560,7 +823,7 @@ export function RewriteWorkspace({
             />
           ) : (
             <span className="rewrite-review-screen-status">
-              {getCompactReviewStatus(currentReview, importedRounds.length)}
+              {reviewRequestStatus}
             </span>
           )}
         </div>
@@ -699,7 +962,7 @@ export function RewriteWorkspace({
                   <h3>ChatGPT Review</h3>
                 </div>
                 <div>
-                  <span>{getCompactReviewStatus(currentReview, importedRounds.length)}</span>
+                  <span>{reviewRequestStatus}</span>
                   <span>{getSaveLabel(saveState)}</span>
                 </div>
               </header>
@@ -716,18 +979,135 @@ export function RewriteWorkspace({
                 />
               </section>
 
-              <div className="rewrite-review-screen-actions">
-                <button
-                  disabled={isApplying || isAnalyzing}
-                  type="button"
-                  onClick={() => void handleExportReview()}
-                >
-                  Review meaning with ChatGPT
-                </button>
-                <button type="button" onClick={() => setIsImportOpen(true)}>
-                  Import semantic review
-                </button>
-              </div>
+              <section
+                className={`rewrite-review-request-status rewrite-review-request-${reviewRequestStatus.toLowerCase().replaceAll(" ", "-")}`}
+                data-review-request-status={reviewRequestStatus}
+              >
+                <div>
+                  <strong>{reviewRequestStatus}</strong>
+                  {reviewRequestStatus === "Prompt format outdated" ? (
+                    <p>
+                      This review request was created with an older response format.
+                      Generate an updated prompt to use the latest structured-review schema.
+                    </p>
+                  ) : reviewRequestStatus === "Draft changed since export" ? (
+                    <p>
+                      The active request still refers to an earlier Human Draft. Its exact
+                      prompt remains unchanged while you decide whether to await that response.
+                    </p>
+                  ) : reviewRequestStatus === "Intent changed since export" ? (
+                    <p>
+                      The active request contains the earlier intent note. Regenerate only
+                      when you want the current intent included in a new request.
+                    </p>
+                  ) : reviewRequestStatus === "Awaiting response" ? (
+                    <p>This exact exported request is waiting for a matching ChatGPT response.</p>
+                  ) : currentReview ? (
+                    <p>The current Human Draft has an imported semantic review.</p>
+                  ) : importedRounds.length > 0 ? (
+                    <p>Imported review history exists, but it does not validate the current Human Draft.</p>
+                  ) : (
+                    <p>No semantic-review prompt has been exported for this Human Draft.</p>
+                  )}
+                </div>
+              </section>
+
+              <section
+                aria-label="Current semantic review request"
+                className="rewrite-review-request-card"
+              >
+                <header>
+                  <div>
+                    <span>Current request</span>
+                    <h4>{awaitingReview ? awaitingReview.rewrite_review_id : "No active request"}</h4>
+                  </div>
+                  {awaitingReview ? (
+                    <span>{formatPromptCreatedAt(awaitingReview)}</span>
+                  ) : null}
+                </header>
+                <div className="rewrite-review-screen-actions">
+                  {awaitingReview && activeRegenerationReason ? (
+                    awaitingPromptFormat === "outdated" ? (
+                      <>
+                        <button
+                          className="rewrite-review-primary-action"
+                          disabled={isApplying || isAnalyzing || isGeneratingReview}
+                          type="button"
+                          onClick={() => requestReviewRegeneration(activeRegenerationReason)}
+                        >
+                          {isGeneratingReview
+                            ? "Saving review prompt…"
+                            : getRegenerationActionLabel(activeRegenerationReason)}
+                        </button>
+                        <button type="button" onClick={() => handleViewPrompt(awaitingReview)}>
+                          View old exported prompt
+                        </button>
+                        <button type="button" onClick={() => setIsImportOpen(true)}>
+                          Import old response
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" onClick={() => handleViewPrompt(awaitingReview)}>
+                          View current prompt
+                        </button>
+                        <button
+                          disabled={isApplying || isAnalyzing || isGeneratingReview}
+                          type="button"
+                          onClick={() => requestReviewRegeneration(activeRegenerationReason)}
+                        >
+                          {isGeneratingReview
+                            ? "Saving review prompt…"
+                            : getRegenerationActionLabel(activeRegenerationReason)}
+                        </button>
+                        <button type="button" onClick={() => setIsImportOpen(true)}>
+                          Import semantic review
+                        </button>
+                      </>
+                    )
+                  ) : (
+                    <>
+                      <button
+                        className="rewrite-review-primary-action"
+                        disabled={isApplying || isAnalyzing || isGeneratingReview}
+                        type="button"
+                        onClick={() => void handleGenerateReviewPrompt()}
+                      >
+                        {isGeneratingReview ? "Saving review prompt…" : "Generate review prompt"}
+                      </button>
+                      <button type="button" onClick={() => setIsImportOpen(true)}>
+                        Import semantic review
+                      </button>
+                    </>
+                  )}
+                </div>
+              </section>
+
+              {supersededReviews.length > 0 ? (
+                <details className="rewrite-review-request-history" open>
+                  <summary>Previous requests · {supersededReviews.length}</summary>
+                  <ol>
+                    {supersededReviews.map((round) => (
+                      <li key={round.rewrite_review_id}>
+                        <div>
+                          <strong>Superseded</strong>
+                          <span>{formatPromptCreatedAt(round)}</span>
+                          <code>{abbreviateValue(round.rewrite_review_id, 20)}</code>
+                        </div>
+                        <button type="button" onClick={() => handleViewPrompt(round)}>
+                          View superseded prompt
+                        </button>
+                      </li>
+                    ))}
+                  </ol>
+                </details>
+              ) : null}
+
+              {importAnnouncement ? (
+                <div className="rewrite-review-import-status" role="status" aria-live="polite">
+                  {importAnnouncement}
+                </div>
+              ) : null}
 
               <section aria-label="Rewrite review" className="rewrite-review-pane">
                 <header>
@@ -775,41 +1155,181 @@ export function RewriteWorkspace({
         ) : null}
 
         {promptRound ? (
-          <WorkspaceDialog title="Manual ChatGPT review prompt" onClose={() => setPromptRound(null)}>
+          <WorkspaceDialog
+            title={promptRound.status === "superseded" ? "Superseded review prompt" : "Current review prompt"}
+            onClose={() => setPromptRound(null)}
+          >
+            {promptRound.status === "superseded" ? (
+              <div className="rewrite-review-old-prompt-warning" role="status">
+                <strong>Superseded review request</strong>
+                <p>
+                  This exact historical prompt remains unchanged and is not the active request.
+                </p>
+              </div>
+            ) : getRewriteReviewPromptFormat(promptRound) === "outdated" ? (
+              <div className="rewrite-review-old-prompt-warning" role="status">
+                <strong>Prompt format may be outdated</strong>
+                <p>This exact active prompt is preserved, but its response format is not current.</p>
+              </div>
+            ) : null}
             <p>
               Copy this exact prompt to ChatGPT. Patchmark does not send it automatically.
             </p>
+            <dl className="rewrite-review-prompt-metadata">
+              <div><dt>Review request</dt><dd>{promptRound.rewrite_review_id}</dd></div>
+              <div><dt>Request state</dt><dd>{promptRound.status === "superseded" ? "Superseded" : "Current"}</dd></div>
+              <div><dt>Created</dt><dd>{formatPromptCreatedAt(promptRound)}</dd></div>
+              <div><dt>Prompt format</dt><dd>{promptRound.prompt_schema_version ?? "Legacy / unverified"}</dd></div>
+              <div><dt>Response schema</dt><dd>{abbreviateValue(promptRound.response_schema_fingerprint ?? "Unverified")}</dd></div>
+              <div><dt>Draft hash</dt><dd>{abbreviateValue(promptRound.human_draft_sha256)}</dd></div>
+              <div><dt>Prompt SHA-256</dt><dd>{abbreviateValue(promptRound.prompt_sha256)}</dd></div>
+              {promptRound.prompt_byte_length !== undefined ? (
+                <div><dt>Exact bytes</dt><dd>{promptRound.prompt_byte_length.toLocaleString()}</dd></div>
+              ) : null}
+              {promptRound.superseded_reason ? (
+                <div><dt>Superseded because</dt><dd>{formatSupersessionReason(promptRound.superseded_reason)}</dd></div>
+              ) : null}
+            </dl>
             <textarea aria-label="Semantic review prompt" readOnly value={promptRound.prompt_text} />
             <div className="rewrite-dialog-actions">
               <button
                 type="button"
                 onClick={() => void navigator.clipboard.writeText(promptRound.prompt_text)}
               >
-                Copy prompt
+                Copy complete prompt
               </button>
-              <button type="button" onClick={() => void handleCancelAwaitingReview()}>
-                Cancel request
-              </button>
+              {promptRound.status === "awaiting_response" &&
+              getRewriteReviewPromptFormat(promptRound) === "current" ? (
+                <button type="button" onClick={() => void handleCancelAwaitingReview()}>
+                  Cancel request
+                </button>
+              ) : null}
               <button type="button" onClick={() => setPromptRound(null)}>Done</button>
             </div>
           </WorkspaceDialog>
         ) : null}
 
-        {isImportOpen ? (
-          <WorkspaceDialog title="Import ChatGPT semantic review" onClose={() => setIsImportOpen(false)}>
-            <p>Paste the structured review JSON for an exported rewrite review request.</p>
-            <textarea
-              aria-label="Semantic review response JSON"
-              placeholder="Paste one fenced JSON response or a JSON object."
-              value={importText}
-              onChange={(event) => setImportText(event.target.value)}
-            />
+        {regenerationConfirmation ? (
+          <WorkspaceDialog
+            title={regenerationConfirmation.reason === "outdated_prompt_format"
+              ? "Update review prompt?"
+              : "Generate a new review prompt?"}
+            onClose={() => {
+              if (!isGeneratingReview) {
+                setRegenerationConfirmation(null);
+              }
+            }}
+          >
+            {regenerationConfirmation.reason === "outdated_prompt_format" ? (
+              <p>
+                This request uses an older response format. Generate a new request using
+                the latest structured-review schema.
+              </p>
+            ) : (
+              <>
+                <p>The current exported request is still awaiting a ChatGPT response.</p>
+                <p>A new review request will be created using:</p>
+                <ul className="rewrite-review-regeneration-list">
+                  <li>the current Human Draft</li>
+                  <li>the current intent note</li>
+                  <li>the latest response format</li>
+                </ul>
+                <p>
+                  The old exact prompt will remain available in review history. A response
+                  for the old request will not be attached to the new request.
+                </p>
+              </>
+            )}
             <div className="rewrite-dialog-actions">
-              <button type="button" onClick={() => setIsImportOpen(false)}>Cancel</button>
-              <button disabled={!importText.trim()} type="button" onClick={() => void handleImportReview()}>
-                Import review
+              <button
+                disabled={isGeneratingReview}
+                type="button"
+                onClick={() => setRegenerationConfirmation(null)}
+              >
+                Cancel
+              </button>
+              <button
+                disabled={isGeneratingReview}
+                type="button"
+                onClick={() => void handleRegenerateReviewPrompt()}
+              >
+                {isGeneratingReview
+                  ? "Saving review prompt…"
+                  : regenerationConfirmation.reason === "outdated_prompt_format"
+                    ? "Generate updated prompt"
+                    : "Generate new prompt"}
               </button>
             </div>
+          </WorkspaceDialog>
+        ) : null}
+
+        {isImportOpen ? (
+          <WorkspaceDialog
+            title="Import ChatGPT semantic review"
+            onClose={() => {
+              setIsImportOpen(false);
+              setHistoricalImportConfirmation(null);
+            }}
+          >
+            {historicalImportConfirmation ? (
+              <div className="rewrite-review-historical-import-confirmation">
+                <strong>This response belongs to a superseded review request.</strong>
+                <p>
+                  It can be imported as a historical review of the earlier request. It will
+                  not be attached to the current active request.
+                </p>
+                <code>{historicalImportConfirmation.reviewRequestId}</code>
+                <div className="rewrite-dialog-actions">
+                  <button
+                    type="button"
+                    onClick={() => setHistoricalImportConfirmation(null)}
+                  >
+                    Cancel
+                  </button>
+                  <button type="button" onClick={() => void handleImportReview(true)}>
+                    Import as historical review
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <>
+                <p>Paste the structured review JSON for an exported rewrite review request.</p>
+                {importFailure ? (
+                  <RewriteReviewImportErrorPanel
+                    failure={importFailure}
+                    onCopyRepairPrompt={() => void handleCopyRepairPrompt()}
+                    onRegeneratePrompt={canRegenerateFailedReviewRequest && activeRegenerationReason
+                      ? () => {
+                          setIsImportOpen(false);
+                          requestReviewRegeneration(activeRegenerationReason);
+                        }
+                      : null}
+                    regenerationActionLabel={canRegenerateFailedReviewRequest && activeRegenerationReason
+                      ? getRegenerationActionLabel(activeRegenerationReason)
+                      : null}
+                    repairCopyStatus={repairCopyStatus}
+                    summaryRef={importErrorSummaryRef}
+                  />
+                ) : null}
+                <textarea
+                  aria-label="Semantic review response JSON"
+                  placeholder="Paste one fenced JSON response or a JSON object."
+                  value={importText}
+                  onChange={(event) => {
+                    setImportText(event.target.value);
+                    setImportFailure(null);
+                    setHistoricalImportConfirmation(null);
+                    setRepairCopyStatus("");
+                  }}
+                />
+                <div className="rewrite-dialog-actions">
+                  <button type="button" onClick={() => setIsImportOpen(false)}>Cancel</button>
+                  <button disabled={!importText.trim()} type="button" onClick={() => void handleImportReview()}>
+                    Import review
+                  </button>
+                </div>
+              </>
+            )}
           </WorkspaceDialog>
         ) : null}
 
@@ -1053,6 +1573,137 @@ function RewriteImpactSummary({ analysis, session }: { analysis: RewriteImpactAn
   );
 }
 
+function RewriteReviewImportErrorPanel({
+  failure,
+  onCopyRepairPrompt,
+  onRegeneratePrompt,
+  regenerationActionLabel,
+  repairCopyStatus,
+  summaryRef
+}: {
+  failure: RewriteReviewImportFailure;
+  onCopyRepairPrompt: () => void;
+  onRegeneratePrompt: (() => void) | null;
+  regenerationActionLabel: string | null;
+  repairCopyStatus: string;
+  summaryRef: RefObject<HTMLDivElement | null>;
+}) {
+  const firstIssue = failure.error.issues[0];
+  const remainingIssues = failure.error.issues.slice(1);
+  const problemCount = failure.error.issues.length;
+  return (
+    <div
+      ref={summaryRef}
+      aria-labelledby="rewrite-review-import-error-title"
+      className="rewrite-review-import-error"
+      data-error-code={firstIssue?.code}
+      role="alert"
+      tabIndex={-1}
+    >
+      <div className="rewrite-review-import-error-heading">
+        <div>
+          <h4 id="rewrite-review-import-error-title">
+            Review response could not be imported
+          </h4>
+          <p>
+            {problemCount} validation problem{problemCount === 1 ? "" : "s"}
+          </p>
+        </div>
+        <strong>{failure.error.category.replaceAll("_", " ")}</strong>
+      </div>
+      {firstIssue ? <RewriteReviewIssueDetails issue={firstIssue} /> : null}
+      {remainingIssues.length > 0 ? (
+        <details>
+          <summary>
+            Show {remainingIssues.length} more validation problem
+            {remainingIssues.length === 1 ? "" : "s"}
+          </summary>
+          <ol className="rewrite-review-import-issue-list">
+            {remainingIssues.map((issue, index) => (
+              <li key={`${issue.path}-${issue.code}-${index}`}>
+                <RewriteReviewIssueDetails issue={issue} />
+              </li>
+            ))}
+          </ol>
+        </details>
+      ) : null}
+      <p className="rewrite-review-import-guidance">{failure.error.guidance}</p>
+      {failure.repairPrompt || onRegeneratePrompt ? (
+        <div className="rewrite-review-import-recovery-actions">
+          {failure.repairPrompt ? (
+            <p>
+              Repair keeps this review request identity and asks ChatGPT to fix only
+              the response structure.
+            </p>
+          ) : null}
+          {onRegeneratePrompt ? (
+            <p>
+              Regeneration supersedes this request and creates a new request using the
+              current draft, intent, and response format.
+            </p>
+          ) : null}
+          <div>
+            {failure.repairPrompt ? (
+              <button type="button" onClick={onCopyRepairPrompt}>
+                Copy repair prompt
+              </button>
+            ) : null}
+            {onRegeneratePrompt && regenerationActionLabel ? (
+              <button type="button" onClick={onRegeneratePrompt}>
+                {regenerationActionLabel}
+              </button>
+            ) : null}
+          </div>
+        </div>
+      ) : null}
+      {failure.repairPrompt ? (
+        <div className="rewrite-review-repair-prompt">
+          <details>
+            <summary>View complete repair prompt</summary>
+            <textarea
+              aria-label="Complete semantic review repair prompt"
+              readOnly
+              value={failure.repairPrompt}
+            />
+          </details>
+          <span aria-live="polite" role="status">{repairCopyStatus}</span>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function RewriteReviewIssueDetails({
+  issue
+}: {
+  issue: RewriteReviewValidationIssue;
+}) {
+  return (
+    <div className="rewrite-review-import-issue" data-issue-code={issue.code}>
+      <code>{issue.path}</code>
+      <p>{issue.message}</p>
+      <dl>
+        <div>
+          <dt>Expected</dt>
+          <dd>{issue.expected}</dd>
+        </div>
+        {issue.actualType ? (
+          <div>
+            <dt>Received</dt>
+            <dd>{issue.actualType}</dd>
+          </div>
+        ) : null}
+      </dl>
+      {issue.example !== undefined ? (
+        <div>
+          <strong>Required shape</strong>
+          <pre>{JSON.stringify(issue.example, null, 2)}</pre>
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function WorkspaceDialog({ children, onClose, title }: { children: ReactNode; onClose: () => void; title: string }) {
   const dialogRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
@@ -1134,6 +1785,116 @@ function getCompactReviewStatus(
     return `${importedRoundCount} previous review${importedRoundCount === 1 ? "" : "s"}`;
   }
   return "No review";
+}
+
+function getReviewRequestStatus({
+  awaitingReview,
+  currentReview,
+  draftChangedSinceExport,
+  importedRounds,
+  intentChangedSinceExport,
+  latestSupersededReview
+}: {
+  awaitingReview: RewriteReviewRound | null;
+  currentReview: RewriteReviewRound | null;
+  draftChangedSinceExport: boolean;
+  importedRounds: RewriteReviewRound[];
+  intentChangedSinceExport: boolean;
+  latestSupersededReview: RewriteReviewRound | null;
+}):
+  | "No review request"
+  | "Awaiting response"
+  | "Prompt format outdated"
+  | "Draft changed since export"
+  | "Intent changed since export"
+  | "Superseded"
+  | "Response imported"
+  | "Earlier-draft review" {
+  if (awaitingReview) {
+    if (draftChangedSinceExport) {
+      return "Draft changed since export";
+    }
+    if (intentChangedSinceExport) {
+      return "Intent changed since export";
+    }
+    return getRewriteReviewPromptFormat(awaitingReview) === "outdated"
+      ? "Prompt format outdated"
+      : "Awaiting response";
+  }
+  if (currentReview) {
+    return "Response imported";
+  }
+  if (importedRounds.length > 0) {
+    return "Earlier-draft review";
+  }
+  if (latestSupersededReview) {
+    return "Superseded";
+  }
+  return "No review request";
+}
+
+function getReviewRegenerationReason({
+  draftChangedSinceExport,
+  intentChangedSinceExport,
+  promptFormat
+}: {
+  draftChangedSinceExport: boolean;
+  intentChangedSinceExport: boolean;
+  promptFormat: "current" | "outdated" | null;
+}): RewriteReviewSupersessionReason {
+  if (draftChangedSinceExport) {
+    return "draft_changed";
+  }
+  if (intentChangedSinceExport) {
+    return "intent_changed";
+  }
+  return promptFormat === "outdated"
+    ? "outdated_prompt_format"
+    : "prompt_regenerated";
+}
+
+function getRegenerationActionLabel(
+  reason: RewriteReviewSupersessionReason
+): string {
+  if (reason === "outdated_prompt_format") {
+    return "Generate updated review prompt";
+  }
+  if (reason === "draft_changed") {
+    return "Generate prompt for current draft";
+  }
+  if (reason === "intent_changed") {
+    return "Regenerate prompt with current intent";
+  }
+  return "Regenerate review prompt";
+}
+
+function formatPromptCreatedAt(round: RewriteReviewRound): string {
+  return new Date(round.prompt_created_at ?? round.exported_at).toLocaleString();
+}
+
+function abbreviateValue(value: string, visibleCharacters = 8): string {
+  if (value.length <= visibleCharacters + 1) {
+    return value;
+  }
+  if (value.startsWith("sha256:")) {
+    return `sha256:${value.slice(7, 7 + visibleCharacters)}…`;
+  }
+  return `${value.slice(0, visibleCharacters)}…`;
+}
+
+function formatSupersessionReason(
+  reason: RewriteReviewSupersessionReason
+): string {
+  if (reason === "outdated_prompt_format") {
+    return "Updated prompt format";
+  }
+  if (reason === "draft_changed") {
+    return "Generated for the current draft";
+  }
+  if (reason === "intent_changed") {
+    return "Generated with the current intent";
+  }
+  return "Prompt regenerated";
 }
 
 function formatEnum(value: string): string {

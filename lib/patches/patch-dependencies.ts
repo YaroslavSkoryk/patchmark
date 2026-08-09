@@ -16,6 +16,11 @@ import type {
   PatchmarkPatch
 } from "../project/project-types.ts";
 import { resolveAndApplyPendingPatch } from "./patch-application.ts";
+import {
+  preflightPatchBaseTarget,
+  transformPatchTargetProvenanceThroughEdit,
+  type PatchBaseTargetPreflight
+} from "./patch-target-provenance.ts";
 
 export type PatchDependencyErrorCode =
   | "cross_comment_dependency"
@@ -27,6 +32,7 @@ export type PatchDependencyErrorCode =
   | "dependency_patch_overlap_conflict"
   | "dependency_patch_target_ambiguous"
   | "dependency_patch_target_missing"
+  | "dependency_target_genuine_ambiguity"
   | "dependency_simulation_failed"
   | "dependency_source_date_coverage_failed"
   | "dependency_source_preservation_failed"
@@ -53,6 +59,11 @@ export class PatchDependencyValidationError extends Error {
   readonly observedAt?: string;
   readonly repairPromptEligible: boolean;
   readonly sourceUrl?: string;
+  readonly targetHeading?: string;
+  readonly baseMatchCount?: number;
+  readonly postPrerequisiteMatchCount?: number;
+  readonly baseTargetUnique?: boolean;
+  readonly ambiguityReason?: string;
 
   constructor({
     code,
@@ -62,6 +73,11 @@ export class PatchDependencyValidationError extends Error {
     observedAt,
     repairPromptEligible = true,
     sourceUrl,
+    targetHeading,
+    baseMatchCount,
+    postPrerequisiteMatchCount,
+    baseTargetUnique,
+    ambiguityReason,
     patchKey
   }: {
     code: PatchDependencyErrorCode;
@@ -71,6 +87,11 @@ export class PatchDependencyValidationError extends Error {
     observedAt?: string;
     repairPromptEligible?: boolean;
     sourceUrl?: string;
+    targetHeading?: string;
+    baseMatchCount?: number;
+    postPrerequisiteMatchCount?: number;
+    baseTargetUnique?: boolean;
+    ambiguityReason?: string;
     patchKey?: string;
   }) {
     super(message);
@@ -82,6 +103,11 @@ export class PatchDependencyValidationError extends Error {
     this.observedAt = observedAt;
     this.repairPromptEligible = repairPromptEligible;
     this.sourceUrl = sourceUrl;
+    this.targetHeading = targetHeading;
+    this.baseMatchCount = baseMatchCount;
+    this.postPrerequisiteMatchCount = postPrerequisiteMatchCount;
+    this.baseTargetUnique = baseTargetUnique;
+    this.ambiguityReason = ambiguityReason;
   }
 }
 
@@ -159,14 +185,18 @@ export function getPatchDependencyClosureOrder(
 }
 
 export function validateImportedPatchDependencySimulation({
+  baseDocumentSha256 = "unknown",
   baseDocumentState = "unknown",
   comments,
+  documentId = "unknown",
   existingPatches,
   importedPatches,
   markdown
 }: {
+  baseDocumentSha256?: string;
   baseDocumentState?: PatchDependencyBaseDocumentState;
   comments: PatchmarkComment[];
+  documentId?: string;
   existingPatches: PatchmarkPatch[];
   importedPatches: PatchmarkPatch[];
   markdown: string;
@@ -178,6 +208,19 @@ export function validateImportedPatchDependencySimulation({
     importedPatches.map((patch, index) => [patch.id, index])
   );
   const simulationOrders = new Map<string, string[]>();
+  const basePreflightByPatchId = new Map<string, PatchBaseTargetPreflight>();
+
+  for (const patch of importedPatches) {
+    const preflight = preflightPatchBaseTarget({
+      baseDocumentSha256,
+      documentId,
+      markdown,
+      patch
+    });
+    basePreflightByPatchId.set(patch.id, preflight);
+    patch.target_provenance =
+      preflight.kind === "resolved" ? preflight.provenance : undefined;
+  }
 
   for (const patch of importedPatches) {
     const prerequisiteIds = getPersistedDependencyClosureOrder(
@@ -206,12 +249,24 @@ export function validateImportedPatchDependencySimulation({
     ];
     let simulatedMarkdown = markdown;
     const appliedPrerequisites: PatchmarkPatch[] = [];
+    const simulatedProvenanceByPatchId = new Map(
+      importedPatches.flatMap((candidate) =>
+        candidate.target_provenance
+          ? [[candidate.id, candidate.target_provenance] as const]
+          : []
+      )
+    );
 
     for (const prerequisite of prerequisitePatches) {
+      const simulatedPrerequisite = withSimulatedTargetProvenance(
+        prerequisite,
+        simulatedProvenanceByPatchId
+      );
       const application = resolveAndApplyPendingPatch({
         comments,
+        documentId,
         markdown: simulatedMarkdown,
-        patch: prerequisite,
+        patch: simulatedPrerequisite,
         patches: simulatedPatches
       });
 
@@ -228,6 +283,11 @@ export function validateImportedPatchDependencySimulation({
 
       simulatedMarkdown = application.markdown;
       appliedPrerequisites.push(prerequisite);
+      transformSimulatedProvenances({
+        application,
+        patch: simulatedPrerequisite,
+        provenanceByPatchId: simulatedProvenanceByPatchId
+      });
     }
 
     if (prerequisiteIds.length === 0 && simulatedMarkdown !== markdown) {
@@ -239,10 +299,15 @@ export function validateImportedPatchDependencySimulation({
       });
     }
 
+    const simulatedPatch = withSimulatedTargetProvenance(
+      patch,
+      simulatedProvenanceByPatchId
+    );
     const application = resolveAndApplyPendingPatch({
       comments,
+      documentId,
       markdown: simulatedMarkdown,
-      patch,
+      patch: simulatedPatch,
       patches: simulatedPatches
     });
 
@@ -253,7 +318,12 @@ export function validateImportedPatchDependencySimulation({
         failedPatch: patch,
         kind: application.kind,
         prerequisite: false,
-        baseDocumentState
+        baseDocumentState,
+        basePreflight: basePreflightByPatchId.get(patch.id),
+        postPrerequisiteMatchCount: countExactOccurrences(
+          simulatedMarkdown,
+          patch.original_text
+        )
       });
     }
 
@@ -399,9 +469,43 @@ export function createPatchDependencyRepairPrompt(error: unknown): string {
             : "",
           error.disclosurePrerequisiteStatus
             ? `Disclosure prerequisite status: ${error.disclosurePrerequisiteStatus}`
+            : "",
+          error.targetHeading
+            ? `Target heading: ${error.targetHeading}`
+            : "",
+          error.baseMatchCount !== undefined
+            ? `Base target match count: ${error.baseMatchCount}`
+            : "",
+          error.postPrerequisiteMatchCount !== undefined
+            ? `Post-prerequisite target match count: ${error.postPrerequisiteMatchCount}`
+            : "",
+          error.baseTargetUnique !== undefined
+            ? `Target unique in exported base: ${error.baseTargetUnique ? "yes" : "no"}`
+            : "",
+          error.ambiguityReason
+            ? `Ambiguity reason: ${error.ambiguityReason}`
             : ""
         ].filter(Boolean)
       : [];
+  if (
+    error instanceof PatchDependencyValidationError &&
+    error.code === "dependency_target_genuine_ambiguity"
+  ) {
+    return `Dependency target repair required.
+
+Validation code: ${error.code}${
+      errorDetails.length > 0 ? `\n${errorDetails.join("\n")}` : ""
+    }
+
+The dependent patch target becomes ambiguous after its prerequisites.
+
+- Return protocol_version 2 and preserve the exact response identities.
+- Keep the substantive reply, patch content, patch_key values, and dependency graph.
+- Scope the dependent patch to a unique owning parent heading, not only a duplicated child heading.
+- If the original and copied structural regions cannot remain independently identifiable, combine the interdependent structural change into one atomic proposal.
+- Before returning the repair, simulate every proposal in dependency order and confirm each dependent original_text resolves to exactly one intended target.
+- Do not add, remove, or rewrite unrelated document content.`;
+  }
   const sourceDependencyRule =
     error instanceof PatchDependencyValidationError &&
     error.code === "dependency_source_date_coverage_failed"
@@ -734,18 +838,22 @@ function isValidPersistedDependencyOwnership({
 
 function createSimulationTargetError({
   appliedPrerequisites,
+  basePreflight,
   baseDocumentState,
   dependentPatch,
   failedPatch,
   kind,
+  postPrerequisiteMatchCount,
   prerequisite
 }: {
   appliedPrerequisites: PatchmarkPatch[];
+  basePreflight?: PatchBaseTargetPreflight;
   baseDocumentState: PatchDependencyBaseDocumentState;
   dependentPatch: PatchmarkPatch;
   failedPatch: PatchmarkPatch;
   kind: "ambiguous" | "not_found" | "stale";
   prerequisite: boolean;
+  postPrerequisiteMatchCount?: number;
 }): PatchDependencyValidationError {
   const overlapsAppliedPrerequisite =
     prerequisite &&
@@ -794,14 +902,24 @@ function createSimulationTargetError({
     return new PatchDependencyValidationError({
       code:
         kind === "ambiguous"
-          ? "dependent_patch_target_ambiguous_after_prerequisites"
+          ? "dependency_target_genuine_ambiguity"
           : "dependent_patch_stale_after_prerequisites",
       dependencyKey: lastPrerequisite,
       message:
         kind === "ambiguous"
           ? `Patch ${dependentKey} could not be validated because its target is ambiguous after declared prerequisite${prerequisiteKeys.length === 1 ? "" : "s"} ${prerequisiteKeys.join(", ")} ${prerequisiteKeys.length === 1 ? "was" : "were"} applied.`
           : `Patch ${dependentKey} became stale after declared prerequisite${prerequisiteKeys.length === 1 ? "" : "s"} ${prerequisiteKeys.join(", ")} changed its target.`,
-      patchKey: dependentPatch.source_patch_key
+      patchKey: dependentPatch.source_patch_key,
+      targetHeading: dependentPatch.target_heading,
+      baseMatchCount: basePreflight?.matchCount,
+      postPrerequisiteMatchCount,
+      baseTargetUnique: basePreflight?.kind === "resolved",
+      ambiguityReason:
+        kind === "ambiguous"
+          ? basePreflight?.kind === "ambiguous"
+            ? "The full target was already ambiguous in the exported base document."
+            : "The target identity could not be validated after prerequisite mutations."
+          : undefined
     });
   }
 
@@ -821,6 +939,64 @@ function createSimulationTargetError({
         : `Declared prerequisite ${failedKey} cannot be applied deterministically before ${dependentKey}.`,
     patchKey: dependentPatch.source_patch_key
   });
+}
+
+function withSimulatedTargetProvenance(
+  patch: PatchmarkPatch,
+  provenanceByPatchId: Map<
+    string,
+    NonNullable<PatchmarkPatch["target_provenance"]>
+  >
+): PatchmarkPatch {
+  const targetProvenance = provenanceByPatchId.get(patch.id);
+  return targetProvenance ? { ...patch, target_provenance: targetProvenance } : patch;
+}
+
+function transformSimulatedProvenances({
+  application,
+  patch,
+  provenanceByPatchId
+}: {
+  application: Extract<
+    ReturnType<typeof resolveAndApplyPendingPatch>,
+    { kind: "applied" }
+  >;
+  patch: PatchmarkPatch;
+  provenanceByPatchId: Map<
+    string,
+    NonNullable<PatchmarkPatch["target_provenance"]>
+  >;
+}): void {
+  const edit = {
+    oldStart: application.start,
+    oldEnd: application.start + patch.original_text.length,
+    insertedText: patch.suggested_text
+  };
+
+  for (const [patchId, provenance] of provenanceByPatchId) {
+    provenanceByPatchId.set(
+      patchId,
+      transformPatchTargetProvenanceThroughEdit(provenance, edit)
+    );
+  }
+}
+
+function countExactOccurrences(markdown: string, text: string): number {
+  if (!text) {
+    return 0;
+  }
+
+  let count = 0;
+  let offset = 0;
+  while (offset <= markdown.length - text.length) {
+    const match = markdown.indexOf(text, offset);
+    if (match === -1) {
+      break;
+    }
+    count += 1;
+    offset = match + Math.max(1, text.length);
+  }
+  return count;
 }
 
 function validateSimulatedPatchSources({

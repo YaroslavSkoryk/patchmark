@@ -5429,6 +5429,124 @@ button {
   gap: 9px;
 }
 
+.rewrite-review-request-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.rewrite-review-request-status > div:first-child {
+  display: grid;
+  gap: 5px;
+}
+
+.rewrite-review-request-status p {
+  max-width: 72ch;
+  margin: 0;
+  color: var(--muted);
+}
+
+.rewrite-review-request-prompt-format-outdated {
+  border-color: #d7ae54;
+  background: #fff8df;
+}
+
+.rewrite-review-request-prompt-format-outdated strong {
+  color: #785a15;
+}
+
+.rewrite-review-request-draft-changed-since-export,
+.rewrite-review-request-intent-changed-since-export {
+  border-color: #9bb9cf;
+  background: #eef6fb;
+}
+
+.rewrite-review-request-card,
+.rewrite-review-request-history {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  padding: 14px;
+}
+
+.rewrite-review-request-card > header,
+.rewrite-review-request-history li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.rewrite-review-request-card h4 {
+  max-width: 100%;
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+  font: 0.82rem/1.45 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+}
+
+.rewrite-review-request-card > header span,
+.rewrite-review-request-history span,
+.rewrite-review-request-history code {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.rewrite-review-request-history summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.rewrite-review-request-history ol {
+  display: grid;
+  gap: 9px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.rewrite-review-request-history li {
+  border-top: 1px solid var(--border);
+  padding-top: 9px;
+}
+
+.rewrite-review-request-history li > div {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.rewrite-review-primary-action {
+  border-color: var(--accent-strong);
+  background: var(--accent-strong);
+  color: #fff;
+}
+
+.rewrite-review-request-status-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.rewrite-review-import-status {
+  border: 1px solid #9fc8b4;
+  border-radius: 10px;
+  background: #edf8f2;
+  color: #245d46;
+  padding: 10px 12px;
+  font-weight: 750;
+}
+
 .rewrite-review-screen-content > .rewrite-review-pane {
   min-height: 260px;
   overflow: visible;
@@ -5510,6 +5628,222 @@ button {
   resize: vertical;
 }
 
+.rewrite-review-old-prompt-warning {
+  border: 1px solid #d7ae54;
+  border-radius: 10px;
+  background: #fff8df;
+  color: #785a15;
+  padding: 11px 12px;
+}
+
+.rewrite-review-old-prompt-warning p {
+  margin: 4px 0 0;
+}
+
+.rewrite-review-regeneration-list {
+  margin: 8px 0 14px;
+}
+
+.rewrite-review-historical-import-confirmation {
+  display: grid;
+  gap: 10px;
+  border: 1px solid #d7ae54;
+  border-radius: 10px;
+  background: #fff8df;
+  padding: 12px;
+}
+
+.rewrite-review-historical-import-confirmation p {
+  margin: 0;
+}
+
+.rewrite-review-historical-import-confirmation code {
+  overflow-wrap: anywhere;
+}
+
+.rewrite-review-prompt-metadata {
+  display: grid;
+  gap: 6px;
+  margin: 12px 0;
+}
+
+.rewrite-review-prompt-metadata > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 10px;
+}
+
+.rewrite-review-prompt-metadata dt {
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.rewrite-review-prompt-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 0.78rem;
+}
+
+.rewrite-review-import-error {
+  display: grid;
+  gap: 12px;
+  margin: 14px 0;
+  border: 1px solid #e5a58c;
+  border-radius: 12px;
+  background: #fff0ea;
+  color: #702718;
+  padding: 14px;
+}
+
+.rewrite-review-import-error:focus {
+  outline: 3px solid rgba(143, 45, 29, 0.28);
+  outline-offset: 2px;
+}
+
+.rewrite-review-import-error h4,
+.rewrite-review-import-error p,
+.rewrite-review-import-error dl,
+.rewrite-review-import-error pre {
+  margin: 0;
+}
+
+.rewrite-review-import-error-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.rewrite-review-import-error-heading > div {
+  display: grid;
+  gap: 3px;
+}
+
+.rewrite-review-import-error-heading > strong {
+  border: 1px solid #e5a58c;
+  border-radius: 999px;
+  padding: 4px 8px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+}
+
+.rewrite-review-import-issue {
+  display: grid;
+  gap: 8px;
+  border-left: 4px solid #b74a2f;
+  background: #fffaf7;
+  padding: 12px;
+}
+
+.rewrite-review-import-issue > code {
+  width: fit-content;
+  border-radius: 5px;
+  background: #f2d7ce;
+  padding: 3px 6px;
+  color: #702718;
+  font-weight: 800;
+}
+
+.rewrite-review-import-issue dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.rewrite-review-import-issue dl > div {
+  min-width: 0;
+}
+
+.rewrite-review-import-issue dt,
+.rewrite-review-import-issue > div > strong {
+  color: #8f2d1d;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.rewrite-review-import-issue dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
+
+.rewrite-review-import-issue pre {
+  overflow: auto;
+  max-height: 210px;
+  margin-top: 5px;
+  border: 1px solid #efc7bb;
+  border-radius: 7px;
+  background: #101815;
+  color: #f4f7f5;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.rewrite-review-import-error summary {
+  cursor: pointer;
+  font-weight: 780;
+}
+
+.rewrite-review-import-issue-list {
+  display: grid;
+  gap: 9px;
+  max-height: 420px;
+  overflow: auto;
+  margin: 10px 0 0;
+  padding-left: 28px;
+}
+
+.rewrite-review-import-guidance {
+  font-weight: 700;
+}
+
+.rewrite-review-repair-prompt {
+  display: grid;
+  gap: 9px;
+  border-top: 1px solid #e5a58c;
+  padding-top: 12px;
+}
+
+.rewrite-review-repair-prompt > button {
+  width: fit-content;
+}
+
+.rewrite-review-repair-prompt textarea {
+  width: 100%;
+  min-height: 220px;
+  margin-top: 8px;
+  border: 1px solid #efc7bb;
+  border-radius: 8px;
+  background: #101815;
+  color: #f4f7f5;
+  padding: 10px;
+  font: 0.78rem/1.5 "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  resize: vertical;
+}
+
+.rewrite-review-repair-prompt > span:not(:empty) {
+  font-weight: 700;
+}
+
+.rewrite-review-import-recovery-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.rewrite-review-import-recovery-actions p {
+  margin: 0;
+}
+
+.rewrite-review-import-recovery-actions > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
 .rewrite-dialog-actions {
   justify-content: flex-end;
   margin-top: 14px;
@@ -5550,7 +5884,18 @@ button {
   .rewrite-resume-banner,
   .rewrite-resume-banner > div,
   .rewrite-workspace-error,
-  .rewrite-recovery-conflict > div:last-child {
+  .rewrite-recovery-conflict > div:last-child,
+  .rewrite-review-request-status {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .rewrite-review-request-status-actions {
+    justify-content: flex-start;
+  }
+
+  .rewrite-review-request-card > header,
+  .rewrite-review-request-history li {
     align-items: stretch;
     flex-direction: column;
   }

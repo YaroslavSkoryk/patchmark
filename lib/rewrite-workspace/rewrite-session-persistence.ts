@@ -264,7 +264,8 @@ export function createRewriteSessionPersistenceCoordinator({
 
   async function persist(
     session: RewriteSession,
-    reason: string
+    reason: string,
+    recoveryFallbackSession?: RewriteSession
   ): Promise<RewriteProjectSaveResult> {
     selectAuthoritativeSession(session);
     const ownedSession = {
@@ -276,10 +277,15 @@ export function createRewriteSessionPersistenceCoordinator({
     const requestedRecoveryRevision = recoveryRevision;
     let recoveryAvailable = false;
     try {
+      const recoverySession = recoveryFallbackSession ?? ownedSession;
       await saveRewriteRecoveryCopy({
         basedOnAuthoritativeRevision: authoritativeRevision,
         recoveryRevision: requestedRecoveryRevision,
-        session: ownedSession
+        session: {
+          ...recoverySession,
+          authoritative_revision: authoritativeRevision,
+          local_project_instance_id: localProjectInstanceId
+        }
       });
       recoveryAvailable = true;
     } catch {

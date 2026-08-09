@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   rmSync,
   writeFileSync
 } from "node:fs";
@@ -156,13 +158,50 @@ try {
   assert.equal(unlockedState.documentHasDependentReplacement, false);
   assert.equal(unlockedState.dependentStatus, "pending");
 
+  await clickButtonByText(client, "Accept Patch");
+  await waitFor(
+    client,
+    `(() => {
+      const raw = window.__patchmarkFixtureWrites?.get(".patchmark/patches.json");
+      const markdown = window.__patchmarkFixtureWrites?.get("document.md") ?? "";
+      if (!raw) return false;
+      const patches = JSON.parse(raw);
+      return patches[1]?.status === "accepted" &&
+        markdown.includes("Dependent line accepted.") &&
+        markdown.includes("## Appendix\\n\\nDependent line.");
+    })()`,
+    "dependent provenance acceptance"
+  );
+  const acceptedState = await readPatchDialogState(client);
+  assert.equal(acceptedState.documentHasDependentReplacement, true);
+  assert.equal(acceptedState.appendixCopyPreserved, true);
+
+  await client.call("Page.reload");
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitFor(
+    client,
+    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+    "reopened dependency project"
+  );
+  const restartedMarkdown = readFileSync(join(projectDir, "document.md"), "utf8");
+  const restartedPatches = JSON.parse(
+    readFileSync(join(projectDir, ".patchmark", "patches.json"), "utf8")
+  );
+  assert.ok(restartedMarkdown.includes("Dependent line accepted."));
+  assert.ok(restartedMarkdown.includes("## Appendix\n\nDependent line."));
+  assert.ok(restartedPatches.every((patch) => patch.status === "accepted"));
+
   console.log(
     JSON.stringify(
       {
         acceptUnlockedAfterPrerequisite: true,
+        appendixCopyPreserved: true,
+        dependentAcceptedAtMappedOriginal: true,
         dependentAppliedAutomatically: false,
         dependencyNavigation: true,
-        pendingDependencyBlocked: true
+        pendingDependencyBlocked: true,
+        restartPersistence: true
       },
       null,
       2
@@ -215,6 +254,8 @@ async function readPatchDialogState(client) {
         dependentStatus: patches[1]?.status ?? "pending",
         documentHasDependentReplacement:
           documentWrite.includes("Dependent line accepted."),
+        appendixCopyPreserved:
+          documentWrite.includes("## Appendix\\n\\nDependent line."),
         hasDependencySummary: Boolean(dependency),
         reviewDependencyButton: Array.from(dependency?.querySelectorAll("button") ?? [])
           .some((button) => button.textContent?.trim() === "Review required patch")
@@ -250,9 +291,11 @@ function createDependencyFixture(root) {
 
 ## Changes
 
-Base line.
-
 Dependent line.
+
+## Summary
+
+Base line.
 `;
   const selectedText = "Base line.";
   const selectedStart = markdown.indexOf(selectedText);
@@ -287,6 +330,30 @@ Dependent line.
     risk_sources: [],
     created_at: now
   };
+  const documentId = "doc_dependency_fixture";
+  const baseDocumentSha256 = createHash("sha256").update(markdown).digest("hex");
+  const createProvenance = (patchKey, originalText, targetHeading) => {
+    const start = markdown.indexOf(originalText);
+    return {
+      schema_version: 1,
+      document_id: documentId,
+      patch_key: patchKey,
+      base_document_sha256: baseDocumentSha256,
+      base_start: start,
+      base_end: start + originalText.length,
+      current_start: start,
+      current_end: start + originalText.length,
+      original_text_fingerprint: createTextFingerprint(originalText),
+      target_heading: targetHeading,
+      heading_ancestry:
+        targetHeading === "## Summary"
+          ? ["# Dependency Review", "## Summary"]
+          : ["# Dependency Review", "## Changes"],
+      base_occurrence_count: 1,
+      resolution_method: "heading_scoped_full_text",
+      mapping_state: "mapped"
+    };
+  };
   const patches = [
     {
       ...commonPatch,
@@ -296,8 +363,14 @@ Dependent line.
       depends_on_patch_ids: [],
       depends_on_patch_keys_snapshot: [],
       display_title: "Base prerequisite change",
+      target_heading: "## Summary",
       original_text: "Base line.",
-      suggested_text: "Base line accepted.",
+      suggested_text: "Base line accepted.\n\n## Appendix\n\nDependent line.",
+      target_provenance: createProvenance(
+        "base-prerequisite",
+        "Base line.",
+        "## Summary"
+      ),
       reason: "Creates the prerequisite document state."
     },
     {
@@ -308,8 +381,14 @@ Dependent line.
       depends_on_patch_ids: ["PM-PATCH-0001"],
       depends_on_patch_keys_snapshot: ["base-prerequisite"],
       display_title: "Update dependent line",
+      target_heading: "## Changes",
       original_text: "Dependent line.",
       suggested_text: "Dependent line accepted.",
+      target_provenance: createProvenance(
+        "dependent-change",
+        "Dependent line.",
+        "## Changes"
+      ),
       reason: "Applies only after the base change."
     }
   ];
@@ -320,6 +399,8 @@ Dependent line.
     `${JSON.stringify(
       {
         schema_version: 1,
+        project_id: "prj_dependency_fixture",
+        document_id: documentId,
         project_name: "Dependency Review Fixture",
         document_file: "document.md",
         created_at: now,
@@ -338,4 +419,13 @@ Dependent line.
     `${JSON.stringify(patches, null, 2)}\n`
   );
   writeFileSync(join(metadata, "tasks.json"), "[]\n");
+}
+
+function createTextFingerprint(value) {
+  let hash = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+  return `fnv1a32:${(hash >>> 0).toString(16).padStart(8, "0")}`;
 }

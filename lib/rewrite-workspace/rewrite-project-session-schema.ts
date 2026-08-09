@@ -1,4 +1,5 @@
 import type { ProjectDocumentIdentity } from "../project/document-scoped-identity.ts";
+import { validateRewriteReviewResponseValue } from "./rewrite-review-schema.ts";
 import type {
   RewriteProjectSessionRecord,
   RewriteProjectSessionStore,
@@ -148,6 +149,20 @@ function normalizeActiveSession(
   }
   const projectId = value.project_id;
   const documentId = value.document_id;
+  const reviewRounds = value.review_rounds.map((round, roundIndex) =>
+    normalizeReviewRound(
+      round,
+      index,
+      roundIndex,
+      projectId,
+      documentId
+    )
+  );
+  if (
+    reviewRounds.filter((round) => round.status === "awaiting_response").length > 1
+  ) {
+    throw new Error(`Human Rewrite session ${index + 1} has multiple active review requests.`);
+  }
   return {
     schema_version: 1,
     rewrite_session_id: value.rewrite_session_id,
@@ -170,15 +185,7 @@ function normalizeActiveSession(
     stale_reference: value.stale_reference,
     created_at: value.created_at,
     updated_at: value.updated_at,
-    review_rounds: value.review_rounds.map((round, roundIndex) =>
-      normalizeReviewRound(
-        round,
-        index,
-        roundIndex,
-        projectId,
-        documentId
-      )
-    ),
+    review_rounds: reviewRounds,
     reference_history: value.reference_history.map((entry) => {
       if (
         !isRecord(entry) ||
@@ -285,8 +292,27 @@ function normalizeReviewRound(
     !isHash(value.intent_note_sha256) ||
     !isHash(value.prompt_sha256) ||
     typeof value.prompt_text !== "string" ||
+    (value.prompt_byte_length !== undefined &&
+      !isNonNegativeInteger(value.prompt_byte_length)) ||
     !isDateString(value.exported_at) ||
-    (value.status !== "awaiting_response" && value.status !== "cancelled" && value.status !== "imported")
+    (value.status !== "awaiting_response" &&
+      value.status !== "cancelled" &&
+      value.status !== "imported" &&
+      value.status !== "superseded") ||
+    (value.prompt_schema_version !== undefined &&
+      !isNonNegativeInteger(value.prompt_schema_version)) ||
+    (value.response_schema_fingerprint !== undefined &&
+      !isSchemaFingerprint(value.response_schema_fingerprint)) ||
+    (value.prompt_created_at !== undefined &&
+      !isDateString(value.prompt_created_at)) ||
+    (value.prompt_generator_version !== undefined &&
+      !isNonEmptyString(value.prompt_generator_version)) ||
+    (value.supersedes_review_request_id !== undefined &&
+      !isNonEmptyString(value.supersedes_review_request_id)) ||
+    (value.status === "superseded" &&
+      (!isDateString(value.superseded_at) ||
+        !isReviewSupersessionReason(value.superseded_reason) ||
+        !isNonEmptyString(value.superseded_by_review_request_id)))
   ) {
     throw new Error(`Human Rewrite session ${sessionIndex + 1}, review round ${roundIndex + 1} is invalid.`);
   }
@@ -311,12 +337,46 @@ function normalizeReviewRound(
     intent_note_sha256: value.intent_note_sha256,
     prompt_sha256: value.prompt_sha256,
     prompt_text: value.prompt_text,
+    ...(isNonNegativeInteger(value.prompt_byte_length)
+      ? { prompt_byte_length: value.prompt_byte_length }
+      : {}),
     exported_at: value.exported_at,
+    ...(isNonNegativeInteger(value.prompt_schema_version)
+      ? { prompt_schema_version: value.prompt_schema_version }
+      : {}),
+    ...(isSchemaFingerprint(value.response_schema_fingerprint)
+      ? { response_schema_fingerprint: value.response_schema_fingerprint }
+      : {}),
+    ...(isDateString(value.prompt_created_at)
+      ? { prompt_created_at: value.prompt_created_at }
+      : {}),
+    ...(isNonEmptyString(value.prompt_generator_version)
+      ? { prompt_generator_version: value.prompt_generator_version }
+      : {}),
     status: value.status,
     ...(isDateString(value.cancelled_at) ? { cancelled_at: value.cancelled_at } : {}),
     ...(isDateString(value.imported_at) ? { imported_at: value.imported_at } : {}),
+    ...(isDateString(value.superseded_at) ? { superseded_at: value.superseded_at } : {}),
+    ...(isReviewSupersessionReason(value.superseded_reason)
+      ? { superseded_reason: value.superseded_reason }
+      : {}),
+    ...(isNonEmptyString(value.superseded_by_review_request_id)
+      ? { superseded_by_review_request_id: value.superseded_by_review_request_id }
+      : {}),
+    ...(isNonEmptyString(value.supersedes_review_request_id)
+      ? { supersedes_review_request_id: value.supersedes_review_request_id }
+      : {}),
     ...(response ? { response } : {})
   };
+}
+
+function isReviewSupersessionReason(
+  value: unknown
+): value is NonNullable<RewriteReviewRound["superseded_reason"]> {
+  return value === "prompt_regenerated" ||
+    value === "outdated_prompt_format" ||
+    value === "draft_changed" ||
+    value === "intent_changed";
 }
 
 function normalizeSemanticResponse(
@@ -324,36 +384,11 @@ function normalizeSemanticResponse(
   sessionIndex: number,
   roundIndex: number
 ): RewriteSemanticReviewResponse {
-  if (!isRecord(value)) {
-    throw invalidSession(sessionIndex);
-  }
-  const arrayFields = [
-    "meaning_preserved",
-    "meaning_changed",
-    "omitted_points",
-    "new_claims",
-    "contradictions",
-    "certainty_changes",
-    "source_impacts",
-    "ambiguities",
-    "suggested_draft_edits"
-  ] as const;
-  if (
-    value.protocol !== "patchmark.human_rewrite_review_import" ||
-    value.protocol_version !== 1 ||
-    !isNonEmptyString(value.rewrite_session_id) ||
-    !isNonEmptyString(value.rewrite_review_id) ||
-    !isNonEmptyString(value.project_id) ||
-    !isNonEmptyString(value.document_id) ||
-    !isHash(value.base_text_sha256) ||
-    !isHash(value.human_draft_sha256) ||
-    !["meaning_preserved", "review_recommended", "substantial_change", "unclear"].includes(String(value.overall_assessment)) ||
-    typeof value.summary !== "string" ||
-    !arrayFields.every((field) => Array.isArray(value[field]))
-  ) {
+  try {
+    return validateRewriteReviewResponseValue(value);
+  } catch {
     throw new Error(`Human Rewrite session ${sessionIndex + 1}, review round ${roundIndex + 1} response is invalid.`);
   }
-  return value as RewriteSemanticReviewResponse;
 }
 
 function invalidSession(index: number): Error {
@@ -374,6 +409,10 @@ function isNonNegativeInteger(value: unknown): value is number {
 
 function isHash(value: unknown): value is string {
   return typeof value === "string" && /^[a-f0-9]{64}$/i.test(value);
+}
+
+function isSchemaFingerprint(value: unknown): value is string {
+  return typeof value === "string" && /^sha256:[a-f0-9]{64}$/i.test(value);
 }
 
 function isDateString(value: unknown): value is string {

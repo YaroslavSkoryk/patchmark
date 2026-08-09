@@ -57,9 +57,10 @@ from the current document:
 Every independent proposal receives an isolated copy of the base Markdown and
 never sees an unrelated imported sibling. Every dependent proposal receives a
 dependency-specific state containing only its transitive prerequisite closure.
-After each prerequisite mutation, Patchmark re-runs the canonical target
-resolver against that exact intermediate Markdown instead of reusing absolute
-offsets.
+Before simulation, Patchmark preflights complete patch targets against that
+base Markdown. A uniquely resolved base target receives canonical provenance;
+a target absent from the base remains eligible for dependency-created target
+resolution after its prerequisites run.
 
 Simulation uses the existing canonical pending-patch target resolver and shared
 text replacement operation. It writes no files, creates no snapshots, advances
@@ -82,6 +83,51 @@ Owning comments provide deterministic scope only when their canonical anchor
 resolves uniquely and the patch target is proven inside that scope. Duplicate
 heading sections, document-level anchors, and unrelated anchors do not justify
 choosing the first occurrence.
+
+## Canonical base-target provenance
+
+Base-origin targets persist document identity, the exported base SHA-256,
+canonical base and current Markdown offsets, a complete-original-text
+fingerprint, the response-local patch key, declared target heading, full owning
+heading ancestry, and the unique base occurrence count. Browser DOM positions
+and occurrence indexes are not target identity.
+
+For every prerequisite replacement, Patchmark transforms each pending mapped
+range:
+
+- a replacement before the target shifts both offsets by its length delta;
+- a replacement after the target leaves the range unchanged;
+- an insertion that copies identical text elsewhere leaves the original mapped
+  range intact;
+- an overlapping replacement marks the mapping for revalidation instead of
+  trusting stale offsets.
+
+After prerequisite simulation, the mapped range must still contain the full
+exact `original_text`, belong to the same document, and retain compatible owning
+heading ancestry. The deterministic resolution priority is:
+
+1. valid transformed base-target provenance;
+2. a unique full-text match under the persisted heading ancestry;
+3. the existing declared-heading and document-wide canonical resolver for a
+   target that did not exist in the base;
+4. failure.
+
+Short linked-comment anchors never override a valid full-patch provenance
+target. Heading text alone never selects the first of multiple identical
+sections.
+
+> When a patch target is unique in the exported base document, Patchmark
+> preserves that target’s canonical identity through declared prerequisite
+> mutations. A prerequisite that copies identical text elsewhere does not make
+> the original target ambiguous.
+
+> Patchmark still rejects targets that were ambiguous in the base snapshot or
+> whose identity cannot be validated after prerequisite changes.
+
+A dependency-created target has no base provenance. Patchmark applies only its
+declared prerequisite closure, then requires the existing canonical resolver to
+find one valid target in that resulting Markdown. Two created copies remain a
+genuine ambiguity.
 
 ## Source validation
 
@@ -112,7 +158,9 @@ Imported patches preserve:
 
 - `source_patch_key`;
 - resolved `depends_on_patch_ids`;
-- `depends_on_patch_keys_snapshot`.
+- `depends_on_patch_keys_snapshot`;
+- optional document-scoped `target_provenance` for uniquely resolved base
+  targets.
 
 Runtime acceptance uses internal document-local patch IDs and verifies matching
 import, comment, and key provenance. Existing patches without dependency
@@ -127,18 +175,24 @@ inspectable and rejectable while blocked. Its Accept action is disabled for:
 - missing, stale, or invalidly owned prerequisites;
 - a current document that no longer matches the dependency-validated state.
 
-Accepting a prerequisite applies only that patch. Once every transitive
-prerequisite is accepted, Patchmark reuses normal current-document target
-validation before enabling and applying the dependent patch. Existing snapshot,
-Version History, anchor recovery, comment lineage, and open-comment behavior
-remain unchanged.
+Accepting a prerequisite applies only that patch and transforms the provenance
+of other pending patches through the exact accepted replacement. Bounded manual
+edits transform ranges through their Markdown change sets; broad or overlapping
+edits require heading-ancestry revalidation. Once every transitive prerequisite
+is accepted, the same provenance-first resolver validates the current document
+before enabling and applying the dependent patch. If the original target was
+deleted or rewritten, Patchmark marks it unavailable rather than attaching the
+patch to a copied occurrence. Existing snapshot, Version History, anchor
+recovery, comment lineage, and open-comment behavior remain unchanged.
 
 ## Guided Review and repair
 
 New focused-comment and Guided Review prompts request protocol version 2,
-`patch_key`, and `depends_on`. Dependency-aware repair text identifies graph or
-combined-state failures and preserves Review Batch identity, comment IDs, patch
-content, sources, reasons, and risks.
+`patch_key`, and `depends_on`. They also ask the model to simulate coordinated
+patches in dependency order and retain an owning parent heading when one patch
+copies a structural region that a dependent patch later edits. Dependency-aware
+repair text identifies graph or combined-state failures and preserves Review
+Batch identity, comment IDs, patch content, sources, reasons, and risks.
 
 Target failures distinguish genuine ambiguity in the exported snapshot, a
 target changed by declared prerequisites, later current-document staleness, and
@@ -147,6 +201,14 @@ invariant failures do not show a misleading ChatGPT repair prompt because
 rewriting a valid response cannot repair local document state or Patchmark
 behavior. Genuine exported-snapshot ambiguity still produces focused repair
 guidance.
+
+`dependency_target_genuine_ambiguity` reports the dependent and prerequisite
+keys, target heading, base and post-prerequisite match counts, whether the base
+target was unique, and the exact ambiguity reason. Its repair prompt asks for a
+unique owning parent scope or one atomic structural proposal. It does not route
+the failure through unrelated source-date or Sources-section instructions. A
+dependency-induced copy resolved by base provenance produces no error or repair
+prompt.
 
 Source-date dependency failures use
 `dependency_source_date_coverage_failed` and report the failing `patch_key`,
@@ -199,6 +261,16 @@ and returned `50823:51696`. Patchmark previously treated those whitespace-only
 boundary differences as distinct candidates. Physical-range canonicalization
 now merges them while retaining linked-anchor, target-heading, and normalized
 provenance. Regression coverage keeps genuine duplicate sections blocked.
+
+The long-table target-duplication regression fixture
+`scripts/fixtures/dependency-induced-target-duplication.json` preserves the
+reported Review Batch, project, document, comment, patch keys, dependency graph,
+and complete Scenario indicators table. Its base target occurs once and occurs
+twice globally after the appendix prerequisite. Direct coverage verifies import
+simulation, persisted provenance, copy-twice behavior, before/after offset
+transforms, dependency-created targets, genuine base and created-target
+ambiguity, document isolation, relevant repair text, and acceptance of the main
+section without changing the appendix copy.
 
 ## Non-goals
 

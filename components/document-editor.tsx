@@ -335,6 +335,10 @@ import {
 } from "@/lib/imports/patchmark-comment-reply-import";
 import { applyPatchReplacementAt } from "@/lib/patches/patch-application";
 import {
+  requirePendingPatchTargetRevalidation,
+  transformPendingPatchTargetProvenances
+} from "@/lib/patches/patch-target-provenance";
+import {
   PatchDependencyValidationError,
   createPatchDependencyRepairPrompt,
   getPatchDependencyBlockerMessage,
@@ -1241,9 +1245,15 @@ export function DocumentEditor() {
   const selectedPatchAnchorStatus = useMemo(
     () =>
       selectedPatch
-        ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches, comments)
+        ? getPatchReviewAnchorStatus(
+            markdown,
+            selectedPatch,
+            patches,
+            comments,
+            activeDocumentIdentity?.documentId
+          )
         : null,
-    [comments, markdown, patches, selectedPatch]
+    [activeDocumentIdentity, comments, markdown, patches, selectedPatch]
   );
   const selectedPatchDependencyStatus = useMemo(
     () =>
@@ -2978,12 +2988,16 @@ export function DocumentEditor() {
       hunkCount: changeSet?.edits.length
     });
 
-    if (!changeSet || comments.length === 0) {
+    if (!changeSet) {
       markEditPerformanceOperation(
         performanceOperationId,
         "state_update_requested"
       );
       setMarkdown(nextMarkdown);
+      const nextPatches = requirePendingPatchTargetRevalidation(patches);
+      if (nextPatches !== patches) {
+        setPatches(nextPatches);
+      }
       return;
     }
 
@@ -3020,6 +3034,27 @@ export function DocumentEditor() {
         "state_update_requested"
       );
       setMarkdown(nextMarkdown);
+      const nextPatches = requirePendingPatchTargetRevalidation(patches);
+      if (nextPatches !== patches) {
+        setPatches(nextPatches);
+      }
+      return;
+    }
+
+    const nextPatches = transformPendingPatchTargetProvenances({
+      edits: changeSet.edits,
+      patches
+    });
+
+    if (comments.length === 0) {
+      markEditPerformanceOperation(
+        performanceOperationId,
+        "state_update_requested"
+      );
+      setMarkdown(nextMarkdown);
+      if (nextPatches !== patches) {
+        setPatches(nextPatches);
+      }
       return;
     }
 
@@ -3043,6 +3078,9 @@ export function DocumentEditor() {
 
     if (mutationResult.comments !== comments) {
       setComments(mutationResult.comments);
+    }
+    if (nextPatches !== patches) {
+      setPatches(nextPatches);
     }
   }
 
@@ -5123,6 +5161,7 @@ export function DocumentEditor() {
       | "current"
       | "unknown" = "unknown";
     let dependencyValidationMarkdown = markdown;
+    let dependencyBaseDocumentSha256 = "";
 
     try {
       parsedResponse = parsePatchmarkCommentReplyImport(
@@ -5151,6 +5190,9 @@ export function DocumentEditor() {
         markdown: dependencyValidationMarkdown,
         patchProposals: parsedResponse.patch_proposals
       });
+      dependencyBaseDocumentSha256 = await createContentSha256(
+        dependencyValidationMarkdown
+      );
       sourceChatUrl = normalizeSourceChatUrl(
         chatGptImportDialog.sourceChatUrl
       );
@@ -5205,8 +5247,10 @@ export function DocumentEditor() {
         sourceChatUrl
       });
       validateImportedPatchDependencySimulation({
+        baseDocumentSha256: dependencyBaseDocumentSha256,
         baseDocumentState: dependencyBaseDocumentState,
         comments,
+        documentId: chatGptImportDialog.documentId,
         existingPatches:
           responseAssociation.kind === "exact" ? [] : existingPatches,
         importedPatches,
@@ -6476,7 +6520,8 @@ export function DocumentEditor() {
       markdown,
       currentPatch,
       patches,
-      comments
+      comments,
+      getProjectDocumentIdentity(projectHandle).documentId
     );
     const currentPatchApplicability =
       currentPatchAnchorStatus.kind === "pending"
@@ -6579,25 +6624,34 @@ export function DocumentEditor() {
         },
         source: "patch_apply"
       });
-      const nextPatches = patches.map((candidate) =>
-        candidate.id === currentPatch.id
-          ? {
-              ...candidate,
-              anchor_recovery_history: currentPatch.anchor_recovery_history,
-              original_text: currentPatch.original_text,
-              previous_original_text: currentPatch.previous_original_text,
-              reanchored_at: currentPatch.reanchored_at,
-              reanchor_reason: currentPatch.reanchor_reason,
-              status: "accepted" as const,
-              resolved_at: appliedAt,
-              accepted_at: appliedAt,
-              applied_at: appliedAt,
-              pre_apply_snapshot_id: snapshotResult.version.id,
-              pre_apply_snapshot_file: snapshotResult.version.file,
-              ...appliedAnchorMetadata
-            }
-          : candidate
-      );
+      const nextPatches = transformPendingPatchTargetProvenances({
+        edits: [
+          {
+            oldStart: originalStart,
+            oldEnd: originalEnd,
+            insertedText: currentPatch.suggested_text
+          }
+        ],
+        patches: patches.map((candidate) =>
+          candidate.id === currentPatch.id
+            ? {
+                ...candidate,
+                anchor_recovery_history: currentPatch.anchor_recovery_history,
+                original_text: currentPatch.original_text,
+                previous_original_text: currentPatch.previous_original_text,
+                reanchored_at: currentPatch.reanchored_at,
+                reanchor_reason: currentPatch.reanchor_reason,
+                status: "accepted" as const,
+                resolved_at: appliedAt,
+                accepted_at: appliedAt,
+                applied_at: appliedAt,
+                pre_apply_snapshot_id: snapshotResult.version.id,
+                pre_apply_snapshot_file: snapshotResult.version.file,
+                ...appliedAnchorMetadata
+              }
+            : candidate
+        )
+      });
 
       const linkedCommentMissing =
         Boolean(currentPatch.comment_id) && !mutationResult.linkedCommentFound;
@@ -6698,7 +6752,8 @@ export function DocumentEditor() {
             original_text: tableRowRebase.currentRowText,
             previous_original_text: currentPatch.original_text,
             reanchored_at: reanchoredAt,
-            reanchor_reason: "table_row_normalized_match" as const
+            reanchor_reason: "table_row_normalized_match" as const,
+            target_provenance: undefined
           }
         : candidate
     );
@@ -7765,11 +7820,16 @@ export function DocumentEditor() {
 
   async function persistRewriteSessionToProject(
     session: RewriteSession,
-    reason: string
+    reason: string,
+    recoveryFallbackSession?: RewriteSession
   ): Promise<RewriteProjectSaveResult> {
     const coordinator = requireRewritePersistenceCoordinator(session);
     const startedAt = performance.now();
-    const result = await coordinator.persist(session, reason);
+    const result = await coordinator.persist(
+      session,
+      reason,
+      recoveryFallbackSession
+    );
     if (typeof window !== "undefined") {
       window.dispatchEvent(
         new CustomEvent("patchmark:rewrite-persistence", {
@@ -8025,11 +8085,20 @@ export function DocumentEditor() {
               timestamp: appliedAt
             }).manifest
           : preparedSnapshot.manifest;
-      const nextPatches = markPendingPatchesAfterHumanRewrite({
-        analysis: currentImpact.analysis,
-        appliedAt,
-        patches,
-        session
+      const nextPatches = transformPendingPatchTargetProvenances({
+        edits: [
+          {
+            oldStart: currentImpact.resolved.start,
+            oldEnd: currentImpact.resolved.end,
+            insertedText: session.human_draft
+          }
+        ],
+        patches: markPendingPatchesAfterHumanRewrite({
+          analysis: currentImpact.analysis,
+          appliedAt,
+          patches,
+          session
+        })
       });
       const coordinator = requireRewritePersistenceCoordinator(session);
       await coordinator.commitApplied({
@@ -12710,6 +12779,9 @@ ${reviewBatchResponseRules}
 - Use an empty \`depends_on\` array for an independent patch.
 - When one patch supplies context or preserves information required by another patch, list its \`patch_key\` in the dependent patch's \`depends_on\` array.
 - Keep dependencies within this response and within the same \`comment_id\`.
+- Before returning coordinated patches, simulate them in dependency order and confirm every dependent \`original_text\` resolves to exactly one intended target.
+- When a patch copies or moves a complete structural region and a dependent patch later edits the original occurrence, preserve a uniquely identifying owning parent heading where possible and do not use a duplicated child heading as the only scope.
+- Use one atomic patch when copied and original structural regions cannot remain independently identifiable after prerequisite simulation.
 - Dependencies never cause automatic acceptance. Every patch remains a separate human decision.
 - Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 - Each \`patch_proposal\` must have its own exact \`original_text\` and \`suggested_text\`.
@@ -13723,7 +13795,8 @@ function getPatchReviewAnchorStatus(
   markdown: string,
   patch: PatchmarkPatch,
   patches: PatchmarkPatch[] = [],
-  comments: PatchmarkComment[] = []
+  comments: PatchmarkComment[] = [],
+  documentId?: string
 ): PatchReviewAnchorStatus {
   if (patch.status === "accepted") {
     return getAppliedPatchAnchorStatus(markdown, patch, patches);
@@ -13731,6 +13804,7 @@ function getPatchReviewAnchorStatus(
 
   const pendingResolution = resolvePendingPatchTarget({
     comments,
+    documentId,
     markdown,
     patch,
     patches
@@ -18278,6 +18352,8 @@ function createFocusedCommentsExportPayload({
         "If you suggest a document change, return a patch proposal linked to the comment_id.",
         "Return patchmark.comment_reply_import protocol version 2. Every patch proposal must include a unique response-local patch_key and a depends_on array.",
         "Use an empty depends_on array for independent patches. Declare same-response, same-comment prerequisites when another patch supplies required validation context or source preservation.",
+        "Before returning coordinated patches, simulate them in dependency order and confirm every dependent original_text resolves to exactly one intended target.",
+        "When one patch copies or moves a complete structural region and a dependent patch edits the original occurrence, preserve a uniquely identifying owning parent heading where possible; do not rely on a duplicated child heading alone, and use one atomic patch if the occurrences cannot remain independently identifiable.",
         "Dependencies never cause automatic acceptance; every patch remains a separate human decision.",
         "If more information is needed, ask a clarification question linked to the comment_id.",
         "Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.",

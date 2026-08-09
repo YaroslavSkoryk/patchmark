@@ -101,7 +101,9 @@ Every save validates the expected authoritative session revision and current pro
 
 ## Manual semantic review
 
-The complete semantic-review workflow lives on the `ChatGPT Review` screen. Its project-backed intent note retains the existing autosave and request-hash semantics. `Review meaning with ChatGPT` creates a manual prompt, and `Import semantic review` validates and stores a response. Patchmark makes no API call and exports no unrelated documents. The compact `ChatGPT Review` action on the Rewrite screen only navigates to this screen; it does not bypass the established persistence or protocol path.
+The complete semantic-review workflow lives on the `ChatGPT Review` screen. Its project-backed intent note retains the existing autosave and request-hash semantics. `Generate review prompt` creates the first manual request, `View current prompt` opens an existing exact request without writing project state, `Regenerate review prompt` deliberately supersedes an awaiting request, and `Import semantic review` validates and stores a response. Patchmark makes no API call and exports no unrelated documents. The compact `ChatGPT Review` action on the Rewrite screen only navigates to this screen; it does not bypass the established persistence or protocol path.
+
+> Viewing an exported prompt opens the exact existing request. Regenerating creates a new review request using the current Human Draft, current intent, and latest prompt format.
 
 Each request is committed to the authoritative project session before the prompt is presented as durably prepared. It records:
 
@@ -114,12 +116,81 @@ base_text_sha256
 human_draft_sha256
 intent_note_sha256
 prompt_sha256
+prompt_byte_length
+prompt_schema_version
+response_schema_fingerprint
+prompt_created_at
+prompt_generator_version
 exported_at
 ```
 
 The response protocol is `patchmark.human_rewrite_review_import`, version `1`. Exact import binding requires the session, review, request project, request document, base-text, and draft identities. Duplicate review import is rejected. A valid response is committed to the project session before success is reported; failed project persistence retains it only as explicitly labeled browser recovery for retry.
 
 The structured response covers overall assessment, preserved meaning, changed meaning, omissions, new claims, contradictions, certainty changes, source/citation impacts, ambiguities, and suggested draft edits. Enum and shape validation runs before storage.
+
+### Prompt format lifecycle
+
+Prompt format versioning is separate from response protocol versioning. The current prompt format is schema version `2`; the response protocol remains version `1`. A deterministic `sha256:` response-schema fingerprint covers required top-level fields, every required semantic array, object item types, every required item field, empty-field rules, and accepted enums. It does not change for explanatory wording or visual formatting alone. Runtime validation, the exported skeleton, repair examples, in-dialog required-shape examples, and drift tests derive from the same canonical schema description.
+
+> A persisted review request keeps its exact exported prompt. When Patchmark’s response format changes, the old request is preserved but marked outdated. The user generates a new review request with a new identity and the current canonical schema.
+
+ChatGPT Review reports `No review request`, `Awaiting response`, `Prompt format outdated`, `Draft changed since export`, `Intent changed since export`, `Superseded`, `Response imported`, or `Earlier-draft review` as applicable. A request with missing or mismatched prompt-schema metadata is never presented as current-format. Its exact prompt remains available under `View old exported prompt`, while the prominent action becomes `Generate updated review prompt`. A current-format active request always keeps separate `View current prompt` and `Regenerate review prompt` actions.
+
+Regeneration first flushes the current Visual or Markdown draft into canonical Markdown, includes the current intent note, verifies the base and draft hashes, and verifies that the expected old request is still active. A confirmation explains that the awaiting request will be superseded. Cancelling the confirmation performs no write. Confirming prepares one session revision that saves the current draft and intent, marks the old request `superseded`, and appends a new awaiting request. The new round always gets a new `rewrite_review_id`, even when every content hash is unchanged, plus current prompt metadata, an exact UTF-8 byte length, a new exact prompt hash, and a `supersedes_review_request_id` relation.
+
+The old round retains its request ID, exact prompt bytes, prompt hash, hashes, creation time, and a reason such as `prompt_regenerated`, `outdated_prompt_format`, `draft_changed`, or `intent_changed`. `Previous requests` exposes each historical round through `View superseded prompt`; its viewer labels the request as superseded and shows creation time, prompt format, response-schema fingerprint, draft hash, prompt hash, and the reason. `Copy complete prompt` copies only the byte-identical persisted prompt.
+
+> Regeneration never rewrites the old exported prompt. The old request remains available as superseded history.
+
+The candidate is presented only after the authoritative project save succeeds. Prompt-generation persistence uses a recovery fallback containing the current draft and intent but not the uncommitted supersession candidate, so a failed save leaves the old project-backed request active and cannot resurrect a partial new request from IndexedDB. Expected authoritative revision and expected active-request identity reject stale tabs and concurrent generation; the UI also suppresses double clicks. Document ownership is rechecked by the persistence owner, so completion cannot attach to a newly selected document.
+
+If the Human Draft hash changes after export, the active request remains exact and is labeled `Draft changed since export`; `Generate prompt for current draft` creates a new request bound to the current hash. If the intent hash changes, Patchmark labels `Intent changed since export` and offers `Regenerate prompt with current intent`. Neither state silently mutates the exported prompt, and the user may continue waiting for the earlier response.
+
+A structurally valid response for a superseded request first shows an `Import as historical review` confirmation. If confirmed, it is stored only on that exact old round as historical review data; cancelling performs no write. It never becomes the current review and never binds to the newer request. A malformed late response retains all path-level errors and may use structural repair against the old identity.
+
+> Repair preserves the identity of an existing response. Regeneration creates a new review request using the latest prompt format. These are separate operations.
+
+### Canonical semantic-review response
+
+The imported top-level object requires protocol `patchmark.human_rewrite_review_import`, protocol version `1`, the exact session/review/project/document identities, the exact base and Human Draft SHA-256 fingerprints, `overall_assessment`, `summary`, and all nine semantic arrays. `overall_assessment` accepts only `meaning_preserved`, `review_recommended`, `substantial_change`, or `unclear`. The `summary` field is required and may be an empty string.
+
+Every semantic array is required, permits `[]`, and accepts only object items with all documented fields present:
+
+- `meaning_preserved`: `point`, `current_text_evidence`, `rewrite_evidence`;
+- `meaning_changed`: `topic`, `current_meaning`, `rewrite_meaning`, `assessment`, `severity`;
+- `omitted_points`: `point`, `importance`, `reason`;
+- `new_claims`: `claim`, `relative_support`, `note`;
+- `contradictions`: `issue`, `severity`;
+- `certainty_changes`: `topic`, `from`, `to`, `impact`;
+- `source_impacts`: `claim_or_source`, `impact`, `note`;
+- `ambiguities`: `issue`, `suggestion`;
+- `suggested_draft_edits`: `draft_excerpt`, `suggested_text`, `reason`.
+
+`severity` and `importance` accept only `low`, `medium`, or `high`. `assessment` accepts only `deliberate`, `possibly_unintentional`, or `unclear`. `relative_support` accepts only `present_in_current_text`, `partially_present_in_current_text`, or `not_present_in_current_text`. Source `impact` accepts only `citation_added`, `citation_changed`, `citation_removed`, `source_support_changed`, or `none`. Enum values are case-sensitive.
+
+All item fields are required in protocol version 1; there are no optional semantic item fields. The evidence, current/rewrite meaning, reason, note, impact explanation, and ambiguity suggestion fields may contain an empty string, but their keys may not be omitted. Core finding text, topics, claims, excerpts, suggested text, `from`, and `to` values must be non-empty strings.
+
+> Patchmark accepts only canonical structured semantic-review findings. It may normalize harmless JSON formatting, but it does not invent missing semantic evidence or reasoning.
+
+The exporter generates field instructions and the complete canonical response skeleton from the same schema description used by runtime validation. It lists all nine arrays under an explicit no-string rule, includes a labeled invalid `meaning_preserved` string-array example, and tells ChatGPT that every array item must be an object, primitive array items are forbidden, empty findings use `[]`, every required item field must remain present, all protocol identities and hashes must be copied exactly, and the response must contain one fenced JSON block with no outside prose. A final seven-step self-check covers object-only arrays, required fields, empty arrays, exact enums, exact identities and hashes, one JSON object, and no prose outside the fence.
+
+### Normalization and validation
+
+The importer removes one leading UTF-8 byte-order mark, ignores surrounding whitespace, and accepts either one plain JSON value or one complete fenced `json`/unlabeled JSON block. It rejects multiple JSON blocks and prose outside a fenced block. All semantic arrays are required, so omission is not normalized to `[]`. Enum capitalization is not normalized. Patchmark never converts string findings into objects or fabricates evidence, severity, reasons, source effects, IDs, hashes, or request identity.
+
+Validation issues have stable codes and paths such as `meaning_preserved[0]` with the expected shape, received type, message, and canonical example. Repairable shape errors include invalid JSON/fence structure, primitive array items, missing semantic fields, missing arrays, and invalid enums. Identity, hash, duplicate, cancelled-request, unknown-request, and persistence errors are classified separately and do not offer misleading structural repair.
+
+Import is preflighted as a pure operation before any draft or project save. A malformed response therefore creates no review round, changes no request status, and requests no authoritative write. A valid response is revalidated against the authoritatively saved draft and then committed as one project-backed session revision. Persistence success is never reported before that commit completes; a failed commit leaves the review absent and the response available for retry.
+
+### Import repair workflow
+
+An invalid response keeps the import dialog open and preserves the textarea value exactly, including Unicode and ordering. A focused, screen-reader-announced error panel appears beside the response and Import action, shows the first failing path and required shape immediately, and lets the user expand all remaining issues. The distant workspace error is not the sole explanation.
+
+> When a response has a repairable structural problem, Patchmark preserves the pasted response and generates a repair prompt containing the exact validation errors and required schema.
+
+`Copy repair prompt` copies the complete manual-bridge prompt. It includes exact protocol/version, session/review/project/document identities, base and Human Draft hashes, every validation issue, generated field rules, the complete canonical skeleton, the full untruncated original response, and its UTF-8 byte length and SHA-256. It names the exact request being repaired, forbids replacing its identity with a newer request ID, asks ChatGPT to repair structure without changing review substance, and requires one fenced JSON block without explanatory prose. For an invalid active response, the dialog also offers regeneration and explains the distinction: repair keeps the request identity, while regeneration creates a new request. For a superseded request it explains that the result is historical and that a current-format review requires regeneration in Patchmark. Patchmark never submits the repair automatically.
+
+Wrong identity or hash responses direct the user to select the correct response or export a fresh request. Cancelled and duplicate requests explain their lifecycle state. A response matching an earlier exported round remains importable as `Review of an earlier draft`; current/earlier classification compares the round hashes with the current base and Human Draft hashes after persistence.
 
 When the draft hash still matches, the review is current. A valid response for an earlier exported draft is retained as `Review of an earlier draft` and is not current validation. Editing and exporting another request preserves earlier rounds. One request can await a response at a time; cancelling it allows a new round.
 

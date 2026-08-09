@@ -33,11 +33,13 @@ type SectionAnchor = Extract<PatchmarkComment["anchor"], { kind: "section" }>;
 
 export type CanonicalTargetMethod =
   | "accepted_patch_replacement"
+  | "base_target_provenance"
   | "context"
   | "current_offset"
   | "descendant"
   | "exact"
   | "historical_anchor"
+  | "heading_ancestry"
   | "linked_comment_anchor"
   | "linked_comment_context"
   | "linked_comment_structure"

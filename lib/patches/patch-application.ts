@@ -17,17 +17,20 @@ export type PatchApplicationResolution =
 
 export function resolveAndApplyPendingPatch({
   comments = [],
+  documentId,
   markdown,
   patch,
   patches = []
 }: {
   comments?: PatchmarkComment[];
+  documentId?: string;
   markdown: string;
   patch: PatchmarkPatch;
   patches?: PatchmarkPatch[];
 }): PatchApplicationResolution {
   const resolution = resolvePendingPatchTarget({
     comments,
+    documentId,
     markdown,
     patch,
     patches

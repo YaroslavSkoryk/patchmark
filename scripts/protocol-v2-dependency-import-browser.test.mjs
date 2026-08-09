@@ -230,6 +230,14 @@ try {
   assert.equal(comments[0].thread[0].content, fixture.response.replies[0].reply);
   assert.equal(patches.length, 18);
   assert.ok(patches.every((patch) => patch.status === "pending"));
+  assert.ok(
+    patches.every(
+      (patch) =>
+        patch.target_provenance?.document_id === fixture.response.document_id &&
+        patch.target_provenance?.base_document_sha256 ===
+          fixture.reviewBatch.document_content_sha256
+    )
+  );
   assert.deepEqual(
     patches.find(
       (patch) => patch.source_patch_key === "link-horme-evidence"

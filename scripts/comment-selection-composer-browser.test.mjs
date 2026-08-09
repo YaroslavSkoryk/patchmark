@@ -37,6 +37,8 @@ const rewriteWorkspaceReviewScreenshotPath =
   process.env.PATCHMARK_REWRITE_REVIEW_SCREENSHOT;
 const rewriteWorkspaceTableScreenshotPath =
   process.env.PATCHMARK_REWRITE_TABLE_SCREENSHOT;
+const semanticReviewAuditOnly =
+  process.env.PATCHMARK_SEMANTIC_REVIEW_AUDIT_ONLY === "1";
 const preambleTarget =
   "Preamble selection has no deterministic containing section.";
 const paragraphTarget =
@@ -427,7 +429,8 @@ async function run() {
           draftEditorMounted: document.querySelector("[aria-label='My rewrite Visual editor']") === window.__patchmarkRewriteDraftEditorNode,
           hasIntent: Boolean(document.querySelector("#rewrite-intent-note")),
           hasImport: Array.from(reviewScreen.querySelectorAll("button")).some((button) => button.textContent.trim() === "Import semantic review"),
-          hasPromptExport: Array.from(reviewScreen.querySelectorAll("button")).some((button) => button.textContent.trim() === "Review meaning with ChatGPT"),
+          hasPromptExport: Array.from(reviewScreen.querySelectorAll("button")).some((button) => button.textContent.trim() === "Generate review prompt"),
+          requestStatus: reviewScreen.querySelector("[data-review-request-status]")?.getAttribute("data-review-request-status"),
           modeControlVisible: document.querySelector("[aria-label='Rewrite comparison mode']")?.getClientRects().length > 0,
           rewriteHidden: rewriteScreen.hidden,
           visibleComparisonPanes: Array.from(document.querySelectorAll(".rewrite-text-pane")).filter((pane) => pane.getClientRects().length > 0).length
@@ -441,6 +444,7 @@ async function run() {
     assert.equal(reviewScreen.hasIntent, true);
     assert.equal(reviewScreen.hasImport, true);
     assert.equal(reviewScreen.hasPromptExport, true);
+    assert.equal(reviewScreen.requestStatus, "No review request");
     assert.equal(reviewScreen.modeControlVisible, false);
     assert.equal(reviewScreen.rewriteHidden, true);
     assert.equal(reviewScreen.visibleComparisonPanes, 0);
@@ -492,7 +496,7 @@ async function run() {
     assert.equal(restoredRewriteSelection.selectionInDraft, true);
     await clickRewriteWorkspaceButton(client, "ChatGPT Review");
     const rewritePromptStartedAt = Date.now();
-    await clickRewriteWorkspaceButton(client, "Review meaning with ChatGPT");
+    await clickRewriteWorkspaceButton(client, "Generate review prompt");
     const promptText = await waitFor(
       client,
       "manual rewrite review prompt",
@@ -504,12 +508,222 @@ async function run() {
     assert.match(promptText, /patchmark\.human_rewrite_review_import/);
     assert.match(promptText, /rewrite_session_/);
     assert.match(promptText, /rewrite_review_/);
+    assert.match(
+      promptText,
+      /Every item in every semantic-review array must be a JSON object\./
+    );
+    assert.match(promptText, /prompt_schema_version 2/);
+    assert.match(promptText, /response_schema_fingerprint sha256:[a-f0-9]{64}/);
+    assert.match(promptText, /Never place a string directly inside:/);
+    for (const arrayName of [
+      "meaning_preserved",
+      "meaning_changed",
+      "omitted_points",
+      "new_claims",
+      "contradictions",
+      "certainty_changes",
+      "source_impacts",
+      "ambiguities",
+      "suggested_draft_edits"
+    ]) {
+      assert.match(promptText, new RegExp(`- ${arrayName}`));
+    }
+    assert.match(promptText, /INVALID — array items may not be strings\./);
+    assert.match(promptText, /1\. Every review array contains only objects\./);
+    assert.match(promptText, /7\. There is no prose outside the JSON fence\./);
+    assert.match(promptText, /Complete canonical response skeleton/);
+    assert.match(promptText, /"meaning_preserved": \[/);
+    assert.match(promptText, /"suggested_draft_edits": \[/);
     const requestPayloadMatch = /Request payload:\s*```json\s*([\s\S]*?)\s*```/.exec(promptText);
     assert.ok(requestPayloadMatch, "Rewrite review request payload missing.");
-    const requestPayload = JSON.parse(requestPayloadMatch[1]);
+    let requestPayload = JSON.parse(requestPayloadMatch[1]);
+    const firstRequestPayload = requestPayload;
+    const firstReviewRequestId = requestPayload.rewrite_review_id;
+    const firstReviewPromptText = promptText;
+    const beforePromptLifecycleDocumentFingerprint =
+      fingerprintDocumentContent(fixtureDir);
+    await clickRewriteDialogButton(client, "Done");
+    assert.equal(
+      await waitFor(
+        client,
+        "awaiting semantic review request status",
+        `document.querySelector("[data-review-request-status]")?.getAttribute("data-review-request-status") ?? null`
+      ),
+      "Awaiting response"
+    );
+    const beforeViewPromptPersistenceEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    await clickRewriteWorkspaceButton(client, "View current prompt");
+    assert.equal(
+      await waitFor(
+        client,
+        "exact persisted current semantic-review prompt",
+        `document.querySelector("[aria-label='Semantic review prompt']")?.value ?? null`
+      ),
+      firstReviewPromptText
+    );
+    const currentPromptProvenance = await evaluate(client, {
+      expression: `(() => {
+        const dialog = document.querySelector("[aria-label='Current review prompt']");
+        return dialog ? {
+          metadata: dialog.querySelector(".rewrite-review-prompt-metadata")?.textContent ?? "",
+          hasCopyComplete: Array.from(dialog.querySelectorAll("button"))
+            .some((button) => button.textContent.trim() === "Copy complete prompt")
+        } : null;
+      })()`
+    });
+    assert.equal(currentPromptProvenance.hasCopyComplete, true);
+    assert.match(currentPromptProvenance.metadata, /Request stateCurrent/);
+    assert.match(currentPromptProvenance.metadata, /Prompt format2/);
+    assert.match(currentPromptProvenance.metadata, /Response schemasha256:[a-f0-9]{8}…/);
+    assert.match(currentPromptProvenance.metadata, /Draft hash[a-f0-9]{8}…/);
+    await evaluate(client, {
+      expression: `(() => {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (value) => {
+              window.__patchmarkCopiedCompleteReviewPrompt = value;
+            }
+          }
+        });
+        return true;
+      })()`
+    });
+    await clickRewriteDialogButton(client, "Copy complete prompt");
+    assert.equal(
+      await waitFor(
+        client,
+        "exact copied current semantic-review prompt",
+        `window.__patchmarkCopiedCompleteReviewPrompt ?? null`
+      ),
+      firstReviewPromptText
+    );
+    await clickRewriteDialogButton(client, "Done");
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      beforeViewPromptPersistenceEventCount,
+      "Viewing the exact persisted review prompt must create zero project writes."
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-review-request-card h4")?.textContent.trim() ?? null`
+      }),
+      firstReviewRequestId
+    );
+
+    await clickRewriteWorkspaceButton(client, "Regenerate review prompt");
+    await waitFor(
+      client,
+      "semantic-review regeneration confirmation",
+      `Boolean(document.querySelector("[aria-label='Generate a new review prompt?']"))`
+    );
+    await clickRewriteDialogButton(client, "Cancel");
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      beforeViewPromptPersistenceEventCount,
+      "Cancelling review-prompt regeneration must create zero project writes."
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-review-request-card h4")?.textContent.trim() ?? null`
+      }),
+      firstReviewRequestId
+    );
+
+    await clickRewriteWorkspaceButton(client, "Regenerate review prompt");
+    await clickRewriteDialogButton(client, "Generate new prompt");
+    const regeneratedPromptText = await waitFor(
+      client,
+      "regenerated current semantic-review prompt",
+      `document.querySelector("[aria-label='Semantic review prompt']")?.value ?? null`,
+      (value) => typeof value === "string" && value !== firstReviewPromptText
+    );
+    const regeneratedPayloadMatch =
+      /Request payload:\s*```json\s*([\s\S]*?)\s*```/.exec(regeneratedPromptText);
+    assert.ok(regeneratedPayloadMatch, "Regenerated review request payload missing.");
+    requestPayload = JSON.parse(regeneratedPayloadMatch[1]);
+    assert.notEqual(requestPayload.rewrite_review_id, firstReviewRequestId);
+    assert.equal(requestPayload.rewrite_session_id, firstRequestPayload.rewrite_session_id);
+    assert.equal(requestPayload.human_draft_sha256, firstRequestPayload.human_draft_sha256);
+    assert.equal(requestPayload.intent_note_sha256, firstRequestPayload.intent_note_sha256);
+    assert.notEqual(
+      createHash("sha256").update(regeneratedPromptText).digest("hex"),
+      createHash("sha256").update(firstReviewPromptText).digest("hex")
+    );
+    await clickRewriteDialogButton(client, "Done");
+    assert.equal(
+      await waitFor(
+        client,
+        "new active semantic-review request identity",
+        `document.querySelector(".rewrite-review-request-card h4")?.textContent.trim() ?? null`
+      ),
+      requestPayload.rewrite_review_id
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      beforeViewPromptPersistenceEventCount + 1,
+      "Regeneration must persist the draft, supersession, and new request in one project commit."
+    );
+    assert.deepEqual(
+      fingerprintDocumentContent(fixtureDir),
+      beforePromptLifecycleDocumentFingerprint,
+      "Prompt regeneration must not mutate Markdown or document review data."
+    );
+    await clickRewriteWorkspaceButton(client, "View superseded prompt");
+    assert.equal(
+      await waitFor(
+        client,
+        "byte-identical superseded semantic-review prompt",
+        `document.querySelector("[aria-label='Semantic review prompt']")?.value ?? null`
+      ),
+      firstReviewPromptText
+    );
+    assert.match(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-review-prompt-metadata")?.textContent ?? ""`
+      }),
+      /Superseded becausePrompt regenerated/
+    );
     await clickRewriteDialogButton(client, "Done");
     await clickRewriteWorkspaceButton(client, "Import semantic review");
     const semanticReviewResponse = createRewriteSemanticReviewResponse(requestPayload);
+    const malformedSemanticReviewResponse = Object.fromEntries(
+      Object.entries(semanticReviewResponse).map(([key, value]) => [
+        key,
+        [
+          "meaning_preserved",
+          "meaning_changed",
+          "omitted_points",
+          "new_claims",
+          "contradictions",
+          "certainty_changes",
+          "source_impacts",
+          "ambiguities",
+          "suggested_draft_edits"
+        ].includes(key)
+          ? [`Existing semantic substance for ${key} — café, ไทย, and exact Unicode. `.repeat(5)]
+          : value
+      ])
+    );
+    const malformedSemanticReviewText = JSON.stringify(
+      malformedSemanticReviewResponse,
+      null,
+      2
+    );
+    const failedImportFingerprint = fingerprintProject(fixtureDir);
+    const failedImportPersistenceEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
     await evaluate(client, {
       expression: `(() => {
         const textarea = document.querySelector("[aria-label='Semantic review response JSON']");
@@ -517,11 +731,172 @@ async function run() {
           HTMLTextAreaElement.prototype,
           "value"
         ).set;
-        setter.call(textarea, ${JSON.stringify(JSON.stringify(semanticReviewResponse))});
+        setter.call(textarea, ${JSON.stringify(malformedSemanticReviewText)});
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        textarea.scrollTop = 140;
+        return true;
+      })()`
+    });
+    await clickRewriteDialogButton(client, "Import review");
+    const failedSemanticImport = await waitFor(
+      client,
+      "in-dialog semantic review validation errors",
+      `(() => {
+        const dialog = document.querySelector("[aria-label='Import ChatGPT semantic review']");
+        const error = dialog?.querySelector(".rewrite-review-import-error");
+        const textarea = dialog?.querySelector("[aria-label='Semantic review response JSON']");
+        const repairButton = Array.from(dialog?.querySelectorAll("button") ?? [])
+          .find((button) => button.textContent.trim() === "Copy repair prompt");
+        const reviewText = document.querySelector(".rewrite-review-pane")?.textContent ?? "";
+        if (!dialog || !error || !textarea || !repairButton) return null;
+        return {
+          activeErrorSummary: document.activeElement === error,
+          errorCode: error.getAttribute("data-error-code"),
+          errorText: error.textContent,
+          hasRegenerate: Array.from(error.querySelectorAll("button"))
+            .some((button) => button.textContent.trim() === "Regenerate review prompt"),
+          globalErrorVisible: Boolean(document.querySelector(".rewrite-workspace-error")),
+          responseText: textarea.value,
+          reviewText,
+          scrollTop: textarea.scrollTop
+        };
+      })()`
+    );
+    assert.equal(failedSemanticImport.activeErrorSummary, true);
+    assert.equal(failedSemanticImport.errorCode, "invalid_array_item_type");
+    assert.match(failedSemanticImport.errorText, /Review response could not be imported/);
+    assert.match(failedSemanticImport.errorText, /meaning_preserved\[0\]/);
+    assert.match(failedSemanticImport.errorText, /Expected/);
+    assert.match(failedSemanticImport.errorText, /Received/);
+    assert.match(failedSemanticImport.errorText, /Repair keeps this review request identity/);
+    assert.match(failedSemanticImport.errorText, /Regeneration supersedes this request/);
+    assert.equal(failedSemanticImport.hasRegenerate, true);
+    assert.equal(failedSemanticImport.globalErrorVisible, false);
+    assert.equal(failedSemanticImport.responseText, malformedSemanticReviewText);
+    assert.equal(failedSemanticImport.reviewText.includes("0 rounds"), true);
+    assert.equal(failedSemanticImport.scrollTop, 140);
+    await delay(150);
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      failedImportFingerprint,
+      "Invalid semantic review preflight must create zero project writes."
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      failedImportPersistenceEventCount,
+      "Invalid semantic review preflight must not request persistence."
+    );
+    await evaluate(client, {
+      expression: `(() => {
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: {
+            writeText: async (value) => {
+              window.__patchmarkCopiedRewriteRepairPrompt = value;
+            }
+          }
+        });
+        return true;
+      })()`
+    });
+    await clickRewriteDialogButton(client, "Copy repair prompt");
+    const copiedRepairPrompt = await waitFor(
+      client,
+      "complete copied semantic review repair prompt",
+      `window.__patchmarkCopiedRewriteRepairPrompt ?? null`
+    );
+    assert.equal(copiedRepairPrompt.includes(malformedSemanticReviewText), true);
+    assert.match(copiedRepairPrompt, /meaning_preserved\[0\] \[invalid_array_item_type\]/);
+    assert.match(copiedRepairPrompt, /Complete canonical response skeleton/);
+    for (const identityValue of [
+      requestPayload.rewrite_session_id,
+      requestPayload.rewrite_review_id,
+      requestPayload.project_id,
+      requestPayload.document_id,
+      requestPayload.base_text_sha256,
+      requestPayload.human_draft_sha256
+    ]) {
+      assert.equal(copiedRepairPrompt.includes(identityValue), true);
+    }
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-review-repair-prompt [role='status']")?.textContent`
+      }),
+      "Complete repair prompt copied."
+    );
+    const validSemanticReviewText = JSON.stringify(semanticReviewResponse);
+    await evaluate(client, {
+      expression: `(() => {
+        const textarea = document.querySelector("[aria-label='Semantic review response JSON']");
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        ).set;
+        setter.call(textarea, ${JSON.stringify(validSemanticReviewText)});
         textarea.dispatchEvent(new Event("input", { bubbles: true }));
         return true;
       })()`
     });
+    assert.equal(
+      await evaluate(client, {
+        expression: `Boolean(document.querySelector(".rewrite-review-import-error"))`
+      }),
+      false,
+      "Editing the response should clear stale validation guidance."
+    );
+    const failedPersistenceFingerprint = fingerprintProject(fixtureDir);
+    const failedPersistenceEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    await evaluate(client, {
+      expression: `(() => {
+        window.__patchmarkFixtureWriteControls.failNextSequence =
+          window.__patchmarkFixtureWriteStats.nextSequence;
+        return window.__patchmarkFixtureWriteStats.nextSequence;
+      })()`
+    });
+    await clickRewriteDialogButton(client, "Import review");
+    const failedPersistenceImport = await waitFor(
+      client,
+      "in-dialog semantic review persistence failure",
+      `(() => {
+        const dialog = document.querySelector("[aria-label='Import ChatGPT semantic review']");
+        const error = dialog?.querySelector(".rewrite-review-import-error[data-error-code='persistence_failure']");
+        const textarea = dialog?.querySelector("[aria-label='Semantic review response JSON']");
+        const reviewText = document.querySelector(".rewrite-review-pane")?.textContent ?? "";
+        if (!dialog || !error || !textarea) return null;
+        return {
+          activeErrorSummary: document.activeElement === error,
+          errorText: error.textContent,
+          repairOffered: Array.from(error.querySelectorAll("button"))
+            .some((button) => button.textContent.trim() === "Copy repair prompt"),
+          responseText: textarea.value,
+          reviewText
+        };
+      })()`
+    );
+    assert.equal(failedPersistenceImport.activeErrorSummary, true);
+    assert.match(
+      failedPersistenceImport.errorText,
+      /validated response was not imported/i
+    );
+    assert.equal(failedPersistenceImport.repairOffered, false);
+    assert.equal(failedPersistenceImport.responseText, validSemanticReviewText);
+    assert.equal(failedPersistenceImport.reviewText.includes("0 rounds"), true);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      failedPersistenceEventCount,
+      "A failed semantic-review save must not publish persistence success."
+    );
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      failedPersistenceFingerprint,
+      "A failed semantic-review save must roll back project files."
+    );
     await clickRewriteDialogButton(client, "Import review");
     const importedReview = await waitFor(
       client,
@@ -544,6 +919,70 @@ async function run() {
     ]) {
       assert.match(importedReview, new RegExp(category));
     }
+    await clickRewriteWorkspaceButton(client, "Import semantic review");
+    const historicalSemanticReviewText = JSON.stringify(
+      createRewriteSemanticReviewResponse(firstRequestPayload)
+    );
+    await evaluate(client, {
+      expression: `(() => {
+        const textarea = document.querySelector("[aria-label='Semantic review response JSON']");
+        const setter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype,
+          "value"
+        ).set;
+        setter.call(textarea, ${JSON.stringify(historicalSemanticReviewText)});
+        textarea.dispatchEvent(new Event("input", { bubbles: true }));
+        return true;
+      })()`
+    });
+    const beforeHistoricalConfirmationEventCount = await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    });
+    await clickRewriteDialogButton(client, "Import review");
+    const historicalImportConfirmation = await waitFor(
+      client,
+      "superseded semantic-review import confirmation",
+      `(() => {
+        const dialog = document.querySelector("[aria-label='Import ChatGPT semantic review']");
+        const confirmation = dialog?.querySelector(".rewrite-review-historical-import-confirmation");
+        return confirmation ? {
+          text: confirmation.textContent,
+          hasImportHistorical: Array.from(confirmation.querySelectorAll("button"))
+            .some((button) => button.textContent.trim() === "Import as historical review")
+        } : null;
+      })()`
+    );
+    assert.match(historicalImportConfirmation.text, /superseded review request/i);
+    assert.match(historicalImportConfirmation.text, /not be attached to the current active request/i);
+    assert.equal(historicalImportConfirmation.hasImportHistorical, true);
+    await clickRewriteDialogButton(client, "Cancel");
+    await delay(150);
+    assert.equal(
+      await evaluate(client, {
+        expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+      }),
+      beforeHistoricalConfirmationEventCount,
+      "Cancelling a historical import confirmation must create zero project writes."
+    );
+    assert.equal(
+      await evaluate(client, {
+        expression: `document.querySelector("[aria-label='Semantic review response JSON']")?.value ?? null`
+      }),
+      historicalSemanticReviewText
+    );
+    await clickRewriteDialogButton(client, "Import review");
+    await clickRewriteDialogButton(client, "Import as historical review");
+    await waitFor(
+      client,
+      "historical superseded semantic review imported",
+      `document.querySelector(".rewrite-review-import-status")?.textContent?.includes("superseded request")`
+    );
+    assert.match(
+      await evaluate(client, {
+        expression: `document.querySelector(".rewrite-review-pane")?.textContent ?? ""`
+      }),
+      /Current draft review/
+    );
     await clickRewriteWorkspaceButton(client, "Rewrite");
     await clickRewriteWorkspaceButton(client, "Markdown");
     assert.equal(
@@ -566,6 +1005,85 @@ async function run() {
       "project-saved semantic rewrite review",
       `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
     );
+    if (semanticReviewAuditOnly) {
+      await clickRewriteWorkspaceButton(client, "Close");
+      await clickRewriteDialogButton(client, "Keep draft and close");
+      assert.deepEqual(
+        fingerprintDocumentContent(fixtureDir),
+        initialDocumentContentFingerprint,
+        "Semantic-review import must not change Markdown or document review content."
+      );
+      const semanticReviewStore = readRewriteSessionStore(
+        fixtureDir,
+        "doc_action"
+      );
+      const semanticReviewSession = semanticReviewStore.sessions.find(
+        (candidate) => candidate.status === "draft"
+      );
+      assert.ok(semanticReviewSession);
+      assert.equal(semanticReviewSession.human_draft, rewriteDraft);
+      assert.equal(semanticReviewSession.review_rounds.length, 2);
+      assert.equal(semanticReviewSession.review_rounds[0].status, "superseded");
+      assert.equal(
+        semanticReviewSession.review_rounds[0].superseded_reason,
+        "prompt_regenerated"
+      );
+      assert.ok(semanticReviewSession.review_rounds[0].response);
+      assert.equal(
+        semanticReviewSession.review_rounds[0].prompt_text,
+        firstReviewPromptText
+      );
+      assert.equal(semanticReviewSession.review_rounds[1].status, "imported");
+      await clearRewriteIndexedDb(client);
+      await client.call("Page.reload", { ignoreCache: true });
+      await waitForEditorShell(client);
+      await clickButtonByText(client, "Open Project Folder");
+      await waitForActiveDocument(client, "Action Plan");
+      await waitFor(
+        client,
+        "project-backed rewrite resume after semantic review import",
+        `document.querySelector(".rewrite-resume-banner")?.textContent?.includes("Rewrite draft available")`
+      );
+      await clickButtonByText(client, "Resume rewrite");
+      await clickRewriteWorkspaceButton(client, "ChatGPT Review");
+      assert.equal(
+        await waitFor(
+          client,
+          "persisted semantic review after refresh",
+          `document.querySelector(".rewrite-review-pane")?.textContent?.includes("Current draft review")`
+        ),
+        true
+      );
+      assert.equal(
+        await evaluate(client, {
+          expression: `Array.from(document.querySelectorAll("[data-testid='rewrite-workspace'] button"))
+            .some((button) => button.textContent.trim() === "View superseded prompt")`
+        }),
+        true
+      );
+      console.log(
+        JSON.stringify(
+          {
+            semanticReviewBrowserAudit: true,
+            invalidResponseZeroWrites: true,
+            viewPromptZeroWrites: true,
+            cancelledRegenerationZeroWrites: true,
+            explicitRegenerationPersisted: true,
+            oldPromptPreservedExactly: true,
+            historicalImportConfirmed: true,
+            responsePreserved: true,
+            inDialogErrors: true,
+            repairPromptCopied: true,
+            persistenceFailureRolledBack: true,
+            repairedImportPersisted: true,
+            humanDraftAndMarkdownUnchanged: true
+          },
+          null,
+          2
+        )
+      );
+      return;
+    }
     await clickRewriteWorkspaceButton(client, "ChatGPT Review");
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
@@ -644,8 +1162,10 @@ async function run() {
     );
     assert.ok(savedRewriteSession);
     assert.equal(savedRewriteSession.human_draft, rewriteDraft);
-    assert.equal(savedRewriteSession.review_rounds.length, 1);
-    assert.equal(savedRewriteSession.review_rounds[0].status, "imported");
+    assert.equal(savedRewriteSession.review_rounds.length, 2);
+    assert.equal(savedRewriteSession.review_rounds[0].status, "superseded");
+    assert.equal(savedRewriteSession.review_rounds[0].prompt_text, firstReviewPromptText);
+    assert.equal(savedRewriteSession.review_rounds[1].status, "imported");
     await clearRewriteIndexedDb(client);
     await client.call("Page.reload", { ignoreCache: true });
     await waitForEditorShell(client);

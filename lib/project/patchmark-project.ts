@@ -5691,6 +5691,9 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       typeof patch.target_heading === "string"
         ? patch.target_heading
         : undefined,
+    target_provenance: normalizePatchTargetProvenance(
+      patch.target_provenance
+    ),
     original_text: patch.original_text,
     suggested_text: patch.suggested_text,
     suggested_text_sources: normalizeSourceReferences(
@@ -5790,6 +5793,79 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
     human_rewrite_impact: normalizeHumanRewritePatchImpact(
       patch.human_rewrite_impact
     )
+  };
+}
+
+function normalizePatchTargetProvenance(
+  value: unknown
+): PatchmarkPatch["target_provenance"] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    value.schema_version !== 1 ||
+    typeof value.document_id !== "string" ||
+    value.document_id.length === 0 ||
+    typeof value.patch_key !== "string" ||
+    value.patch_key.length === 0 ||
+    typeof value.base_document_sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.base_document_sha256) ||
+    typeof value.base_start !== "number" ||
+    !Number.isInteger(value.base_start) ||
+    value.base_start < 0 ||
+    typeof value.base_end !== "number" ||
+    !Number.isInteger(value.base_end) ||
+    value.base_end < value.base_start ||
+    typeof value.current_start !== "number" ||
+    !Number.isInteger(value.current_start) ||
+    value.current_start < 0 ||
+    typeof value.current_end !== "number" ||
+    !Number.isInteger(value.current_end) ||
+    value.current_end < value.current_start ||
+    typeof value.original_text_fingerprint !== "string" ||
+    !/^fnv1a32:[a-f0-9]{8}$/.test(value.original_text_fingerprint) ||
+    !Array.isArray(value.heading_ancestry) ||
+    !value.heading_ancestry.every(
+      (heading) => typeof heading === "string" && heading.length > 0
+    ) ||
+    value.base_occurrence_count !== 1 ||
+    ![
+      "exact_full_text",
+      "heading_scoped_full_text",
+      "normalized_full_text"
+    ].includes(String(value.resolution_method)) ||
+    !["mapped", "requires_revalidation"].includes(
+      String(value.mapping_state)
+    )
+  ) {
+    throw new Error(
+      ".patchmark/patches.json contains invalid patch target provenance."
+    );
+  }
+
+  return {
+    schema_version: 1,
+    document_id: value.document_id,
+    patch_key: value.patch_key,
+    base_document_sha256: value.base_document_sha256,
+    base_start: value.base_start,
+    base_end: value.base_end,
+    current_start: value.current_start,
+    current_end: value.current_end,
+    original_text_fingerprint: value.original_text_fingerprint,
+    target_heading:
+      typeof value.target_heading === "string"
+        ? value.target_heading
+        : undefined,
+    heading_ancestry: value.heading_ancestry,
+    base_occurrence_count: 1,
+    resolution_method: value.resolution_method as NonNullable<
+      PatchmarkPatch["target_provenance"]
+    >["resolution_method"],
+    mapping_state: value.mapping_state as NonNullable<
+      PatchmarkPatch["target_provenance"]
+    >["mapping_state"]
   };
 }
 
