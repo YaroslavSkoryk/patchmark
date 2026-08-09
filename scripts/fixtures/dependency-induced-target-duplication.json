@@ -1,0 +1,42 @@
+{
+  "protocol": "patchmark.comment_reply_import",
+  "protocol_version": 2,
+  "review_batch_id": "review_batch_9a637b1d-0b08-48cf-8698-9318621ebe1f",
+  "project_id": "prj_0b86549a-56aa-4f37-8f4e-68cba8c958a3",
+  "document_id": "doc_2909a2c8-c4da-4cd0-8a03-f58387444ce6",
+  "summary": "Preserve the complete sensitivity analysis in an appendix and present essential indicators in the main plan.",
+  "replies": [
+    {
+      "comment_id": "PM-COMMENT-0086",
+      "reply": "I separated the complete sensitivity detail from the main decision view while preserving both through an explicit dependency.",
+      "suggested_user_action": "review"
+    }
+  ],
+  "patch_proposals": [
+    {
+      "patch_key": "add-complete-sensitivity-appendix",
+      "depends_on": [],
+      "comment_id": "PM-COMMENT-0086",
+      "display_title": "Add complete sensitivity appendix",
+      "target_heading": "## 18. Summary",
+      "original_text": "## 18. Summary\n\nCrust Chant should validate demand, contribution, capacity, and workload before expanding.",
+      "suggested_text": "## 18. Summary\n\nCrust Chant should validate demand, contribution, capacity, and workload before expanding.\n\n## Appendix A. Complete Channel-Mix Sensitivity\n\n### Scenario indicators\n\n| **Indicator** | **35,000 THB salary, 40/60 mix** | **35,000 THB salary, 50/50 mix** | **50,000 THB salary, 40/60 mix** | **50,000 THB salary, 50/50 mix** |\n| --- | ---: | ---: | ---: | ---: |\n| Weighted contribution per sale unit | 75 THB | 85.50 THB | 75 THB | 85.50 THB |\n| Monthly cost to cover with `E = 7,054 THB` and `T = 0` | 46,997 THB | 46,997 THB | 61,997 THB | 61,997 THB |\n| Required total sale units per month | 627 | 550 | 827 | 726 |\n| Required total sale units per week | 145 | 127 | 191 | 168 |\n| Required retail / wholesale units per month | 251 / 376 | 275 / 275 | 331 / 496 | 363 / 363 |\n| Provisional production commitment | 2 cycles, about 4 production days/week | 2 cycles, about 4 production days/week | 3 cycles, about 6 production days/week | 3 cycles, about 6 production days/week |\n| Committed weekly capacity used for comparison | 140–160 loaves | 140–160 loaves | 210–240 loaves | 210–240 loaves |\n| Capacity headroom against modeled weekly units | **5-unit shortfall** at 140; 15-unit buffer at 160 | 13–33-unit buffer | 19–49-unit buffer | 42–72-unit buffer |\n| Contribution from 100 additional monthly units | 7,500 THB | 8,550 THB | 7,500 THB | 8,550 THB |\n\nHere, `E` is gross monthly equipment rent and `T` is Thai-employee compensation not already included in verified product or channel unit costs. Setting `E` to 7,054 THB and `T` to zero is only a comparison case, not a conclusion that the final values will equal those amounts. Capacity comparisons provisionally treat one modeled sale unit as one loaf requiring similar refrigeration space.",
+      "reason": "Keeps the complete sensitivity detail available without overloading the main decision path.",
+      "risk": "The dependent main-section patch must continue to target the original occurrence."
+    },
+    {
+      "patch_key": "present-essential-sensitivity-indicators",
+      "depends_on": [
+        "add-complete-sensitivity-appendix"
+      ],
+      "comment_id": "PM-COMMENT-0086",
+      "display_title": "Present essential sensitivity indicators",
+      "target_heading": "### Scenario indicators",
+      "original_text": "### Scenario indicators\n\n| **Indicator** | **35,000 THB salary, 40/60 mix** | **35,000 THB salary, 50/50 mix** | **50,000 THB salary, 40/60 mix** | **50,000 THB salary, 50/50 mix** |\n| --- | ---: | ---: | ---: | ---: |\n| Weighted contribution per sale unit | 75 THB | 85.50 THB | 75 THB | 85.50 THB |\n| Monthly cost to cover with `E = 7,054 THB` and `T = 0` | 46,997 THB | 46,997 THB | 61,997 THB | 61,997 THB |\n| Required total sale units per month | 627 | 550 | 827 | 726 |\n| Required total sale units per week | 145 | 127 | 191 | 168 |\n| Required retail / wholesale units per month | 251 / 376 | 275 / 275 | 331 / 496 | 363 / 363 |\n| Provisional production commitment | 2 cycles, about 4 production days/week | 2 cycles, about 4 production days/week | 3 cycles, about 6 production days/week | 3 cycles, about 6 production days/week |\n| Committed weekly capacity used for comparison | 140–160 loaves | 140–160 loaves | 210–240 loaves | 210–240 loaves |\n| Capacity headroom against modeled weekly units | **5-unit shortfall** at 140; 15-unit buffer at 160 | 13–33-unit buffer | 19–49-unit buffer | 42–72-unit buffer |\n| Contribution from 100 additional monthly units | 7,500 THB | 8,550 THB | 7,500 THB | 8,550 THB |\n\nHere, `E` is gross monthly equipment rent and `T` is Thai-employee compensation not already included in verified product or channel unit costs. Setting `E` to 7,054 THB and `T` to zero is only a comparison case, not a conclusion that the final values will equal those amounts. Capacity comparisons provisionally treat one modeled sale unit as one loaf requiring similar refrigeration space.",
+      "suggested_text": "### Essential scenario indicators\n\n| **Decision indicator** | **35,000 THB salary range** | **50,000 THB salary range** |\n| --- | ---: | ---: |\n| Required sale units per week | 127–145 | 168–191 |\n| Provisional production commitment | 2 cycles/week | 3 cycles/week |\n| Capacity position | Near the 140–160 loaf boundary | Within the 210–240 loaf boundary |\n\nSee Appendix A for the complete channel-mix sensitivity table and assumptions.",
+      "reason": "Keeps the main plan decision-oriented while retaining complete calculations in Appendix A.",
+      "risk": "Must replace the original main section, not the copied appendix section."
+    }
+  ],
+  "open_questions": []
+}

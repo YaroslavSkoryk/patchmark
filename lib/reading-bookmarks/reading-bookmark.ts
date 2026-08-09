@@ -4,12 +4,14 @@ import {
   type CanonicalTargetMethod
 } from "../comments/canonical-target-resolution.ts";
 import {
-  createPatchmarkDocumentIdentityKey,
-  getPatchmarkDocumentIdentity
-} from "../project/project-identity.ts";
+  assertProjectDocumentScope,
+  createProjectDocumentKey,
+  parsePersistedProjectDocumentIdentity,
+  serializeProjectDocumentIdentity,
+  type ProjectDocumentIdentity
+} from "../project/document-scoped-identity.ts";
 import type {
   PatchmarkComment,
-  PatchmarkDocumentIdentity,
   PatchmarkManifest,
   PatchmarkPatch,
   PatchmarkReadingBookmark,
@@ -28,16 +30,22 @@ export type ReadingBookmarkResolution =
       state: "ambiguous" | "not_found";
     };
 
-export function getCurrentDocumentReadingBookmark(
-  manifest: PatchmarkManifest
-): PatchmarkReadingBookmark | null {
-  const identity = getPatchmarkDocumentIdentity(manifest);
-
-  return (
-    manifest.reading_bookmarks?.[
-      createPatchmarkDocumentIdentityKey(identity)
-    ] ?? null
+export function getDocumentReadingBookmark({
+  document,
+  manifest
+}: {
+  document: ProjectDocumentIdentity;
+  manifest: PatchmarkManifest;
+}): PatchmarkReadingBookmark | null {
+  const bookmark = manifest.reading_bookmark;
+  if (!bookmark) {
+    return null;
+  }
+  assertProjectDocumentScope(
+    parsePersistedProjectDocumentIdentity(bookmark.document),
+    document
   );
+  return bookmark;
 }
 
 export function setDocumentReadingBookmark({
@@ -47,16 +55,20 @@ export function setDocumentReadingBookmark({
   timestamp
 }: {
   anchor: PatchmarkReadingBookmarkAnchor;
-  document?: PatchmarkDocumentIdentity;
+  document: ProjectDocumentIdentity;
   manifest: PatchmarkManifest;
   timestamp: string;
 }): { bookmark: PatchmarkReadingBookmark; manifest: PatchmarkManifest } {
-  const identity = document ?? getPatchmarkDocumentIdentity(manifest);
-  const key = createPatchmarkDocumentIdentityKey(identity);
-  const previous = manifest.reading_bookmarks?.[key];
+  const previous = manifest.reading_bookmark;
+  if (previous) {
+    assertProjectDocumentScope(
+      parsePersistedProjectDocumentIdentity(previous.document),
+      document
+    );
+  }
   const bookmark: PatchmarkReadingBookmark = {
     format_version: 1,
-    document: identity,
+    document: serializeProjectDocumentIdentity(document),
     anchor,
     created_at: previous?.created_at ?? timestamp,
     updated_at: timestamp
@@ -66,11 +78,9 @@ export function setDocumentReadingBookmark({
     bookmark,
     manifest: {
       ...manifest,
-      project_id: identity.project_id,
-      reading_bookmarks: {
-        ...manifest.reading_bookmarks,
-        [key]: bookmark
-      }
+      project_id: document.projectId,
+      document_id: document.documentId,
+      reading_bookmark: bookmark
     }
   };
 }
@@ -79,25 +89,21 @@ export function removeDocumentReadingBookmark({
   document,
   manifest
 }: {
-  document?: PatchmarkDocumentIdentity;
+  document: ProjectDocumentIdentity;
   manifest: PatchmarkManifest;
 }): PatchmarkManifest {
-  const identity = document ?? getPatchmarkDocumentIdentity(manifest);
-  const key = createPatchmarkDocumentIdentityKey(identity);
-
-  if (!manifest.reading_bookmarks?.[key]) {
+  if (!manifest.reading_bookmark) {
     return manifest;
   }
-
-  const nextBookmarks = { ...manifest.reading_bookmarks };
-  delete nextBookmarks[key];
-
-  return {
-    ...manifest,
-    project_id: identity.project_id,
-    reading_bookmarks:
-      Object.keys(nextBookmarks).length > 0 ? nextBookmarks : undefined
-  };
+  assertProjectDocumentScope(
+    parsePersistedProjectDocumentIdentity(
+      manifest.reading_bookmark.document
+    ),
+    document
+  );
+  const { reading_bookmark, ...nextManifest } = manifest;
+  void reading_bookmark;
+  return nextManifest;
 }
 
 export function resolveReadingBookmark({
@@ -139,8 +145,8 @@ export function createReadingBookmarkAnchorAdapter(
   bookmark: PatchmarkReadingBookmark
 ): PatchmarkComment {
   return {
-    id: `PM-READING-BOOKMARK-${createPatchmarkDocumentIdentityKey(
-      bookmark.document
+    id: `PM-READING-BOOKMARK-${createProjectDocumentKey(
+      parsePersistedProjectDocumentIdentity(bookmark.document)
     )}`,
     type: "note",
     status: "open",

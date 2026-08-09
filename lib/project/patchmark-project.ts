@@ -1,9 +1,48 @@
 import { type MarkdownFileHandle } from "../files/file-system-access.ts";
+import { normalizeCommentTrashMetadata } from "../comments/comment-trash-schema.ts";
+import { normalizeCommentDeletionTombstones } from "../comments/comment-deletion-tombstones.ts";
 import {
-  createNewPatchmarkProjectId,
-  createPatchmarkDocumentIdentityKey,
-  getPatchmarkProjectId
-} from "./project-identity.ts";
+  assertDocumentScope,
+  assertUniqueDocumentLocalIds,
+  createProjectDocumentIdentity,
+  serializeProjectDocumentIdentity,
+  legacyDocumentScopeId,
+  type ProjectDocumentIdentity,
+  type VersionRef
+} from "./document-scoped-identity.ts";
+import {
+  addExistingProjectDocument as registerExistingProjectDocument,
+  assignDocumentToGroup,
+  archiveRegisteredDocument,
+  completePendingProjectMigration,
+  convertLegacyProject,
+  createProjectId,
+  createDocumentGroup,
+  createDocumentScopedDirectoryHandle,
+  createProjectDocument as registerCreatedProjectDocument,
+  getRegisteredDocument,
+  listProjectDocuments,
+  locateProjectDocument as repairProjectDocumentPath,
+  markLegacyConversionReopened,
+  readProjectManifest,
+  removeDocumentGroup,
+  renameDocumentGroup,
+  reorderDocumentGroup,
+  reorderRegisteredDocument,
+  resolveProjectFilePath,
+  rollbackPendingProjectMigration,
+  restoreRegisteredDocument,
+  updateDocumentRegistration,
+  writeProjectManifestAtomic,
+  type PatchmarkDocumentAvailability,
+  type PatchmarkDocumentGroup,
+  type PatchmarkDocumentRole,
+  type PatchmarkProjectDocumentView,
+  type PatchmarkProjectManifestV1,
+  type PatchmarkRegisteredDocument,
+  type ProjectDirectoryHandle,
+  type ProjectFileHandle
+} from "./multi-document-project.ts";
 import {
   type PatchmarkCommentActionContext,
   type PatchmarkCommentActionIntent,
@@ -29,14 +68,40 @@ import {
   type PatchmarkSaveCommit,
   type PatchmarkSuggestedUserAction,
   type PatchmarkSourceReference,
-  type PatchmarkVersionEntry
+  type PatchmarkVersionEntry,
+  type PatchmarkVersionMutationAudit
 } from "./project-types.ts";
+import {
+  incrementDocumentSwitchPerformanceCounter,
+  markDocumentSwitchPerformance,
+  recordDocumentSwitchPerformanceDuration,
+  updateDocumentSwitchPerformanceMetadata
+} from "../performance/document-switch-performance.ts";
+import {
+  parseReviewBatchRecords,
+  serializeReviewBatchRecords
+} from "../review-batches/review-batch-schema.ts";
+import type { PatchmarkReviewBatch } from "../review-batches/review-batch-types.ts";
+import {
+  createEmptyReviewQueueOverrides,
+  parseReviewQueueOverrides,
+  serializeReviewQueueOverrides
+} from "../review-queue/review-queue-override-schema.ts";
+import type { PatchmarkReviewQueueOverrides } from "../review-queue/review-queue-override-types.ts";
+import {
+  parseRewriteProjectSessionStore,
+  serializeRewriteProjectSessionStore
+} from "../rewrite-workspace/rewrite-project-session-schema.ts";
+import type { RewriteProjectSessionRecord } from "../rewrite-workspace/rewrite-session-types.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
 const manifestFileName = "manifest.json";
 const commentsFileName = "comments.json";
 const patchesFileName = "patches.json";
+const reviewBatchesFileName = "review-batches.json";
+const reviewQueueOverridesFileName = "review-queue-overrides.json";
+const rewriteSessionsFileName = "rewrite-sessions.json";
 const saveCommitFileName = "save-commit.json";
 const recoveryDirectoryName = "recovery";
 const saveCommitFormatVersion = 1;
@@ -57,6 +122,14 @@ type DirectoryHandleOptions = {
 
 export type PatchmarkDirectoryHandle = {
   name: string;
+  kind?: "directory";
+  isSameEntry?: (other: PatchmarkDirectoryHandle) => Promise<boolean>;
+  queryPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<
+    "denied" | "granted" | "prompt"
+  >;
+  requestPermission?: (options?: { mode?: "read" | "readwrite" }) => Promise<
+    "denied" | "granted" | "prompt"
+  >;
   getFileHandle: (
     name: string,
     options?: DirectoryHandleOptions
@@ -67,10 +140,15 @@ export type PatchmarkDirectoryHandle = {
   ) => Promise<PatchmarkDirectoryHandle>;
   removeEntry?: (name: string, options?: { recursive?: boolean }) => Promise<void>;
   entries?: () => AsyncIterableIterator<[string, { kind?: "file" | "directory" }]>;
+  resolve?: (possibleDescendant: { kind?: "file" | "directory" }) => Promise<string[] | null>;
 };
 
 export type PatchmarkProjectRecoveryState = {
-  kind: "incomplete_save" | "invalid_current_state";
+  kind:
+    | "incomplete_save"
+    | "invalid_current_state"
+    | "missing_document"
+    | "migration_rolled_back";
   canRestore: boolean;
   message: string;
   technicalDetails: string[];
@@ -85,8 +163,14 @@ type PatchmarkProjectPersistenceState = {
   manifestText: string;
   commentsReference?: PatchmarkComment[];
   patchesReference?: PatchmarkPatch[];
+  reviewBatchesReference?: PatchmarkReviewBatch[];
+  reviewQueueOverridesReference?: PatchmarkReviewQueueOverrides;
+  rewriteSessionsReference?: RewriteProjectSessionRecord[];
   commentsRaw?: string;
   patchesRaw?: string;
+  reviewBatchesRaw?: string;
+  reviewQueueOverridesRaw?: string;
+  rewriteSessionsRaw?: string;
   readSource: "current" | "current_readonly" | "lkg";
   recovery?: PatchmarkProjectRecoveryState;
   debug: PatchmarkPersistenceDebugState;
@@ -96,6 +180,11 @@ export type PatchmarkProjectHandle = {
   directoryHandle: PatchmarkDirectoryHandle;
   manifest: PatchmarkManifest;
   persistence: PatchmarkProjectPersistenceState;
+  projectMode?: "legacy" | "multi";
+  projectDirectoryHandle?: PatchmarkDirectoryHandle;
+  projectManifest?: PatchmarkProjectManifestV1;
+  document?: PatchmarkRegisteredDocument;
+  documentAvailability?: PatchmarkDocumentAvailability;
 };
 
 export type LoadedPatchmarkProject = {
@@ -132,6 +221,9 @@ export type ProjectCommitFileKey =
   | "document"
   | "comments"
   | "patches"
+  | "review_batches"
+  | "review_queue_overrides"
+  | "rewrite_sessions"
   | "manifest";
 
 type PreparedProjectFile = {
@@ -147,14 +239,39 @@ type ProjectCommitRequest = {
   markdown?: string;
   comments?: PatchmarkComment[];
   patches?: PatchmarkPatch[];
+  reviewBatches?: PatchmarkReviewBatch[];
+  reviewBatchesUpdate?: (
+    batches: PatchmarkReviewBatch[]
+  ) => PatchmarkReviewBatch[];
+  reviewQueueOverrides?: PatchmarkReviewQueueOverrides;
+  reviewQueueOverridesUpdate?: (
+    overrides: PatchmarkReviewQueueOverrides
+  ) => PatchmarkReviewQueueOverrides;
+  rewriteSessions?: RewriteProjectSessionRecord[];
+  rewriteSessionsUpdate?: (
+    sessions: RewriteProjectSessionRecord[]
+  ) => RewriteProjectSessionRecord[];
   manifest?: PatchmarkManifest;
+  manifestUpdate?: (manifest: PatchmarkManifest) => PatchmarkManifest;
   reason: string;
   allowSupersede?: boolean;
+  rollbackOnFailure?: boolean;
+};
+
+export type PatchmarkProjectDocumentListItem = PatchmarkProjectDocumentView & {
+  hasReadingBookmark: boolean;
 };
 
 type ProjectWriteQueueState = {
   tail: Promise<void>;
   latestRequestId: number;
+};
+
+type PendingLegacyAssemblyTransaction = {
+  assemblyId: string;
+  directory: PatchmarkDirectoryHandle;
+  stage: string;
+  updatedAt: string;
 };
 
 const projectWriteQueues = new WeakMap<
@@ -242,37 +359,141 @@ export async function openProjectFolder(): Promise<LoadedPatchmarkProject | null
     return null;
   }
 
-  const documentFileHandle = await getRequiredFileHandle(
-    directoryHandle,
-    documentFileName,
-    "This folder does not contain document.md."
-  );
+  return openProjectFolderHandle(directoryHandle);
+}
 
-  const metadataDirectoryHandle = await getRequiredDirectoryHandle(
-    directoryHandle,
-    metadataDirectoryName,
-    "This folder contains document.md but is not initialized as a Patchmark project."
-  );
+export async function openProjectFolderHandle(
+  directoryHandle: PatchmarkDirectoryHandle,
+  options: { deferAssemblyRecovery?: boolean; readOnly?: boolean } = {}
+): Promise<LoadedPatchmarkProject> {
 
-  const manifestFileHandle = await getRequiredFileHandle(
-    metadataDirectoryHandle,
-    manifestFileName,
-    "This folder is missing .patchmark/manifest.json."
-  );
+  let multiDocumentManifestError: unknown;
+  let migrationRollbackError: unknown;
+  let projectManifest: PatchmarkProjectManifestV1 | null = null;
+  try {
+    projectManifest = await readProjectManifest(
+      directoryHandle as ProjectDirectoryHandle
+    );
+  } catch (error) {
+    multiDocumentManifestError = error;
+  }
+  if (projectManifest) {
+    const pendingAssembly = options.deferAssemblyRecovery
+      ? null
+      : await findPendingLegacyAssemblyTransaction(
+          directoryHandle,
+          projectManifest.project_id
+        );
+    try {
+      const loaded = await openRegisteredProjectFromManifest(
+        directoryHandle,
+        projectManifest,
+        options
+      );
+      if (!options.readOnly) {
+        await completePendingProjectMigration(
+          directoryHandle as ProjectDirectoryHandle,
+          projectManifest
+        );
+        if (pendingAssembly) {
+          await completePendingLegacyAssemblyTransaction(
+            directoryHandle,
+            projectManifest,
+            loaded,
+            pendingAssembly
+          );
+        }
+      }
+      return loaded;
+    } catch (error) {
+      if (options.readOnly) {
+        throw error;
+      }
+      if (pendingAssembly) {
+        await invalidatePendingLegacyAssemblyTransaction(
+          directoryHandle,
+          pendingAssembly,
+          error
+        );
+        throw new Error(
+          `An interrupted assembled project failed reopen validation and was marked incomplete: ${getErrorMessage(
+            error
+          )}`
+        );
+      }
+      const rolledBack = await rollbackPendingProjectMigration(
+        directoryHandle as ProjectDirectoryHandle,
+        projectManifest,
+        error
+      );
+      if (!rolledBack) {
+        throw error;
+      }
+      migrationRollbackError = error;
+    }
+  }
 
-  const manifestText = await readTextFile(manifestFileHandle);
-  const markdown = await readTextFile(documentFileHandle);
-  const openedProject = await createOpenedProjectHandle({
-    directoryHandle,
-    manifestText,
-    markdown
-  });
+  try {
+    const documentFileHandle = await getRequiredFileHandle(
+      directoryHandle,
+      documentFileName,
+      "This folder does not contain document.md."
+    );
 
-  return {
-    markdown: openedProject.markdown,
-    project: openedProject.project,
-    recovery: openedProject.project.persistence.recovery
-  };
+    const metadataDirectoryHandle = await getRequiredDirectoryHandle(
+      directoryHandle,
+      metadataDirectoryName,
+      "This folder contains document.md but is not initialized as a Patchmark project."
+    );
+
+    const manifestFileHandle = await getRequiredFileHandle(
+      metadataDirectoryHandle,
+      manifestFileName,
+      "This folder is missing .patchmark/manifest.json."
+    );
+
+    const manifestText = await readTextFile(manifestFileHandle);
+    const markdown = await readTextFile(documentFileHandle);
+    const openedProject = await createOpenedProjectHandle({
+      directoryHandle,
+      manifestText,
+      markdown,
+      readOnly: options.readOnly
+    });
+    openedProject.project.projectMode = "legacy";
+    openedProject.project.projectDirectoryHandle = directoryHandle;
+    if (migrationRollbackError) {
+      const recovery: PatchmarkProjectRecoveryState = {
+        kind: "migration_rolled_back",
+        canRestore: false,
+        message:
+          "Patchmark rolled back an incomplete multi-document conversion and reopened the untouched legacy project.",
+        technicalDetails: [
+          migrationRollbackError instanceof Error
+            ? migrationRollbackError.message
+            : String(migrationRollbackError)
+        ],
+        temporaryFiles: []
+      };
+      openedProject.project.persistence.recovery = recovery;
+      return {
+        markdown: openedProject.markdown,
+        project: openedProject.project,
+        recovery
+      };
+    }
+
+    return {
+      markdown: openedProject.markdown,
+      project: openedProject.project,
+      recovery: openedProject.project.persistence.recovery
+    };
+  } catch (error) {
+    if (multiDocumentManifestError) {
+      throw multiDocumentManifestError;
+    }
+    throw error;
+  }
 }
 
 export async function createProjectFromMarkdown({
@@ -300,7 +521,8 @@ export async function createProjectFromMarkdown({
   const now = new Date().toISOString();
   const manifest: PatchmarkManifest = {
     schema_version: 1,
-    project_id: createNewPatchmarkProjectId(),
+    project_id: createProjectId(),
+    document_id: legacyDocumentScopeId,
     project_name: createProjectName(
       suggestedProjectName ?? directoryHandle.name,
       directoryHandle.name
@@ -317,6 +539,8 @@ export async function createProjectFromMarkdown({
   const project: PatchmarkProjectHandle = {
     directoryHandle,
     manifest,
+    projectMode: "legacy",
+    projectDirectoryHandle: directoryHandle,
     persistence: await createLegacyPersistenceState({
       directoryHandle,
       documentText: markdown,
@@ -328,6 +552,482 @@ export async function createProjectFromMarkdown({
     markdown,
     project
   };
+}
+
+export function isMultiDocumentProject(project: PatchmarkProjectHandle): boolean {
+  return project.projectMode === "multi" && Boolean(project.projectManifest);
+}
+
+export function getProjectTitle(project: PatchmarkProjectHandle): string {
+  return project.projectManifest?.title ?? project.manifest.project_name;
+}
+
+export function getActiveProjectDocument(
+  project: PatchmarkProjectHandle
+): PatchmarkRegisteredDocument | null {
+  return project.document ?? null;
+}
+
+export function getProjectDocumentScopeId(
+  project: PatchmarkProjectHandle
+): string {
+  return project.document?.document_id ?? legacyDocumentScopeId;
+}
+
+export function getProjectDocumentIdentity(
+  project: PatchmarkProjectHandle
+): ProjectDocumentIdentity {
+  return createProjectDocumentIdentity(
+    project.projectManifest?.project_id ??
+      project.manifest.project_id ??
+      createLegacyProjectId(project.manifest),
+    project.document?.document_id ??
+      project.manifest.document_id ??
+      legacyDocumentScopeId
+  );
+}
+
+export function getProjectDocumentExportIdentity(
+  project: PatchmarkProjectHandle
+): {
+  project_name: string;
+  project_id?: string;
+  document_file: string;
+  document_id?: string;
+  document_title?: string;
+  document_role?: PatchmarkDocumentRole;
+} {
+  return {
+    project_name: getProjectTitle(project),
+    project_id: project.projectManifest?.project_id,
+    document_file: project.document?.path ?? project.manifest.document_file,
+    document_id: project.document?.document_id,
+    document_title: project.document?.display_title,
+    document_role: project.document?.role
+  };
+}
+
+export async function getProjectDocumentList(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkProjectDocumentListItem[]> {
+  const root = getAuthoritativeProjectDirectory(project);
+  if (!project.projectManifest) {
+    return [
+      {
+        document_id: "legacy-document",
+        path: project.manifest.document_file,
+        display_title: createLegacyDocumentTitle(project),
+        role: null,
+        status: "active",
+        position: 1000,
+        added_at: project.manifest.created_at,
+        archived_at: null,
+        availability: "available",
+        hasReadingBookmark: Boolean(project.manifest.reading_bookmark)
+      }
+    ];
+  }
+  const documents = await listProjectDocuments(
+    root as ProjectDirectoryHandle,
+    project.projectManifest
+  );
+  return Promise.all(
+    documents.map(async (document) => ({
+      ...document,
+      hasReadingBookmark: await hasStoredReadingBookmark({
+        document,
+        projectManifest: project.projectManifest!,
+        root
+      })
+    }))
+  );
+}
+
+async function hasStoredReadingBookmark({
+  document,
+  projectManifest,
+  root
+}: {
+  document: PatchmarkRegisteredDocument;
+  projectManifest: PatchmarkProjectManifestV1;
+  root: PatchmarkDirectoryHandle;
+}): Promise<boolean> {
+  try {
+    const scopedDirectory = (await createDocumentScopedDirectoryHandle(
+      root as ProjectDirectoryHandle,
+      document
+    )) as PatchmarkDirectoryHandle;
+    const metadata = await scopedDirectory.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    const manifestText = await readTextFile(
+      await metadata.getFileHandle(manifestFileName)
+    );
+    const details: string[] = [];
+    const manifest = parseManifestForValidation(
+      manifestText,
+      projectManifest.title,
+      details,
+      createProjectDocumentIdentity(
+        projectManifest.project_id,
+        document.document_id
+      )
+    );
+    return details.length === 0 && Boolean(manifest?.reading_bookmark);
+  } catch {
+    return false;
+  }
+}
+
+export async function convertProjectToMultiDocument(
+  project: PatchmarkProjectHandle
+): Promise<LoadedPatchmarkProject> {
+  const prepared = await prepareMultiDocumentProject(project);
+  if (prepared.migrationId) {
+    await markLegacyConversionReopened(
+      getAuthoritativeProjectDirectory(prepared.loaded.project) as ProjectDirectoryHandle,
+      prepared.migrationId,
+      "complete"
+    );
+  }
+  return prepared.loaded;
+}
+
+export async function createNewProjectDocument({
+  displayTitle,
+  groupId,
+  markdown,
+  path,
+  project,
+  role
+}: {
+  displayTitle: string;
+  groupId?: string | null;
+  markdown?: string;
+  path: string;
+  project: PatchmarkProjectHandle;
+  role: PatchmarkDocumentRole;
+}): Promise<LoadedPatchmarkProject> {
+  const prepared = await prepareMultiDocumentProject(project);
+  const activeProject = prepared.loaded.project;
+  const root = getAuthoritativeProjectDirectory(activeProject);
+  const registry = requireProjectManifest(activeProject);
+  const result = await registerCreatedProjectDocument({
+    displayTitle,
+    groupId,
+    manifest: registry,
+    markdown,
+    path,
+    role,
+    root: root as ProjectDirectoryHandle
+  });
+  updateProjectRegistryContext(activeProject, result.manifest);
+  const loaded = await openRegisteredProjectDocument(
+    root,
+    result.manifest,
+    result.document.document_id
+  );
+  if (prepared.migrationId) {
+    await markLegacyConversionReopened(
+      root as ProjectDirectoryHandle,
+      prepared.migrationId,
+      "complete"
+    );
+  }
+  return loaded;
+}
+
+export async function addExistingDocumentToProject({
+  displayTitle,
+  groupId,
+  path,
+  project,
+  role
+}: {
+  displayTitle?: string;
+  groupId?: string | null;
+  path: string;
+  project: PatchmarkProjectHandle;
+  role: PatchmarkDocumentRole;
+}): Promise<LoadedPatchmarkProject> {
+  const prepared = await prepareMultiDocumentProject(project);
+  const activeProject = prepared.loaded.project;
+  const root = getAuthoritativeProjectDirectory(activeProject);
+  const registry = requireProjectManifest(activeProject);
+  const result = await registerExistingProjectDocument({
+    displayTitle,
+    groupId,
+    manifest: registry,
+    path,
+    role,
+    root: root as ProjectDirectoryHandle
+  });
+  updateProjectRegistryContext(activeProject, result.manifest);
+  const loaded = await openRegisteredProjectDocument(
+    root,
+    result.manifest,
+    result.document.document_id
+  );
+  if (prepared.migrationId) {
+    await markLegacyConversionReopened(
+      root as ProjectDirectoryHandle,
+      prepared.migrationId,
+      "complete"
+    );
+  }
+  return loaded;
+}
+
+export async function resolveDocumentPathFromFileHandle(
+  project: PatchmarkProjectHandle,
+  fileHandle: MarkdownFileHandle
+): Promise<string> {
+  return resolveProjectFilePath(
+    getAuthoritativeProjectDirectory(project) as ProjectDirectoryHandle,
+    fileHandle as ProjectFileHandle
+  );
+}
+
+export async function openProjectDocument(
+  project: PatchmarkProjectHandle,
+  documentId: string,
+  options: { performanceOperationId?: string | null } = {}
+): Promise<LoadedPatchmarkProject> {
+  return openRegisteredProjectDocument(
+    getAuthoritativeProjectDirectory(project),
+    requireProjectManifest(project),
+    documentId,
+    { performanceOperationId: options.performanceOperationId }
+  );
+}
+
+export async function switchProjectDocument({
+  comments,
+  documentId,
+  markdown,
+  patches,
+  project,
+  performanceOperationId
+}: {
+  comments: PatchmarkComment[];
+  documentId: string;
+  markdown: string;
+  patches: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+  performanceOperationId?: string | null;
+}): Promise<LoadedPatchmarkProject> {
+  if (project.documentAvailability !== "missing") {
+    const persistenceStartedAt = performance.now();
+    const result = await saveProjectState({
+      comments,
+      markdown,
+      patches,
+      project,
+      reason: "switch_document"
+    });
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "persist_current_authoritative_state",
+      performance.now() - persistenceStartedAt
+    );
+    updateDocumentSwitchPerformanceMetadata(performanceOperationId, {
+      changedFiles: result.changedFiles,
+      saveStatus: result.status
+    });
+    incrementDocumentSwitchPerformanceCounter(
+      performanceOperationId,
+      "authoritative_bytes_written",
+      result.bytesWritten
+    );
+    incrementDocumentSwitchPerformanceCounter(
+      performanceOperationId,
+      "serialized_files",
+      result.serializedFiles.length
+    );
+  }
+  markDocumentSwitchPerformance(
+    performanceOperationId,
+    "current_authoritative_state_persisted"
+  );
+  return openProjectDocument(project, documentId, { performanceOperationId });
+}
+
+export async function updateProjectDocumentMetadata({
+  displayTitle,
+  documentId,
+  project,
+  role
+}: {
+  displayTitle?: string;
+  documentId: string;
+  project: PatchmarkProjectHandle;
+  role?: PatchmarkDocumentRole;
+}): Promise<PatchmarkProjectManifestV1> {
+  const next = updateDocumentRegistration(
+    requireProjectManifest(project),
+    documentId,
+    {
+      ...(displayTitle !== undefined ? { display_title: displayTitle } : {}),
+      ...(role !== undefined ? { role } : {})
+    }
+  );
+  if (next !== project.projectManifest) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function moveProjectDocument({
+  direction,
+  documentId,
+  project
+}: {
+  direction: "up" | "down";
+  documentId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = reorderRegisteredDocument(current, documentId, direction);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function createProjectDocumentGroup({
+  project,
+  title
+}: {
+  project: PatchmarkProjectHandle;
+  title: string;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = createDocumentGroup(current, title);
+  await commitProjectRegistry(project, next);
+  return next;
+}
+
+export async function renameProjectDocumentGroup({
+  groupId,
+  project,
+  title
+}: {
+  groupId: string;
+  project: PatchmarkProjectHandle;
+  title: string;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = renameDocumentGroup(current, groupId, title);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function moveProjectDocumentGroup({
+  direction,
+  groupId,
+  project
+}: {
+  direction: "up" | "down";
+  groupId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = reorderDocumentGroup(current, groupId, direction);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function moveProjectDocumentToGroup({
+  documentId,
+  groupId,
+  project
+}: {
+  documentId: string;
+  groupId: string | null;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = assignDocumentToGroup(current, documentId, groupId);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function deleteProjectDocumentGroup({
+  groupId,
+  project
+}: {
+  groupId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = removeDocumentGroup(current, groupId);
+  await commitProjectRegistry(project, next);
+  return next;
+}
+
+export function getProjectDocumentGroups(
+  project: PatchmarkProjectHandle
+): PatchmarkDocumentGroup[] {
+  return [...(project.projectManifest?.groups ?? [])].sort(
+    (left, right) =>
+      left.position - right.position || left.created_at.localeCompare(right.created_at)
+  );
+}
+
+export async function archiveProjectDocument({
+  documentId,
+  project
+}: {
+  documentId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = archiveRegisteredDocument(current, documentId);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function restoreProjectDocument({
+  documentId,
+  project
+}: {
+  documentId: string;
+  project: PatchmarkProjectHandle;
+}): Promise<PatchmarkProjectManifestV1> {
+  const current = requireProjectManifest(project);
+  const next = restoreRegisteredDocument(current, documentId);
+  if (next !== current) {
+    await commitProjectRegistry(project, next);
+  }
+  return next;
+}
+
+export async function locateProjectDocument({
+  documentId,
+  path,
+  project
+}: {
+  documentId: string;
+  path: string;
+  project: PatchmarkProjectHandle;
+}): Promise<LoadedPatchmarkProject> {
+  const root = getAuthoritativeProjectDirectory(project);
+  const next = await repairProjectDocumentPath({
+    documentId,
+    manifest: requireProjectManifest(project),
+    path,
+    root: root as ProjectDirectoryHandle
+  });
+  updateProjectRegistryContext(project, next);
+  return openRegisteredProjectDocument(root, next, documentId);
 }
 
 export async function saveProjectDocument(
@@ -348,17 +1048,25 @@ export async function saveProjectState({
   manifest,
   markdown,
   patches,
+  reviewBatches,
+  reviewQueueOverrides,
+  rewriteSessions,
   project,
   reason,
-  allowSupersede = false
+  allowSupersede = false,
+  rollbackOnFailure = false
 }: {
   comments?: PatchmarkComment[];
   manifest?: PatchmarkManifest;
   markdown?: string;
   patches?: PatchmarkPatch[];
+  reviewBatches?: PatchmarkReviewBatch[];
+  reviewQueueOverrides?: PatchmarkReviewQueueOverrides;
+  rewriteSessions?: RewriteProjectSessionRecord[];
   project: PatchmarkProjectHandle;
   reason: string;
   allowSupersede?: boolean;
+  rollbackOnFailure?: boolean;
 }): Promise<PatchmarkProjectCommitResult> {
   return commitProjectState({
     allowSupersede,
@@ -366,17 +1074,39 @@ export async function saveProjectState({
     manifest,
     markdown,
     patches,
+    reviewBatches,
+    reviewQueueOverrides,
+    rewriteSessions,
+    project,
+    reason,
+    rollbackOnFailure
+  });
+}
+
+export async function updateProjectManifestMetadata({
+  project,
+  reason,
+  update
+}: {
+  project: PatchmarkProjectHandle;
+  reason: string;
+  update: (manifest: PatchmarkManifest) => PatchmarkManifest;
+}): Promise<PatchmarkProjectCommitResult> {
+  return commitProjectState({
+    manifestUpdate: update,
     project,
     reason
   });
 }
 
 export async function createProjectSnapshot({
+  audit,
   allowDuplicate = false,
   project,
   markdown,
   reason = "manual snapshot"
 }: {
+  audit?: PatchmarkVersionMutationAudit;
   allowDuplicate?: boolean;
   project: PatchmarkProjectHandle;
   markdown: string;
@@ -403,9 +1133,90 @@ export async function createProjectSnapshot({
     };
   }
 
+  const prepared = await prepareProjectSnapshot({
+    audit,
+    contentHash,
+    markdown,
+    project,
+    reason
+  });
+  await commitProjectState({
+    manifest: prepared.manifest,
+    project,
+    reason: "create_snapshot"
+  });
+
+  return {
+    created: true,
+    version: prepared.version,
+    project
+  };
+}
+
+export async function prepareProjectMutationSnapshot({
+  audit,
+  markdown,
+  project,
+  reason
+}: {
+  audit: PatchmarkVersionMutationAudit;
+  markdown: string;
+  project: PatchmarkProjectHandle;
+  reason: string;
+}): Promise<{
+  manifest: PatchmarkManifest;
+  snapshotFileName: string;
+  version: PatchmarkVersionEntry;
+}> {
+  return prepareProjectSnapshot({
+    audit,
+    contentHash: await createMarkdownHash(markdown),
+    markdown,
+    project,
+    reason
+  });
+}
+
+export async function discardPreparedProjectMutationSnapshot({
+  project,
+  snapshotFileName
+}: {
+  project: PatchmarkProjectHandle;
+  snapshotFileName: string;
+}): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    const versionsDirectoryHandle =
+      await metadataDirectoryHandle.getDirectoryHandle("versions");
+    await versionsDirectoryHandle.removeEntry?.(snapshotFileName);
+  } catch {
+    return;
+  }
+}
+
+async function prepareProjectSnapshot({
+  audit,
+  contentHash,
+  markdown,
+  project,
+  reason
+}: {
+  audit?: PatchmarkVersionMutationAudit;
+  contentHash: string | undefined;
+  markdown: string;
+  project: PatchmarkProjectHandle;
+  reason: string;
+}): Promise<{
+  manifest: PatchmarkManifest;
+  snapshotFileName: string;
+  version: PatchmarkVersionEntry;
+}> {
   const createdAt = new Date().toISOString();
   const snapshotId = createSnapshotId(createdAt);
-  const snapshotFile = `.patchmark/versions/${snapshotId}.md`;
+  const snapshotFileName = `${snapshotId}.md`;
+  const snapshotFile = `.patchmark/versions/${snapshotFileName}`;
   const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
     metadataDirectoryName,
     { create: true }
@@ -415,35 +1226,25 @@ export async function createProjectSnapshot({
       create: true
     });
   const snapshotFileHandle = await versionsDirectoryHandle.getFileHandle(
-    `${snapshotId}.md`,
+    snapshotFileName,
     { create: true }
   );
-  const versionEntry: PatchmarkVersionEntry = {
+  const version: PatchmarkVersionEntry = {
     id: snapshotId,
     file: snapshotFile,
     created_at: createdAt,
     reason,
-    content_hash: contentHash
+    content_hash: contentHash,
+    ...(audit ? { mutation: audit } : {})
   };
   const manifest: PatchmarkManifest = {
     ...project.manifest,
     updated_at: createdAt,
     current_version: snapshotId,
-    versions: [...versions, versionEntry]
+    versions: [...(project.manifest.versions ?? []), version]
   };
-
   await writeTextFile(snapshotFileHandle, markdown);
-  await commitProjectState({
-    manifest,
-    project,
-    reason: "create_snapshot"
-  });
-
-  return {
-    created: true,
-    version: versionEntry,
-      project
-  };
+  return { manifest, snapshotFileName, version };
 }
 
 async function isSameAsLatestSnapshot({
@@ -508,7 +1309,27 @@ function isSnapshotNotFoundError(error: unknown): boolean {
 export async function listProjectVersions(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkVersionEntry[]> {
-  return project.manifest.versions ?? [];
+  const versions = project.manifest.versions ?? [];
+  assertUniqueDocumentLocalIds({
+    documentId: getProjectDocumentScopeId(project),
+    ids: versions.map((version) => version.id),
+    kind: "version"
+  });
+  return versions;
+}
+
+export async function readProjectVersionMarkdownByRef(
+  project: PatchmarkProjectHandle,
+  reference: VersionRef,
+  version: PatchmarkVersionEntry
+): Promise<string> {
+  assertDocumentScope(reference, getProjectDocumentScopeId(project));
+  if (reference.id !== version.id) {
+    throw new Error(
+      `Version reference ${reference.id} does not match ${version.id}.`
+    );
+  }
+  return readProjectVersionMarkdown(project, version);
 }
 
 export async function readProjectVersionMarkdown(
@@ -543,6 +1364,9 @@ export async function readProjectVersionMarkdown(
 export async function readProjectComments(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkComment[]> {
+  if (project.persistence.commentsReference) {
+    return project.persistence.commentsReference;
+  }
   const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
 
   let commentsFileHandle: MarkdownFileHandle;
@@ -590,12 +1414,19 @@ export async function readProjectComments(
   }
 
   const comments = parsedComments.map(normalizeComment);
+  assertUniqueDocumentLocalIds({
+    documentId: getProjectDocumentScopeId(project),
+    ids: comments.map((comment) => comment.id),
+    kind: "comment"
+  });
   project.persistence.commentsReference = comments;
   project.persistence.commentsRaw = undefined;
-  project.persistence.files.comments = await createPersistedFileCommit(
-    ".patchmark/comments.json",
-    rawComments
-  );
+  if (!project.persistence.files.comments) {
+    project.persistence.files.comments = await createPersistedFileCommit(
+      ".patchmark/comments.json",
+      rawComments
+    );
+  }
   return comments;
 }
 
@@ -634,14 +1465,411 @@ export async function writeProjectContextPack({
     { create: true }
   );
 
-  await writeTextFile(contextPackFileHandle, contents);
+  try {
+    await writeTextFile(contextPackFileHandle, contents);
+
+    const writtenContents = await readTextFile(contextPackFileHandle);
+    if (writtenContents !== contents) {
+      throw new Error(`Could not verify context pack ${fileName}.`);
+    }
+  } catch (error) {
+    if (contextPacksDirectoryHandle.removeEntry) {
+      await contextPacksDirectoryHandle.removeEntry(fileName).catch(() => {});
+    }
+    throw error;
+  }
 
   return `${metadataDirectoryName}/context-packs/${fileName}`;
+}
+
+export async function readProjectContextPack({
+  project,
+  relativePath
+}: {
+  project: PatchmarkProjectHandle;
+  relativePath: string;
+}): Promise<string> {
+  const fileName = getContextPackFileName(relativePath);
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const contextPacksDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("context-packs");
+  return readTextFile(await contextPacksDirectoryHandle.getFileHandle(fileName));
+}
+
+export async function removeProjectContextPack({
+  project,
+  relativePath
+}: {
+  project: PatchmarkProjectHandle;
+  relativePath: string;
+}): Promise<boolean> {
+  const fileName = getContextPackFileName(relativePath);
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const contextPacksDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("context-packs");
+  if (!contextPacksDirectoryHandle.removeEntry) {
+    return false;
+  }
+  try {
+    await contextPacksDirectoryHandle.removeEntry(fileName);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return true;
+    }
+    throw error;
+  }
+}
+
+export async function readProjectReviewBatchRecords(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkReviewBatch[]> {
+  if (project.persistence.reviewBatchesReference) {
+    return project.persistence.reviewBatchesReference;
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const hasCommittedRecords = Boolean(project.persistence.files.review_batches);
+  let text = project.persistence.reviewBatchesRaw;
+  if (text === undefined && hasCommittedRecords) {
+    const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
+    text = await readTextFile(
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? `${reviewBatchesFileName}.lkg`
+          : reviewBatchesFileName
+      )
+    );
+  }
+  const records = parseReviewBatchRecords({
+    identity,
+    text: hasCommittedRecords ? text ?? "[]\n" : "[]\n"
+  });
+  project.persistence.reviewBatchesReference = records;
+  project.persistence.reviewBatchesRaw = undefined;
+  return records;
+}
+
+export async function commitProjectReviewBatchUpdate({
+  project,
+  reason,
+  update
+}: {
+  project: PatchmarkProjectHandle;
+  reason: string;
+  update: (batches: PatchmarkReviewBatch[]) => PatchmarkReviewBatch[];
+}): Promise<PatchmarkReviewBatch[]> {
+  if (!project.persistence.reviewBatchesReference) {
+    await readProjectReviewBatchRecords(project);
+  }
+  await commitProjectState({
+    project,
+    reason,
+    reviewBatchesUpdate: update
+  });
+  return project.persistence.reviewBatchesReference ?? [];
+}
+
+export async function readProjectReviewQueueOverrides(
+  project: PatchmarkProjectHandle
+): Promise<PatchmarkReviewQueueOverrides> {
+  if (project.persistence.reviewQueueOverridesReference) {
+    return project.persistence.reviewQueueOverridesReference;
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const hasCommittedOverrides = Boolean(
+    project.persistence.files.review_queue_overrides
+  );
+  let text = project.persistence.reviewQueueOverridesRaw;
+  if (text === undefined && hasCommittedOverrides) {
+    const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
+    text = await readTextFile(
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? `${reviewQueueOverridesFileName}.lkg`
+          : reviewQueueOverridesFileName
+      )
+    );
+  }
+  const overrides = hasCommittedOverrides
+    ? parseReviewQueueOverrides({
+        identity,
+        text:
+          text ??
+          serializeReviewQueueOverrides({
+            identity,
+            overrides: createEmptyReviewQueueOverrides(identity)
+          })
+      })
+    : createEmptyReviewQueueOverrides(identity);
+  project.persistence.reviewQueueOverridesReference = overrides;
+  project.persistence.reviewQueueOverridesRaw = undefined;
+  return overrides;
+}
+
+export async function commitProjectReviewQueueOverridesUpdate({
+  project,
+  reason,
+  update
+}: {
+  project: PatchmarkProjectHandle;
+  reason: string;
+  update: (
+    overrides: PatchmarkReviewQueueOverrides
+  ) => PatchmarkReviewQueueOverrides;
+}): Promise<PatchmarkReviewQueueOverrides> {
+  if (!project.persistence.reviewQueueOverridesReference) {
+    await readProjectReviewQueueOverrides(project);
+  }
+  await commitProjectState({
+    project,
+    reason,
+    reviewQueueOverridesUpdate: update
+  });
+  return (
+    project.persistence.reviewQueueOverridesReference ??
+    createEmptyReviewQueueOverrides(getProjectDocumentIdentity(project))
+  );
+}
+
+export class RewriteProjectSessionConflictError extends Error {
+  constructor(message = "This rewrite draft changed in another Patchmark window.") {
+    super(message);
+    this.name = "RewriteProjectSessionConflictError";
+  }
+}
+
+export async function readProjectRewriteSessionRecords(
+  project: PatchmarkProjectHandle
+): Promise<RewriteProjectSessionRecord[]> {
+  if (project.persistence.rewriteSessionsReference) {
+    return project.persistence.rewriteSessionsReference;
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const hasCommittedSessions = Boolean(project.persistence.files.rewrite_sessions);
+  let text = project.persistence.rewriteSessionsRaw;
+  if (text === undefined && hasCommittedSessions) {
+    const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
+    text = await readTextFile(
+      await metadataDirectoryHandle.getFileHandle(
+        project.persistence.readSource === "lkg"
+          ? `${rewriteSessionsFileName}.lkg`
+          : rewriteSessionsFileName
+      )
+    );
+  }
+  const records = hasCommittedSessions
+    ? parseRewriteProjectSessionStore({
+        identity,
+        text:
+          text ??
+          serializeRewriteProjectSessionStore({ identity, sessions: [] })
+      }).sessions
+    : [];
+  project.persistence.rewriteSessionsReference = records;
+  project.persistence.rewriteSessionsRaw = undefined;
+  return records;
+}
+
+export async function saveProjectRewriteSessionRecord({
+  expectedRevision,
+  project,
+  record,
+  reason
+}: {
+  expectedRevision: number;
+  project: PatchmarkProjectHandle;
+  record: RewriteProjectSessionRecord;
+  reason: string;
+}): Promise<{
+  commit: PatchmarkProjectCommitResult;
+  record: RewriteProjectSessionRecord;
+  sessions: RewriteProjectSessionRecord[];
+}> {
+  return saveProjectStateWithRewriteSessionRecord({
+    expectedRevision,
+    project,
+    reason,
+    rewriteSessionRecord: record
+  });
+}
+
+export async function saveProjectStateWithRewriteSessionRecord({
+  comments,
+  expectedRevision,
+  manifest,
+  markdown,
+  patches,
+  project,
+  reason,
+  rewriteSessionRecord
+}: {
+  comments?: PatchmarkComment[];
+  expectedRevision: number;
+  manifest?: PatchmarkManifest;
+  markdown?: string;
+  patches?: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+  reason: string;
+  rewriteSessionRecord: RewriteProjectSessionRecord;
+}): Promise<{
+  commit: PatchmarkProjectCommitResult;
+  record: RewriteProjectSessionRecord;
+  sessions: RewriteProjectSessionRecord[];
+}> {
+  const identity = getProjectDocumentIdentity(project);
+  if (
+    rewriteSessionRecord.project_id !== identity.projectId ||
+    rewriteSessionRecord.document_id !== identity.documentId
+  ) {
+    throw new Error("The Human Rewrite session does not belong to this project document.");
+  }
+  return withRewriteProjectLock(identity, async () => {
+    await assertProjectCommitStillCurrent(project);
+    const currentSessions = await readCurrentRewriteSessionRecordsFromDisk(project);
+    const current = currentSessions.find(
+      (candidate) =>
+        candidate.rewrite_session_id === rewriteSessionRecord.rewrite_session_id
+    );
+    const currentRevision = current?.authoritative_revision ?? 0;
+    if (currentRevision !== expectedRevision) {
+      throw new RewriteProjectSessionConflictError();
+    }
+    const nextRecord = {
+      ...rewriteSessionRecord,
+      authoritative_revision: currentRevision + 1,
+      authoritative_generation: project.persistence.generation + 1
+    } as RewriteProjectSessionRecord;
+    const nextSessions = [
+      ...currentSessions.filter(
+        (candidate) =>
+          candidate.rewrite_session_id !== rewriteSessionRecord.rewrite_session_id
+      ),
+      nextRecord
+    ];
+    const commit = await saveProjectState({
+      comments,
+      manifest,
+      markdown,
+      patches,
+      project,
+      reason,
+      rewriteSessions: nextSessions,
+      rollbackOnFailure: true
+    });
+    return { commit, record: nextRecord, sessions: nextSessions };
+  });
+}
+
+export async function verifyProjectRewriteSessionRecord({
+  project,
+  session
+}: {
+  project: PatchmarkProjectHandle;
+  session: RewriteProjectSessionRecord;
+}): Promise<boolean> {
+  const records = await readCurrentRewriteSessionRecordsFromDisk(project);
+  const current = records.find(
+    (candidate) => candidate.rewrite_session_id === session.rewrite_session_id
+  );
+  return Boolean(
+    current &&
+      current.status === session.status &&
+      current.authoritative_revision === session.authoritative_revision &&
+      current.human_draft_sha256 === session.human_draft_sha256
+  );
+}
+
+async function readCurrentRewriteSessionRecordsFromDisk(
+  project: PatchmarkProjectHandle
+): Promise<RewriteProjectSessionRecord[]> {
+  if (!project.persistence.files.rewrite_sessions) {
+    return [];
+  }
+  const identity = getProjectDocumentIdentity(project);
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const text = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    rewriteSessionsFileName
+  );
+  if (text === null) {
+    return [];
+  }
+  return parseRewriteProjectSessionStore({ identity, text }).sessions;
+}
+
+async function assertProjectCommitStillCurrent(
+  project: PatchmarkProjectHandle
+): Promise<void> {
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const currentText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    saveCommitFileName
+  );
+  if (!project.persistence.commit && currentText === null) {
+    return;
+  }
+  if (!project.persistence.commit || currentText === null) {
+    throw new RewriteProjectSessionConflictError();
+  }
+  const details: string[] = [];
+  const current = parseSaveCommitForValidation(currentText, details);
+  if (
+    !current ||
+    details.length > 0 ||
+    current.commit_id !== project.persistence.commit.commit_id ||
+    current.generation !== project.persistence.generation
+  ) {
+    throw new RewriteProjectSessionConflictError();
+  }
+}
+
+const rewriteProjectLocks = new Map<string, Promise<void>>();
+
+async function withRewriteProjectLock<T>(
+  identity: ProjectDocumentIdentity,
+  operation: () => Promise<T>
+): Promise<T> {
+  const key = `patchmark-human-rewrite:${identity.projectId}:${identity.documentId}`;
+  const lockManager = typeof navigator !== "undefined"
+    ? (navigator as Navigator & {
+        locks?: { request: <R>(name: string, callback: () => Promise<R>) => Promise<R> };
+      }).locks
+    : undefined;
+  if (lockManager) {
+    return lockManager.request(key, operation);
+  }
+  const previous = rewriteProjectLocks.get(key) ?? Promise.resolve();
+  let resolveTail!: () => void;
+  const tail = new Promise<void>((resolve) => {
+    resolveTail = resolve;
+  });
+  const queued = previous.catch(() => undefined).then(() => tail);
+  rewriteProjectLocks.set(key, queued);
+  await previous.catch(() => undefined);
+  try {
+    return await operation();
+  } finally {
+    resolveTail();
+    if (rewriteProjectLocks.get(key) === queued) {
+      rewriteProjectLocks.delete(key);
+    }
+  }
 }
 
 export async function readProjectPatches(
   project: PatchmarkProjectHandle
 ): Promise<PatchmarkPatch[]> {
+  if (project.persistence.patchesReference) {
+    return project.persistence.patchesReference;
+  }
   const metadataDirectoryHandle = await getProjectReadMetadataDirectory(project);
 
   let patchesFileHandle: MarkdownFileHandle;
@@ -687,12 +1915,19 @@ export async function readProjectPatches(
   }
 
   const patches = parsedPatches.map(normalizePatch);
+  assertUniqueDocumentLocalIds({
+    documentId: getProjectDocumentScopeId(project),
+    ids: patches.map((patch) => patch.id),
+    kind: "patch"
+  });
   project.persistence.patchesReference = patches;
   project.persistence.patchesRaw = undefined;
-  project.persistence.files.patches = await createPersistedFileCommit(
-    ".patchmark/patches.json",
-    rawPatches
-  );
+  if (!project.persistence.files.patches) {
+    project.persistence.files.patches = await createPersistedFileCommit(
+      ".patchmark/patches.json",
+      rawPatches
+    );
+  }
   return patches;
 }
 
@@ -730,9 +1965,44 @@ export async function writeProjectImport({
     create: true
   });
 
-  await writeTextFile(importFileHandle, contents);
+  try {
+    await writeTextFile(importFileHandle, contents);
+  } catch (error) {
+    await importsDirectoryHandle.removeEntry?.(fileName).catch(() => undefined);
+    throw error;
+  }
 
   return `${metadataDirectoryName}/imports/${fileName}`;
+}
+
+export async function removeProjectImport({
+  project,
+  relativePath
+}: {
+  project: PatchmarkProjectHandle;
+  relativePath: string;
+}): Promise<boolean> {
+  const match = /^\.patchmark\/imports\/([^/]+)$/.exec(relativePath);
+  if (!match || match[1].includes("..")) {
+    throw new Error("The Patchmark import path is invalid.");
+  }
+  const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const importsDirectoryHandle =
+    await metadataDirectoryHandle.getDirectoryHandle("imports");
+  if (!importsDirectoryHandle.removeEntry) {
+    return false;
+  }
+  try {
+    await importsDirectoryHandle.removeEntry(match[1]);
+    return true;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return true;
+    }
+    throw error;
+  }
 }
 
 export function getProjectPersistenceDebugState(
@@ -756,7 +2026,10 @@ export function resetProjectPersistenceDebugState(
 export async function restoreProjectLastKnownGood(
   project: PatchmarkProjectHandle
 ): Promise<LoadedPatchmarkProject> {
-  const lkg = await readValidLastKnownGoodGeneration(project.directoryHandle);
+  const lkg = await readValidLastKnownGoodGeneration(
+    project.directoryHandle,
+    getProjectDocumentIdentity(project)
+  );
 
   if (!lkg) {
     throw new Error("The last complete project save is no longer available.");
@@ -767,7 +2040,7 @@ export async function restoreProjectLastKnownGood(
   const preparedFiles: PreparedProjectFile[] = [];
 
   try {
-    for (const key of ["document", "comments", "patches", "manifest"] as const) {
+    for (const key of getCommittedProjectFileKeys(lkg.commit)) {
       preparedFiles.push(
         await prepareProjectTemporaryFile({
           commitId: restoreId,
@@ -810,13 +2083,27 @@ export async function restoreProjectLastKnownGood(
     await installPreparedProjectFile(commitPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+    if (!lkg.commit.files.review_batches) {
+      await removeReviewBatchFileIfPresent(project.directoryHandle);
+    }
+    if (!lkg.commit.files.review_queue_overrides) {
+      await removeReviewQueueOverridesFileIfPresent(project.directoryHandle);
+    }
+    if (!lkg.commit.files.rewrite_sessions) {
+      await removeRewriteSessionsFileIfPresent(project.directoryHandle);
+    }
   } finally {
     await cleanupPreparedFiles(preparedFiles);
   }
 
   const restoredProject: PatchmarkProjectHandle = {
     directoryHandle: project.directoryHandle,
+    document: project.document,
+    documentAvailability: project.documentAvailability,
     manifest: lkg.manifest,
+    projectDirectoryHandle: project.projectDirectoryHandle,
+    projectManifest: project.projectManifest,
+    projectMode: project.projectMode,
     persistence: {
       generation: lkg.commit.generation,
       commit: lkg.commit,
@@ -825,6 +2112,15 @@ export async function restoreProjectLastKnownGood(
       manifestText: lkg.texts.manifest,
       commentsRaw: lkg.texts.comments,
       patchesRaw: lkg.texts.patches,
+      reviewBatchesRaw: lkg.commit.files.review_batches
+        ? lkg.texts.review_batches
+        : undefined,
+      reviewQueueOverridesRaw: lkg.commit.files.review_queue_overrides
+        ? lkg.texts.review_queue_overrides
+        : undefined,
+      rewriteSessionsRaw: lkg.commit.files.rewrite_sessions
+        ? lkg.texts.rewrite_sessions
+        : undefined,
       readSource: "current",
       debug: createEmptyPersistenceDebugState()
     }
@@ -858,8 +2154,16 @@ async function commitProjectState({
   allowSupersede = false,
   comments,
   manifest,
+  manifestUpdate,
   markdown,
   patches,
+  reviewBatches,
+  reviewBatchesUpdate,
+  reviewQueueOverrides,
+  reviewQueueOverridesUpdate,
+  rewriteSessions,
+  rewriteSessionsUpdate,
+  rollbackOnFailure = false,
   project,
   reason
 }: ProjectCommitRequest & {
@@ -896,8 +2200,16 @@ async function commitProjectState({
         allowSupersede,
         comments,
         manifest,
+        manifestUpdate,
         markdown,
         patches,
+        reviewBatches,
+        reviewBatchesUpdate,
+        reviewQueueOverrides,
+        reviewQueueOverridesUpdate,
+        rewriteSessions,
+        rewriteSessionsUpdate,
+        rollbackOnFailure,
         project,
         queue,
         reason,
@@ -918,8 +2230,16 @@ async function executeProjectCommit({
   allowSupersede,
   comments,
   manifest,
+  manifestUpdate,
   markdown,
   patches,
+  reviewBatches,
+  reviewBatchesUpdate,
+  reviewQueueOverrides,
+  reviewQueueOverridesUpdate,
+  rewriteSessions,
+  rewriteSessionsUpdate,
+  rollbackOnFailure,
   project,
   queue,
   reason,
@@ -935,11 +2255,17 @@ async function executeProjectCommit({
   const changedFiles: ProjectCommitFileKey[] = [];
   const serializedFiles: ProjectCommitFileKey[] = [];
   const desiredTexts: Partial<Record<ProjectCommitFileKey, string>> = {};
+  const requestedManifest = manifestUpdate
+    ? manifestUpdate(project.manifest)
+    : manifest;
 
   debug.lastFileResults = {
     document: "skipped",
     comments: "skipped",
     patches: "skipped",
+    review_batches: "skipped",
+    review_queue_overrides: "skipped",
+    rewrite_sessions: "skipped",
     manifest: "skipped"
   };
 
@@ -957,7 +2283,10 @@ async function executeProjectCommit({
     if (comments === persistence.commentsReference) {
       debug.lastFileResults.comments = "unchanged";
     } else {
-      const commentsText = serializeComments(comments);
+      const commentsText = serializeComments(
+        comments,
+        getProjectDocumentScopeId(project)
+      );
       serializedFiles.push("comments");
       debug.serializationCount += 1;
       const commentsCommit = await createPersistedFileCommit(
@@ -983,7 +2312,10 @@ async function executeProjectCommit({
     if (patches === persistence.patchesReference) {
       debug.lastFileResults.patches = "unchanged";
     } else {
-      const patchesText = serializePatches(patches);
+      const patchesText = serializePatches(
+        patches,
+        getProjectDocumentScopeId(project)
+      );
       serializedFiles.push("patches");
       debug.serializationCount += 1;
       const patchesCommit = await createPersistedFileCommit(
@@ -1005,15 +2337,163 @@ async function executeProjectCommit({
     }
   }
 
+  const currentReviewBatches =
+    persistence.reviewBatchesReference ??
+    parseReviewBatchRecords({
+      identity: getProjectDocumentIdentity(project),
+      text: persistence.files.review_batches
+        ? persistence.reviewBatchesRaw ?? "[]\n"
+        : "[]\n"
+    });
+  const requestedReviewBatches = reviewBatchesUpdate
+    ? reviewBatchesUpdate(currentReviewBatches)
+    : reviewBatches;
+  if (requestedReviewBatches !== undefined) {
+    if (requestedReviewBatches === persistence.reviewBatchesReference) {
+      debug.lastFileResults.review_batches = "unchanged";
+    } else {
+      const reviewBatchesText = serializeReviewBatchRecords({
+        identity: getProjectDocumentIdentity(project),
+        records: requestedReviewBatches
+      });
+      serializedFiles.push("review_batches");
+      debug.serializationCount += 1;
+      const reviewBatchesCommit = await createPersistedFileCommit(
+        `${metadataDirectoryName}/${reviewBatchesFileName}`,
+        reviewBatchesText
+      );
+      const currentReviewBatchesCommit =
+        persistence.files.review_batches ??
+        (await createPersistedFileCommit(
+          `${metadataDirectoryName}/${reviewBatchesFileName}`,
+          "[]\n"
+        ));
+      if (reviewBatchesCommit.sha256 === currentReviewBatchesCommit.sha256) {
+        persistence.reviewBatchesReference = requestedReviewBatches;
+        debug.lastFileResults.review_batches = "unchanged";
+      } else {
+        changedFiles.push("review_batches");
+        desiredTexts.review_batches = reviewBatchesText;
+        debug.lastFileResults.review_batches = "changed";
+      }
+    }
+  }
+
+  const reviewQueueIdentity = getProjectDocumentIdentity(project);
+  const emptyReviewQueueOverrides = createEmptyReviewQueueOverrides(
+    reviewQueueIdentity
+  );
+  const emptyReviewQueueOverridesText = serializeReviewQueueOverrides({
+    identity: reviewQueueIdentity,
+    overrides: emptyReviewQueueOverrides
+  });
+  const currentReviewQueueOverrides =
+    persistence.reviewQueueOverridesReference ??
+    (persistence.files.review_queue_overrides
+      ? parseReviewQueueOverrides({
+          identity: reviewQueueIdentity,
+          text:
+            persistence.reviewQueueOverridesRaw ??
+            emptyReviewQueueOverridesText
+        })
+      : emptyReviewQueueOverrides);
+  const requestedReviewQueueOverrides = reviewQueueOverridesUpdate
+    ? reviewQueueOverridesUpdate(currentReviewQueueOverrides)
+    : reviewQueueOverrides;
+  if (requestedReviewQueueOverrides !== undefined) {
+    if (
+      requestedReviewQueueOverrides ===
+      persistence.reviewQueueOverridesReference
+    ) {
+      debug.lastFileResults.review_queue_overrides = "unchanged";
+    } else {
+      const reviewQueueOverridesText = serializeReviewQueueOverrides({
+        identity: reviewQueueIdentity,
+        overrides: requestedReviewQueueOverrides
+      });
+      serializedFiles.push("review_queue_overrides");
+      debug.serializationCount += 1;
+      const reviewQueueOverridesCommit = await createPersistedFileCommit(
+        `${metadataDirectoryName}/${reviewQueueOverridesFileName}`,
+        reviewQueueOverridesText
+      );
+      const currentReviewQueueOverridesCommit =
+        persistence.files.review_queue_overrides ??
+        (await createPersistedFileCommit(
+          `${metadataDirectoryName}/${reviewQueueOverridesFileName}`,
+          emptyReviewQueueOverridesText
+        ));
+      if (
+        reviewQueueOverridesCommit.sha256 ===
+        currentReviewQueueOverridesCommit.sha256
+      ) {
+        persistence.reviewQueueOverridesReference =
+          requestedReviewQueueOverrides;
+        debug.lastFileResults.review_queue_overrides = "unchanged";
+      } else {
+        changedFiles.push("review_queue_overrides");
+        desiredTexts.review_queue_overrides = reviewQueueOverridesText;
+        debug.lastFileResults.review_queue_overrides = "changed";
+      }
+    }
+  }
+
+  const rewriteIdentity = getProjectDocumentIdentity(project);
+  const emptyRewriteSessionsText = serializeRewriteProjectSessionStore({
+    identity: rewriteIdentity,
+    sessions: []
+  });
+  const currentRewriteSessions =
+    persistence.rewriteSessionsReference ??
+    (persistence.files.rewrite_sessions
+      ? parseRewriteProjectSessionStore({
+          identity: rewriteIdentity,
+          text: persistence.rewriteSessionsRaw ?? emptyRewriteSessionsText
+        }).sessions
+      : []);
+  const requestedRewriteSessions = rewriteSessionsUpdate
+    ? rewriteSessionsUpdate(currentRewriteSessions)
+    : rewriteSessions;
+  if (requestedRewriteSessions !== undefined) {
+    if (requestedRewriteSessions === persistence.rewriteSessionsReference) {
+      debug.lastFileResults.rewrite_sessions = "unchanged";
+    } else {
+      const rewriteSessionsText = serializeRewriteProjectSessionStore({
+        identity: rewriteIdentity,
+        sessions: requestedRewriteSessions
+      });
+      serializedFiles.push("rewrite_sessions");
+      debug.serializationCount += 1;
+      const rewriteSessionsCommit = await createPersistedFileCommit(
+        `${metadataDirectoryName}/${rewriteSessionsFileName}`,
+        rewriteSessionsText
+      );
+      const currentRewriteSessionsCommit =
+        persistence.files.rewrite_sessions ??
+        (await createPersistedFileCommit(
+          `${metadataDirectoryName}/${rewriteSessionsFileName}`,
+          emptyRewriteSessionsText
+        ));
+      if (rewriteSessionsCommit.sha256 === currentRewriteSessionsCommit.sha256) {
+        persistence.rewriteSessionsReference = requestedRewriteSessions;
+        debug.lastFileResults.rewrite_sessions = "unchanged";
+      } else {
+        changedFiles.push("rewrite_sessions");
+        desiredTexts.rewrite_sessions = rewriteSessionsText;
+        debug.lastFileResults.rewrite_sessions = "changed";
+      }
+    }
+  }
+
   const manifestChanged =
-    manifest !== undefined &&
-    createManifestMeaningfulKey(manifest) !==
+    requestedManifest !== undefined &&
+    createManifestMeaningfulKey(requestedManifest) !==
       createManifestMeaningfulKey(project.manifest);
 
   if (manifestChanged) {
     changedFiles.push("manifest");
     debug.lastFileResults.manifest = "changed";
-  } else if (manifest !== undefined) {
+  } else if (requestedManifest !== undefined) {
     debug.lastFileResults.manifest = "unchanged";
   }
 
@@ -1034,8 +2514,28 @@ async function executeProjectCommit({
     return recordSupersededCommit(project, serializedFiles);
   }
 
-  const currentTexts = await readCurrentProjectTexts(project.directoryHandle);
-  const currentDescriptors = await createProjectFileDescriptors(currentTexts);
+  const includeCurrentReviewBatches = Boolean(
+    persistence.files.review_batches
+  );
+  const includeCurrentReviewQueueOverrides = Boolean(
+    persistence.files.review_queue_overrides
+  );
+  const includeCurrentRewriteSessions = Boolean(
+    persistence.files.rewrite_sessions
+  );
+  const currentTexts = await readCurrentProjectTexts(
+    project.directoryHandle,
+    includeCurrentReviewBatches,
+    includeCurrentReviewQueueOverrides,
+    emptyReviewQueueOverridesText,
+    includeCurrentRewriteSessions,
+    emptyRewriteSessionsText
+  );
+  const currentDescriptors = await createProjectFileDescriptors(
+    currentTexts,
+    includeCurrentReviewBatches,
+    includeCurrentReviewQueueOverrides
+  );
   const currentCommit =
     persistence.commit ??
     createLegacyBaselineCommit({
@@ -1054,7 +2554,7 @@ async function executeProjectCommit({
   const generation = Math.max(persistence.generation, currentCommit.generation) + 1;
   const commitId = createSaveCommitId(generation);
   const nextManifest: PatchmarkManifest = {
-    ...(manifest ?? project.manifest),
+    ...(requestedManifest ?? project.manifest),
     updated_at: createdAt,
     save_generation: generation,
     save_commit_id: commitId
@@ -1068,7 +2568,19 @@ async function executeProjectCommit({
     ...currentTexts,
     ...desiredTexts
   } satisfies Record<ProjectCommitFileKey, string>;
-  const nextDescriptors = await createProjectFileDescriptors(nextTexts);
+  const includeNextReviewBatches =
+    includeCurrentReviewBatches || changedFiles.includes("review_batches");
+  const includeNextReviewQueueOverrides =
+    includeCurrentReviewQueueOverrides ||
+    changedFiles.includes("review_queue_overrides");
+  const includeNextRewriteSessions =
+    includeCurrentRewriteSessions || changedFiles.includes("rewrite_sessions");
+  const nextDescriptors = await createProjectFileDescriptors(
+    nextTexts,
+    includeNextReviewBatches,
+    includeNextReviewQueueOverrides,
+    includeNextRewriteSessions
+  );
   const saveCommit: PatchmarkSaveCommit = {
     format_version: saveCommitFormatVersion,
     generation,
@@ -1078,6 +2590,7 @@ async function executeProjectCommit({
   };
   const commitText = serializeSaveCommit(saveCommit);
   const preparedFiles: PreparedProjectFile[] = [];
+  const attemptedInstalls: PreparedProjectFile[] = [];
 
   try {
     for (const key of changedFiles.filter((key) => key !== "manifest")) {
@@ -1117,6 +2630,7 @@ async function executeProjectCommit({
     for (const prepared of preparedFiles.filter(
       (file) => file.key !== "manifest" && file.key !== "commit"
     )) {
+      attemptedInstalls.push(prepared);
       await installPreparedProjectFile(prepared, (bytes) =>
         recordPersistenceWrite(project, bytes)
       );
@@ -1131,12 +2645,30 @@ async function executeProjectCommit({
       throw new Error(`Could not prepare project save ${reason}.`);
     }
 
+    attemptedInstalls.push(manifestPrepared);
     await installPreparedProjectFile(manifestPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+    attemptedInstalls.push(commitPrepared);
     await installPreparedProjectFile(commitPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+  } catch (error) {
+    if (rollbackOnFailure) {
+      const rollbackSucceeded = await rollbackAttemptedProjectInstalls({
+        attemptedInstalls,
+        currentCommit,
+        currentTexts,
+        includeCurrentReviewBatches,
+        includeCurrentReviewQueueOverrides,
+        includeCurrentRewriteSessions,
+        onWrite: (bytes) => recordPersistenceWrite(project, bytes)
+      });
+      if (!rollbackSucceeded) {
+        persistence.readSource = "lkg";
+      }
+    }
+    throw error;
   } finally {
     await cleanupPreparedFiles(preparedFiles);
   }
@@ -1156,6 +2688,21 @@ async function executeProjectCommit({
 
   if (patches !== undefined) {
     persistence.patchesReference = patches;
+  }
+
+  if (requestedReviewBatches !== undefined) {
+    persistence.reviewBatchesReference = requestedReviewBatches;
+    persistence.reviewBatchesRaw = undefined;
+  }
+
+  if (requestedReviewQueueOverrides !== undefined) {
+    persistence.reviewQueueOverridesReference = requestedReviewQueueOverrides;
+    persistence.reviewQueueOverridesRaw = undefined;
+  }
+
+  if (requestedRewriteSessions !== undefined) {
+    persistence.rewriteSessionsReference = requestedRewriteSessions;
+    persistence.rewriteSessionsRaw = undefined;
   }
 
   const bytesWritten = debug.bytesWritten - bytesWrittenBeforeCommit;
@@ -1230,12 +2777,30 @@ function createEmptyPersistenceDebugState(): PatchmarkPersistenceDebugState {
   };
 }
 
-function serializeComments(comments: PatchmarkComment[]): string {
-  return `${JSON.stringify(comments.map(normalizeComment), null, 2)}\n`;
+function serializeComments(
+  comments: PatchmarkComment[],
+  documentId: string
+): string {
+  const normalized = comments.map(normalizeComment);
+  assertUniqueDocumentLocalIds({
+    documentId,
+    ids: normalized.map((comment) => comment.id),
+    kind: "comment"
+  });
+  return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
-function serializePatches(patches: PatchmarkPatch[]): string {
-  return `${JSON.stringify(patches.map(normalizePatch), null, 2)}\n`;
+function serializePatches(
+  patches: PatchmarkPatch[],
+  documentId: string
+): string {
+  const normalized = patches.map(normalizePatch);
+  assertUniqueDocumentLocalIds({
+    documentId,
+    ids: normalized.map((patch) => patch.id),
+    kind: "patch"
+  });
+  return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
 function serializeManifest(manifest: PatchmarkManifest): string {
@@ -1260,15 +2825,528 @@ function createSaveCommitId(generation: number): string {
   return `PM-SAVE-${String(generation).padStart(6, "0")}-${randomId}`;
 }
 
+async function openRegisteredProjectFromManifest(
+  directoryHandle: PatchmarkDirectoryHandle,
+  manifest: PatchmarkProjectManifestV1,
+  options: { readOnly?: boolean } = {}
+): Promise<LoadedPatchmarkProject> {
+  const documents = await listProjectDocuments(
+    directoryHandle as ProjectDirectoryHandle,
+    manifest
+  );
+  const activeDocuments = documents.filter(
+    (document) => document.status === "active"
+  );
+  const preferredDocumentId = readPreferredDocumentId(manifest.project_id);
+  const selected =
+    activeDocuments.find(
+      (document) =>
+        document.document_id === preferredDocumentId &&
+        document.availability === "available"
+    ) ??
+    activeDocuments.find((document) => document.availability === "available") ??
+    activeDocuments[0];
+  if (!selected) {
+    throw new Error("This Patchmark project has no active documents.");
+  }
+  return openRegisteredProjectDocument(
+    directoryHandle,
+    manifest,
+    selected.document_id,
+    options
+  );
+}
+
+async function openRegisteredProjectDocument(
+  root: PatchmarkDirectoryHandle,
+  projectManifest: PatchmarkProjectManifestV1,
+  documentId: string,
+  options: {
+    performanceOperationId?: string | null;
+    readOnly?: boolean;
+  } = {}
+): Promise<LoadedPatchmarkProject> {
+  const operationId = options.performanceOperationId;
+  markDocumentSwitchPerformance(operationId, "target_open_started");
+  const document = getRegisteredDocument(projectManifest, documentId);
+  const ownershipStartedAt = performance.now();
+  const scopedDirectory = (await createDocumentScopedDirectoryHandle(
+    root as ProjectDirectoryHandle,
+    document
+  )) as PatchmarkDirectoryHandle;
+  recordDocumentSwitchPerformanceDuration(
+    operationId,
+    "validate_target_ownership",
+    performance.now() - ownershipStartedAt
+  );
+  markDocumentSwitchPerformance(operationId, "target_ownership_validated");
+
+  let documentFile: MarkdownFileHandle;
+  try {
+    documentFile = await scopedDirectory.getFileHandle(documentFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+    const missing = await createMissingDocumentProject({
+      document,
+      projectManifest,
+      root,
+      scopedDirectory
+    });
+    rememberPreferredDocumentId(projectManifest.project_id, documentId);
+    return missing;
+  }
+
+  const metadataDirectory = await scopedDirectory.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const documentManifestFile = await getRequiredFileHandle(
+    metadataDirectory,
+    manifestFileName,
+    `Document store ${documentId} is missing manifest.json.`
+  );
+  const manifestReadStartedAt = performance.now();
+  const targetManifestText = await readTextFile(documentManifestFile);
+  recordDocumentSwitchPerformanceDuration(
+    operationId,
+    "read_target_manifest",
+    performance.now() - manifestReadStartedAt
+  );
+  const markdownReadStartedAt = performance.now();
+  const targetMarkdown = await readTextFile(documentFile);
+  recordDocumentSwitchPerformanceDuration(
+    operationId,
+    "read_target_markdown",
+    performance.now() - markdownReadStartedAt
+  );
+  incrementDocumentSwitchPerformanceCounter(
+    operationId,
+    "bytes_read",
+    new TextEncoder().encode(targetManifestText).byteLength +
+      new TextEncoder().encode(targetMarkdown).byteLength
+  );
+  markDocumentSwitchPerformance(operationId, "target_markdown_read");
+  const loaded = await createOpenedProjectHandle({
+    directoryHandle: scopedDirectory,
+    documentIdentity: createProjectDocumentIdentity(
+      projectManifest.project_id,
+      document.document_id
+    ),
+    manifestText: targetManifestText,
+    markdown: targetMarkdown,
+    performanceOperationId: operationId,
+    readOnly: options.readOnly
+  });
+  applyMultiDocumentContext({
+    availability: "available",
+    document,
+    loaded,
+    projectManifest,
+    root
+  });
+  rememberPreferredDocumentId(projectManifest.project_id, documentId);
+  return loaded;
+}
+
+async function createMissingDocumentProject({
+  document,
+  projectManifest,
+  root,
+  scopedDirectory
+}: {
+  document: PatchmarkRegisteredDocument;
+  projectManifest: PatchmarkProjectManifestV1;
+  root: PatchmarkDirectoryHandle;
+  scopedDirectory: PatchmarkDirectoryHandle;
+}): Promise<LoadedPatchmarkProject> {
+  const metadataDirectory = await scopedDirectory.getDirectoryHandle(
+    metadataDirectoryName
+  );
+  const manifestText = await readTextFile(
+    await getRequiredFileHandle(
+      metadataDirectory,
+      manifestFileName,
+      `Document store ${document.document_id} is missing manifest.json.`
+    )
+  );
+  const details: string[] = [];
+  const manifest = parseManifestForValidation(
+    manifestText,
+    projectManifest.title,
+    details,
+    createProjectDocumentIdentity(
+      projectManifest.project_id,
+      document.document_id
+    )
+  );
+  if (!manifest || details.length > 0) {
+    throw new Error(
+      details[0] ?? `Document store ${document.document_id} has an invalid manifest.`
+    );
+  }
+  const recovery: PatchmarkProjectRecoveryState = {
+    kind: "missing_document",
+    canRestore: false,
+    message: `The registered Markdown file ${document.path} is missing. Locate it to restore this document.`,
+    technicalDetails: [
+      `Document ID: ${document.document_id}`,
+      `Registered path: ${document.path}`
+    ],
+    temporaryFiles: []
+  };
+  const project: PatchmarkProjectHandle = {
+    directoryHandle: scopedDirectory,
+    document,
+    documentAvailability: "missing",
+    manifest,
+    projectDirectoryHandle: root,
+    projectManifest,
+    projectMode: "multi",
+    persistence: {
+      generation: manifest.save_generation ?? 0,
+      commit: null,
+      files: {},
+      documentText: "",
+      manifestText,
+      readSource: "current_readonly",
+      recovery,
+      debug: createEmptyPersistenceDebugState()
+    }
+  };
+  return { markdown: "", project, recovery };
+}
+
+function applyMultiDocumentContext({
+  availability,
+  document,
+  loaded,
+  projectManifest,
+  root
+}: {
+  availability: PatchmarkDocumentAvailability;
+  document: PatchmarkRegisteredDocument;
+  loaded: LoadedPatchmarkProject;
+  projectManifest: PatchmarkProjectManifestV1;
+  root: PatchmarkDirectoryHandle;
+}): void {
+  loaded.project.projectMode = "multi";
+  loaded.project.projectDirectoryHandle = root;
+  loaded.project.projectManifest = projectManifest;
+  loaded.project.document = document;
+  loaded.project.documentAvailability = availability;
+}
+
+async function prepareMultiDocumentProject(
+  project: PatchmarkProjectHandle
+): Promise<{ loaded: LoadedPatchmarkProject; migrationId?: string }> {
+  if (project.projectManifest && project.document) {
+    return {
+      loaded: {
+        markdown: project.persistence.documentText,
+        project,
+        recovery: project.persistence.recovery
+      }
+    };
+  }
+  if (project.persistence.readSource !== "current") {
+    throw new Error("Repair or restore the legacy project before converting it.");
+  }
+
+  const expectedComments = await readProjectComments(project);
+  const expectedPatches = await readProjectPatches(project);
+  const expectedVersions = await listProjectVersions(project);
+  const expectedVersionContents = await Promise.all(
+    expectedVersions.map((version) => readProjectVersionMarkdown(project, version))
+  );
+  const root = getAuthoritativeProjectDirectory(project);
+  const conversion = await convertLegacyProject({
+    projectTitle: project.manifest.project_name,
+    root: root as ProjectDirectoryHandle
+  });
+  const loaded = await openRegisteredProjectDocument(
+    root,
+    conversion.manifest,
+    conversion.document.document_id
+  );
+  const reopenedComments = await readProjectComments(loaded.project);
+  const reopenedPatches = await readProjectPatches(loaded.project);
+  const reopenedVersions = await listProjectVersions(loaded.project);
+  const reopenedVersionContents = await Promise.all(
+    reopenedVersions.map((version) =>
+      readProjectVersionMarkdown(loaded.project, version)
+    )
+  );
+  if (
+    createObjectIdentitySignature(reopenedComments) !==
+      createObjectIdentitySignature(expectedComments) ||
+    createObjectIdentitySignature(reopenedPatches) !==
+      createObjectIdentitySignature(expectedPatches) ||
+    createObjectIdentitySignature(reopenedVersions) !==
+      createObjectIdentitySignature(expectedVersions) ||
+    JSON.stringify(reopenedVersionContents) !==
+      JSON.stringify(expectedVersionContents) ||
+    loaded.markdown !== project.persistence.documentText
+  ) {
+    throw new Error("Converted project did not pass semantic reopen verification.");
+  }
+  const validationSave = await saveProjectState({
+    comments: reopenedComments,
+    markdown: loaded.markdown,
+    patches: reopenedPatches,
+    project: loaded.project,
+    reason: "migration_reopen_validation"
+  });
+  if (validationSave.status !== "unchanged") {
+    throw new Error("Converted project required an unexpected validation write.");
+  }
+  const validatedLoaded = await openRegisteredProjectDocument(
+    root,
+    conversion.manifest,
+    conversion.document.document_id
+  );
+  await markLegacyConversionReopened(
+    root as ProjectDirectoryHandle,
+    conversion.migrationId,
+    "reopened"
+  );
+  return { loaded: validatedLoaded, migrationId: conversion.migrationId };
+}
+
+function createObjectIdentitySignature(values: Array<{ id: string }>): string {
+  return JSON.stringify(values.map((value) => value.id));
+}
+
+async function commitProjectRegistry(
+  project: PatchmarkProjectHandle,
+  manifest: PatchmarkProjectManifestV1
+): Promise<void> {
+  await writeProjectManifestAtomic(
+    getAuthoritativeProjectDirectory(project) as ProjectDirectoryHandle,
+    manifest
+  );
+  updateProjectRegistryContext(project, manifest);
+}
+
+function updateProjectRegistryContext(
+  project: PatchmarkProjectHandle,
+  manifest: PatchmarkProjectManifestV1
+): void {
+  project.projectManifest = manifest;
+  if (project.document) {
+    project.document = getRegisteredDocument(
+      manifest,
+      project.document.document_id
+    );
+  }
+}
+
+function requireProjectManifest(
+  project: PatchmarkProjectHandle
+): PatchmarkProjectManifestV1 {
+  if (!project.projectManifest) {
+    throw new Error("Convert this legacy project before managing documents.");
+  }
+  return project.projectManifest;
+}
+
+function getAuthoritativeProjectDirectory(
+  project: PatchmarkProjectHandle
+): PatchmarkDirectoryHandle {
+  return project.projectDirectoryHandle ?? project.directoryHandle;
+}
+
+function createLegacyDocumentTitle(project: PatchmarkProjectHandle): string {
+  return project.manifest.project_name.replace(/[_-]+/g, " ").trim() || "Document";
+}
+
+function readPreferredDocumentId(projectId: string): string | null {
+  try {
+    return globalThis.localStorage?.getItem(
+      `patchmark:active-document:${projectId}`
+    ) ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function rememberPreferredDocumentId(projectId: string, documentId: string): void {
+  try {
+    globalThis.localStorage?.setItem(
+      `patchmark:active-document:${projectId}`,
+      documentId
+    );
+  } catch {
+    return;
+  }
+}
+
+async function findPendingLegacyAssemblyTransaction(
+  root: PatchmarkDirectoryHandle,
+  projectId: string
+): Promise<PendingLegacyAssemblyTransaction | null> {
+  try {
+    const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+    const transactions = await metadata.getDirectoryHandle("transactions");
+    if (!transactions.entries) {
+      return null;
+    }
+    const candidates: PendingLegacyAssemblyTransaction[] = [];
+    for await (const [assemblyId, entry] of transactions.entries()) {
+      if (entry.kind !== "directory") {
+        continue;
+      }
+      const directory = await transactions.getDirectoryHandle(assemblyId);
+      const text = await readOptionalTextFile(directory, "assembly.json");
+      if (!text) {
+        continue;
+      }
+      try {
+        const journal = JSON.parse(text) as unknown;
+        if (
+          isRecord(journal) &&
+          journal.format === "patchmark-legacy-assembly-transaction" &&
+          journal.destination_project_id === projectId &&
+          ["manifest_committed", "reopened", "sources_verified"].includes(
+            String(journal.stage)
+          )
+        ) {
+          candidates.push({
+            assemblyId,
+            directory,
+            stage: String(journal.stage),
+            updatedAt:
+              typeof journal.updated_at === "string" ? journal.updated_at : ""
+          });
+        }
+      } catch {
+        continue;
+      }
+    }
+    candidates.sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+    return candidates[0] ?? null;
+  } catch (error) {
+    if (isNotFoundError(error)) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function completePendingLegacyAssemblyTransaction(
+  root: PatchmarkDirectoryHandle,
+  manifest: PatchmarkProjectManifestV1,
+  initiallyLoaded: LoadedPatchmarkProject,
+  transaction: PendingLegacyAssemblyTransaction
+): Promise<void> {
+  for (const document of manifest.documents) {
+    const loaded = await openRegisteredProjectDocument(
+      root,
+      manifest,
+      document.document_id,
+      { readOnly: true }
+    );
+    if (loaded.recovery || loaded.project.documentAvailability !== "available") {
+      throw new Error(
+        `Imported document ${document.document_id} did not reopen as authoritative.`
+      );
+    }
+    await readProjectComments(loaded.project);
+    await readProjectPatches(loaded.project);
+    for (const version of await listProjectVersions(loaded.project)) {
+      await readProjectVersionMarkdown(loaded.project, version);
+    }
+  }
+  if (initiallyLoaded.project.document) {
+    rememberPreferredDocumentId(
+      manifest.project_id,
+      initiallyLoaded.project.document.document_id
+    );
+  }
+  await updateLegacyAssemblyJournal(transaction.directory, "complete");
+  try {
+    const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+    const transactions = await metadata.getDirectoryHandle("transactions");
+    await transactions.removeEntry?.(transaction.assemblyId, { recursive: true });
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      return;
+    }
+  }
+}
+
+async function invalidatePendingLegacyAssemblyTransaction(
+  root: PatchmarkDirectoryHandle,
+  transaction: PendingLegacyAssemblyTransaction,
+  error: unknown
+): Promise<void> {
+  try {
+    await updateLegacyAssemblyJournal(
+      transaction.directory,
+      "invalid_destination",
+      error
+    );
+  } finally {
+    const metadata = await root.getDirectoryHandle(metadataDirectoryName);
+    if (!metadata.removeEntry) {
+      throw new Error(
+        "This filesystem cannot remove the invalid assembled project manifest."
+      );
+    }
+    try {
+      await metadata.removeEntry("project.json");
+    } catch (removeError) {
+      if (!isNotFoundError(removeError)) {
+        throw removeError;
+      }
+    }
+  }
+}
+
+async function updateLegacyAssemblyJournal(
+  directory: PatchmarkDirectoryHandle,
+  stage: string,
+  error?: unknown
+): Promise<void> {
+  const text = await readOptionalTextFile(directory, "assembly.json");
+  let journal: Record<string, unknown> = {};
+  if (text) {
+    try {
+      const parsed = JSON.parse(text) as unknown;
+      if (isRecord(parsed)) {
+        journal = parsed;
+      }
+    } catch {
+      journal = {};
+    }
+  }
+  await writeTextFile(
+    await directory.getFileHandle("assembly.json", { create: true }),
+    `${JSON.stringify({
+      ...journal,
+      stage,
+      updated_at: new Date().toISOString(),
+      ...(error ? { error: getErrorMessage(error) } : {})
+    }, null, 2)}\n`
+  );
+}
+
 async function createOpenedProjectHandle({
   directoryHandle,
+  documentIdentity,
   manifestText,
-  markdown
+  markdown,
+  performanceOperationId,
+  readOnly = false
 }: {
   directoryHandle: PatchmarkDirectoryHandle;
+  documentIdentity?: ProjectDocumentIdentity;
   manifestText: string;
   markdown: string;
+  performanceOperationId?: string | null;
+  readOnly?: boolean;
 }): Promise<LoadedPatchmarkProject> {
+  const currentStoreStartedAt = performance.now();
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
   );
@@ -1281,15 +3359,50 @@ async function createOpenedProjectHandle({
     metadataDirectoryHandle,
     patchesFileName
   );
+  const reviewBatchesText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    reviewBatchesFileName
+  );
+  const reviewQueueOverridesText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    reviewQueueOverridesFileName
+  );
+  const rewriteSessionsText = await readOptionalTextFile(
+    metadataDirectoryHandle,
+    rewriteSessionsFileName
+  );
   const commitText = await readOptionalTextFile(
     metadataDirectoryHandle,
     saveCommitFileName
+  );
+  const currentStoreReadDuration = performance.now() - currentStoreStartedAt;
+  recordDocumentSwitchPerformanceDuration(
+    performanceOperationId,
+    "read_target_current_store",
+    currentStoreReadDuration
+  );
+  const reviewBytes =
+    new TextEncoder().encode(commentsText ?? "").byteLength +
+    new TextEncoder().encode(patchesText ?? "").byteLength +
+    new TextEncoder().encode(reviewBatchesText ?? "").byteLength +
+    new TextEncoder().encode(reviewQueueOverridesText ?? "").byteLength +
+    new TextEncoder().encode(rewriteSessionsText ?? "").byteLength +
+    new TextEncoder().encode(commitText ?? "").byteLength;
+  incrementDocumentSwitchPerformanceCounter(
+    performanceOperationId,
+    "bytes_read",
+    reviewBytes
+  );
+  markDocumentSwitchPerformance(
+    performanceOperationId,
+    "target_current_store_read"
   );
   const currentDetails: string[] = [];
   const currentManifest = parseManifestForValidation(
     manifestText,
     directoryHandle.name,
-    currentDetails
+    currentDetails,
+    documentIdentity
   );
 
   if (commentsText === null) {
@@ -1300,18 +3413,58 @@ async function createOpenedProjectHandle({
     currentDetails.push("Missing .patchmark/patches.json.");
   }
 
+  const currentCommit = commitText
+    ? parseSaveCommitForValidation(commitText, currentDetails)
+    : null;
+  const committedReviewBatches = Boolean(currentCommit?.files.review_batches);
+  const committedReviewQueueOverrides = Boolean(
+    currentCommit?.files.review_queue_overrides
+  );
+  const committedRewriteSessions = Boolean(
+    currentCommit?.files.rewrite_sessions
+  );
+  if (committedReviewBatches && reviewBatchesText === null) {
+    currentDetails.push("Missing .patchmark/review-batches.json.");
+  }
+  if (committedReviewQueueOverrides && reviewQueueOverridesText === null) {
+    currentDetails.push("Missing .patchmark/review-queue-overrides.json.");
+  }
+  if (committedRewriteSessions && rewriteSessionsText === null) {
+    currentDetails.push("Missing .patchmark/rewrite-sessions.json.");
+  }
+  const emptyReviewQueueOverridesText = currentManifest
+    ? serializeReviewQueueOverrides({
+        identity: getManifestDocumentIdentity(currentManifest),
+        overrides: createEmptyReviewQueueOverrides(
+          getManifestDocumentIdentity(currentManifest)
+        )
+      })
+    : "{}\n";
+  const emptyRewriteSessionsText = currentManifest
+    ? serializeRewriteProjectSessionStore({
+        identity: getManifestDocumentIdentity(currentManifest),
+        sessions: []
+      })
+    : "{}\n";
+
   const currentTexts =
     commentsText !== null && patchesText !== null
       ? {
           document: markdown,
           comments: commentsText,
           patches: patchesText,
+          review_batches: committedReviewBatches
+            ? reviewBatchesText ?? "[]\n"
+            : "[]\n",
+          review_queue_overrides: committedReviewQueueOverrides
+            ? reviewQueueOverridesText ?? emptyReviewQueueOverridesText
+            : emptyReviewQueueOverridesText,
+          rewrite_sessions: committedRewriteSessions
+            ? rewriteSessionsText ?? emptyRewriteSessionsText
+            : emptyRewriteSessionsText,
           manifest: manifestText
         }
       : null;
-  const currentCommit = commitText
-    ? parseSaveCommitForValidation(commitText, currentDetails)
-    : null;
 
   if (!commitText && currentManifest && currentTexts) {
     validatePersistedJson(currentTexts, currentDetails);
@@ -1320,7 +3473,8 @@ async function createOpenedProjectHandle({
       directoryHandle,
       documentText: markdown,
       manifestText,
-      patchesText: currentTexts.patches
+      patchesText: currentTexts.patches,
+      reviewQueueOverridesText: currentTexts.review_queue_overrides
     });
 
     if (currentDetails.length > 0) {
@@ -1347,6 +3501,7 @@ async function createOpenedProjectHandle({
   }
 
   if (currentManifest && currentTexts && currentCommit) {
+    const validationStartedAt = performance.now();
     await validateCommittedProjectTexts(
       currentTexts,
       currentCommit,
@@ -1357,9 +3512,46 @@ async function createOpenedProjectHandle({
       currentCommit,
       currentDetails
     );
+    validateReviewBatchTextForIdentity({
+      commit: currentCommit,
+      details: currentDetails,
+      identity: getManifestDocumentIdentity(currentManifest),
+      text: currentTexts.review_batches
+    });
+    validateReviewQueueOverridesTextForIdentity({
+      commit: currentCommit,
+      details: currentDetails,
+      identity: getManifestDocumentIdentity(currentManifest),
+      text: currentTexts.review_queue_overrides
+    });
+    validateRewriteSessionTextForIdentity({
+      commit: currentCommit,
+      details: currentDetails,
+      identity: getManifestDocumentIdentity(currentManifest),
+      text: currentTexts.rewrite_sessions
+    });
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "validate_target_integrity",
+      performance.now() - validationStartedAt
+    );
+    incrementDocumentSwitchPerformanceCounter(
+      performanceOperationId,
+      "content_hashes_computed",
+      4 +
+        (committedReviewBatches ? 1 : 0) +
+        (committedReviewQueueOverrides ? 1 : 0) +
+        (committedRewriteSessions ? 1 : 0)
+    );
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "target_integrity_validated"
+    );
 
     if (currentDetails.length === 0) {
-      await cleanupStaleProjectTemporaryFiles(directoryHandle);
+      if (!readOnly) {
+        await cleanupStaleProjectTemporaryFiles(directoryHandle);
+      }
       const project: PatchmarkProjectHandle = {
         directoryHandle,
         manifest: currentManifest,
@@ -1371,6 +3563,15 @@ async function createOpenedProjectHandle({
           manifestText,
           commentsRaw: currentTexts.comments,
           patchesRaw: currentTexts.patches,
+          reviewBatchesRaw: committedReviewBatches
+            ? currentTexts.review_batches
+            : undefined,
+          reviewQueueOverridesRaw: committedReviewQueueOverrides
+            ? currentTexts.review_queue_overrides
+            : undefined,
+          rewriteSessionsRaw: committedRewriteSessions
+            ? currentTexts.rewrite_sessions
+            : undefined,
           readSource: "current",
           debug: createEmptyPersistenceDebugState()
         }
@@ -1379,7 +3580,10 @@ async function createOpenedProjectHandle({
     }
   }
 
-  const lkg = await readValidLastKnownGoodGeneration(directoryHandle);
+  const lkg = await readValidLastKnownGoodGeneration(
+    directoryHandle,
+    documentIdentity
+  );
 
   if (lkg) {
     const recovery: PatchmarkProjectRecoveryState = {
@@ -1403,6 +3607,15 @@ async function createOpenedProjectHandle({
         manifestText: lkg.texts.manifest,
         commentsRaw: lkg.texts.comments,
         patchesRaw: lkg.texts.patches,
+        reviewBatchesRaw: lkg.commit.files.review_batches
+          ? lkg.texts.review_batches
+          : undefined,
+        reviewQueueOverridesRaw: lkg.commit.files.review_queue_overrides
+          ? lkg.texts.review_queue_overrides
+          : undefined,
+        rewriteSessionsRaw: lkg.commit.files.rewrite_sessions
+          ? lkg.texts.rewrite_sessions
+          : undefined,
         readSource: "lkg",
         recovery,
         debug: createEmptyPersistenceDebugState()
@@ -1429,7 +3642,12 @@ async function createOpenedProjectHandle({
     technicalDetails: currentDetails,
     temporaryFiles
   };
-  const descriptors = await createProjectFileDescriptors(currentTexts);
+  const descriptors = await createProjectFileDescriptors(
+    currentTexts,
+    committedReviewBatches,
+    committedReviewQueueOverrides,
+    committedRewriteSessions
+  );
   const project: PatchmarkProjectHandle = {
     directoryHandle,
     manifest: currentManifest,
@@ -1441,6 +3659,15 @@ async function createOpenedProjectHandle({
       manifestText,
       commentsRaw: commentsText ?? undefined,
       patchesRaw: patchesText ?? undefined,
+      reviewBatchesRaw: committedReviewBatches
+        ? reviewBatchesText ?? undefined
+        : undefined,
+      reviewQueueOverridesRaw: committedReviewQueueOverrides
+        ? reviewQueueOverridesText ?? undefined
+        : undefined,
+      rewriteSessionsRaw: committedRewriteSessions
+        ? rewriteSessionsText ?? undefined
+        : undefined,
       readSource: "current_readonly",
       recovery,
       debug: createEmptyPersistenceDebugState()
@@ -1454,13 +3681,15 @@ async function createLegacyPersistenceState({
   directoryHandle,
   documentText,
   manifestText,
-  patchesText
+  patchesText,
+  reviewQueueOverridesText
 }: {
   commentsText?: string;
   directoryHandle: PatchmarkDirectoryHandle;
   documentText: string;
   manifestText: string;
   patchesText?: string;
+  reviewQueueOverridesText?: string;
 }): Promise<PatchmarkProjectPersistenceState> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
@@ -1477,13 +3706,16 @@ async function createLegacyPersistenceState({
     document: documentText,
     comments: resolvedCommentsText,
     patches: resolvedPatchesText,
+    review_batches: "[]\n",
+    review_queue_overrides: reviewQueueOverridesText ?? "{}\n",
+    rewrite_sessions: "{\"schema_version\":1,\"project_id\":\"\",\"document_id\":\"\",\"sessions\":[]}\n",
     manifest: manifestText
   };
 
   return {
     generation: 0,
     commit: null,
-    files: await createProjectFileDescriptors(texts),
+    files: await createProjectFileDescriptors(texts, false),
     documentText,
     manifestText,
     commentsRaw: resolvedCommentsText,
@@ -1494,37 +3726,121 @@ async function createLegacyPersistenceState({
 }
 
 async function readCurrentProjectTexts(
-  directoryHandle: PatchmarkDirectoryHandle
+  directoryHandle: PatchmarkDirectoryHandle,
+  includeReviewBatches: boolean,
+  includeReviewQueueOverrides: boolean,
+  emptyReviewQueueOverridesText: string,
+  includeRewriteSessions: boolean,
+  emptyRewriteSessionsText: string
 ): Promise<Record<ProjectCommitFileKey, string>> {
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
   );
-  const [document, comments, patches, manifest] = await Promise.all([
+  const [
+    document,
+    comments,
+    patches,
+    manifest,
+    reviewBatches,
+    reviewQueueOverrides,
+    rewriteSessions
+  ] = await Promise.all([
     readTextFile(await directoryHandle.getFileHandle(documentFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(commentsFileName)),
     readTextFile(await metadataDirectoryHandle.getFileHandle(patchesFileName)),
-    readTextFile(await metadataDirectoryHandle.getFileHandle(manifestFileName))
+    readTextFile(await metadataDirectoryHandle.getFileHandle(manifestFileName)),
+    includeReviewBatches
+      ? readTextFile(
+          await metadataDirectoryHandle.getFileHandle(reviewBatchesFileName)
+        )
+      : Promise.resolve("[]\n"),
+    includeReviewQueueOverrides
+      ? readTextFile(
+          await metadataDirectoryHandle.getFileHandle(
+            reviewQueueOverridesFileName
+          )
+        )
+      : Promise.resolve(emptyReviewQueueOverridesText),
+    includeRewriteSessions
+      ? readTextFile(
+          await metadataDirectoryHandle.getFileHandle(rewriteSessionsFileName)
+        )
+      : Promise.resolve(emptyRewriteSessionsText)
   ]);
-  return { document, comments, patches, manifest };
+  return {
+    document,
+    comments,
+    patches,
+    review_batches: reviewBatches,
+    review_queue_overrides: reviewQueueOverrides,
+    rewrite_sessions: rewriteSessions,
+    manifest
+  };
 }
 
 async function readCurrentFileCommit(
   project: PatchmarkProjectHandle,
   key: ProjectCommitFileKey
 ): Promise<PatchmarkPersistedFileCommit> {
-  const texts = await readCurrentProjectTexts(project.directoryHandle);
+  const texts = await readCurrentProjectTexts(
+    project.directoryHandle,
+    Boolean(project.persistence.files.review_batches),
+    Boolean(project.persistence.files.review_queue_overrides),
+    serializeReviewQueueOverrides({
+      identity: getProjectDocumentIdentity(project),
+      overrides: createEmptyReviewQueueOverrides(
+        getProjectDocumentIdentity(project)
+      )
+    }),
+    Boolean(project.persistence.files.rewrite_sessions),
+    serializeRewriteProjectSessionStore({
+      identity: getProjectDocumentIdentity(project),
+      sessions: []
+    })
+  );
   return createPersistedFileCommit(getProjectFilePath(key), texts[key]);
 }
 
 async function createProjectFileDescriptors(
-  texts: Record<ProjectCommitFileKey, string>
+  texts: Record<ProjectCommitFileKey, string>,
+  includeReviewBatches: boolean,
+  includeReviewQueueOverrides = false,
+  includeRewriteSessions = false
 ): Promise<PatchmarkSaveCommit["files"]> {
   const [document, comments, patches, manifest] = await Promise.all(
     (["document", "comments", "patches", "manifest"] as const).map((key) =>
       createPersistedFileCommit(getProjectFilePath(key), texts[key])
     )
   );
-  return { document, comments, patches, manifest };
+  const reviewBatches = includeReviewBatches
+    ? await createPersistedFileCommit(
+        getProjectFilePath("review_batches"),
+        texts.review_batches
+      )
+    : undefined;
+  const reviewQueueOverrides = includeReviewQueueOverrides
+    ? await createPersistedFileCommit(
+        getProjectFilePath("review_queue_overrides"),
+        texts.review_queue_overrides
+      )
+    : undefined;
+  const rewriteSessions = includeRewriteSessions
+    ? await createPersistedFileCommit(
+        getProjectFilePath("rewrite_sessions"),
+        texts.rewrite_sessions
+      )
+    : undefined;
+  return {
+    document,
+    comments,
+    patches,
+    manifest,
+    ...(reviewBatches ? { review_batches: reviewBatches } : {}),
+    ...(reviewQueueOverrides
+      ? { review_queue_overrides: reviewQueueOverrides }
+      : {}),
+    ...(rewriteSessions ? { rewrite_sessions: rewriteSessions } : {})
+  };
 }
 
 async function createPersistedFileCommit(
@@ -1572,6 +3888,15 @@ function getProjectFilePath(key: ProjectCommitFileKey): string {
   if (key === "patches") {
     return `${metadataDirectoryName}/${patchesFileName}`;
   }
+  if (key === "review_batches") {
+    return `${metadataDirectoryName}/${reviewBatchesFileName}`;
+  }
+  if (key === "review_queue_overrides") {
+    return `${metadataDirectoryName}/${reviewQueueOverridesFileName}`;
+  }
+  if (key === "rewrite_sessions") {
+    return `${metadataDirectoryName}/${rewriteSessionsFileName}`;
+  }
   return `${metadataDirectoryName}/${manifestFileName}`;
 }
 
@@ -1585,7 +3910,103 @@ function getProjectFileName(key: ProjectCommitFileKey): string {
   if (key === "patches") {
     return patchesFileName;
   }
+  if (key === "review_batches") {
+    return reviewBatchesFileName;
+  }
+  if (key === "review_queue_overrides") {
+    return reviewQueueOverridesFileName;
+  }
+  if (key === "rewrite_sessions") {
+    return rewriteSessionsFileName;
+  }
   return manifestFileName;
+}
+
+function getCommittedProjectFileKeys(
+  commit: PatchmarkSaveCommit
+): ProjectCommitFileKey[] {
+  return [
+    "document",
+    "comments",
+    "patches",
+    ...(commit.files.review_batches
+      ? (["review_batches"] as ProjectCommitFileKey[])
+      : []),
+    ...(commit.files.review_queue_overrides
+      ? (["review_queue_overrides"] as ProjectCommitFileKey[])
+      : []),
+    ...(commit.files.rewrite_sessions
+      ? (["rewrite_sessions"] as ProjectCommitFileKey[])
+      : []),
+    "manifest"
+  ];
+}
+
+function getContextPackFileName(relativePath: string): string {
+  const prefix = `${metadataDirectoryName}/context-packs/`;
+  if (
+    !relativePath.startsWith(prefix) ||
+    relativePath.slice(prefix.length).length === 0 ||
+    relativePath.slice(prefix.length).includes("/") ||
+    relativePath.includes("..")
+  ) {
+    throw new Error("Invalid document-scoped context-pack path.");
+  }
+  return relativePath.slice(prefix.length);
+}
+
+async function removeReviewBatchFileIfPresent(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    if (!metadataDirectoryHandle.removeEntry) {
+      return;
+    }
+    await metadataDirectoryHandle.removeEntry(reviewBatchesFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
+}
+
+async function removeReviewQueueOverridesFileIfPresent(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    if (!metadataDirectoryHandle.removeEntry) {
+      return;
+    }
+    await metadataDirectoryHandle.removeEntry(reviewQueueOverridesFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
+}
+
+async function removeRewriteSessionsFileIfPresent(
+  directoryHandle: PatchmarkDirectoryHandle
+): Promise<void> {
+  try {
+    const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
+      metadataDirectoryName
+    );
+    if (!metadataDirectoryHandle.removeEntry) {
+      return;
+    }
+    await metadataDirectoryHandle.removeEntry(rewriteSessionsFileName);
+  } catch (error) {
+    if (!isNotFoundError(error)) {
+      throw error;
+    }
+  }
 }
 
 function createLegacyBaselineCommit({
@@ -1599,8 +4020,12 @@ function createLegacyBaselineCommit({
     descriptors.document.sha256,
     descriptors.comments.sha256,
     descriptors.patches.sha256,
-    descriptors.manifest.sha256
+    descriptors.manifest.sha256,
+    descriptors.review_batches?.sha256,
+    descriptors.review_queue_overrides?.sha256,
+    descriptors.rewrite_sessions?.sha256
   ]
+    .filter((hash): hash is string => Boolean(hash))
     .map((hash) => hash.slice(0, 8))
     .join("-");
   return {
@@ -1632,7 +4057,7 @@ async function writeLastKnownGoodGeneration({
       create: true
     });
 
-  for (const key of ["document", "comments", "patches", "manifest"] as const) {
+  for (const key of getCommittedProjectFileKeys(commit)) {
     const text = texts[key];
     const fileHandle = await recoveryDirectoryHandle.getFileHandle(
       `${getProjectFileName(key)}.lkg`,
@@ -1797,6 +4222,69 @@ async function installPreparedProjectFile(
   }
 }
 
+async function rollbackAttemptedProjectInstalls({
+  attemptedInstalls,
+  currentCommit,
+  currentTexts,
+  includeCurrentReviewBatches,
+  includeCurrentReviewQueueOverrides,
+  includeCurrentRewriteSessions,
+  onWrite
+}: {
+  attemptedInstalls: PreparedProjectFile[];
+  currentCommit: PatchmarkSaveCommit;
+  currentTexts: Record<ProjectCommitFileKey, string>;
+  includeCurrentReviewBatches: boolean;
+  includeCurrentReviewQueueOverrides: boolean;
+  includeCurrentRewriteSessions: boolean;
+  onWrite: (bytes: number) => void;
+}): Promise<boolean> {
+  let succeeded = true;
+  const restoredTargets = new Set<string>();
+
+  for (const prepared of [...attemptedInstalls].reverse()) {
+    const targetKey = `${prepared.directoryHandle.name}/${prepared.targetFileName}`;
+    if (restoredTargets.has(targetKey)) {
+      continue;
+    }
+    restoredTargets.add(targetKey);
+    try {
+      const shouldRemove =
+        (prepared.key === "review_batches" &&
+          !includeCurrentReviewBatches) ||
+        (prepared.key === "review_queue_overrides" &&
+          !includeCurrentReviewQueueOverrides) ||
+        (prepared.key === "rewrite_sessions" &&
+          !includeCurrentRewriteSessions);
+      if (shouldRemove) {
+        await prepared.directoryHandle
+          .removeEntry?.(prepared.targetFileName)
+          .catch((error) => {
+            if (!isNotFoundError(error)) {
+              throw error;
+            }
+          });
+        continue;
+      }
+      const text =
+        prepared.key === "commit"
+          ? serializeSaveCommit(currentCommit)
+          : currentTexts[prepared.key];
+      const targetFileHandle =
+        await prepared.directoryHandle.getFileHandle(
+          prepared.targetFileName,
+          { create: true }
+        );
+      await writeTextFile(targetFileHandle, text);
+      onWrite(new TextEncoder().encode(text).byteLength);
+    } catch {
+      succeeded = false;
+    }
+  }
+
+  return succeeded;
+}
+
 async function cleanupPreparedFiles(
   preparedFiles: PreparedProjectFile[]
 ): Promise<void> {
@@ -1828,7 +4316,8 @@ async function getProjectReadMetadataDirectory(
 }
 
 async function readValidLastKnownGoodGeneration(
-  directoryHandle: PatchmarkDirectoryHandle
+  directoryHandle: PatchmarkDirectoryHandle,
+  documentIdentity?: ProjectDocumentIdentity
 ): Promise<{
   commit: PatchmarkSaveCommit;
   manifest: PatchmarkManifest;
@@ -1862,16 +4351,70 @@ async function readValidLastKnownGoodGeneration(
     const normalizedManifest = parseManifestForValidation(
       manifest,
       directoryHandle.name,
-      details
+      details,
+      documentIdentity
     );
-    const texts = { document, comments, patches, manifest };
-
     if (!commit || !normalizedManifest) {
       return null;
     }
+    const reviewBatches = commit.files.review_batches
+      ? await readTextFile(
+          await recoveryDirectoryHandle.getFileHandle(
+            `${reviewBatchesFileName}.lkg`
+          )
+        )
+      : "[]\n";
+    const lkgIdentity = getManifestDocumentIdentity(normalizedManifest);
+    const reviewQueueOverrides = commit.files.review_queue_overrides
+      ? await readTextFile(
+          await recoveryDirectoryHandle.getFileHandle(
+            `${reviewQueueOverridesFileName}.lkg`
+          )
+        )
+      : serializeReviewQueueOverrides({
+          identity: lkgIdentity,
+          overrides: createEmptyReviewQueueOverrides(lkgIdentity)
+        });
+    const rewriteSessions = commit.files.rewrite_sessions
+      ? await readTextFile(
+          await recoveryDirectoryHandle.getFileHandle(
+            `${rewriteSessionsFileName}.lkg`
+          )
+        )
+      : serializeRewriteProjectSessionStore({
+          identity: lkgIdentity,
+          sessions: []
+        });
+    const texts = {
+      document,
+      comments,
+      patches,
+      review_batches: reviewBatches,
+      review_queue_overrides: reviewQueueOverrides,
+      rewrite_sessions: rewriteSessions,
+      manifest
+    };
 
     await validateCommittedProjectTexts(texts, commit, details);
     validateManifestCommitIdentity(normalizedManifest, commit, details);
+    validateReviewBatchTextForIdentity({
+      commit,
+      details,
+      identity: getManifestDocumentIdentity(normalizedManifest),
+      text: texts.review_batches
+    });
+    validateReviewQueueOverridesTextForIdentity({
+      commit,
+      details,
+      identity: lkgIdentity,
+      text: texts.review_queue_overrides
+    });
+    validateRewriteSessionTextForIdentity({
+      commit,
+      details,
+      identity: lkgIdentity,
+      text: texts.rewrite_sessions
+    });
     return details.length === 0
       ? { commit, manifest: normalizedManifest, texts }
       : null;
@@ -1899,17 +4442,113 @@ function validateManifestCommitIdentity(
   }
 }
 
+function validateReviewBatchTextForIdentity({
+  commit,
+  details,
+  identity,
+  text
+}: {
+  commit: PatchmarkSaveCommit;
+  details: string[];
+  identity: ProjectDocumentIdentity;
+  text: string;
+}): void {
+  if (!commit.files.review_batches) {
+    return;
+  }
+  try {
+    parseReviewBatchRecords({ identity, text });
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/review-batches.json is invalid."
+    );
+  }
+}
+
+function validateReviewQueueOverridesTextForIdentity({
+  commit,
+  details,
+  identity,
+  text
+}: {
+  commit: PatchmarkSaveCommit;
+  details: string[];
+  identity: ProjectDocumentIdentity;
+  text: string;
+}): void {
+  if (!commit.files.review_queue_overrides) {
+    return;
+  }
+  try {
+    parseReviewQueueOverrides({ identity, text });
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/review-queue-overrides.json is invalid."
+    );
+  }
+}
+
+function validateRewriteSessionTextForIdentity({
+  commit,
+  details,
+  identity,
+  text
+}: {
+  commit: PatchmarkSaveCommit;
+  details: string[];
+  identity: ProjectDocumentIdentity;
+  text: string;
+}): void {
+  if (!commit.files.rewrite_sessions) {
+    return;
+  }
+  try {
+    parseRewriteProjectSessionStore({ identity, text });
+  } catch (error) {
+    details.push(
+      error instanceof Error
+        ? error.message
+        : ".patchmark/rewrite-sessions.json is invalid."
+    );
+  }
+}
+
+function getManifestDocumentIdentity(
+  manifest: PatchmarkManifest
+): ProjectDocumentIdentity {
+  if (!manifest.project_id || !manifest.document_id) {
+    throw new Error("Patchmark document identity is incomplete.");
+  }
+  return createProjectDocumentIdentity(
+    manifest.project_id,
+    manifest.document_id
+  );
+}
+
 async function validateCommittedProjectTexts(
   texts: Record<ProjectCommitFileKey, string>,
   commit: PatchmarkSaveCommit,
   details: string[]
 ): Promise<void> {
   validatePersistedJson(texts, details);
-  const descriptors = await createProjectFileDescriptors(texts);
+  const descriptors = await createProjectFileDescriptors(
+    texts,
+    Boolean(commit.files.review_batches),
+    Boolean(commit.files.review_queue_overrides),
+    Boolean(commit.files.rewrite_sessions)
+  );
 
-  for (const key of ["document", "comments", "patches", "manifest"] as const) {
+  for (const key of getCommittedProjectFileKeys(commit)) {
     const expected = commit.files[key];
     const actual = descriptors[key];
+    if (!expected || !actual) {
+      details.push(`${getProjectFilePath(key)} is missing from save metadata.`);
+      continue;
+    }
     if (
       expected.path !== actual.path ||
       expected.bytes !== actual.bytes ||
@@ -1924,7 +4563,7 @@ function validatePersistedJson(
   texts: Record<ProjectCommitFileKey, string>,
   details: string[]
 ): void {
-  for (const key of ["comments", "patches"] as const) {
+  for (const key of ["comments", "patches", "review_batches"] as const) {
     try {
       if (!Array.isArray(JSON.parse(texts[key]))) {
         details.push(`${getProjectFilePath(key)} must contain a JSON array.`);
@@ -1932,6 +4571,28 @@ function validatePersistedJson(
     } catch {
       details.push(`${getProjectFilePath(key)} contains malformed JSON.`);
     }
+  }
+
+  try {
+    const value = JSON.parse(texts.rewrite_sessions);
+    if (!isRecord(value)) {
+      details.push(`${getProjectFilePath("rewrite_sessions")} must contain a JSON object.`);
+    }
+  } catch {
+    details.push(`${getProjectFilePath("rewrite_sessions")} contains malformed JSON.`);
+  }
+
+  try {
+    const value = JSON.parse(texts.review_queue_overrides);
+    if (!isRecord(value)) {
+      details.push(
+        `${getProjectFilePath("review_queue_overrides")} must contain a JSON object.`
+      );
+    }
+  } catch {
+    details.push(
+      `${getProjectFilePath("review_queue_overrides")} contains malformed JSON.`
+    );
   }
 
   try {
@@ -1944,10 +4605,15 @@ function validatePersistedJson(
 function parseManifestForValidation(
   text: string,
   fallbackProjectName: string,
-  details: string[]
+  details: string[],
+  documentIdentity?: ProjectDocumentIdentity
 ): PatchmarkManifest | null {
   try {
-    return normalizeManifest(JSON.parse(text), fallbackProjectName);
+    return normalizeManifest(
+      JSON.parse(text),
+      fallbackProjectName,
+      documentIdentity
+    );
   } catch (error) {
     details.push(
       error instanceof Error
@@ -1990,8 +4656,25 @@ function isPatchmarkSaveCommit(value: unknown): value is PatchmarkSaveCommit {
   }
 
   const files = value.files;
-  return (["document", "comments", "patches", "manifest"] as const).every(
-    (key) => isPersistedFileCommit(files[key], getProjectFilePath(key))
+  return (
+    (["document", "comments", "patches", "manifest"] as const).every(
+      (key) => isPersistedFileCommit(files[key], getProjectFilePath(key))
+    ) &&
+    (files.review_batches === undefined ||
+      isPersistedFileCommit(
+        files.review_batches,
+        getProjectFilePath("review_batches")
+      )) &&
+    (files.review_queue_overrides === undefined ||
+      isPersistedFileCommit(
+        files.review_queue_overrides,
+        getProjectFilePath("review_queue_overrides")
+      )) &&
+    (files.rewrite_sessions === undefined ||
+      isPersistedFileCommit(
+        files.rewrite_sessions,
+        getProjectFilePath("rewrite_sessions")
+      ))
   );
 }
 
@@ -2112,6 +4795,9 @@ async function preserveQuestionableCurrentProjectFiles(
     ...[
       commentsFileName,
       patchesFileName,
+      reviewBatchesFileName,
+      reviewQueueOverridesFileName,
+      rewriteSessionsFileName,
       manifestFileName,
       saveCommitFileName
     ].map((fileName) => ({
@@ -2296,7 +4982,8 @@ async function writeTextFile(
 
 function normalizeManifest(
   manifest: unknown,
-  fallbackProjectName: string
+  fallbackProjectName: string,
+  documentIdentity?: ProjectDocumentIdentity
 ): PatchmarkManifest {
   if (!isRecord(manifest)) {
     throw new Error(".patchmark/manifest.json is not valid JSON metadata.");
@@ -2317,16 +5004,25 @@ function normalizeManifest(
       : createProjectName(fallbackProjectName, fallbackProjectName);
   const createdAt =
     typeof manifest.created_at === "string" ? manifest.created_at : now;
-  const projectId = getPatchmarkProjectId({
-    created_at: createdAt,
-    document_file: documentFileName,
-    project_id:
-      typeof manifest.project_id === "string" ? manifest.project_id : undefined,
-    project_name: projectName
-  });
+  const projectId =
+    documentIdentity?.projectId ??
+    (typeof manifest.project_id === "string" && manifest.project_id.trim()
+      ? manifest.project_id
+      : createLegacyProjectId({
+          created_at: createdAt,
+          document_file: documentFileName,
+          project_name: projectName
+        }));
+  const documentId =
+    documentIdentity?.documentId ??
+    (typeof manifest.document_id === "string" && manifest.document_id.trim()
+      ? manifest.document_id
+      : legacyDocumentScopeId);
+  const identity = createProjectDocumentIdentity(projectId, documentId);
   return {
     schema_version: 1,
     project_id: projectId,
+    document_id: documentId,
     project_name: projectName,
     document_file: documentFileName,
     created_at: createdAt,
@@ -2349,60 +5045,80 @@ function normalizeManifest(
     versions: Array.isArray(manifest.versions)
       ? manifest.versions.filter(isPatchmarkVersionEntry)
       : undefined,
-    reading_bookmarks: normalizeReadingBookmarks(
-      manifest.reading_bookmarks,
-      projectId
-    )
+    reading_bookmark: normalizeReadingBookmark(manifest, identity),
+    comment_deletion_tombstones: normalizeCommentDeletionTombstones({
+      documentId,
+      projectId,
+      value: manifest.comment_deletion_tombstones
+    })
   };
 }
 
-function normalizeReadingBookmarks(
-  value: unknown,
-  projectId: string
-): Record<string, PatchmarkReadingBookmark> | undefined {
-  if (!isRecord(value)) {
-    return undefined;
+function normalizeReadingBookmark(
+  manifest: Record<string, unknown>,
+  identity: ProjectDocumentIdentity
+): PatchmarkReadingBookmark | undefined {
+  const candidates = [
+    manifest.reading_bookmark,
+    ...(isRecord(manifest.reading_bookmarks)
+      ? Object.values(manifest.reading_bookmarks)
+      : [])
+  ];
+
+  for (const candidate of candidates) {
+    if (
+      !isRecord(candidate) ||
+      candidate.format_version !== 1 ||
+      !isRecord(candidate.document) ||
+      !isPatchmarkCommentAnchor(candidate.anchor) ||
+      candidate.anchor.kind === "document" ||
+      typeof candidate.created_at !== "string" ||
+      typeof candidate.updated_at !== "string" ||
+      !hasPersistedBookmarkDocumentIdentity(candidate.document)
+    ) {
+      continue;
+    }
+
+    return {
+      format_version: 1,
+      document: serializeProjectDocumentIdentity(identity),
+      anchor: normalizeKnownCommentAnchor(candidate.anchor, "note") as
+        PatchmarkReadingBookmark["anchor"],
+      created_at: candidate.created_at,
+      updated_at: candidate.updated_at
+    };
   }
 
-  const bookmarks = Object.values(value)
-    .filter(isPatchmarkReadingBookmark)
-    .filter((bookmark) => bookmark.document.project_id === projectId)
-    .map((bookmark) => ({
-      format_version: 1 as const,
-      document: {
-        project_id: bookmark.document.project_id,
-        document_file: bookmark.document.document_file
-      },
-      anchor: normalizeKnownCommentAnchor(bookmark.anchor, "note") as
-        PatchmarkReadingBookmark["anchor"],
-      created_at: bookmark.created_at,
-      updated_at: bookmark.updated_at
-    }));
-
-  return bookmarks.length > 0
-    ? Object.fromEntries(
-        bookmarks.map((bookmark) => [
-          createPatchmarkDocumentIdentityKey(bookmark.document),
-          bookmark
-        ])
-      )
-    : undefined;
+  return undefined;
 }
 
-function isPatchmarkReadingBookmark(
-  value: unknown
-): value is PatchmarkReadingBookmark {
+function hasPersistedBookmarkDocumentIdentity(
+  value: Record<string, unknown>
+): boolean {
   return (
-    isRecord(value) &&
-    value.format_version === 1 &&
-    isRecord(value.document) &&
-    typeof value.document.project_id === "string" &&
-    typeof value.document.document_file === "string" &&
-    isPatchmarkCommentAnchor(value.anchor) &&
-    value.anchor.kind !== "document" &&
-    typeof value.created_at === "string" &&
-    typeof value.updated_at === "string"
+    (typeof value.project_id === "string" &&
+      typeof value.document_id === "string") ||
+    (typeof value.project_id === "string" &&
+      typeof value.document_file === "string")
   );
+}
+
+function createLegacyProjectId(
+  manifest: Pick<
+    PatchmarkManifest,
+    "created_at" | "document_file" | "project_name"
+  >
+): string {
+  const value = [
+    manifest.created_at,
+    manifest.project_name,
+    manifest.document_file
+  ].join("\u0000");
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash = Math.imul(hash ^ value.charCodeAt(index), 0x01000193) >>> 0;
+  }
+  return `prj_legacy_${hash.toString(16).padStart(8, "0")}`;
 }
 
 function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry {
@@ -2412,7 +5128,25 @@ function isPatchmarkVersionEntry(value: unknown): value is PatchmarkVersionEntry
     typeof value.file === "string" &&
     typeof value.created_at === "string" &&
     typeof value.reason === "string" &&
-    (value.content_hash === undefined || typeof value.content_hash === "string")
+    (value.content_hash === undefined || typeof value.content_hash === "string") &&
+    (value.mutation === undefined || isPatchmarkVersionMutationAudit(value.mutation))
+  );
+}
+
+function isPatchmarkVersionMutationAudit(
+  value: unknown
+): value is PatchmarkVersionMutationAudit {
+  return Boolean(
+    isRecord(value) &&
+      value.author_type === "human" &&
+      value.mutation_type === "human_rewrite" &&
+      typeof value.rewrite_session_id === "string" &&
+      (value.target_kind === "selection" || value.target_kind === "section") &&
+      (value.heading_snapshot === null || typeof value.heading_snapshot === "string") &&
+      typeof value.base_text_sha256 === "string" &&
+      typeof value.applied_text_sha256 === "string" &&
+      (value.semantic_review_status === "reviewed" ||
+        value.semantic_review_status === "not_reviewed")
   );
 }
 
@@ -2450,7 +5184,8 @@ function normalizeComment(comment: unknown): PatchmarkComment {
     resolved_at:
       status === "resolved" && typeof comment.resolved_at === "string"
         ? comment.resolved_at
-        : undefined
+        : undefined,
+    ...normalizeCommentTrashMetadata(comment)
   };
 }
 
@@ -2934,6 +5669,18 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       typeof patch.source_chat_url === "string"
         ? patch.source_chat_url
         : undefined,
+    source_patch_key:
+      typeof patch.source_patch_key === "string"
+        ? patch.source_patch_key
+        : undefined,
+    depends_on_patch_ids: normalizePatchDependencyIds(
+      patch.depends_on_patch_ids,
+      "depends_on_patch_ids"
+    ),
+    depends_on_patch_keys_snapshot: normalizePatchDependencyIds(
+      patch.depends_on_patch_keys_snapshot,
+      "depends_on_patch_keys_snapshot"
+    ),
     display_title:
       typeof patch.display_title === "string"
         ? patch.display_title
@@ -2944,6 +5691,9 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
       typeof patch.target_heading === "string"
         ? patch.target_heading
         : undefined,
+    target_provenance: normalizePatchTargetProvenance(
+      patch.target_provenance
+    ),
     original_text: patch.original_text,
     suggested_text: patch.suggested_text,
     suggested_text_sources: normalizeSourceReferences(
@@ -3039,8 +5789,129 @@ function normalizePatch(patch: unknown): PatchmarkPatch {
     reanchor_reason:
       patch.reanchor_reason === "table_row_normalized_match"
         ? patch.reanchor_reason
-        : undefined
+        : undefined,
+    human_rewrite_impact: normalizeHumanRewritePatchImpact(
+      patch.human_rewrite_impact
+    )
   };
+}
+
+function normalizePatchTargetProvenance(
+  value: unknown
+): PatchmarkPatch["target_provenance"] {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !isRecord(value) ||
+    value.schema_version !== 1 ||
+    typeof value.document_id !== "string" ||
+    value.document_id.length === 0 ||
+    typeof value.patch_key !== "string" ||
+    value.patch_key.length === 0 ||
+    typeof value.base_document_sha256 !== "string" ||
+    !/^[a-f0-9]{64}$/.test(value.base_document_sha256) ||
+    typeof value.base_start !== "number" ||
+    !Number.isInteger(value.base_start) ||
+    value.base_start < 0 ||
+    typeof value.base_end !== "number" ||
+    !Number.isInteger(value.base_end) ||
+    value.base_end < value.base_start ||
+    typeof value.current_start !== "number" ||
+    !Number.isInteger(value.current_start) ||
+    value.current_start < 0 ||
+    typeof value.current_end !== "number" ||
+    !Number.isInteger(value.current_end) ||
+    value.current_end < value.current_start ||
+    typeof value.original_text_fingerprint !== "string" ||
+    !/^fnv1a32:[a-f0-9]{8}$/.test(value.original_text_fingerprint) ||
+    !Array.isArray(value.heading_ancestry) ||
+    !value.heading_ancestry.every(
+      (heading) => typeof heading === "string" && heading.length > 0
+    ) ||
+    value.base_occurrence_count !== 1 ||
+    ![
+      "exact_full_text",
+      "heading_scoped_full_text",
+      "normalized_full_text"
+    ].includes(String(value.resolution_method)) ||
+    !["mapped", "requires_revalidation"].includes(
+      String(value.mapping_state)
+    )
+  ) {
+    throw new Error(
+      ".patchmark/patches.json contains invalid patch target provenance."
+    );
+  }
+
+  return {
+    schema_version: 1,
+    document_id: value.document_id,
+    patch_key: value.patch_key,
+    base_document_sha256: value.base_document_sha256,
+    base_start: value.base_start,
+    base_end: value.base_end,
+    current_start: value.current_start,
+    current_end: value.current_end,
+    original_text_fingerprint: value.original_text_fingerprint,
+    target_heading:
+      typeof value.target_heading === "string"
+        ? value.target_heading
+        : undefined,
+    heading_ancestry: value.heading_ancestry,
+    base_occurrence_count: 1,
+    resolution_method: value.resolution_method as NonNullable<
+      PatchmarkPatch["target_provenance"]
+    >["resolution_method"],
+    mapping_state: value.mapping_state as NonNullable<
+      PatchmarkPatch["target_provenance"]
+    >["mapping_state"]
+  };
+}
+
+function normalizeHumanRewritePatchImpact(
+  value: unknown
+): PatchmarkPatch["human_rewrite_impact"] {
+  if (
+    !isRecord(value) ||
+    typeof value.rewrite_session_id !== "string" ||
+    typeof value.applied_at !== "string" ||
+    (value.target_kind !== "selection" && value.target_kind !== "section") ||
+    (value.heading_snapshot !== null &&
+      typeof value.heading_snapshot !== "string") ||
+    value.reason !== "overlapping_human_rewrite"
+  ) {
+    return undefined;
+  }
+  return {
+    rewrite_session_id: value.rewrite_session_id,
+    applied_at: value.applied_at,
+    target_kind: value.target_kind,
+    heading_snapshot: value.heading_snapshot,
+    reason: value.reason
+  };
+}
+
+function normalizePatchDependencyIds(
+  value: unknown,
+  fieldName: "depends_on_patch_ids" | "depends_on_patch_keys_snapshot"
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+
+  if (
+    !Array.isArray(value) ||
+    value.some(
+      (item) => typeof item !== "string" || item.trim().length === 0
+    )
+  ) {
+    throw new Error(
+      `.patchmark/patches.json contains invalid ${fieldName} metadata.`
+    );
+  }
+
+  return [...value];
 }
 
 function normalizePatchAnchorRecoveryHistory(
@@ -3477,4 +6348,8 @@ function isNotFoundError(error: unknown): boolean {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
+}
+
+function getErrorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }

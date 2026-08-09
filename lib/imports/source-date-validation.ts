@@ -24,6 +24,30 @@ export const SOURCE_OBSERVED_AT_ERROR =
 export const SOURCE_OBSERVATION_REFERENCE_ERROR =
   "Add the source observation date to the reference.";
 
+export class SourceReferenceValidationError extends Error {
+  readonly observedAt?: string;
+  readonly publishedAt?: string | null;
+  readonly sourceUrl: string;
+
+  constructor({
+    message,
+    observedAt,
+    publishedAt,
+    sourceUrl
+  }: {
+    message: string;
+    observedAt?: string;
+    publishedAt?: string | null;
+    sourceUrl: string;
+  }) {
+    super(message);
+    this.name = "SourceReferenceValidationError";
+    this.observedAt = observedAt;
+    this.publishedAt = publishedAt;
+    this.sourceUrl = sourceUrl;
+  }
+}
+
 const MARKDOWN_LINK_PATTERN = /\[([^\]]+)\]\((https?:\/\/[^)]+)\)/g;
 const DATE_VALUE_PATTERN = /^(\d{4})(?:-(\d{2})(?:-(\d{2}))?)?$/;
 const MONTH_LENGTHS = [31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
@@ -33,7 +57,8 @@ const OBSERVED_ANNOTATION_PATTERN =
   /\b(?:observed|checked|accessed|verified)(?:\s+on)?\s+(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{4}|\d{4}(?:-\d{2})?(?:-\d{2})?)\b/i;
 const PUBLISHED_ANNOTATION_PATTERN =
   /\bpublished\s*:?\s+(?:on\s+)?(?:\d{1,2}\s+[A-Z][a-z]+\s+\d{4}|[A-Z][a-z]+\s+\d{4}|\d{4}(?:-\d{2})?(?:-\d{2})?)\b/i;
-const UNAVAILABLE_PUBLICATION_PATTERN = /\bpublication date unavailable\b/i;
+const UNAVAILABLE_PUBLICATION_PATTERN =
+  /\b(?:no\s+available\s+publication\s+dates?|publication\s+dates?(?:\s+(?:are|is))?\s+unavailable)\b/i;
 
 export function parseSourceDateValue(
   value: string,
@@ -215,6 +240,43 @@ export function validateSuggestedTextReferenceDates({
   sources: PatchmarkSourceReference[];
   suggestedText: string;
 }) {
+  validateSuggestedTextReferenceDatesInternal({
+    originalText,
+    sources,
+    suggestedText
+  });
+}
+
+export function validateSuggestedTextReferenceDatesWithCoverage({
+  coverageMarkdown,
+  originalText,
+  sources,
+  suggestedText
+}: {
+  coverageMarkdown: string;
+  originalText: string;
+  sources: PatchmarkSourceReference[];
+  suggestedText: string;
+}) {
+  validateSuggestedTextReferenceDatesInternal({
+    coverageMarkdown,
+    originalText,
+    sources,
+    suggestedText
+  });
+}
+
+function validateSuggestedTextReferenceDatesInternal({
+  coverageMarkdown,
+  originalText,
+  sources,
+  suggestedText
+}: {
+  coverageMarkdown?: string;
+  originalText: string;
+  sources: PatchmarkSourceReference[];
+  suggestedText: string;
+}) {
   const sourceByUrl = new Map(
     sources.map((source) => [normalizeUrl(source.url), source])
   );
@@ -228,32 +290,60 @@ export function validateSuggestedTextReferenceDates({
     }
 
     const source = sourceByUrl.get(normalizeUrl(link.url));
-    const context = getReferenceContext(suggestedText, link.end);
+    const context = getReferenceContext(suggestedText, link.start, link.end);
     const hasPublishedAnnotation = PUBLISHED_ANNOTATION_PATTERN.test(context);
     const hasUnavailableAnnotation =
       UNAVAILABLE_PUBLICATION_PATTERN.test(context);
     const hasObservationAnnotation = hasObservedAnnotation(context);
+    const hasDependencyCoverage =
+      coverageMarkdown && source
+        ? hasVisibleDependencyDateCoverage(coverageMarkdown, source)
+        : false;
 
     if (source?.published_at === null) {
-      if (!hasUnavailableAnnotation || !hasObservationAnnotation) {
-        throw new Error(SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR);
+      if (
+        (!hasUnavailableAnnotation || !hasObservationAnnotation) &&
+        !hasDependencyCoverage
+      ) {
+        throw createSourceReferenceValidationError({
+          linkUrl: link.url,
+          message: SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR,
+          source
+        });
       }
       continue;
     }
 
     if (hasUnavailableAnnotation && !hasObservationAnnotation) {
-      throw new Error(SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR);
+      throw createSourceReferenceValidationError({
+        linkUrl: link.url,
+        message: SOURCE_DATE_UNAVAILABLE_REFERENCE_ERROR,
+        source
+      });
     }
 
-    if (!hasPublishedAnnotation && !hasUnavailableAnnotation) {
-      throw new Error(SOURCE_DATE_REFERENCE_ERROR);
+    if (
+      !hasPublishedAnnotation &&
+      !hasUnavailableAnnotation &&
+      !hasDependencyCoverage
+    ) {
+      throw createSourceReferenceValidationError({
+        linkUrl: link.url,
+        message: SOURCE_DATE_REFERENCE_ERROR,
+        source
+      });
     }
 
     if (
       isTimeSensitiveReference({ context, linkLabel: link.label, source }) &&
-      !hasObservationAnnotation
+      !hasObservationAnnotation &&
+      !hasDependencyCoverage
     ) {
-      throw new Error(SOURCE_OBSERVATION_REFERENCE_ERROR);
+      throw createSourceReferenceValidationError({
+        linkUrl: link.url,
+        message: SOURCE_OBSERVATION_REFERENCE_ERROR,
+        source
+      });
     }
   }
 }
@@ -262,7 +352,7 @@ export function auditVisibleReferenceDateAnnotations(
   markdown: string
 ): VisibleReferenceDateAuditIssue[] {
   return getMarkdownLinks(markdown).flatMap((link): VisibleReferenceDateAuditIssue[] => {
-    const context = getReferenceContext(markdown, link.end);
+    const context = getReferenceContext(markdown, link.start, link.end);
     const hasPublicationDate =
       PUBLISHED_ANNOTATION_PATTERN.test(context) ||
       UNAVAILABLE_PUBLICATION_PATTERN.test(context);
@@ -314,8 +404,51 @@ function getMarkdownLinks(markdown: string): Array<{
   }));
 }
 
-function getReferenceContext(markdown: string, linkEnd: number): string {
-  return markdown.slice(linkEnd, linkEnd + 220);
+function getReferenceContext(
+  markdown: string,
+  linkStart: number,
+  linkEnd: number
+): string {
+  const lineStart = markdown.lastIndexOf("\n", linkStart - 1) + 1;
+  const lineEndMatch = markdown.indexOf("\n", linkEnd);
+  const lineEnd = lineEndMatch === -1 ? markdown.length : lineEndMatch;
+  const line = markdown.slice(lineStart, lineEnd);
+
+  if (line.trimStart().startsWith("|")) {
+    return line;
+  }
+
+  const precedingMarkdown = markdown.slice(0, linkStart);
+  const precedingBreak = Array.from(
+    precedingMarkdown.matchAll(/\n[ \t]*\n/g)
+  ).at(-1);
+  const blockStart = precedingBreak
+    ? (precedingBreak.index ?? 0) + precedingBreak[0].length
+    : 0;
+  const followingMarkdown = markdown.slice(linkEnd);
+  const followingBreak = /\n[ \t]*\n/.exec(followingMarkdown);
+  const blockEnd = followingBreak
+    ? linkEnd + (followingBreak.index ?? 0)
+    : markdown.length;
+
+  return markdown.slice(blockStart, blockEnd);
+}
+
+function createSourceReferenceValidationError({
+  linkUrl,
+  message,
+  source
+}: {
+  linkUrl: string;
+  message: string;
+  source?: PatchmarkSourceReference;
+}): SourceReferenceValidationError {
+  return new SourceReferenceValidationError({
+    message,
+    observedAt: source?.observed_at,
+    publishedAt: source?.published_at,
+    sourceUrl: source?.url ?? linkUrl
+  });
 }
 
 function isTimeSensitiveReference({
@@ -341,6 +474,113 @@ function isTimeSensitiveReference({
 
 function isLikelyLiveDynamicSource(value: string): boolean {
   return DYNAMIC_SOURCE_PATTERN.test(value);
+}
+
+function hasVisibleDependencyDateCoverage(
+  markdown: string,
+  source: PatchmarkSourceReference
+): boolean {
+  if (!source.observed_at) {
+    return false;
+  }
+
+  const hasObservationDate = containsLabeledSourceDate(
+    markdown,
+    /(?:observed|checked|accessed|verified)(?:\s+on)?/,
+    source.observed_at
+  );
+
+  if (source.published_at === null) {
+    return (
+      UNAVAILABLE_PUBLICATION_PATTERN.test(markdown) && hasObservationDate
+    );
+  }
+
+  if (!source.published_at) {
+    return false;
+  }
+
+  const hasPublicationDate = containsLabeledSourceDate(
+    markdown,
+    /published(?:\s+on)?/,
+    source.published_at
+  );
+
+  return (
+    hasPublicationDate &&
+    (!isLikelyLiveDynamicSource(
+      [
+        source.title ?? "",
+        source.url,
+        source.supports ?? "",
+        source.note ?? ""
+      ].join(" ")
+    ) ||
+      hasObservationDate)
+  );
+}
+
+function containsLabeledSourceDate(
+  markdown: string,
+  labelPattern: RegExp,
+  date: string
+): boolean {
+  const dateAlternatives = getVisibleSourceDateAlternatives(date)
+    .map(escapeRegExp)
+    .join("|");
+
+  if (!dateAlternatives) {
+    return false;
+  }
+
+  return new RegExp(
+    `${labelPattern.source}[^.\\n]{0,80}(?:${dateAlternatives})`,
+    "i"
+  ).test(markdown);
+}
+
+function getVisibleSourceDateAlternatives(value: string): string[] {
+  const parsed = parseSourceDateValue(value, "source date");
+
+  if (parsed.precision === "year") {
+    return [value];
+  }
+
+  const [year, monthValue, dayValue] = value.split("-");
+  const month = Number(monthValue);
+  const monthName = [
+    "January",
+    "February",
+    "March",
+    "April",
+    "May",
+    "June",
+    "July",
+    "August",
+    "September",
+    "October",
+    "November",
+    "December"
+  ][month - 1];
+
+  if (!monthName) {
+    return [value];
+  }
+
+  if (parsed.precision === "month") {
+    return [value, `${monthName} ${year}`];
+  }
+
+  const day = Number(dayValue);
+  return [
+    value,
+    `${day} ${monthName} ${year}`,
+    `${monthName} ${day}, ${year}`
+  ];
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeUrl(url: string): string {

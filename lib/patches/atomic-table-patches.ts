@@ -14,7 +14,84 @@ import type {
 } from "../project/project-types.ts";
 
 export const ATOMIC_TABLE_IMPORT_ERROR =
-  "ChatGPT split one structural table change into multiple patches. Export the comment again to receive one complete-table patch.";
+  "ChatGPT split one structural change across multiple patch proposals. Request one atomic patch covering the complete affected table or structural region.";
+
+const INCOMPLETE_STRUCTURAL_REGION_ERROR =
+  "ChatGPT proposed a structural table change without owning the complete affected table or structural region.";
+const MALFORMED_STRUCTURAL_MARKDOWN_ERROR =
+  "ChatGPT proposed malformed Markdown in a structural table replacement.";
+const INTERNAL_SINGLE_PROPOSAL_SPLIT_ERROR =
+  "Patchmark could not validate this atomic structural patch. Retry the import without changing the response.";
+
+export type AtomicTablePatchErrorCode =
+  | "incomplete_structural_region"
+  | "malformed_structural_markdown"
+  | "single_proposal_split_invariant"
+  | "split_structural_change_across_proposals";
+
+export class AtomicTablePatchValidationError extends Error {
+  readonly code: AtomicTablePatchErrorCode;
+  readonly conflictingProposalCount?: number;
+  readonly patchKeys: string[];
+  readonly repairPromptEligible: boolean;
+  readonly targetHeading?: string;
+
+  constructor({
+    code,
+    conflictingProposalCount,
+    message,
+    patchKeys = [],
+    repairPromptEligible = true,
+    targetHeading
+  }: {
+    code: AtomicTablePatchErrorCode;
+    conflictingProposalCount?: number;
+    message: string;
+    patchKeys?: string[];
+    repairPromptEligible?: boolean;
+    targetHeading?: string;
+  }) {
+    super(message);
+    this.name = "AtomicTablePatchValidationError";
+    this.code = code;
+    this.conflictingProposalCount = conflictingProposalCount;
+    this.patchKeys = patchKeys;
+    this.repairPromptEligible = repairPromptEligible;
+    this.targetHeading = targetHeading;
+  }
+}
+
+export function createAtomicTableRepairPrompt(error: unknown): string {
+  if (
+    !(error instanceof AtomicTablePatchValidationError) ||
+    !error.repairPromptEligible
+  ) {
+    return "";
+  }
+
+  if (error.code === "split_structural_change_across_proposals") {
+    const details = [
+      error.patchKeys.length > 0
+        ? `Conflicting patch keys: ${error.patchKeys.join(", ")}.`
+        : "",
+      error.targetHeading ? `Target heading: ${error.targetHeading}.` : ""
+    ].filter(Boolean);
+
+    return `Structural patch rules:
+- Return one patch proposal covering the complete affected table or structural region.
+- Do not split header, row, column, reordering, or overlapping region changes across proposals.
+${details.join("\n")}`.trim();
+  }
+
+  if (error.code === "incomplete_structural_region") {
+    return `Structural patch rules:
+- Copy the complete affected table or structural region into original_text.
+- Return the complete structurally valid replacement in suggested_text.`;
+  }
+
+  return `Structural Markdown rules:
+- Return well-formed Markdown tables with a header, delimiter row, and consistent cell counts.`;
+}
 
 export const CHATGPT_ATOMIC_TABLE_PROMPT_RULES = `## Atomic table changes
 
@@ -29,6 +106,8 @@ For these operations:
 - Include the header, delimiter/alignment row, and every body row.
 - Return exactly one \`patch_proposal\` for that table.
 - Never split the structural change into separate header, delimiter, or body-row proposals.
+- One proposal may own a complete region containing several related tables, and the replacement may contain a different number of tables.
+- Keep interdependent table reordering or restructuring inside that one complete-region proposal.
 - Do not omit unchanged rows from either field.
 - Do not use placeholders, ellipses, abbreviated rows, or text such as "remaining rows unchanged."
 - Do not reconstruct content that was not supplied in the exported context.
@@ -70,9 +149,29 @@ Canonical table context markers:
 type PatchProposalInput = PatchmarkCommentReplyImport["patch_proposals"][number];
 
 type PatchProposalAnalysis = {
+  complete: boolean;
   matchKey: string;
   proposalIndex: number;
   structural: boolean;
+};
+
+export type AtomicTablePatchImportDiagnostics = {
+  proposalCount: number;
+  proposals: Array<{
+    directDependencies: string[];
+    exactMatchCount: number;
+    originalTableBlockCount: number;
+    patchKey: string;
+    proposalIndex: number;
+    suggestedTableBlockCount: number;
+  }>;
+  structuralGroups: Array<{
+    incompleteStructuralProposalIndexes: number[];
+    patchKeys: string[];
+    proposalIndexes: number[];
+    regionId: string;
+    structuralProposalIndexes: number[];
+  }>;
 };
 
 export type CompleteTableOccurrence = {
@@ -226,7 +325,96 @@ export function validateAtomicTablePatchImport({
   markdown: string;
   patchProposals: PatchProposalInput[];
 }): void {
-  const structuralProposalIndexesByTable = new Map<string, Set<number>>();
+  const diagnostics = inspectAtomicTablePatchImport({
+    markdown,
+    patchProposals
+  });
+
+  patchProposals.forEach((proposal, proposalIndex) => {
+    const proposalDiagnostics = diagnostics.proposals[proposalIndex];
+    const suggestedTables = findMarkdownTables(proposal.suggested_text);
+
+    if (
+      (proposalDiagnostics?.exactMatchCount ?? 0) > 0 &&
+      (proposalDiagnostics?.originalTableBlockCount ?? 0) > 0 &&
+      suggestedTables.some((table) => !table.isWellFormed)
+    ) {
+      throw createProposalValidationError({
+        code: "malformed_structural_markdown",
+        message: MALFORMED_STRUCTURAL_MARKDOWN_ERROR,
+        patchProposals,
+        proposalIndexes: [proposalIndex]
+      });
+    }
+  });
+
+  for (const group of diagnostics.structuralGroups) {
+    if (
+      group.structuralProposalIndexes.length > 0 &&
+      group.proposalIndexes.length > 1
+    ) {
+      if (patchProposals.length === 1) {
+        throw new AtomicTablePatchValidationError({
+          code: "single_proposal_split_invariant",
+          message: INTERNAL_SINGLE_PROPOSAL_SPLIT_ERROR,
+          patchKeys: group.patchKeys,
+          repairPromptEligible: false
+        });
+      }
+
+      throw createProposalValidationError({
+        code: "split_structural_change_across_proposals",
+        conflictingProposalCount: group.proposalIndexes.length,
+        message: ATOMIC_TABLE_IMPORT_ERROR,
+        patchProposals,
+        proposalIndexes: group.proposalIndexes
+      });
+    }
+  }
+
+  for (const group of diagnostics.structuralGroups) {
+    if (group.incompleteStructuralProposalIndexes.length > 0) {
+      throw createProposalValidationError({
+        code: "incomplete_structural_region",
+        message: INCOMPLETE_STRUCTURAL_REGION_ERROR,
+        patchProposals,
+        proposalIndexes: group.incompleteStructuralProposalIndexes
+      });
+    }
+  }
+
+  patchProposals.forEach((proposal, proposalIndex) => {
+    if ((diagnostics.proposals[proposalIndex]?.exactMatchCount ?? 0) === 0) {
+      return;
+    }
+
+    const originalTables = findMarkdownTables(proposal.original_text);
+    const suggestedTables = findMarkdownTables(proposal.suggested_text);
+    const structural = isStructuralRegionChange(
+      originalTables,
+      suggestedTables
+    );
+
+    if (
+      structural &&
+      originalTables.some((table) => !table.isWellFormed) &&
+      !mentionsMalformedTableRepair(proposal.reason, proposal.risk)
+    ) {
+      throw new Error(
+        "ChatGPT proposed a structural table repair for a malformed source table without explaining the normalization in reason and risk."
+      );
+    }
+  });
+}
+
+export function inspectAtomicTablePatchImport({
+  markdown,
+  patchProposals
+}: {
+  markdown: string;
+  patchProposals: PatchProposalInput[];
+}): AtomicTablePatchImportDiagnostics {
+  const analysesByTable = new Map<string, PatchProposalAnalysis[]>();
 
   patchProposals.forEach((proposal, proposalIndex) => {
     const analyses = analyzePatchProposalAgainstCurrentTables({
@@ -236,22 +424,52 @@ export function validateAtomicTablePatchImport({
     });
 
     for (const analysis of analyses) {
-      if (!analysis.structural) {
-        continue;
-      }
-
-      const proposalIndexes =
-        structuralProposalIndexesByTable.get(analysis.matchKey) ?? new Set();
-      proposalIndexes.add(proposalIndex);
-      structuralProposalIndexesByTable.set(analysis.matchKey, proposalIndexes);
+      const tableAnalyses = analysesByTable.get(analysis.matchKey) ?? [];
+      tableAnalyses.push(analysis);
+      analysesByTable.set(analysis.matchKey, tableAnalyses);
     }
   });
 
-  for (const proposalIndexes of structuralProposalIndexesByTable.values()) {
-    if (proposalIndexes.size > 1) {
-      throw new Error(ATOMIC_TABLE_IMPORT_ERROR);
-    }
-  }
+  return {
+    proposalCount: patchProposals.length,
+    proposals: patchProposals.map((proposal, proposalIndex) => ({
+      directDependencies: [...(proposal.depends_on ?? [])],
+      exactMatchCount: findExactTextMatches(markdown, proposal.original_text).length,
+      originalTableBlockCount: findMarkdownTables(proposal.original_text).length,
+      patchKey: proposal.patch_key ?? `proposal-${proposalIndex + 1}`,
+      proposalIndex,
+      suggestedTableBlockCount: findMarkdownTables(proposal.suggested_text).length
+    })),
+    structuralGroups: Array.from(analysesByTable.entries()).map(
+      ([regionId, analyses]) => {
+        const proposalIndexes = uniqueSortedIndexes(
+          analyses.map((analysis) => analysis.proposalIndex)
+        );
+        const structuralProposalIndexes = uniqueSortedIndexes(
+          analyses
+            .filter((analysis) => analysis.structural)
+            .map((analysis) => analysis.proposalIndex)
+        );
+        const incompleteStructuralProposalIndexes = uniqueSortedIndexes(
+          analyses
+            .filter((analysis) => analysis.structural && !analysis.complete)
+            .map((analysis) => analysis.proposalIndex)
+        );
+
+        return {
+          incompleteStructuralProposalIndexes,
+          patchKeys: proposalIndexes.map(
+            (proposalIndex) =>
+              patchProposals[proposalIndex]?.patch_key ??
+              `proposal-${proposalIndex + 1}`
+          ),
+          proposalIndexes,
+          regionId,
+          structuralProposalIndexes
+        };
+      }
+    )
+  };
 }
 
 function analyzePatchProposalAgainstCurrentTables({
@@ -265,24 +483,24 @@ function analyzePatchProposalAgainstCurrentTables({
 }): PatchProposalAnalysis[] {
   const matches = findExactTextMatches(markdown, proposal.original_text);
   const analyses: PatchProposalAnalysis[] = [];
+  const originalTables = findMarkdownTables(proposal.original_text);
+  const suggestedTables = findMarkdownTables(proposal.suggested_text);
+  const completeRegionStructural = isStructuralRegionChange(
+    originalTables,
+    suggestedTables
+  );
 
   matches.forEach((match) => {
     const tables = findMarkdownTablesOverlappingRange(markdown, match);
 
     tables.forEach((table) => {
-      const touchesWholeTable = match.start <= table.start && match.end >= table.end;
-      const structural = touchesWholeTable
-        ? validateWholeTablePatchProposal({
-            match,
-            proposal,
-            table
-          })
-        : validateTableFragmentPatchProposal({
-            proposal,
-            table
-          });
+      const complete = match.start <= table.start && match.end >= table.end;
+      const structural = complete
+        ? completeRegionStructural
+        : isStructuralTableFragmentPatchProposal(proposal);
 
       analyses.push({
+        complete,
         matchKey: `${table.start}:${table.end}`,
         proposalIndex,
         structural
@@ -293,90 +511,96 @@ function analyzePatchProposalAgainstCurrentTables({
   return analyses;
 }
 
-function validateWholeTablePatchProposal({
-  match,
-  proposal,
-  table
-}: {
-  match: TextRange;
-  proposal: PatchProposalInput;
-  table: MarkdownTable;
-}): boolean {
-  const originalTables = findMarkdownTables(proposal.original_text);
-  const relativeTableStart = table.start - match.start;
-  const relativeTableEnd = table.end - match.start;
-  const originalTable = originalTables.find(
-    (candidate) =>
-      candidate.start === relativeTableStart && candidate.end === relativeTableEnd
+function isStructuralTableFragmentPatchProposal(
+  proposal: PatchProposalInput
+): boolean {
+  return (
+    hasFragmentStructuralCellDistributionChange(
+      proposal.original_text,
+      proposal.suggested_text
+    ) ||
+    createsMalformedTableFragment(
+      proposal.original_text,
+      proposal.suggested_text
+    )
   );
-  const suggestedTables = findMarkdownTables(proposal.suggested_text);
+}
 
-  if (!originalTable) {
+function isStructuralRegionChange(
+  originalTables: MarkdownTable[],
+  suggestedTables: MarkdownTable[]
+): boolean {
+  if (originalTables.length === 0) {
     return false;
   }
 
-  if (suggestedTables.length === 0) {
+  if (originalTables.length !== suggestedTables.length) {
     return true;
   }
 
-  if (suggestedTables.length !== 1) {
-    throw new Error(ATOMIC_TABLE_IMPORT_ERROR);
-  }
-
-  const suggestedTable = suggestedTables[0];
-  const structural = isStructuralTableChange(originalTable, suggestedTable);
-
-  if (!structural) {
-    return false;
-  }
-
-  if (
-    !suggestedTable.isWellFormed ||
-    !isSurroundingContextPreserved({
-      originalTable,
-      proposal,
-      suggestedTable
-    })
-  ) {
-    throw new Error(ATOMIC_TABLE_IMPORT_ERROR);
-  }
-
-  if (
-    !table.isWellFormed &&
-    !mentionsMalformedTableRepair(proposal.reason, proposal.risk)
-  ) {
-    throw new Error(
-      "ChatGPT proposed a structural table repair for a malformed source table without explaining the normalization in reason and risk."
+  if (originalTables.length > 1) {
+    return originalTables.some(
+      (table, index) => table.markdown !== suggestedTables[index]?.markdown
     );
   }
 
-  return true;
+  return isStructuralTableChange(originalTables[0], suggestedTables[0]);
 }
 
-function validateTableFragmentPatchProposal({
-  proposal,
-  table
+function createProposalValidationError({
+  code,
+  conflictingProposalCount,
+  message,
+  patchProposals,
+  proposalIndexes
 }: {
-  proposal: PatchProposalInput;
-  table: MarkdownTable;
-}): boolean {
-  const structural = hasFragmentStructuralCellDistributionChange(
-    proposal.original_text,
-    proposal.suggested_text
+  code: AtomicTablePatchErrorCode;
+  conflictingProposalCount?: number;
+  message: string;
+  patchProposals: PatchProposalInput[];
+  proposalIndexes: number[];
+}): AtomicTablePatchValidationError {
+  const proposals = proposalIndexes
+    .map((proposalIndex) => patchProposals[proposalIndex])
+    .filter((proposal): proposal is PatchProposalInput => Boolean(proposal));
+  const headings = Array.from(
+    new Set(
+      proposals
+        .map((proposal) => proposal.target_heading)
+        .filter((heading): heading is string => Boolean(heading))
+    )
   );
 
-  if (structural) {
-    throw new Error(ATOMIC_TABLE_IMPORT_ERROR);
-  }
+  const patchKeys = proposals.map(
+    (proposal, index) => proposal.patch_key ?? `proposal-${index + 1}`
+  );
+  const targetHeading = headings.length === 1 ? headings[0] : undefined;
+  const messageDetails =
+    code === "split_structural_change_across_proposals"
+      ? [
+          patchKeys.length > 0
+            ? `Conflicting patch keys: ${patchKeys.join(", ")}.`
+            : "",
+          targetHeading ? `Target heading: ${targetHeading}.` : "",
+          conflictingProposalCount
+            ? `Conflicting proposals: ${conflictingProposalCount}.`
+            : ""
+        ]
+          .filter(Boolean)
+          .join(" ")
+      : "";
 
-  if (
-    table.isWellFormed &&
-    createsMalformedTableFragment(proposal.original_text, proposal.suggested_text)
-  ) {
-    throw new Error(ATOMIC_TABLE_IMPORT_ERROR);
-  }
+  return new AtomicTablePatchValidationError({
+    code,
+    conflictingProposalCount,
+    message: messageDetails ? `${message} ${messageDetails}` : message,
+    patchKeys,
+    targetHeading
+  });
+}
 
-  return false;
+function uniqueSortedIndexes(indexes: number[]): number[] {
+  return Array.from(new Set(indexes)).sort((first, second) => first - second);
 }
 
 function hasFragmentStructuralCellDistributionChange(
@@ -445,23 +669,6 @@ function isStructuralTableChange(
     originalHeaderCells.join("\u0000") !== suggestedHeaderCells.join("\u0000") &&
     [...originalHeaderCells].sort().join("\u0000") ===
       [...suggestedHeaderCells].sort().join("\u0000")
-  );
-}
-
-function isSurroundingContextPreserved({
-  originalTable,
-  proposal,
-  suggestedTable
-}: {
-  originalTable: MarkdownTable;
-  proposal: PatchProposalInput;
-  suggestedTable: MarkdownTable;
-}): boolean {
-  return (
-    proposal.original_text.slice(0, originalTable.start) ===
-      proposal.suggested_text.slice(0, suggestedTable.start) &&
-    proposal.original_text.slice(originalTable.end) ===
-      proposal.suggested_text.slice(suggestedTable.end)
   );
 }
 

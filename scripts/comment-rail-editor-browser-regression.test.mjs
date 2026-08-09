@@ -485,12 +485,15 @@ function createProjectPickerShim({
   baseUrl,
   directories,
   files,
-  projectName
+  projectName,
+  pickerPaths = [""]
 }) {
   return `(() => {
     const filePaths = new Set(${JSON.stringify(files)});
     const directoryPaths = new Set(${JSON.stringify(directories)});
     const overrides = new Map();
+    const readLog = [];
+    const lastModifiedByPath = new Map();
     const writeLog = [];
     const writeControls = {
       delayByPath: {},
@@ -503,6 +506,8 @@ function createProjectPickerShim({
       maximumActiveWrites: 0,
       nextSequence: 1
     };
+    const pickerQueue = ${JSON.stringify(pickerPaths)};
+    let pickerIndex = 0;
 
     function normalizePath(path) {
       return String(path).split("/").filter(Boolean).join("/");
@@ -524,6 +529,7 @@ function createProjectPickerShim({
       }
 
       async getFile() {
+        const startedAt = performance.now();
         const text = overrides.has(this.path)
           ? overrides.get(this.path)
           : await fetch(${JSON.stringify(baseUrl)} + "/file?path=" + encodeURIComponent(this.path)).then((response) => {
@@ -534,7 +540,16 @@ function createProjectPickerShim({
               return response.text();
             });
 
-        return new File([text], this.name, { type: this.name.endsWith(".json") ? "application/json" : "text/markdown" });
+        readLog.push({
+          path: this.path,
+          bytes: new TextEncoder().encode(text).byteLength,
+          startedAt,
+          completedAt: performance.now()
+        });
+        return new File([text], this.name, {
+          lastModified: lastModifiedByPath.get(this.path) ?? 1,
+          type: this.name.endsWith(".json") ? "application/json" : "text/markdown"
+        });
       }
 
       async createWritable() {
@@ -545,6 +560,12 @@ function createProjectPickerShim({
           async write(data) {
             if (data instanceof Blob) {
               chunks.push(await data.text());
+            } else if (data instanceof ArrayBuffer) {
+              chunks.push(new TextDecoder().decode(new Uint8Array(data)));
+            } else if (ArrayBuffer.isView(data)) {
+              chunks.push(new TextDecoder().decode(
+                new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+              ));
             } else {
               chunks.push(String(data));
             }
@@ -607,6 +628,7 @@ function createProjectPickerShim({
                 }
               });
               overrides.set(path, nextContent);
+              lastModifiedByPath.set(path, Date.now() + sequence);
               filePaths.add(path);
               const parent = path.split("/").slice(0, -1).join("/");
 
@@ -726,6 +748,25 @@ function createProjectPickerShim({
           ];
         }
       }
+
+      async isSameEntry(other) {
+        return other?.kind === "directory" && other?.path === this.path;
+      }
+
+      async resolve(possibleDescendant) {
+        if (!possibleDescendant || typeof possibleDescendant.path !== "string") {
+          return null;
+        }
+        if (possibleDescendant.path === this.path) {
+          return [];
+        }
+        const prefix = this.path ? this.path + "/" : "";
+        if (!possibleDescendant.path.startsWith(prefix)) {
+          return null;
+        }
+        const relativePath = possibleDescendant.path.slice(prefix.length);
+        return relativePath ? relativePath.split("/") : [];
+      }
     }
 
     try {
@@ -733,6 +774,7 @@ function createProjectPickerShim({
     } catch {}
 
     window.__patchmarkFixtureWrites = overrides;
+    window.__patchmarkFixtureReadLog = readLog;
     window.__patchmarkFixtureWriteLog = writeLog;
     window.__patchmarkFixtureWriteControls = writeControls;
     window.__patchmarkFixtureWriteStats = writeStats;
@@ -745,6 +787,7 @@ function createProjectPickerShim({
         if (!response.ok) throw new Error("Could not set fixture file: " + normalizedPath);
       });
       overrides.set(normalizedPath, String(content));
+      lastModifiedByPath.set(normalizedPath, Date.now());
       filePaths.add(normalizedPath);
       return true;
     };
@@ -757,8 +800,14 @@ function createProjectPickerShim({
         return response.text();
       });
     };
-    window.showDirectoryPicker = async () =>
-      new PatchmarkFixtureDirectoryHandle("", ${JSON.stringify(projectName)});
+    window.showDirectoryPicker = async () => {
+      const selectedPath = normalizePath(
+        pickerQueue[Math.min(pickerIndex, pickerQueue.length - 1)] ?? ""
+      );
+      pickerIndex += 1;
+      const selectedName = selectedPath.split("/").pop() || ${JSON.stringify(projectName)};
+      return new PatchmarkFixtureDirectoryHandle(selectedPath, selectedName);
+    };
   })();`;
 }
 

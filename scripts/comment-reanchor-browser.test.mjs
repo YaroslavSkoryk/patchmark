@@ -2,15 +2,16 @@ import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import {
-  cpSync,
   existsSync,
   mkdirSync,
+  mkdtempSync,
   readFileSync,
+  readdirSync,
   rmSync,
-  unlinkSync,
+  statSync,
   writeFileSync
 } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, join, relative } from "node:path";
 import { tmpdir } from "node:os";
 import { setTimeout as delay } from "node:timers/promises";
 import {
@@ -29,10 +30,9 @@ import {
 } from "./comment-rail-editor-browser-regression.test.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3117/";
-const sourceProjectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
 const artifactRoot =
   process.env.PATCHMARK_PHASE8_ARTIFACT_DIR ??
-  join(tmpdir(), `patchmark-phase8-${Date.now()}`);
+  mkdtempSync(join(tmpdir(), "patchmark-reanchor-browser-"));
 const fixtureDir = join(artifactRoot, "project-fixture");
 const screenshotDir = join(artifactRoot, "screenshots");
 const commentIds = {
@@ -40,22 +40,31 @@ const commentIds = {
   missing: "PM-COMMENT-PHASE8-B",
   link: "PM-COMMENT-PHASE8-C",
   multi: "PM-COMMENT-PHASE8-D",
-  row: "PM-COMMENT-PHASE8-E"
+  row: "PM-COMMENT-PHASE8-E",
+  table: "PM-COMMENT-PHASE8-F",
+  failure: "PM-COMMENT-PHASE8-G"
 };
-
-if (!sourceProjectDir || !existsSync(join(sourceProjectDir, "document.md"))) {
-  throw new Error(
-    "Set PATCHMARK_REAL_PROJECT_DIR to a Patchmark project. The script copies it before validation."
-  );
-}
+const paragraphReplacement =
+  "Current explanatory phrase for deleted evidence.";
+const secondParagraphReplacement =
+  "A newer explanatory phrase should replace the first manual choice.";
+const tableCellReplacement =
+  "Break-even must be calculated after ingredient cost, packaging, labor, delivery, utilities, admin, accounting, tax/VAT handling, staff, and facility costs.";
+const failureReplacement =
+  "Persistence failure target remains available for a safe retry.";
 
 mkdirSync(artifactRoot, { recursive: true });
 mkdirSync(screenshotDir, { recursive: true });
-cpSync(sourceProjectDir, fixtureDir, { recursive: true });
 preparePhase8Fixture(fixtureDir);
 
-const patchesPath = join(fixtureDir, ".patchmark", "patches.json");
-const commentsPath = join(fixtureDir, ".patchmark", "comments.json");
+const actionStore = join(
+  fixtureDir,
+  ".patchmark",
+  "documents",
+  "doc_action"
+);
+const patchesPath = join(actionStore, "patches.json");
+const commentsPath = join(actionStore, "comments.json");
 const patchesBefore = readFileSync(patchesPath);
 const commentsBeforeCancelHash = sha256(readFileSync(commentsPath));
 const inventory = inventoryProject(fixtureDir);
@@ -87,6 +96,7 @@ const chrome = spawn(
 );
 
 let client;
+const runtimeExceptions = [];
 
 try {
   const browserWsUrl = await waitForDevToolsUrl(chrome);
@@ -94,6 +104,12 @@ try {
   client = await CdpClient.connect(pageWsUrl);
   await client.call("Page.enable");
   await client.call("Runtime.enable");
+  client.on("Runtime.exceptionThrown", ({ exceptionDetails }) => {
+    runtimeExceptions.push({
+      description: exceptionDetails?.exception?.description,
+      text: exceptionDetails?.text
+    });
+  });
   await client.call("Page.addScriptToEvaluateOnNewDocument", {
     source: createProjectPickerShim({
       baseUrl: fixtureServer.baseUrl,
@@ -114,21 +130,119 @@ try {
   await waitForPhase8Comments(client);
   await waitForVisualEditor(client);
 
+  const initialFingerprint = fingerprintProject(fixtureDir);
   await activateComment(client, commentIds.ambiguous);
+  const baselineEntry = await evaluate(client, {
+    expression: `(() => {
+      window.scrollTo({ top: Math.max(0, document.body.scrollHeight - window.innerHeight - 320) });
+      window.__patchmarkReanchorEditorNode = document.querySelector("[aria-label='editable markdown']");
+      const editor = window.__patchmarkReanchorEditorNode;
+      return {
+        editorHeight: editor?.getBoundingClientRect().height ?? 0,
+        tableButtonCount: editor?.querySelectorAll("button").length ?? 0,
+        scrollY: window.scrollY,
+        readCount: window.__patchmarkFixtureReadLog?.length ?? 0
+      };
+    })()`
+  });
+  const controlsStartedAt = Date.now();
   await clickCommentButton(client, commentIds.ambiguous, "Re-anchor");
+  await waitForSelector(client, ".reanchor-workspace");
+  const workspaceEntry = await measureWorkspace(client);
+  const controlsLatencyMs = Date.now() - controlsStartedAt;
+  assert.ok(
+    Math.abs(workspaceEntry.scrollY - baselineEntry.scrollY) <= 1,
+    `Opening re-anchor must preserve deep scroll position. Before ${baselineEntry.scrollY}, after ${workspaceEntry.scrollY}.`
+  );
+  assert.equal(workspaceEntry.editorSame, true, "Editor must not remount.");
+  assert.equal(
+    workspaceEntry.editorContentEditable,
+    "true",
+    "Visual re-anchor must preserve the rendered editor tree."
+  );
+  assert.equal(
+    workspaceEntry.editorAriaReadOnly,
+    "true",
+    "Visual re-anchor must expose selection-only state to assistive technology."
+  );
+  assert.ok(
+    Math.abs(workspaceEntry.editorHeight - baselineEntry.editorHeight) <= 1,
+    "Visual re-anchor must not collapse table-heavy editor content."
+  );
+  assert.equal(
+    workspaceEntry.tableButtonCount,
+    baselineEntry.tableButtonCount,
+    "Visual re-anchor must preserve table-control geometry."
+  );
+  const blockedMutationBefore = await evaluate(client, {
+    expression: `(() => {
+      const editor = document.querySelector("[aria-label='editable markdown']");
+      const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+      let textNode = walker.nextNode();
+      while (textNode && !textNode.textContent?.trim()) {
+        textNode = walker.nextNode();
+      }
+      if (!textNode) throw new Error("Visual editor text is unavailable.");
+      const range = document.createRange();
+      range.setStart(textNode, 0);
+      range.collapse(true);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      editor.focus({ preventScroll: true });
+      return {
+        scrollY: window.scrollY,
+        text: editor.textContent
+      };
+    })()`,
+    userGesture: true
+  });
+  await client.call("Input.insertText", {
+    text: "PATCHMARK_BLOCKED_REANCHOR_MUTATION"
+  });
+  await delay(50);
+  const blockedMutationAfter = await evaluate(client, {
+    expression: `(() => {
+      const editor = document.querySelector("[aria-label='editable markdown']");
+      return {
+        scrollY: window.scrollY,
+        text: editor.textContent
+      };
+    })()`
+  });
+  assert.deepEqual(
+    blockedMutationAfter,
+    blockedMutationBefore,
+    "Visual re-anchor must block document mutations without changing layout."
+  );
+  assert.equal(workspaceEntry.position, "fixed");
+  assertWorkspaceInViewport(workspaceEntry);
+  assert.equal(
+    workspaceEntry.readCount,
+    baselineEntry.readCount,
+    "Opening re-anchor must not reload project files."
+  );
+  assert.ok(controlsLatencyMs < 1000, "Re-anchor controls should appear promptly.");
   await waitForSelector(client, ".reanchor-candidate-list");
   await capture(client, "02-suggested-candidate-list.png");
-  await clickCandidateButton(client, 0, "Show in document");
+  await clickCandidateButton(client, 0, "Preview candidate");
   await waitForPreviewHighlight(client);
   await capture(client, "03-candidate-preview.png");
+  await clickWithin(client, ".reanchor-mode-panel", "Return to previous position");
+  await waitForScrollNear(client, baselineEntry.scrollY);
   await clickWithin(client, ".reanchor-mode-panel", "Cancel");
   await waitForSelectorToDisappear(client, ".reanchor-mode-panel");
   assert.equal(sha256(readFileSync(commentsPath)), commentsBeforeCancelHash);
+  assert.deepEqual(
+    fingerprintProject(fixtureDir),
+    initialFingerprint,
+    "Preview and cancellation must not write authoritative project files."
+  );
 
   await activateComment(client, commentIds.ambiguous);
   await clickCommentButton(client, commentIds.ambiguous, "Re-anchor");
-  await clickCandidateButton(client, 1, "Show in document");
-  await clickCandidateButton(client, 1, "Use this location");
+  await clickCandidateButton(client, 1, "Preview candidate");
+  await clickCandidateButton(client, 1, "Review this location");
   await waitForSelector(client, ".reanchor-confirmation-dialog");
   await capture(client, "04-final-confirmation.png");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
@@ -139,7 +253,7 @@ try {
 
   const writesBeforeNoOp = await getFixtureWriteCount(client);
   await openHealthyChangeAnchor(client, commentIds.ambiguous);
-  await clickCandidateButton(client, 0, "Use this location");
+  await clickCandidateButton(client, 0, "Review this location");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
   await waitForText(client, "This comment is already anchored to that text.");
   assert.equal(await getFixtureWriteCount(client), writesBeforeNoOp);
@@ -147,12 +261,124 @@ try {
   await activateComment(client, commentIds.missing);
   await capture(client, "01-missing-anchor-reanchor.png");
   await clickCommentButton(client, commentIds.missing, "Re-anchor");
-  await clickButtonByText(client, "Markdown Mode");
-  const replacementPhrase = "Current explanatory phrase for deleted evidence.";
-  await selectMarkdownText(client, replacementPhrase);
+  await clickButtonByText(client, "Visual Mode");
+  await waitForVisualEditor(client);
+  const beforeManualCancelFingerprint = fingerprintProject(fixtureDir);
+  await selectVisualText(client, paragraphReplacement);
+  await waitForWorkspaceSelection(client, paragraphReplacement);
+  assert.equal(
+    await evaluate(client, {
+      expression: `Boolean(document.querySelector(".comment-selection-action"))`
+    }),
+    false,
+    "The ordinary Add comment affordance must be suppressed during re-anchor."
+  );
+  await evaluate(client, {
+    expression: `(() => {
+      const selection = window.getSelection();
+      const rect = selection?.rangeCount
+        ? selection.getRangeAt(0).getClientRects()[0]
+        : null;
+      if (!rect) throw new Error("Re-anchor selection rectangle missing.");
+      document.querySelector(".editor-body").dispatchEvent(
+        new MouseEvent("contextmenu", {
+          bubbles: true,
+          cancelable: true,
+          clientX: rect.left + Math.max(1, rect.width / 2),
+          clientY: rect.top + Math.max(1, rect.height / 2)
+        })
+      );
+      window.dispatchEvent(
+        new KeyboardEvent("keydown", {
+          altKey: true,
+          bubbles: true,
+          key: "M",
+          shiftKey: true
+        })
+      );
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await delay(50);
+  assert.equal(
+    await evaluate(client, {
+      expression: `Boolean(
+        document.querySelector("[data-testid='selection-actions-chooser']")
+      )`
+    }),
+    false,
+    "Right-click and keyboard scope actions must stay suppressed during re-anchor."
+  );
+  await selectVisualText(client, secondParagraphReplacement);
+  await waitForWorkspaceSelection(client, secondParagraphReplacement);
+  await clickWithin(client, ".reanchor-mode-panel", "Use selection as new anchor");
+  await clickWithin(
+    client,
+    ".reanchor-confirmation-dialog",
+    "Choose different text"
+  );
+  await waitForSelectorToDisappear(client, ".reanchor-confirmation-dialog");
+  await clickWithin(client, ".reanchor-mode-panel", "Cancel");
+  await waitForSelectorToDisappear(client, ".reanchor-mode-panel");
+  assert.deepEqual(
+    fingerprintProject(fixtureDir),
+    beforeManualCancelFingerprint,
+    "Selecting, previewing, and cancelling must not write project state."
+  );
+
+  await activateComment(client, commentIds.missing);
+  await clickCommentButton(client, commentIds.missing, "Re-anchor");
+  await selectVisualText(client, paragraphReplacement);
+  await waitForWorkspaceSelection(client, paragraphReplacement);
+  await setConfirmResult(client, false);
+  await selectDocument(client, "Notes");
+  await waitForActiveDocument(client, "Action Plan");
+  assert.equal(
+    await evaluate(client, {
+      expression: `Boolean(document.querySelector(".reanchor-workspace"))`
+    }),
+    true,
+    "Rejected switching must keep the current re-anchor session."
+  );
+  await setConfirmResult(client, true);
+  await selectDocument(client, "Notes");
+  await waitForActiveDocument(client, "Notes");
+  await waitForSelectorToDisappear(client, ".reanchor-workspace");
+  const duplicateComment = JSON.parse(
+    readFileSync(
+      join(
+        fixtureDir,
+        ".patchmark",
+        "documents",
+        "doc_notes",
+        "comments.json"
+      ),
+      "utf8"
+    )
+  ).find((comment) => comment.id === commentIds.missing);
+  assert.equal(duplicateComment.anchor.selected_text, "Different historical text");
+  await selectDocument(client, "Action Plan");
+  await waitForActiveDocument(client, "Action Plan");
+  await waitForPhase8Comments(client);
+  await waitForVisualEditor(client);
+
+  await activateComment(client, commentIds.missing);
+  await clickCommentButton(client, commentIds.missing, "Re-anchor");
+  await selectVisualText(client, paragraphReplacement);
+  await waitForWorkspaceSelection(client, paragraphReplacement);
   await clickWithin(client, ".reanchor-mode-panel", "Use selection as new anchor");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
-  await waitForPersistedAnchor(commentsPath, commentIds.missing, replacementPhrase);
+  await waitForPersistedAnchor(
+    commentsPath,
+    commentIds.missing,
+    paragraphReplacement
+  );
+  const stalePatchAfterReanchor = JSON.parse(
+    readFileSync(patchesPath, "utf8")
+  ).find((patch) => patch.id === "PM-PATCH-PHASE8");
+  assert.equal(stalePatchAfterReanchor.status, "stale");
+  assert.equal(stalePatchAfterReanchor.original_text, "Deleted historical evidence");
 
   await activateComment(client, commentIds.link);
   await clickCommentButton(client, commentIds.link, "Re-anchor");
@@ -199,6 +425,116 @@ try {
   );
   assert.equal(persistedRowComment.anchor.anchor_context.table_row_index, 3);
 
+  await clickButtonByText(client, "Visual Mode");
+  await waitForVisualEditor(client);
+  await activateComment(client, commentIds.table);
+  await clickCommentButton(client, commentIds.table, "Re-anchor");
+  await selectVisualText(client, tableCellReplacement);
+  const tableSelectionState = await waitForWorkspaceSelection(
+    client,
+    tableCellReplacement
+  );
+  assert.equal(tableSelectionState.contextKind, "table_cell");
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 900,
+    mobile: false,
+    width: 720
+  });
+  const mobileWorkspace = await waitForWorkspaceViewport(client);
+  assertWorkspaceInViewport(mobileWorkspace);
+  assert.ok(
+    mobileWorkspace.width <= 696,
+    "Narrow workspace must avoid horizontal overflow."
+  );
+  assert.equal(mobileWorkspace.selectionText.includes(tableCellReplacement), true);
+  await capture(client, "09-mobile-workspace.png");
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1100,
+    mobile: false,
+    width: 1700
+  });
+  await waitForWorkspaceViewport(client);
+  await clickWithin(client, ".reanchor-mode-panel", "Use selection as new anchor");
+  await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
+  const persistedTableComment = await waitForPersistedAnchor(
+    commentsPath,
+    commentIds.table,
+    tableCellReplacement
+  );
+  assert.equal(
+    persistedTableComment.anchor.anchor_context.kind,
+    "table_cell"
+  );
+  await capture(client, "10-table-reanchored.png");
+
+  await activateComment(client, commentIds.failure);
+  await clickCommentButton(client, commentIds.failure, "Re-anchor");
+  await selectVisualText(client, failureReplacement);
+  const failureSelectionState = await waitForWorkspaceSelection(
+    client,
+    failureReplacement
+  );
+  assert.ok(
+    Number(failureSelectionState.selectionLatencyMs) < 250,
+    "Selection updates should remain responsive."
+  );
+  await focusButtonWithin(
+    client,
+    ".reanchor-mode-panel",
+    "Use selection as new anchor"
+  );
+  await pressFocusedKey(client, "Enter");
+  await waitForSelector(client, ".reanchor-confirmation-dialog");
+  await pressFocusedKey(client, "Escape");
+  await waitForSelectorToDisappear(client, ".reanchor-confirmation-dialog");
+  await focusButtonWithin(
+    client,
+    ".reanchor-mode-panel",
+    "Use selection as new anchor"
+  );
+  await pressFocusedKey(client, "Enter");
+  await waitForSelector(client, ".reanchor-confirmation-dialog");
+  const commentsBeforeFailureHash = sha256(readFileSync(commentsPath));
+  await injectNextWriteFailure(client);
+  await focusButtonWithin(
+    client,
+    ".reanchor-confirmation-dialog",
+    "Confirm re-anchor"
+  );
+  await pressFocusedKey(client, "Enter");
+  await waitForText(client, "The previous anchor remains authoritative.");
+  assert.equal(
+    await evaluate(client, {
+      expression: `Boolean(document.querySelector(".reanchor-confirmation-dialog"))`
+    }),
+    true,
+    "Persistence failure must keep the confirmation open."
+  );
+  assert.equal(
+    sha256(readFileSync(commentsPath)),
+    commentsBeforeFailureHash,
+    "Persistence failure must preserve the authoritative comment anchor."
+  );
+  const confirmationStartedAt = Date.now();
+  await focusButtonWithin(
+    client,
+    ".reanchor-confirmation-dialog",
+    "Confirm re-anchor"
+  );
+  await pressFocusedKey(client, "Enter");
+  await waitForPersistedAnchor(
+    commentsPath,
+    commentIds.failure,
+    failureReplacement
+  );
+  const confirmationLatencyMs = Date.now() - confirmationStartedAt;
+  assert.ok(
+    confirmationLatencyMs < 2500,
+    "Re-anchor confirmation should remain responsive."
+  );
+
   await activateComment(client, commentIds.missing);
   await clickCommentButton(client, commentIds.missing, "Mark for ChatGPT");
   await waitForEnabledButton(client, "body", "Generate ChatGPT Prompt");
@@ -206,7 +542,7 @@ try {
   await waitForSelector(client, ".comment-export-dialog textarea");
   const exportContainsNewAnchor = await evaluate(client, {
     expression: `Array.from(document.querySelectorAll(".comment-export-dialog textarea"))
-      .some((element) => element.value.includes(${JSON.stringify(replacementPhrase)}))`
+      .some((element) => element.value.includes(${JSON.stringify(paragraphReplacement)}))`
   });
   assert.equal(exportContainsNewAnchor, true);
   await clickWithin(client, ".comment-export-dialog", "Close");
@@ -218,7 +554,9 @@ try {
     commentIds.missing,
     commentIds.link,
     commentIds.multi,
-    commentIds.row
+    commentIds.row,
+    commentIds.table,
+    commentIds.failure
   ];
 
   for (const commentId of verifiedIds) {
@@ -251,7 +589,12 @@ try {
         noOpWrites: 0,
         patchBytesUnchanged: true,
         reloadStable: true,
-        exportUsesNewAnchor: exportContainsNewAnchor
+        exportUsesNewAnchor: exportContainsNewAnchor,
+        controlsLatencyMs,
+        confirmationLatencyMs,
+        deepScrollPreserved: true,
+        editorRemounted: false,
+        mobileWorkspaceVisible: true
       },
       null,
       2
@@ -271,10 +614,18 @@ try {
 
 function preparePhase8Fixture(projectDir) {
   const metadataDir = join(projectDir, ".patchmark");
-  const manifestPath = join(metadataDir, "manifest.json");
+  const now = "2026-07-30T00:00:00.000Z";
+  mkdirSync(join(metadataDir, "documents"), { recursive: true });
+  const filler = Array.from({ length: 48 }, (_, index) => [
+    `## Long document context ${index + 1}`,
+    "",
+    `Deep-scroll re-anchor fixture paragraph ${index + 1}. `.repeat(12),
+    ""
+  ]).flat();
   const document = [
     "# Patchmark Phase 8 Fixture",
     "",
+    ...filler,
     "## Demand Generation Plan",
     "The first LINE add candidate belongs to demand generation.",
     "",
@@ -282,12 +633,19 @@ function preparePhase8Fixture(projectDir) {
     "The second LINE add candidate belongs to weekly reporting.",
     "",
     "## Replacement Evidence",
-    "Current explanatory phrase for deleted evidence.",
+    paragraphReplacement,
+    "",
+    secondParagraphReplacement,
     "",
     "## Public References",
     "| Brand | Delivery |",
     "| --- | --- |",
     "| PAUL | [PAUL Thailand online delivery](https://www.paulthailand.com/next-day-delivery) |",
+    "",
+    "## Growth Path and Scenarios",
+    "| Illustrative revenue logic | How to read it |",
+    "| --- | --- |",
+    `| ${tableCellReplacement} | This remains a provisional planning model. |`,
     "",
     "## Product Evidence",
     "### Early Cranberries & Walnut signal",
@@ -300,49 +658,136 @@ function preparePhase8Fixture(projectDir) {
     "| Product | Signal |",
     "| --- | --- |",
     "| Original | Shared signal |",
-    "| Baguette | Shared signal |"
+    "| Baguette | Shared signal |",
+    "",
+    "## Persistence Failure",
+    failureReplacement
   ].join("\n");
   const comments = [
     fixtureComment(commentIds.ambiguous, "LINE add", "Choose the relevant occurrence."),
     fixtureComment(commentIds.missing, "Deleted historical evidence", "Select replacement evidence."),
     fixtureComment(commentIds.link, "Old PAUL delivery text", "Select the current PAUL link."),
     fixtureComment(commentIds.multi, "Old product evidence", "Select current multi-block evidence."),
-    fixtureComment(commentIds.row, "| Missing | Shared signal |", "Select the intended row.")
+    fixtureComment(commentIds.row, "| Missing | Shared signal |", "Select the intended row."),
+    fixtureComment(commentIds.table, "Old break-even table text", "Select the current table cell."),
+    fixtureComment(commentIds.failure, "Old persistence target", "Verify atomic retry behavior.")
   ];
   const patches = [
     {
       id: "PM-PATCH-PHASE8",
-      status: "pending",
+      status: "stale",
       comment_id: commentIds.missing,
       original_text: "Deleted historical evidence",
-      suggested_text: "Current explanatory phrase for deleted evidence.",
+      suggested_text: paragraphReplacement,
       reason: "Fixture patch integrity check.",
-      created_at: "2026-07-15T00:00:00.000Z"
+      created_at: now
     }
   ];
-  const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
-  delete manifest.save_generation;
-  delete manifest.save_commit_id;
-  manifest.updated_at = "2026-07-15T00:00:00.000Z";
+  const duplicateDocument = [
+    "# Duplicate Local Comment ID",
+    "",
+    "This document deliberately contains the same local comment ID.",
+    "",
+    "Only this document owns its local duplicate."
+  ].join("\n");
+  const documents = [
+    createDocumentStore({
+      comments,
+      displayTitle: "Action Plan",
+      documentId: "doc_action",
+      markdown: document,
+      now,
+      patches,
+      path: "action-plan.md",
+      position: 1000,
+      projectDir
+    }),
+    createDocumentStore({
+      comments: [
+        fixtureComment(
+          commentIds.missing,
+          "Different historical text",
+          "Duplicate local ID in another document."
+        )
+      ],
+      displayTitle: "Notes",
+      documentId: "doc_notes",
+      markdown: duplicateDocument,
+      now,
+      patches: [],
+      path: "notes.md",
+      position: 2000,
+      projectDir
+    })
+  ];
 
-  writeFileSync(join(projectDir, "document.md"), document);
-  writeFileSync(join(metadataDir, "comments.json"), `${JSON.stringify(comments, null, 2)}\n`);
-  writeFileSync(join(metadataDir, "patches.json"), `${JSON.stringify(patches, null, 2)}\n`);
-  writeFileSync(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`);
+  writeFileSync(
+    join(metadataDir, "project.json"),
+    serializeJson({
+      format: "patchmark-project",
+      schema_version: 1,
+      project_id: "project-reanchor-fixture",
+      title: "Re-anchor fixture",
+      created_at: now,
+      manifest_revision: 1,
+      documents
+    })
+  );
+}
 
-  for (const fileName of [
-    "save-commit.json",
-    "document.md.lkg",
-    "comments.json.lkg",
-    "patches.json.lkg",
-    "manifest.json.lkg",
-    "save-commit.json.lkg"
-  ]) {
-    const filePath = join(metadataDir, fileName);
-    if (existsSync(filePath)) {
-      unlinkSync(filePath);
-    }
+function createDocumentStore({
+  comments,
+  displayTitle,
+  documentId,
+  markdown,
+  now,
+  patches,
+  path,
+  position,
+  projectDir
+}) {
+  writeFileSync(join(projectDir, path), markdown);
+  const store = join(projectDir, ".patchmark", "documents", documentId);
+  for (const directory of ["versions", "context-packs", "imports", "recovery"]) {
+    mkdirSync(join(store, directory), { recursive: true });
   }
+  writeFileSync(join(store, "comments.json"), serializeJson(comments));
+  writeFileSync(join(store, "patches.json"), serializeJson(patches));
+  writeFileSync(join(store, "tasks.json"), "[]\n");
+  writeFileSync(join(store, "review-batches.json"), "[]\n");
+  writeFileSync(join(store, "review-queue-overrides.json"), "{}\n");
+  writeFileSync(
+    join(store, "manifest.json"),
+    serializeJson({
+      schema_version: 1,
+      project_id: "project-reanchor-fixture",
+      document_id: documentId,
+      project_name: "Re-anchor fixture",
+      document_file: "document.md",
+      created_at: now,
+      updated_at: now
+    })
+  );
+  writeFileSync(
+    join(store, "document.json"),
+    serializeJson({
+      format: "patchmark-document-store",
+      schema_version: 1,
+      document_id: documentId,
+      created_at: now,
+      source: "created"
+    })
+  );
+  return {
+    document_id: documentId,
+    path,
+    display_title: displayTitle,
+    role: "research",
+    status: "active",
+    position,
+    added_at: now,
+    archived_at: null
+  };
 }
 
 function fixtureComment(id, selectedText, comment) {
@@ -401,6 +846,7 @@ async function clickCommentButton(pageClient, commentId, text) {
 }
 
 async function clickWithin(pageClient, selector, text) {
+  await waitForEnabledButton(pageClient, selector, text);
   await evaluate(pageClient, {
     expression: `(() => {
       const root = document.querySelector(${JSON.stringify(selector)});
@@ -415,7 +861,256 @@ async function clickWithin(pageClient, selector, text) {
 }
 
 async function clickCandidateButton(pageClient, index, text) {
-  await clickWithin(pageClient, `.reanchor-candidate-card:nth-child(${index + 1})`, text);
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const cards = Array.from(document.querySelectorAll(".reanchor-candidate-card"));
+      const card = cards[${index}];
+      const button = Array.from(card?.querySelectorAll("button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)} && !candidate.disabled);
+      if (!button) throw new Error("Missing candidate button ${text}");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function measureWorkspace(pageClient) {
+  return await waitForWorkspaceViewport(pageClient);
+}
+
+async function waitForWorkspaceViewport(pageClient) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    latestState = await evaluate(pageClient, {
+      expression: `(() => {
+        const workspace = document.querySelector(".reanchor-workspace");
+        if (!workspace) return null;
+        const rect = workspace.getBoundingClientRect();
+        const style = getComputedStyle(workspace);
+        const editor = document.querySelector("[aria-label='editable markdown']");
+        return {
+          bottom: rect.bottom,
+          editorAriaReadOnly: editor?.getAttribute("aria-readonly"),
+          editorContentEditable: editor?.getAttribute("contenteditable"),
+          editorHeight: editor?.getBoundingClientRect().height ?? 0,
+          editorSame:
+            window.__patchmarkReanchorEditorNode ===
+            editor,
+          height: rect.height,
+          left: rect.left,
+          position: style.position,
+          readCount: window.__patchmarkFixtureReadLog?.length ?? 0,
+          right: rect.right,
+          scrollY: window.scrollY,
+          selectionLatencyMs: workspace.getAttribute("data-selection-latency-ms"),
+          selectionText:
+            workspace.querySelector(".reanchor-selection-status")?.textContent ?? "",
+          top: rect.top,
+          tableButtonCount: editor?.querySelectorAll("button").length ?? 0,
+          visibility: style.visibility,
+          viewportHeight: window.innerHeight,
+          viewportWidth: window.innerWidth,
+          width: rect.width
+        };
+      })()`
+    });
+
+    if (
+      latestState &&
+      latestState.visibility === "visible" &&
+      latestState.width > 0 &&
+      latestState.height > 0 &&
+      latestState.top >= 0 &&
+      latestState.bottom <= latestState.viewportHeight + 1
+    ) {
+      return latestState;
+    }
+
+    await delay(25);
+  }
+
+  throw new Error(
+    `Timed out waiting for viewport-stable re-anchor workspace.\n${JSON.stringify(
+      latestState,
+      null,
+      2
+    )}`
+  );
+}
+
+function assertWorkspaceInViewport(workspace) {
+  assert.ok(workspace.top >= 0, "Workspace must remain below the viewport top.");
+  assert.ok(
+    workspace.bottom <= workspace.viewportHeight + 1,
+    "Workspace must remain above the viewport bottom."
+  );
+  assert.ok(workspace.left >= 0, "Workspace must remain inside the left edge.");
+  assert.ok(
+    workspace.right <= workspace.viewportWidth + 1,
+    "Workspace must remain inside the right edge."
+  );
+}
+
+async function waitForScrollNear(pageClient, expectedScrollY) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const currentScrollY = await evaluate(pageClient, {
+      expression: "window.scrollY"
+    });
+    if (Math.abs(currentScrollY - expectedScrollY) <= 2) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error(`Timed out returning to scroll position ${expectedScrollY}.`);
+}
+
+async function selectVisualText(pageClient, selectedText) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const root = document.querySelector(".patchmark-prose");
+      if (!root) throw new Error("Visual editor missing");
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      let node = walker.nextNode();
+      while (node && !node.data.includes(${JSON.stringify(selectedText)})) {
+        node = walker.nextNode();
+      }
+      if (!node) throw new Error("Visual selection text missing");
+      const start = node.data.indexOf(${JSON.stringify(selectedText)});
+      const range = document.createRange();
+      range.setStart(node, start);
+      range.setEnd(node, start + ${JSON.stringify(selectedText)}.length);
+      node.parentElement?.scrollIntoView({ block: "center" });
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      document.querySelector(".editor-body")
+        ?.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return {
+        selectedText: selection.toString(),
+        scrollY: window.scrollY
+      };
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForWorkspaceSelection(pageClient, selectedText) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    latestState = await evaluate(pageClient, {
+      expression: `(() => {
+        const workspace = document.querySelector(".reanchor-workspace");
+        const button = Array.from(workspace?.querySelectorAll("button") ?? [])
+          .find((candidate) => candidate.textContent?.trim() === "Use selection as new anchor");
+        const status = workspace?.querySelector(".reanchor-selection-status");
+        return {
+          buttonEnabled: Boolean(button && !button.disabled),
+          contextKind: status?.getAttribute("data-selection-context") ?? null,
+          selectionLatencyMs: workspace?.getAttribute("data-selection-latency-ms") ?? null,
+          selectionText: status?.getAttribute("data-selection-text") ?? ""
+        };
+      })()`
+    });
+    if (
+      latestState.buttonEnabled &&
+      latestState.selectionText === selectedText
+    ) {
+      return latestState;
+    }
+    await delay(25);
+  }
+  throw new Error(
+    `Timed out waiting for re-anchor selection ${selectedText}.\n${JSON.stringify(
+      latestState,
+      null,
+      2
+    )}`
+  );
+}
+
+async function setConfirmResult(pageClient, result) {
+  await evaluate(pageClient, {
+    expression: `window.confirm = () => ${JSON.stringify(result)}; true`
+  });
+}
+
+async function selectDocument(pageClient, title) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const buttons = Array.from(document.querySelectorAll(".project-document-select"));
+      const button = buttons.find((candidate) =>
+        candidate.textContent?.includes(${JSON.stringify(title)})
+      );
+      if (!button || button.disabled) {
+        throw new Error("Document selector unavailable: ${title}");
+      }
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForActiveDocument(pageClient, title) {
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    const active = await evaluate(pageClient, {
+      expression: `document.querySelector("[aria-label='Workspace status']")
+        ?.textContent?.includes(${JSON.stringify(`Document: ${title}`)}) ?? false`
+    });
+    if (active) {
+      return;
+    }
+    await delay(50);
+  }
+  throw new Error(`Timed out waiting for active document ${title}.`);
+}
+
+async function focusButtonWithin(pageClient, selector, text) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const root = document.querySelector(${JSON.stringify(selector)});
+      const button = Array.from(root?.querySelectorAll("button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)} && !candidate.disabled);
+      if (!button) throw new Error("Missing enabled button ${text}");
+      button.focus({ preventScroll: true });
+      return document.activeElement === button;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function pressFocusedKey(pageClient, key) {
+  const windowsVirtualKeyCode = key === "Escape" ? 27 : 13;
+  await pageClient.call("Input.dispatchKeyEvent", {
+    code: key,
+    key,
+    nativeVirtualKeyCode: windowsVirtualKeyCode,
+    text: key === "Enter" ? "\r" : undefined,
+    type: "keyDown",
+    unmodifiedText: key === "Enter" ? "\r" : undefined,
+    windowsVirtualKeyCode
+  });
+  await pageClient.call("Input.dispatchKeyEvent", {
+    code: key,
+    key,
+    nativeVirtualKeyCode: windowsVirtualKeyCode,
+    type: "keyUp",
+    windowsVirtualKeyCode
+  });
+}
+
+async function injectNextWriteFailure(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      window.__patchmarkFixtureWriteControls.failNextSequence =
+        window.__patchmarkFixtureWriteStats.nextSequence;
+      return window.__patchmarkFixtureWriteStats.nextSequence;
+    })()`
+  });
 }
 
 async function openHealthyChangeAnchor(pageClient, commentId) {
@@ -498,27 +1193,61 @@ async function selectVisualLink(pageClient, label) {
 
 async function assertActiveCommentProjection(pageClient, commentId, expectedText) {
   await clickCommentButton(pageClient, commentId, "Find");
-  await waitForSelector(pageClient, "textarea.markdown-source-editor");
-  const sourceSelection = await evaluate(pageClient, {
-    expression: `(() => {
-      const textarea = document.querySelector("textarea.markdown-source-editor");
-      return textarea.value.slice(textarea.selectionStart, textarea.selectionEnd);
-    })()`
-  });
+  let sourceSelection = null;
+  let latestFindState = null;
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    latestFindState = await evaluate(pageClient, {
+      expression: `(() => {
+        const textarea = document.querySelector("textarea.markdown-source-editor");
+        return {
+          bodyText: document.body.textContent?.slice(0, 1200) ?? "",
+          feedback: Array.from(document.querySelectorAll("[role='status'], [role='alert']"))
+            .map((element) => element.textContent?.trim())
+            .filter(Boolean)
+            .slice(-6),
+          markdownPressed:
+            document.querySelector("[aria-label='Editor mode'] button[aria-pressed='true']")
+              ?.textContent?.trim() ?? null,
+          selection: textarea
+            ? textarea.value.slice(textarea.selectionStart, textarea.selectionEnd)
+            : null,
+          textarea: Boolean(textarea)
+        };
+      })()`
+    });
+    if (latestFindState.textarea) {
+      sourceSelection = latestFindState.selection;
+      break;
+    }
+    await delay(50);
+  }
+  if (sourceSelection === null) {
+    throw new Error(
+      `Find did not open Markdown Mode.\n${JSON.stringify(
+        { latestFindState, runtimeExceptions },
+        null,
+        2
+      )}`
+    );
+  }
   assert.equal(sourceSelection, expectedText);
-  await clickButtonByText(pageClient, "Visual Mode");
-  await waitForVisualEditor(pageClient);
-  await waitForOpenHighlight(pageClient);
   const rail = await evaluate(pageClient, {
     expression: `(() => {
       const item = document.querySelector(${JSON.stringify(`[data-comment-id="${commentId}"]`)});
+      const card = document.querySelector(${JSON.stringify(`#patchmark-comment-card-${commentId}`)});
       return {
+        cardText: card?.textContent ?? "",
         floating: item?.classList.contains("comment-floating-item") ?? false,
         status: item?.getAttribute("data-comment-anchor-status") ?? null
       };
     })()`
   });
-  assert.deepEqual(rail, { floating: true, status: "active" });
+  assert.equal(rail.floating, true);
+  assert.equal(rail.status, "active");
+  assert.equal(rail.cardText.includes(expectedText.slice(0, 100)), true);
+  await clickButtonByText(pageClient, "Visual Mode");
+  await waitForVisualEditor(pageClient);
+  await waitForOpenHighlight(pageClient);
 }
 
 async function waitForPersistedAnchor(commentsPath, commentId, selectedText) {
@@ -659,8 +1388,36 @@ function screenshotFiles() {
     "05-successfully-reanchored.png",
     "06-table-link-reanchor.png",
     "07-multi-block-reanchor.png",
-    "08-removed-from-unpositioned.png"
+    "08-removed-from-unpositioned.png",
+    "09-mobile-workspace.png",
+    "10-table-reanchored.png"
   ].map((fileName) => join(screenshotDir, fileName));
+}
+
+function fingerprintProject(root) {
+  return Object.fromEntries(
+    listFiles(root).map((path) => [
+      relative(root, path),
+      sha256(readFileSync(path))
+    ])
+  );
+}
+
+function listFiles(root) {
+  const files = [];
+  for (const name of readdirSync(root)) {
+    const path = join(root, name);
+    if (statSync(path).isDirectory()) {
+      files.push(...listFiles(path));
+    } else if (existsSync(path)) {
+      files.push(path);
+    }
+  }
+  return files.sort();
+}
+
+function serializeJson(value) {
+  return `${JSON.stringify(value, null, 2)}\n`;
 }
 
 function sha256(bytes) {

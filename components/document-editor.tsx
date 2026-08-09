@@ -8,6 +8,8 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
 import {
@@ -68,7 +70,7 @@ import {
 } from "@/lib/comments/comment-anchor-patch-mapping";
 import { findUniqueCurrentTableRowForPatchOriginal } from "@/lib/comments/comment-anchor-table-row-recovery";
 import {
-  COMMENT_AFFORDANCE_MENU_SIZE,
+  COMMENT_SELECTION_ACTION_SIZE,
   chooseSelectionAffordanceRect,
   createCommentAffordanceBounds,
   createPointAffordanceRect,
@@ -85,8 +87,32 @@ import {
   type VisualTableAnchorProjection
 } from "@/lib/comments/comment-anchor-visual-projection";
 import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
+import {
+  buildCommentTrashSummary,
+  getActiveComments,
+  getTrashedComments,
+  isCommentTrashed,
+  moveCommentsToTrash,
+  restoreCommentsFromTrash
+} from "@/lib/comments/comment-trash-operations";
+import {
+  buildPermanentDeletionSummary,
+  emptyCommentTrash,
+  permanentlyDeleteComments,
+  type CommentPermanentDeletionMode
+} from "@/lib/comments/comment-permanent-deletion-operations";
+import { getDeletedCommentTombstone } from "@/lib/comments/comment-deletion-tombstones";
 import { DocumentActions } from "@/components/document-actions";
+import {
+  SelectionActionsChooser,
+  createSelectionActionOptions,
+  type SelectionActionId,
+  type SelectionActionsPresentation
+} from "@/components/selection-actions-chooser";
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
+import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
+import { GuidedReviewWizard } from "@/components/guided-review/guided-review-wizard";
+import { ProjectDocumentNavigator } from "@/components/project-document-navigator";
 import {
   MarkdownSourceEditor,
   type MarkdownMutationHint,
@@ -94,7 +120,12 @@ import {
 } from "@/components/markdown-source-editor";
 import { DocumentOutline } from "@/components/document-outline";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
-import { DraftRestoreBanner } from "@/components/draft-restore-banner";
+import {
+  DocumentRecoveryBanner,
+  type DocumentRecoveryPresentation
+} from "@/components/document-recovery-banner";
+import { LegacyRecoveryPanel } from "@/components/legacy-recovery-panel";
+import { ProjectResumeBanner } from "@/components/project-resume-banner";
 import { PdfExportPreview } from "@/components/pdf-export-preview";
 import {
   SnapshotDialog,
@@ -102,22 +133,97 @@ import {
 } from "@/components/snapshot-dialog";
 import { VersionHistoryPanel } from "@/components/version-history-panel";
 import { VisualMarkdownEditor } from "@/components/visual-markdown-editor";
+import {
+  RewriteRecoveryConflictBanner,
+  RewriteResumeBanner,
+  RewriteWorkspace,
+  type RewriteWorkspaceImpactResult
+} from "@/components/rewrite-workspace/rewrite-workspace";
 import { downloadMarkdown } from "@/lib/files/download-markdown";
 import {
   canSaveMarkdownFilePicker,
+  openMarkdownFileWithPicker,
   saveMarkdownAsFile,
   saveMarkdownToFileHandle,
   type LoadedMarkdownFile,
   type MarkdownFileHandle
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
+import { deriveReviewQueue } from "@/lib/review-queue/review-queue-engine";
+import {
+  getDeferredReviewCommentIds,
+  getReviewQueueOverrides,
+  deferReviewComment,
+  restoreDeferredReviewComment
+} from "@/lib/review-queue/review-queue-overrides";
+import { createEmptyReviewQueueOverrides } from "@/lib/review-queue/review-queue-override-schema";
+import type { PatchmarkReviewQueueOverrides } from "@/lib/review-queue/review-queue-override-types";
+import {
+  validateGuidedReviewSessionSelection,
+  type GuidedReviewProposalSession
+} from "@/lib/review-queue/guided-review-session";
+import { createReviewBatchExportLifecycleEvidence } from "@/lib/review-batches/review-batch-active-evidence";
+import {
+  createTrackedReviewBatchExport,
+  readExactReviewBatchDocumentSnapshot,
+  ReviewBatchDocumentSnapshotError,
+  readExactReviewBatchPrompt
+} from "@/lib/review-batches/review-batch-export";
+import {
+  cancelReviewBatch,
+  getActiveReviewBatch,
+  listReviewBatches
+} from "@/lib/review-batches/review-batch-repository";
+import {
+  associateReviewBatchResponse,
+  validateExactReviewBatchResponseComments
+} from "@/lib/review-batches/review-batch-response-receipt";
+import {
+  acknowledgeReviewBatchResponse,
+  createRespondedReviewBatchRecords,
+  getPendingReviewResponseBatch,
+  upgradeLegacyReviewBatchResponse
+} from "@/lib/review-batches/review-batch-progression";
+import {
+  analyzeImportedReviewBatchResponse,
+  hasExactImportedReviewBatchContributions
+} from "@/lib/review-batches/review-response-analysis";
+import type {
+  PatchmarkReviewBatch,
+  ReviewBatchPromptEnvelope,
+  ReviewBatchSectionSnapshot
+} from "@/lib/review-batches/review-batch-types";
 import {
   createReadingBookmarkAnchorAdapter,
-  getCurrentDocumentReadingBookmark,
+  getDocumentReadingBookmark,
   removeDocumentReadingBookmark,
   resolveReadingBookmark,
   setDocumentReadingBookmark
 } from "@/lib/reading-bookmarks/reading-bookmark";
+import {
+  analyzeRewriteImpact,
+  markPendingPatchesAfterHumanRewrite,
+  type RewriteCommentSimulation,
+  type RewriteImpactAnalysis
+} from "@/lib/rewrite-workspace/rewrite-impact-analysis";
+import {
+  createRewriteSession,
+  getCurrentRewriteReview
+} from "@/lib/rewrite-workspace/rewrite-review-protocol";
+import {
+  captureRewriteTarget,
+  refreshRewriteTarget,
+  resolveRewriteTarget,
+  resolveRewriteTargetForRefresh
+} from "@/lib/rewrite-workspace/rewrite-target-resolution";
+import {
+  createRewriteSessionPersistenceCoordinator,
+  RewriteSessionPersistenceError,
+  type RewriteProjectSaveResult,
+  type RewriteRecoveryConflict,
+  type RewriteSessionPersistenceCoordinator
+} from "@/lib/rewrite-workspace/rewrite-session-persistence";
+import type { RewriteSession } from "@/lib/rewrite-workspace/rewrite-session-types";
 import {
   createAppliedPatchReviewContent,
   createPatchReviewSnippetPreview,
@@ -137,8 +243,10 @@ import {
   type PendingPatchTargetMatchMethod
 } from "@/lib/patches/linked-patch-target-resolution";
 import {
+  AtomicTablePatchValidationError,
   CHATGPT_ATOMIC_TABLE_PROMPT_RULES,
   createCanonicalTableContextsFromOccurrences,
+  createAtomicTableRepairPrompt,
   getCompleteTableOccurrencesForExport,
   replaceCompleteTableOccurrencesWithMarkers,
   validateAtomicTablePatchImport,
@@ -159,30 +267,87 @@ import {
   type PatchFollowUpRelationship
 } from "@/lib/patches/comment-patch-history";
 import {
+  addExistingDocumentToProject,
+  archiveProjectDocument,
   canOpenProjectFolder,
+  convertProjectToMultiDocument,
+  createProjectDocumentGroup,
   createProjectFromMarkdown,
+  createNewProjectDocument,
   createProjectSnapshot,
+  discardPreparedProjectMutationSnapshot,
+  deleteProjectDocumentGroup,
+  getActiveProjectDocument,
+  getProjectDocumentIdentity,
+  getProjectDocumentList,
+  getProjectDocumentGroups,
+  getProjectDocumentExportIdentity,
+  getProjectDocumentScopeId,
+  getProjectTitle,
+  isMultiDocumentProject,
   listProjectVersions,
+  locateProjectDocument,
+  moveProjectDocument,
+  moveProjectDocumentGroup,
+  moveProjectDocumentToGroup,
   openProjectFolder,
+  openProjectFolderHandle,
+  openProjectDocument,
+  prepareProjectMutationSnapshot,
   readProjectVersionMarkdown,
+  readProjectVersionMarkdownByRef,
   readProjectComments,
   readProjectPatches,
+  removeProjectImport,
+  resolveDocumentPathFromFileHandle,
+  renameProjectDocumentGroup,
+  restoreProjectDocument,
   restoreProjectLastKnownGood,
   saveProjectState,
-  writeProjectContextPack,
+  switchProjectDocument,
+  updateProjectManifestMetadata,
   writeProjectComments,
   writeProjectImport,
   writeProjectPatches,
+  updateProjectDocumentMetadata,
   type LoadedPatchmarkProject,
+  type PatchmarkDirectoryHandle,
+  type PatchmarkProjectDocumentListItem,
   type PatchmarkProjectHandle,
   type PatchmarkProjectRecoveryState
 } from "@/lib/project/patchmark-project";
 import {
+  createCommentRef,
+  createDocumentScopedKey,
+  createProjectDocumentIdentity,
+  createProjectDocumentKey,
+  createVersionRef,
+  isDocumentScopeCurrent
+} from "@/lib/project/document-scoped-identity";
+import {
+  type PatchmarkDocumentGroup,
+  type PatchmarkDocumentRole
+} from "@/lib/project/multi-document-project";
+import {
   CHATGPT_IMPORT_REPAIR_PROMPT,
+  CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES,
   CHATGPT_INTERNAL_CITATION_PROMPT_RULES,
   normalizeSourceChatUrl,
   parsePatchmarkCommentReplyImport
 } from "@/lib/imports/patchmark-comment-reply-import";
+import { applyPatchReplacementAt } from "@/lib/patches/patch-application";
+import {
+  requirePendingPatchTargetRevalidation,
+  transformPendingPatchTargetProvenances
+} from "@/lib/patches/patch-target-provenance";
+import {
+  PatchDependencyValidationError,
+  createPatchDependencyRepairPrompt,
+  getPatchDependencyBlockerMessage,
+  getPatchDependencyReviewStatus,
+  validateImportedPatchDependencySimulation,
+  type PatchDependencyReviewStatus
+} from "@/lib/patches/patch-dependencies";
 import {
   type CommentAnchorStatus,
   type PatchmarkComment,
@@ -205,11 +370,41 @@ import {
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 import {
-  deleteDocumentDraft,
-  readMostRecentDocumentDraft,
-  saveDocumentDraft,
-  type DocumentDraft
+  deleteLegacyUnscopedDocumentDraft,
+  readLegacyUnscopedDocumentDrafts,
+  type LegacyUnscopedDocumentDraft
 } from "@/lib/storage/document-draft-storage";
+import {
+  compareEntryIdentity,
+  createContentSha256,
+  createLocalProjectInstanceId,
+  createLocalStandaloneFileId,
+  deleteDocumentRecovery,
+  deleteProjectInstanceRecoveryData,
+  evaluateRecoveryContent,
+  findProjectInstanceForDirectory,
+  findStandaloneInstanceForFile,
+  getDirectoryPermission,
+  getProjectDocumentRecoveryId,
+  getStandaloneDocumentRecoveryId,
+  isUsableStoredDirectoryHandle,
+  listProjectDocumentRecoveries,
+  readMostRecentProjectInstance,
+  readProjectInstance,
+  readRecovery,
+  rememberProjectInstance,
+  rememberStandaloneFileInstance,
+  requestDirectoryPermission,
+  saveProjectDocumentRecovery,
+  saveStandaloneDocumentRecovery,
+  type FileSystemPermissionState,
+  type DocumentRecoveryRecord,
+  type LocalProjectInstanceRecord,
+  type LocalStandaloneFileRecord,
+  type ProjectDocumentRecoveryRecord,
+  type StoredDirectoryHandle,
+  type StoredFileHandle
+} from "@/lib/storage/document-recovery-storage";
 import {
   incrementEditPerformanceCounter,
   markEditPerformanceOperation,
@@ -218,13 +413,33 @@ import {
   startEditPerformanceOperation,
   updateEditPerformanceMetadata
 } from "@/lib/performance/edit-performance";
+import {
+  finishDocumentSwitchPerformanceOperation,
+  incrementDocumentSwitchPerformanceCounter,
+  markDocumentSwitchPerformance,
+  recordDocumentSwitchPerformanceDuration,
+  startDocumentSwitchPerformanceOperation,
+  updateDocumentSwitchPerformanceMetadata
+} from "@/lib/performance/document-switch-performance";
 
 type EditorMode = "visual" | "markdown";
+type ReadingBookmarkNavigationRequest = {
+  bookmark: PatchmarkReadingBookmark | null;
+  documentKey: string;
+  markdown: string;
+  mode: EditorMode;
+  patches: PatchmarkPatch[];
+};
 type PatchReviewMode = "visual" | "markdown-source";
 type SaveStatus = "idle" | "saving" | "failed" | "unavailable";
 type SaveFeedback = {
   kind: "success" | "error" | "info";
   message: string;
+};
+type PreparedDocumentRecovery = {
+  clearedRecoveryId?: string;
+  markdown: string;
+  presentation: DocumentRecoveryPresentation | null;
 };
 type SelectedTextAnchor = Extract<
   PatchmarkCommentAnchor,
@@ -242,33 +457,58 @@ type SelectedCommentAnchorDraftResult = {
   draft: SelectedCommentAnchorDraft | null;
   help: string | null;
 };
-type CommentContextMenuState = {
-  defaultHeadingLine: number | null;
+type SelectionActionsState = {
+  anchorRect: CommentAffordanceRect;
+  documentFingerprint: string;
+  documentId: string;
+  documentKey: string;
+  documentVersion: number;
+  presentation: SelectionActionsPresentation;
+  projectId: string;
   selectedDraft: SelectedCommentAnchorDraft | null;
   selectedTextPositionTop: number | null;
+  selectionFingerprint: string;
   selectionHelp: string | null;
+  selectionLatencyMs: number | null;
+  targetHeadingLine: number | null;
+  trigger: "context_menu" | "keyboard" | "selection";
   x: number;
   y: number;
 };
 type ReanchorSession = {
   candidates: HumanReanchorCandidate[];
   commentId: string;
+  documentId: string;
   documentHash: string;
   documentVersion: number;
   error: string | null;
   previousActiveCommentState: ActiveCommentState;
   previousStatus: CommentAnchorStatus;
   previewProposal: HumanReanchorProposal | null;
+  previewReturnScrollY: number | null;
+  projectId: string;
+  selectionDraft: SelectedCommentAnchorDraft | null;
+  selectionHelp: string | null;
+  selectionLatencyMs: number | null;
+  startedAt: number;
+  startedMode: EditorMode;
+  startedScrollY: number;
+};
+type ReanchorWorkspaceStyle = CSSProperties & {
+  "--reanchor-workspace-max-height"?: string;
 };
 type ChatGptPromptDialogState = {
-  commentIds: string[];
+  batchId: string;
   dedicatedDocumentReview: boolean;
-  exportId: string;
-  exportedAt: string;
-  payloadFileName: string;
+  documentId: string;
   promptFileName: string;
-  jsonText: string;
+  jsonText?: string;
   promptText: string;
+};
+type ReviewBatchCancelDialogState = {
+  batchId: string;
+  documentId: string;
+  projectId: string;
 };
 type DocumentLevelExportGuardDialogState =
   | {
@@ -299,7 +539,11 @@ type MarkCommentFocusGuardDialogState =
       targetCommentId: string;
     };
 type ChatGptImportDialogState = {
+  documentId: string;
   error: string | null;
+  errorCode: string | null;
+  projectId: string;
+  repairPrompt: string;
   responseJson: string;
   sourceChatUrl: string;
 };
@@ -372,6 +616,7 @@ type DocumentMutationSource =
   | "composition"
   | "cut"
   | "formatter"
+  | "human_rewrite"
   | "manual_source"
   | "manual_visual"
   | "move"
@@ -436,6 +681,10 @@ type PatchDisplayState =
   | "stale";
 type PatchGroupListDialogState = {
   commentId: string | null;
+};
+type DocumentScopedActiveCommentState = {
+  documentId: string;
+  state: ActiveCommentState;
 };
 type CommentPositionMeasurementInput = {
   comments: PatchmarkComment[];
@@ -515,10 +764,19 @@ let cachedDocumentLineStartOffsets:
     }
   | undefined;
 const SOURCE_SECTION_HEADING_PATTERN = /\b(source notes|references)\b/i;
+const EMPTY_DOCUMENT_GROUPS: PatchmarkDocumentGroup[] = [];
+const REVIEW_QUEUE_PREVIEW_EXPORTED_AT = "2000-01-01T00:00:00.000Z";
+const REVIEW_QUEUE_PREVIEW_EXPORT_ID = "comment-export-20000101-000000-000";
+const REVIEW_QUEUE_PREVIEW_BATCH_ID =
+  "review_batch_00000000-0000-4000-8000-000000000000";
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
   const editorDocumentRef = useRef<HTMLDivElement>(null);
+  const commentsRailRef = useRef<HTMLElement>(null);
+  const reanchorWorkspaceRef = useRef<HTMLElement>(null);
+  const reanchorWorkspacePrimaryRef = useRef<HTMLButtonElement>(null);
+  const reanchorWorkspaceRenderCountRef = useRef(0);
   const [fileName, setFileName] = useState<string | null>(null);
   // Markdown is the source of truth across both editing modes.
   const [markdown, setMarkdown] = useState("");
@@ -527,11 +785,66 @@ export function DocumentEditor() {
     useState<MarkdownFileHandle | null>(null);
   const [projectHandle, setProjectHandle] =
     useState<PatchmarkProjectHandle | null>(null);
+  const activeDocumentId = projectHandle
+    ? getProjectDocumentScopeId(projectHandle)
+    : null;
+  const activeDocumentIdRef = useRef<string | null>(activeDocumentId);
+  activeDocumentIdRef.current = activeDocumentId;
+  const activeDocumentIdentity = useMemo(
+    () => (projectHandle ? getProjectDocumentIdentity(projectHandle) : null),
+    [projectHandle]
+  );
+  const activeDocumentKey = activeDocumentIdentity
+    ? createProjectDocumentKey(activeDocumentIdentity)
+    : null;
+  const activeDocumentKeyRef = useRef<string | null>(activeDocumentKey);
+  activeDocumentKeyRef.current = activeDocumentKey;
+  const activeProjectIdRef = useRef<string | null>(
+    activeDocumentIdentity?.projectId ?? null
+  );
+  activeProjectIdRef.current = activeDocumentIdentity?.projectId ?? null;
   const [projectRecovery, setProjectRecovery] =
     useState<PatchmarkProjectRecoveryState | null>(null);
+  const [projectDocuments, setProjectDocuments] = useState<
+    PatchmarkProjectDocumentListItem[]
+  >([]);
+  const projectDocumentsRef = useRef(projectDocuments);
+  projectDocumentsRef.current = projectDocuments;
   const [restoredMarkdown, setRestoredMarkdown] = useState<string | null>(null);
-  const [availableDraft, setAvailableDraft] = useState<DocumentDraft | null>(null);
+  const [legacyUnscopedDrafts, setLegacyUnscopedDrafts] = useState<
+    LegacyUnscopedDocumentDraft[]
+  >([]);
+  const [localProjectInstanceId, setLocalProjectInstanceId] = useState<
+    string | null
+  >(null);
+  const [standaloneFileInstance, setStandaloneFileInstance] = useState<
+    LocalStandaloneFileRecord | null
+  >(null);
+  const [recentProject, setRecentProject] = useState<
+    LocalProjectInstanceRecord | null
+  >(null);
+  const [recentProjectPermission, setRecentProjectPermission] = useState<
+    FileSystemPermissionState | "unavailable"
+  >("unavailable");
+  const [recentProjectRecoveryCount, setRecentProjectRecoveryCount] =
+    useState(0);
+  const [isResumingProject, setIsResumingProject] = useState(false);
+  const [resumeProjectError, setResumeProjectError] = useState<string | null>(
+    null
+  );
+  const [deviceRecoveryWarning, setDeviceRecoveryWarning] = useState<
+    string | null
+  >(null);
+  const [documentRecoveryPresentation, setDocumentRecoveryPresentation] =
+    useState<DocumentRecoveryPresentation | null>(null);
+  const [projectRecoveryDocumentIds, setProjectRecoveryDocumentIds] = useState<
+    string[]
+  >([]);
+  const projectRecoveryDocumentIdsRef = useRef(projectRecoveryDocumentIds);
+  projectRecoveryDocumentIdsRef.current = projectRecoveryDocumentIds;
   const [mode, setMode] = useState<EditorMode>("visual");
+  const modeRef = useRef<EditorMode>(mode);
+  modeRef.current = mode;
   const [documentVersion, setDocumentVersion] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
@@ -540,23 +853,102 @@ export function DocumentEditor() {
   );
   const [comments, setComments] = useState<PatchmarkComment[]>([]);
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
+  const [reviewBatches, setReviewBatches] = useState<PatchmarkReviewBatch[]>([]);
+  const activeComments = useMemo(() => getActiveComments(comments), [comments]);
+  const trashedComments = useMemo(
+    () => getTrashedComments(comments),
+    [comments]
+  );
+  const trashedCommentIds = useMemo(
+    () => new Set(trashedComments.map((comment) => comment.id)),
+    [trashedComments]
+  );
+  const activePatches = useMemo(
+    () =>
+      patches.filter(
+        (patch) =>
+          !patch.comment_id || !trashedCommentIds.has(patch.comment_id)
+      ),
+    [patches, trashedCommentIds]
+  );
+  const [reviewQueueOverrides, setReviewQueueOverrides] =
+    useState<PatchmarkReviewQueueOverrides | null>(null);
+  const markdownRef = useRef(markdown);
+  markdownRef.current = markdown;
+  const commentsRef = useRef(comments);
+  commentsRef.current = comments;
+  const patchesRef = useRef(patches);
+  patchesRef.current = patches;
   const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
+  const isProjectDataLoadingRef = useRef(isProjectDataLoading);
+  isProjectDataLoadingRef.current = isProjectDataLoading;
   const [commentsError, setCommentsError] = useState<string | null>(null);
   const [isCommentBusy, setIsCommentBusy] = useState(false);
-  const [isReadingBookmarkBusy, setIsReadingBookmarkBusy] = useState(false);
-  const [isReadingBookmarkEmphasized, setIsReadingBookmarkEmphasized] =
-    useState(false);
-  const [isReadingBookmarkMenuOpen, setIsReadingBookmarkMenuOpen] =
-    useState(false);
-  const [readingBookmarkPosition, setReadingBookmarkPosition] = useState<
-    number | null
-  >(null);
+  const [readingBookmarkBusyDocumentKey, setReadingBookmarkBusyDocumentKey] =
+    useState<string | null>(null);
+  const [
+    readingBookmarkEmphasizedDocumentKey,
+    setReadingBookmarkEmphasizedDocumentKey
+  ] = useState<string | null>(null);
+  const [readingBookmarkPosition, setReadingBookmarkPosition] = useState<{
+    documentKey: string;
+    top: number;
+  } | null>(null);
+  const [readingBookmarkMenuDocumentKey, setReadingBookmarkMenuDocumentKey] =
+    useState<string | null>(null);
   const readingBookmarkMarkerRef = useRef<HTMLButtonElement>(null);
   const readingBookmarkMenuRef = useRef<HTMLDivElement>(null);
   const readingBookmarkRemoveButtonRef = useRef<HTMLButtonElement>(null);
   const readingBookmarkEmphasisTimeoutRef = useRef<number | null>(null);
-  const [activeCommentState, setActiveCommentState] =
-    useState<ActiveCommentState>({ kind: "none" });
+  const pendingReadingBookmarkNavigationRef = useRef<string | null>(null);
+  const deviceRecoveryLoadRequestRef = useRef(0);
+  const continueReadingAtBookmarkRef = useRef<
+    ((request: ReadingBookmarkNavigationRequest) => Promise<void>) | null
+  >(null);
+  const documentSwitchRequestRef = useRef(0);
+  const [requestedProjectDocumentId, setRequestedProjectDocumentId] = useState<
+    string | null
+  >(null);
+  const pendingDocumentSwitchPerformanceRef = useRef<{
+    operationId: string | null;
+    targetDocumentId: string;
+  } | null>(null);
+  const [documentActiveCommentState, setDocumentActiveCommentState] =
+    useState<DocumentScopedActiveCommentState | null>(null);
+  const activeCommentState = useMemo<ActiveCommentState>(
+    () =>
+      activeDocumentId &&
+      documentActiveCommentState?.documentId === activeDocumentId
+        ? documentActiveCommentState.state
+        : { kind: "none" },
+    [activeDocumentId, documentActiveCommentState]
+  );
+  const setActiveCommentState = useCallback(
+    (
+      nextState:
+        | ActiveCommentState
+        | ((currentState: ActiveCommentState) => ActiveCommentState)
+    ) => {
+      if (!activeDocumentId) {
+        setDocumentActiveCommentState(null);
+        return;
+      }
+      setDocumentActiveCommentState((current) => {
+        const currentState =
+          current?.documentId === activeDocumentId
+            ? current.state
+            : ({ kind: "none" } as ActiveCommentState);
+        return {
+          documentId: activeDocumentId,
+          state:
+            typeof nextState === "function"
+              ? nextState(currentState)
+              : nextState
+        };
+      });
+    },
+    [activeDocumentId]
+  );
   const lastScrolledActiveCommentKeyRef = useRef<string | null>(null);
   const [markdownSelection, setMarkdownSelection] =
     useState<MarkdownSelection>({
@@ -568,24 +960,58 @@ export function DocumentEditor() {
   >(null);
   const [visualSelectionDraft, setVisualSelectionDraft] =
     useState<SelectedCommentAnchorDraft | null>(null);
+  const [selectionActions, setSelectionActions] =
+    useState<SelectionActionsState | null>(null);
+  const selectionActionsRef = useRef<SelectionActionsState | null>(null);
+  selectionActionsRef.current = selectionActions;
+  const commentSelectionActionButtonRef = useRef<HTMLButtonElement>(null);
+  const pendingSelectionActionsTriggerRef = useRef<"keyboard" | null>(null);
   const [commentAddRequest, setCommentAddRequest] =
     useState<CommentAddRequest | null>(null);
   const [commentReplyRequest, setCommentReplyRequest] =
     useState<CommentReplyRequest | null>(null);
-  const [commentContextMenu, setCommentContextMenu] =
-    useState<CommentContextMenuState | null>(null);
   const [reanchorSession, setReanchorSession] =
     useState<ReanchorSession | null>(null);
   const [reanchorConfirmation, setReanchorConfirmation] =
     useState<HumanReanchorProposal | null>(null);
+  const [reanchorWorkspaceStyle, setReanchorWorkspaceStyle] =
+    useState<ReanchorWorkspaceStyle | null>(null);
+  const [rewriteSession, setRewriteSession] = useState<RewriteSession | null>(null);
+  const [rewriteDraftAvailable, setRewriteDraftAvailable] =
+    useState<RewriteSession | null>(null);
+  const [rewritePersistenceSource, setRewritePersistenceSource] =
+    useState<"project" | "recovery_only">("project");
+  const [rewriteRecoveryConflict, setRewriteRecoveryConflict] =
+    useState<RewriteRecoveryConflict | null>(null);
+  const [isRewriteBusy, setIsRewriteBusy] = useState(false);
+  const rewriteSessionLoadRequestRef = useRef(0);
+  const rewritePersistenceCoordinatorRef =
+    useRef<RewriteSessionPersistenceCoordinator | null>(null);
+  const rewriteReturnFocusRef = useRef<HTMLElement | null>(null);
   const [commentPositions, setCommentPositions] = useState<Record<string, number>>(
     {}
   );
   const [snapshotDialog, setSnapshotDialog] =
     useState<SnapshotDialogState | null>(null);
-  const [isPdfExportPreviewOpen, setIsPdfExportPreviewOpen] = useState(false);
+  const [pdfExportTarget, setPdfExportTarget] = useState<{
+    documentId: string | null;
+    fileName: string;
+    markdown: string;
+  } | null>(null);
+  const [isLegacyProjectAssemblyOpen, setIsLegacyProjectAssemblyOpen] =
+    useState(false);
   const [chatGptPromptDialog, setChatGptPromptDialog] =
     useState<ChatGptPromptDialogState | null>(null);
+  const [reviewBatchCancelDialog, setReviewBatchCancelDialog] =
+    useState<ReviewBatchCancelDialogState | null>(null);
+  const reviewBatchCancelDialogRef = useRef<HTMLElement>(null);
+  const reviewBatchCancelPrimaryButtonRef = useRef<HTMLButtonElement>(null);
+  const [isGuidedReviewOpen, setIsGuidedReviewOpen] = useState(false);
+  useEffect(() => {
+    if (reviewBatchCancelDialog) {
+      reviewBatchCancelPrimaryButtonRef.current?.focus();
+    }
+  }, [reviewBatchCancelDialog]);
   const [documentLevelExportGuardDialog, setDocumentLevelExportGuardDialog] =
     useState<DocumentLevelExportGuardDialogState | null>(null);
   const [markCommentFocusGuardDialog, setMarkCommentFocusGuardDialog] =
@@ -607,7 +1033,24 @@ export function DocumentEditor() {
   >(null);
   const pendingEditPerformanceOperationIdRef = useRef<string | null>(null);
 
-  const headings = useMemo(() => parseMarkdownHeadings(markdown), [markdown]);
+  incrementDocumentSwitchPerformanceCounter(
+    pendingDocumentSwitchPerformanceRef.current?.operationId,
+    "react_render_count"
+  );
+  const headings = useMemo(() => {
+    const startedAt = performance.now();
+    const parsedHeadings = parseMarkdownHeadings(markdown);
+    recordDocumentSwitchPerformanceDuration(
+      pendingDocumentSwitchPerformanceRef.current?.operationId,
+      "build_document_outline",
+      performance.now() - startedAt
+    );
+    markDocumentSwitchPerformance(
+      pendingDocumentSwitchPerformanceRef.current?.operationId,
+      "document_outline_built"
+    );
+    return parsedHeadings;
+  }, [markdown]);
   const deferredPatchReviewMarkdown = useDeferredValue(markdown);
   const markdownSelectionDraft = useMemo(
     () => createMarkdownSelectionDraft(markdown, markdownSelection),
@@ -651,6 +1094,11 @@ export function DocumentEditor() {
         "comment_anchor_summaries",
         performance.now() - startedAt
       );
+      recordDocumentSwitchPerformanceDuration(
+        pendingDocumentSwitchPerformanceRef.current?.operationId,
+        "resolve_comment_anchors",
+        performance.now() - startedAt
+      );
       return summaries;
     },
     [comments, headings, markdown, patches]
@@ -659,13 +1107,33 @@ export function DocumentEditor() {
     () => new Map(comments.map((comment) => [comment.id, comment])),
     [comments]
   );
+  const reanchorComment = reanchorSession
+    ? commentsById.get(reanchorSession.commentId) ?? null
+    : null;
+  const reanchorOriginalAnchor = getSelectedTextCommentAnchor(
+    reanchorComment ?? undefined
+  );
+  const reanchorSelectionRange = getDraftMarkdownRange(
+    reanchorSession?.selectionDraft ?? null
+  );
+  const reanchorWorkspaceSessionKey = reanchorSession
+    ? `${reanchorSession.projectId}:${reanchorSession.documentId}:${reanchorSession.commentId}`
+    : null;
+  const reanchorHasLinkedStalePatch = Boolean(
+    reanchorSession &&
+      patches.some(
+        (patch) =>
+          patch.comment_id === reanchorSession.commentId &&
+          patch.status === "stale"
+      )
+  );
   const pendingPatchCountsByCommentId = useMemo(
-    () => getPendingPatchCountsByCommentId(patches),
-    [patches]
+    () => getPendingPatchCountsByCommentId(activePatches),
+    [activePatches]
   );
   const pendingPatches = useMemo(
-    () => patches.filter((patch) => patch.status === "pending"),
-    [patches]
+    () => activePatches.filter((patch) => patch.status === "pending"),
+    [activePatches]
   );
   const shouldResolvePatchGroupAnchors = Boolean(
     patchGroupListDialog ||
@@ -699,8 +1167,12 @@ export function DocumentEditor() {
   );
   const pendingPatchGroups = useMemo(
     () =>
-      patchGroups.filter((group) => group.status_summary.pending > 0),
-    [patchGroups]
+      patchGroups.filter(
+        (group) =>
+          group.status_summary.pending > 0 &&
+          (!group.comment_id || !trashedCommentIds.has(group.comment_id))
+      ),
+    [patchGroups, trashedCommentIds]
   );
   const patchGroupSummariesByCommentId = useMemo(
     () => getPatchGroupSummariesByCommentId(patchGroups, commentsById),
@@ -776,9 +1248,29 @@ export function DocumentEditor() {
   const selectedPatchAnchorStatus = useMemo(
     () =>
       selectedPatch
-        ? getPatchReviewAnchorStatus(markdown, selectedPatch, patches, comments)
+        ? getPatchReviewAnchorStatus(
+            markdown,
+            selectedPatch,
+            patches,
+            comments,
+            activeDocumentIdentity?.documentId
+          )
         : null,
-    [comments, markdown, patches, selectedPatch]
+    [activeDocumentIdentity, comments, markdown, patches, selectedPatch]
+  );
+  const selectedPatchDependencyStatus = useMemo(
+    () =>
+      selectedPatch && selectedPatchAnchorStatus
+        ? getPatchDependencyReviewStatus({
+            applicability:
+              selectedPatchAnchorStatus.kind === "pending"
+                ? selectedPatchAnchorStatus.applicability
+                : undefined,
+            patch: selectedPatch,
+            patches
+          })
+        : null,
+    [patches, selectedPatch, selectedPatchAnchorStatus]
   );
   const selectedPatchFollowUpRelationship = useMemo(
     () =>
@@ -796,8 +1288,200 @@ export function DocumentEditor() {
     (baselineMarkdown === null || markdown !== baselineMarkdown);
   const isSaving = saveStatus === "saving";
   const isProjectMode = projectHandle !== null;
-  const isProjectRecoveryReadOnly = projectRecovery !== null;
+  const isProjectRecoveryReadOnly =
+    projectRecovery !== null && projectRecovery.kind !== "migration_rolled_back";
   const isReanchorMode = reanchorSession !== null;
+  const syncVisualCommentSelection = useCallback((
+    options: { clearInvalidReanchorSelection?: boolean } = {}
+  ) => {
+    if (mode !== "visual") {
+      return;
+    }
+
+    if (
+      !activeDocumentKey ||
+      !activeDocumentIdentity ||
+      !isProjectMode ||
+      isProjectRecoveryReadOnly ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null
+    ) {
+      setSelectionActions(null);
+      return;
+    }
+
+    const selectionStartedAt = performance.now();
+    const selectionResult = createVisualSelectionDraftResult({
+      container: editorDocumentRef.current,
+      markdown
+    });
+
+    if (isReanchorMode) {
+      setSelectionActions(null);
+      const browserSelection = window.getSelection();
+      const hasForeignSelection = Boolean(
+        browserSelection &&
+          !browserSelection.isCollapsed &&
+          browserSelection.rangeCount > 0 &&
+          (!editorDocumentRef.current?.contains(browserSelection.anchorNode) ||
+            !editorDocumentRef.current?.contains(browserSelection.focusNode))
+      );
+      const shouldClearInvalidSelection =
+        options.clearInvalidReanchorSelection || hasForeignSelection;
+
+      setReanchorSession((current) => {
+        if (
+          !current ||
+          current.projectId !== activeProjectIdRef.current ||
+          current.documentId !== activeDocumentIdRef.current ||
+          current.documentVersion !== documentVersion
+        ) {
+          return current;
+        }
+
+        if (!selectionResult.draft && !shouldClearInvalidSelection) {
+          return current;
+        }
+
+        const selectionRange = getDraftMarkdownRange(selectionResult.draft);
+        const selectionHelp = selectionRange
+          ? null
+          : selectionResult.draft
+            ? "Patchmark could not map this selection to the current Markdown. Choose text within one supported document range."
+            : selectionResult.help ??
+              "Select non-empty text inside the current document.";
+
+        if (
+          areSelectedCommentDraftsEqual(
+            current.selectionDraft,
+            selectionResult.draft
+          ) &&
+          current.selectionHelp === selectionHelp
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          error: null,
+          previewProposal: null,
+          selectionDraft: selectionResult.draft,
+          selectionHelp,
+          selectionLatencyMs: Math.max(
+            0,
+            performance.now() - selectionStartedAt
+          )
+        };
+      });
+      return;
+    }
+
+    if (commentAddRequest?.scope === "selected_text") {
+      return;
+    }
+
+    if (!selectionResult.draft || !selectionResult.affordanceRect) {
+      if (selectionActionsRef.current?.presentation === "chooser") {
+        const current = selectionActionsRef.current;
+        const position = getSelectionActionsPosition({
+          anchorRect: current.anchorRect,
+          presentation: "chooser"
+        });
+        setSelectionActions({
+          ...current,
+          x: position.x,
+          y: position.y
+        });
+        return;
+      }
+
+      setVisualSelectionDraft(null);
+      setSelectionActions(null);
+      return;
+    }
+
+    const initialSelectedDraft = selectionResult.draft;
+    const selectionStart = getDraftMarkdownStartOffset(initialSelectedDraft);
+    const targetHeading =
+      typeof selectionStart === "number"
+        ? getHeadingContainingOffset(markdown, headings, selectionStart)
+        : findVisualHeadingForPoint({
+            container: editorDocumentRef.current,
+            headings,
+            pointY: selectionResult.affordanceRect.top
+          }) ?? defaultCommentHeading;
+    const selectedDraft = targetHeading
+      ? scopeVisualSelectionDraftToHeading({
+          draft: initialSelectedDraft,
+          heading: targetHeading,
+          headings,
+          markdown
+        })
+      : initialSelectedDraft;
+    const workspaceRect = documentWorkspaceRef.current?.getBoundingClientRect();
+    const selectedTextPositionTop = workspaceRect
+      ? getWorkspaceRelativePreferredTop(
+          selectionResult.affordanceRect.top,
+          workspaceRect.top
+        )
+      : null;
+    const documentFingerprint = createDocumentHash(markdown);
+    const selectionFingerprint = createSelectionActionFingerprint({
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentVersion,
+      draft: selectedDraft,
+      projectId: activeDocumentIdentity.projectId,
+      targetHeadingLine: targetHeading?.line ?? null
+    });
+    const current = selectionActionsRef.current;
+    const preservesOpenChooser =
+      current?.presentation === "chooser" &&
+      current.documentKey === activeDocumentKey &&
+      current.documentVersion === documentVersion &&
+      current.selectionFingerprint === selectionFingerprint;
+    const presentation: SelectionActionsPresentation = preservesOpenChooser
+      ? "chooser"
+      : "compact";
+    const position = getSelectionActionsPosition({
+      anchorRect: selectionResult.affordanceRect,
+      presentation
+    });
+
+    setVisualSelectionDraft(selectedDraft);
+    setSelectionActions({
+      anchorRect: selectionResult.affordanceRect,
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentKey: activeDocumentKey,
+      documentVersion,
+      presentation,
+      projectId: activeDocumentIdentity.projectId,
+      selectedDraft,
+      selectedTextPositionTop,
+      selectionFingerprint,
+      selectionHelp: selectionResult.help,
+      selectionLatencyMs: Math.max(0, performance.now() - selectionStartedAt),
+      targetHeadingLine: targetHeading?.line ?? null,
+      trigger: preservesOpenChooser ? current.trigger : "selection",
+      x: position.x,
+      y: position.y
+    });
+  }, [
+    activeDocumentKey,
+    activeDocumentIdentity,
+    commentAddRequest?.scope,
+    defaultCommentHeading,
+    documentVersion,
+    headings,
+    isCommentBusy,
+    isProjectMode,
+    isProjectRecoveryReadOnly,
+    isReanchorMode,
+    markdown,
+    mode,
+    requestedProjectDocumentId
+  ]);
   const documentStatus: DocumentStatusKind = getDocumentStatus({
     isDirty,
     markdown,
@@ -806,10 +1490,13 @@ export function DocumentEditor() {
   });
   const readingBookmark = useMemo(
     () =>
-      projectHandle
-        ? getCurrentDocumentReadingBookmark(projectHandle.manifest)
+      projectHandle && activeDocumentIdentity
+        ? getDocumentReadingBookmark({
+            document: activeDocumentIdentity,
+            manifest: projectHandle.manifest
+          })
         : null,
-    [projectHandle]
+    [activeDocumentIdentity, projectHandle]
   );
   const readingBookmarkResolution = useMemo(
     () =>
@@ -818,56 +1505,419 @@ export function DocumentEditor() {
         : null,
     [markdown, patches, readingBookmark]
   );
+  const isReadingBookmarkBusy =
+    activeDocumentKey !== null &&
+    readingBookmarkBusyDocumentKey === activeDocumentKey;
+  const selectionActionsHeading = selectionActions?.targetHeadingLine
+    ? headings.find(
+        (heading) => heading.line === selectionActions.targetHeadingLine
+      )
+    : undefined;
+  const selectionActionsSectionLabel = selectionActionsHeading
+    ? cleanMarkdownHeadingText(selectionActionsHeading.text)
+    : null;
+  const selectionActionsContextLabel = selectionActions?.selectedDraft
+    ? getSelectionActionsContextLabel(selectionActions.selectedDraft)
+    : null;
+  const selectionActionOptions = createSelectionActionOptions({
+    bookmarkUnavailableReason: !isProjectMode
+      ? "Reading bookmarks require Project Folder Mode."
+      : isProjectRecoveryReadOnly
+        ? "Bookmarks are unavailable while project recovery is read-only."
+        : isReadingBookmarkBusy
+          ? "A reading bookmark update is already in progress."
+          : !selectionActions?.selectedDraft &&
+              !selectionActionsSectionLabel
+            ? "Select text or open the chooser inside a section."
+            : null,
+    commentsUnavailableReason: !isProjectMode
+      ? "Comments require Project Folder Mode."
+      : isProjectRecoveryReadOnly
+        ? "Comments are unavailable while project recovery is read-only."
+        : isCommentBusy
+          ? "Another comment operation is in progress."
+          : null,
+    rewriteUnavailableReason: !isProjectMode
+      ? "Rewrite Workspace requires Project Folder Mode."
+      : !localProjectInstanceId
+        ? "Device-local project identity is not available yet."
+        : isProjectRecoveryReadOnly || documentRecoveryPresentation?.kind === "conflict"
+          ? "Resolve project recovery before starting a rewrite."
+          : isDirty
+            ? "Save or discard the current document changes before starting a rewrite."
+            : isSaving || isCommentBusy || isRewriteBusy
+              ? "Another document operation is in progress."
+              : rewriteDraftAvailable
+                ? "A rewrite draft already exists for this document. Resume or discard it first."
+                : null,
+    sectionLabel: selectionActionsSectionLabel,
+    selectedTextAvailable: Boolean(selectionActions?.selectedDraft),
+    selectionUnavailableReason:
+      selectionActions?.selectionHelp ?? "Select document text first."
+  });
+  const shouldRenderSelectionActions = Boolean(
+    !isReanchorMode &&
+      selectionActions &&
+      selectionActions.documentVersion === documentVersion &&
+      (activeDocumentIdentity
+        ? selectionActions.projectId === activeDocumentIdentity.projectId &&
+          selectionActions.documentId === activeDocumentIdentity.documentId &&
+          selectionActions.documentKey === activeDocumentKey
+        : selectionActions.projectId === "" && selectionActions.documentId === "")
+  );
+  const isReadingBookmarkEmphasized =
+    activeDocumentKey !== null &&
+    readingBookmarkEmphasizedDocumentKey === activeDocumentKey;
+  const isReadingBookmarkMenuOpen =
+    activeDocumentKey !== null &&
+    readingBookmarkMenuDocumentKey === activeDocumentKey;
+  const readingBookmarkMenuId = activeDocumentKey
+    ? `reading-bookmark-action-menu-${encodeURIComponent(activeDocumentKey)}`
+    : undefined;
+  const projectGroups = projectHandle
+    ? getProjectDocumentGroups(projectHandle)
+    : EMPTY_DOCUMENT_GROUPS;
+  const activeDocumentGroup = projectHandle?.document?.group_id
+    ? projectGroups.find(
+        (group) => group.group_id === projectHandle.document?.group_id
+      ) ?? null
+    : null;
+  const activeReviewBatch = useMemo(
+    () => getActiveReviewBatch(reviewBatches),
+    [reviewBatches]
+  );
+  const pendingReviewResponseBatch = useMemo(
+    () => getPendingReviewResponseBatch(reviewBatches),
+    [reviewBatches]
+  );
+  const deferredReviewCommentIds = useMemo(
+    () =>
+      reviewQueueOverrides
+        ? getDeferredReviewCommentIds(reviewQueueOverrides)
+        : new Set<string>(),
+    [reviewQueueOverrides]
+  );
+  const guidedReviewPromptPreviewBuilder = useCallback(
+    ({
+      batchType,
+      selectedCommentIds
+    }: {
+      batchType: "follow_up" | "document_level" | "section";
+      selectedCommentIds: string[];
+    }) => {
+      if (!projectHandle || !activeDocumentIdentity) {
+        return "";
+      }
+      const commentsById = new Map(
+        activeComments.map((comment) => [comment.id, comment])
+      );
+      const selectedComments = selectedCommentIds.flatMap((commentId) => {
+        const comment = commentsById.get(commentId);
+        return comment ? [comment] : [];
+      });
+      return buildFocusedCommentsPromptPreview({
+        comments: selectedComments,
+        dedicatedDocumentReview: batchType === "document_level",
+        exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
+        exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
+        headings,
+        markdown,
+        patches: activePatches,
+        project: projectHandle,
+        reviewBatchEnvelope: {
+          review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
+          project_id: activeDocumentIdentity.projectId,
+          document_id: activeDocumentIdentity.documentId,
+          ordered_comment_ids: selectedCommentIds
+        }
+      }).promptText;
+    },
+    [
+      activeDocumentIdentity,
+      activeComments,
+      headings,
+      markdown,
+      activePatches,
+      projectHandle
+    ]
+  );
+  const guidedReviewQueue = useMemo(() => {
+    if (
+      !isGuidedReviewOpen ||
+      !projectHandle ||
+      !activeDocumentIdentity
+    ) {
+      return null;
+    }
+
+    return deriveReviewQueue({
+      buildPromptPreview: guidedReviewPromptPreviewBuilder,
+      activeExportEvidence:
+        createReviewBatchExportLifecycleEvidence(reviewBatches),
+      comments: activeComments,
+      deferredCommentIds: deferredReviewCommentIds,
+      documentGeneration: projectHandle.persistence.generation,
+      documentId: activeDocumentIdentity.documentId,
+      markdown,
+      patches: activePatches,
+      projectId: activeDocumentIdentity.projectId
+    });
+  }, [
+    activeDocumentIdentity,
+    activeComments,
+    deferredReviewCommentIds,
+    guidedReviewPromptPreviewBuilder,
+    isGuidedReviewOpen,
+    markdown,
+    activePatches,
+    projectHandle,
+    reviewBatches
+  ]);
+  const guidedReviewWorkingStateKey = useMemo(
+    () =>
+      isGuidedReviewOpen && activeDocumentIdentity && projectHandle
+        ? createDocumentHash(
+            JSON.stringify({
+              activeBatchId: activeReviewBatch?.batch_id ?? null,
+              pendingResponseBatchId:
+                pendingReviewResponseBatch?.batch_id ?? null,
+              comments: activeComments,
+              deferredCommentIds: [...deferredReviewCommentIds].sort(),
+              documentGeneration: projectHandle.persistence.generation,
+              documentId: activeDocumentIdentity.documentId,
+              markdown,
+              patches: activePatches,
+              projectId: activeDocumentIdentity.projectId
+            })
+          )
+        : "",
+    [
+      activeDocumentIdentity,
+      activeReviewBatch,
+      activeComments,
+      deferredReviewCommentIds,
+      isGuidedReviewOpen,
+      markdown,
+      activePatches,
+      pendingReviewResponseBatch,
+      projectHandle
+    ]
+  );
+  continueReadingAtBookmarkRef.current = continueReadingAtBookmark;
+
+  const persistActiveRecoveryNow = useCallback(async () => {
+    if (
+      !fileName ||
+      baselineMarkdown === null ||
+      markdown === baselineMarkdown ||
+      documentRecoveryPresentation?.kind === "conflict"
+    ) {
+      return null;
+    }
+
+    if (
+      projectHandle?.projectManifest &&
+      projectHandle.document &&
+      localProjectInstanceId
+    ) {
+      const groupTitle = projectHandle.document.group_id
+        ? getProjectDocumentGroups(projectHandle).find(
+            (group) => group.group_id === projectHandle.document?.group_id
+          )?.title ?? null
+        : null;
+      const record = await saveProjectDocumentRecovery({
+        baseDocumentGeneration:
+          projectHandle.manifest.save_generation ??
+          projectHandle.persistence.generation,
+        baseMarkdown: baselineMarkdown,
+        documentId: projectHandle.document.document_id,
+        documentTitle: projectHandle.document.display_title,
+        groupTitle,
+        localInstanceId: localProjectInstanceId,
+        markdown,
+        projectId: projectHandle.projectManifest.project_id,
+        projectTitle: projectHandle.projectManifest.title
+      });
+      setProjectRecoveryDocumentIds((current) =>
+        current.includes(record.document_id)
+          ? current
+          : [...current, record.document_id]
+      );
+      return record.recovery_id;
+    }
+
+    if (!projectHandle && standaloneFileInstance) {
+      const record = await saveStandaloneDocumentRecovery({
+        baseMarkdown: baselineMarkdown,
+        fileName,
+        localFileId: standaloneFileInstance.local_file_id,
+        markdown
+      });
+      return record.recovery_id;
+    }
+
+    return null;
+  }, [
+    baselineMarkdown,
+    documentRecoveryPresentation?.kind,
+    fileName,
+    localProjectInstanceId,
+    markdown,
+    projectHandle,
+    standaloneFileInstance
+  ]);
 
   useEffect(() => {
-    setAvailableDraft(readMostRecentDocumentDraft());
+    setLegacyUnscopedDrafts(readLegacyUnscopedDocumentDrafts());
+    void refreshRecentProjectState();
   }, []);
 
   useEffect(() => {
-    let isCancelled = false;
+    if (!projectHandle || !localProjectInstanceId) {
+      setRewriteDraftAvailable(null);
+      setRewriteSession(null);
+      return;
+    }
+    const identity = getProjectDocumentIdentity(projectHandle);
+    const directoryHandle =
+      projectHandle.projectDirectoryHandle ?? projectHandle.directoryHandle;
+    void rememberProjectInstance({
+      directoryHandle: directoryHandle as StoredDirectoryHandle,
+      documentId: identity.documentId,
+      documentTitle:
+        projectHandle.document?.display_title ?? projectHandle.manifest.project_name,
+      groupId: projectHandle.document?.group_id ?? null,
+      localInstanceId: localProjectInstanceId,
+      projectId: identity.projectId,
+      projectTitle: getProjectTitle(projectHandle)
+    })
+      .then(setRecentProject)
+      .catch(() => undefined);
+  }, [localProjectInstanceId, projectDocuments, projectHandle]);
 
-    if (!projectHandle) {
-      setIsProjectDataLoading(false);
-      setVersionEntries([]);
-      setComments([]);
-      setPatches([]);
-      setSelectedPatchId(null);
-      setSelectedPatchGroupId(null);
-      setPatchGroupListDialog(null);
-      setPatchReviewCommentScopeId(null);
-      setPatchReviewGroupScopeId(null);
-      setCommentsError(null);
+  useEffect(() => {
+    const requestId = rewriteSessionLoadRequestRef.current + 1;
+    rewriteSessionLoadRequestRef.current = requestId;
+    setRewriteSession(null);
+    setRewriteRecoveryConflict(null);
+    rewritePersistenceCoordinatorRef.current = null;
+    if (!activeDocumentIdentity || !localProjectInstanceId || !projectHandle) {
+      setRewriteDraftAvailable(null);
+      return;
+    }
+    const coordinator = createRewriteSessionPersistenceCoordinator({
+      localProjectInstanceId,
+      project: projectHandle
+    });
+    rewritePersistenceCoordinatorRef.current = coordinator;
+    void coordinator
+      .load()
+      .then((result) => {
+        if (requestId === rewriteSessionLoadRequestRef.current) {
+          setRewriteDraftAvailable(result.session);
+          setRewriteRecoveryConflict(result.conflict);
+          setRewritePersistenceSource(
+            result.source === "recovery_only" ? "recovery_only" : "project"
+          );
+          if (result.notice === "legacy_migrated") {
+            setSaveFeedback({
+              kind: "success",
+              message: "Rewrite draft moved into the project."
+            });
+          } else if (result.notice === "project_copy_rebound") {
+            setSaveFeedback({
+              kind: "success",
+              message: "Project rewrite draft ownership was updated for this project copy."
+            });
+          }
+        }
+      })
+      .catch((loadError) => {
+        if (requestId === rewriteSessionLoadRequestRef.current) {
+          setRewriteDraftAvailable(null);
+          setDeviceRecoveryWarning(
+            `Human Rewrite project data could not be loaded safely. ${getProjectErrorMessage(loadError)}`
+          );
+        }
+      });
+  }, [activeDocumentIdentity, localProjectInstanceId, projectHandle]);
+
+  useEffect(
+    () => () => {
+      if (readingBookmarkEmphasisTimeoutRef.current !== null) {
+        window.clearTimeout(readingBookmarkEmphasisTimeoutRef.current);
+      }
+    },
+    []
+  );
+
+  useLayoutEffect(() => {
+    const menuDocumentKey = readingBookmarkMenuDocumentKey;
+
+    if (!menuDocumentKey || menuDocumentKey !== activeDocumentKey) {
       return;
     }
 
-    setIsProjectDataLoading(true);
-    void Promise.all([
-      listProjectVersions(projectHandle),
-      readProjectComments(projectHandle),
-      readProjectPatches(projectHandle)
-    ])
-      .then(([versions, projectComments, projectPatches]) => {
-        if (!isCancelled) {
-          setVersionEntries(versions);
-          setComments(projectComments);
-          setPatches(projectPatches);
-          setCommentsError(null);
-          setIsProjectDataLoading(false);
-        }
-      })
-      .catch((error) => {
-        if (!isCancelled) {
-          setComments([]);
-          setPatches([]);
-          setCommentsError(getProjectErrorMessage(error));
-          setIsProjectDataLoading(false);
-        }
-      });
+    if (activeDocumentKeyRef.current === menuDocumentKey) {
+      readingBookmarkRemoveButtonRef.current?.focus();
+    }
+
+    function closeReadingBookmarkMenu(event: PointerEvent) {
+      if (
+        event.target instanceof Node &&
+        (readingBookmarkMenuRef.current?.contains(event.target) ||
+          readingBookmarkMarkerRef.current?.contains(event.target))
+      ) {
+        return;
+      }
+
+      setReadingBookmarkMenuDocumentKey((currentKey) =>
+        currentKey === menuDocumentKey ? null : currentKey
+      );
+    }
+
+    function handleReadingBookmarkMenuKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") {
+        return;
+      }
+
+      event.preventDefault();
+      setReadingBookmarkMenuDocumentKey((currentKey) =>
+        currentKey === menuDocumentKey ? null : currentKey
+      );
+      if (activeDocumentKeyRef.current === menuDocumentKey) {
+        readingBookmarkMarkerRef.current?.focus();
+      }
+    }
+
+    window.addEventListener("pointerdown", closeReadingBookmarkMenu);
+    window.addEventListener("keydown", handleReadingBookmarkMenuKeyDown);
 
     return () => {
-      isCancelled = true;
+      window.removeEventListener("pointerdown", closeReadingBookmarkMenu);
+      window.removeEventListener("keydown", handleReadingBookmarkMenuKeyDown);
     };
-  }, [projectHandle]);
+  }, [activeDocumentKey, readingBookmarkMenuDocumentKey]);
+
+  useEffect(() => {
+    if (
+      !activeDocumentKey ||
+      readingBookmarkMenuDocumentKey !== activeDocumentKey ||
+      !readingBookmark ||
+      readingBookmarkPosition?.documentKey !== activeDocumentKey ||
+      mode !== "visual"
+    ) {
+      setReadingBookmarkMenuDocumentKey((currentKey) =>
+        currentKey === readingBookmarkMenuDocumentKey ? null : currentKey
+      );
+    }
+  }, [
+    activeDocumentKey,
+    mode,
+    readingBookmark,
+    readingBookmarkMenuDocumentKey,
+    readingBookmarkPosition
+  ]);
 
   useEffect(() => {
     if (selectedPatchId && !patches.some((patch) => patch.id === selectedPatchId)) {
@@ -1007,7 +2057,7 @@ export function DocumentEditor() {
   }, [patchGroups, selectedPatchGroupId]);
 
   useEffect(() => {
-    const commentIds = new Set(comments.map((comment) => comment.id));
+    const commentIds = new Set(activeComments.map((comment) => comment.id));
 
     setActiveCommentState((currentState) => {
       if (currentState.kind === "comment") {
@@ -1036,27 +2086,81 @@ export function DocumentEditor() {
 
       return currentState;
     });
-  }, [comments]);
+  }, [activeComments, setActiveCommentState]);
 
   useEffect(() => {
-    if (!fileName) {
+    if (
+      !fileName ||
+      baselineMarkdown === null ||
+      markdown === baselineMarkdown ||
+      documentRecoveryPresentation?.kind === "conflict"
+    ) {
       return;
     }
 
     const operationId = pendingEditPerformanceOperationIdRef.current;
-    const persistenceStartedAt = performance.now();
-    saveDocumentDraft({
-      fileName,
-      markdown,
-      updatedAt: new Date().toISOString()
-    });
-    recordEditPerformanceDuration(
-      operationId,
-      "draft_persistence",
-      performance.now() - persistenceStartedAt
-    );
-    markEditPerformanceOperation(operationId, "persistence_settled");
-  }, [fileName, markdown]);
+    const timeoutId = window.setTimeout(() => {
+      const persistenceStartedAt = performance.now();
+      void persistActiveRecoveryNow()
+        .catch(() => {
+          setDeviceRecoveryWarning(
+            "Device-local recovery could not be updated. Save changes to the project or file before closing Patchmark."
+          );
+        })
+        .finally(() => {
+          recordEditPerformanceDuration(
+            operationId,
+            "draft_persistence",
+            performance.now() - persistenceStartedAt
+          );
+          markEditPerformanceOperation(operationId, "persistence_settled");
+        });
+    }, 500);
+
+    return () => window.clearTimeout(timeoutId);
+  }, [
+    baselineMarkdown,
+    documentRecoveryPresentation?.kind,
+    fileName,
+    markdown,
+    persistActiveRecoveryNow
+  ]);
+
+  useEffect(() => {
+    function preserveRecoveryBeforeSuspension() {
+      if (projectHandle) {
+        persistProjectDocumentUiState(
+          projectHandle,
+          {
+            activeCommentState,
+            markdownSelection,
+            mode,
+            scrollY: window.scrollY
+          },
+          localProjectInstanceId
+        );
+      }
+      void persistActiveRecoveryNow();
+    }
+    function preserveRecoveryWhenHidden() {
+      if (document.visibilityState === "hidden") {
+        preserveRecoveryBeforeSuspension();
+      }
+    }
+    window.addEventListener("pagehide", preserveRecoveryBeforeSuspension);
+    document.addEventListener("visibilitychange", preserveRecoveryWhenHidden);
+    return () => {
+      window.removeEventListener("pagehide", preserveRecoveryBeforeSuspension);
+      document.removeEventListener("visibilitychange", preserveRecoveryWhenHidden);
+    };
+  }, [
+    activeCommentState,
+    localProjectInstanceId,
+    markdownSelection,
+    mode,
+    persistActiveRecoveryNow,
+    projectHandle
+  ]);
 
   useLayoutEffect(() => {
     const operationId = pendingEditPerformanceOperationIdRef.current;
@@ -1075,6 +2179,45 @@ export function DocumentEditor() {
     return () => window.cancelAnimationFrame(animationFrameId);
   }, [comments, markdown]);
 
+  useLayoutEffect(() => {
+    const pendingSwitch = pendingDocumentSwitchPerformanceRef.current;
+
+    if (
+      !pendingSwitch ||
+      !projectHandle ||
+      getProjectDocumentScopeId(projectHandle) !==
+        pendingSwitch.targetDocumentId
+    ) {
+      return;
+    }
+
+    incrementDocumentSwitchPerformanceCounter(
+      pendingSwitch.operationId,
+      "react_commit_count"
+    );
+    markDocumentSwitchPerformance(
+      pendingSwitch.operationId,
+      "first_target_render"
+    );
+
+    if (isProjectDataLoading) {
+      return;
+    }
+
+    window.requestAnimationFrame(() => {
+      if (
+        pendingDocumentSwitchPerformanceRef.current?.operationId !==
+        pendingSwitch.operationId
+      ) {
+        return;
+      }
+      markDocumentSwitchPerformance(
+        pendingSwitch.operationId,
+        "first_usable_editor"
+      );
+    });
+  }, [comments, isProjectDataLoading, markdown, projectHandle]);
+
   useEffect(() => {
     if (!isDirty) {
       return;
@@ -1090,36 +2233,92 @@ export function DocumentEditor() {
   }, [isDirty]);
 
   useEffect(() => {
-    if (!commentContextMenu) {
+    if (selectionActions?.presentation !== "chooser") {
       return;
     }
 
-    function closeCommentContextMenu() {
-      setCommentContextMenu(null);
+    function closeSelectionActionsFromOutside() {
+      setSelectionActions(null);
+      setVisualSelectionDraft(null);
     }
 
-    function handleContextMenuKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        closeCommentContextMenu();
+    window.addEventListener("pointerdown", closeSelectionActionsFromOutside);
+
+    return () => {
+      window.removeEventListener(
+        "pointerdown",
+        closeSelectionActionsFromOutside
+      );
+    };
+  }, [selectionActions?.presentation]);
+
+  useEffect(() => {
+    let animationFrameId: number | null = null;
+
+    function scheduleSelectionSync() {
+      if (animationFrameId !== null) {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+
+      animationFrameId = window.requestAnimationFrame(() => {
+        animationFrameId = null;
+        syncVisualCommentSelection();
+      });
+    }
+
+    document.addEventListener("selectionchange", scheduleSelectionSync);
+    window.addEventListener("resize", scheduleSelectionSync);
+    window.addEventListener("scroll", scheduleSelectionSync, true);
+    scheduleSelectionSync();
+
+    return () => {
+      if (animationFrameId !== null) {
+        window.cancelAnimationFrame(animationFrameId);
+      }
+      document.removeEventListener("selectionchange", scheduleSelectionSync);
+      window.removeEventListener("resize", scheduleSelectionSync);
+      window.removeEventListener("scroll", scheduleSelectionSync, true);
+    };
+  }, [syncVisualCommentSelection]);
+
+  useEffect(() => {
+    if (!selectionActions) {
+      return;
+    }
+
+    function handleSelectionActionKeyDown(event: KeyboardEvent) {
+      if (
+        event.altKey &&
+        event.shiftKey &&
+        event.key.toLowerCase() === "m"
+      ) {
+        event.preventDefault();
+        pendingSelectionActionsTriggerRef.current = "keyboard";
+        commentSelectionActionButtonRef.current?.click();
+        return;
+      }
+
+      if (
+        event.key === "Escape" &&
+        selectionActionsRef.current?.presentation === "compact"
+      ) {
+        setSelectionActions(null);
+        setVisualSelectionDraft(null);
+        window.getSelection()?.removeAllRanges();
       }
     }
 
-    window.addEventListener("click", closeCommentContextMenu);
-    window.addEventListener("keydown", handleContextMenuKeyDown);
-    window.addEventListener("scroll", closeCommentContextMenu, true);
-
-    return () => {
-      window.removeEventListener("click", closeCommentContextMenu);
-      window.removeEventListener("keydown", handleContextMenuKeyDown);
-      window.removeEventListener("scroll", closeCommentContextMenu, true);
-    };
-  }, [commentContextMenu]);
+    window.addEventListener("keydown", handleSelectionActionKeyDown);
+    return () =>
+      window.removeEventListener("keydown", handleSelectionActionKeyDown);
+  }, [selectionActions]);
 
   useEffect(() => {
     if (!reanchorSession) {
       return;
     }
 
+    const currentReanchorSession = reanchorSession;
     const previousActiveCommentState = reanchorSession.previousActiveCommentState;
 
     function handleReanchorEscape(event: KeyboardEvent) {
@@ -1131,17 +2330,89 @@ export function DocumentEditor() {
       if (reanchorConfirmation) {
         setReanchorConfirmation(null);
       } else {
+        const commentId = currentReanchorSession.commentId;
         setReanchorSession(null);
         setMarkdownSelection({ end: 0, start: 0 });
         setMarkdownSelectionRequest(null);
         setVisualSelectionDraft(null);
-        setActiveCommentState(previousActiveCommentState);
+        if (
+          isDocumentScopeCurrent(
+            currentReanchorSession,
+            activeDocumentIdRef.current
+          )
+        ) {
+          setActiveCommentState(previousActiveCommentState);
+        }
+        restoreFocusToCommentCard(commentId);
       }
     }
 
     window.addEventListener("keydown", handleReanchorEscape);
     return () => window.removeEventListener("keydown", handleReanchorEscape);
-  }, [reanchorConfirmation, reanchorSession]);
+  }, [reanchorConfirmation, reanchorSession, setActiveCommentState]);
+
+  useLayoutEffect(() => {
+    if (!reanchorWorkspaceSessionKey) {
+      reanchorWorkspaceRenderCountRef.current = 0;
+      setReanchorWorkspaceStyle(null);
+      return;
+    }
+
+    reanchorWorkspaceRenderCountRef.current += 1;
+
+    function positionWorkspace() {
+      const rail = commentsRailRef.current;
+
+      if (window.innerWidth <= 900 || !rail) {
+        setReanchorWorkspaceStyle((current) => {
+          const next: ReanchorWorkspaceStyle = {
+            "--reanchor-workspace-max-height": "min(58vh, 620px)",
+            bottom: 12,
+            left: 12,
+            right: 12,
+            top: "auto",
+            width: "auto"
+          };
+          return areReanchorWorkspaceStylesEqual(current, next)
+            ? current
+            : next;
+        });
+        return;
+      }
+
+      const railRect = rail.getBoundingClientRect();
+      const left = Math.min(
+        window.innerWidth - 12 - railRect.width,
+        Math.max(12, railRect.left)
+      );
+      const next: ReanchorWorkspaceStyle = {
+        "--reanchor-workspace-max-height": "calc(100vh - 40px)",
+        bottom: "auto",
+        left: Math.round(left),
+        right: "auto",
+        top: 20,
+        width: Math.round(railRect.width)
+      };
+
+      setReanchorWorkspaceStyle((current) =>
+        areReanchorWorkspaceStylesEqual(current, next) ? current : next
+      );
+    }
+
+    positionWorkspace();
+    window.addEventListener("resize", positionWorkspace);
+    window.addEventListener("scroll", positionWorkspace, true);
+
+    const focusFrame = window.requestAnimationFrame(() => {
+      reanchorWorkspaceRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      window.removeEventListener("resize", positionWorkspace);
+      window.removeEventListener("scroll", positionWorkspace, true);
+    };
+  }, [reanchorWorkspaceSessionKey]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -1149,6 +2420,13 @@ export function DocumentEditor() {
     let settledTimeoutId: number | null = null;
     const editorContainer = editorDocumentRef.current;
     const workspace = documentWorkspaceRef.current;
+    const pendingSwitch = pendingDocumentSwitchPerformanceRef.current;
+    const switchOperationId =
+      pendingSwitch &&
+      projectHandle &&
+      getProjectDocumentScopeId(projectHandle) === pendingSwitch.targetDocumentId
+        ? pendingSwitch.operationId
+        : null;
 
     function syncCommentAnchors() {
       if (isCancelled) {
@@ -1159,12 +2437,12 @@ export function DocumentEditor() {
       const projectionStartedAt = performance.now();
       markEditPerformanceOperation(operationId, "visual_projection_start");
       const nextCommentPositions = measureCommentPositions({
-        comments,
+        comments: activeComments,
         container: editorDocumentRef.current,
         headings,
         markdown,
         mode,
-        patches,
+        patches: activePatches,
         workspace: documentWorkspaceRef.current
       });
 
@@ -1173,7 +2451,7 @@ export function DocumentEditor() {
           ? currentCommentPositions
           : nextCommentPositions
       );
-      const nextReadingBookmarkPosition = measureReadingBookmarkPosition({
+      const nextReadingBookmarkTop = measureReadingBookmarkPosition({
         bookmark: readingBookmark,
         container: editorDocumentRef.current,
         headings,
@@ -1181,22 +2459,26 @@ export function DocumentEditor() {
         mode,
         patches
       });
-      setReadingBookmarkPosition((currentPosition) =>
-        currentPosition === nextReadingBookmarkPosition
+      setReadingBookmarkPosition((currentPosition) => {
+        if (activeDocumentKey === null || nextReadingBookmarkTop === null) {
+          return null;
+        }
+        return currentPosition?.documentKey === activeDocumentKey &&
+          currentPosition.top === nextReadingBookmarkTop
           ? currentPosition
-          : nextReadingBookmarkPosition
-      );
+          : { documentKey: activeDocumentKey, top: nextReadingBookmarkTop };
+      });
 
       updateVisualCommentHighlights({
         activeCommentState,
-        comments,
+        comments: activeComments,
         container: editorDocumentRef.current,
         headings,
         markdown,
         mode,
-        patches,
+        patches: activePatches,
         previewComment: createReanchorPreviewComment({
-          comments,
+          comments: activeComments,
           proposal: reanchorSession?.previewProposal ?? null,
           targetCommentId: reanchorSession?.commentId ?? null
         })
@@ -1215,6 +2497,15 @@ export function DocumentEditor() {
         "visual_projection_and_rail",
         performance.now() - projectionStartedAt
       );
+      recordDocumentSwitchPerformanceDuration(
+        switchOperationId,
+        "measure_and_position_comment_rail",
+        performance.now() - projectionStartedAt
+      );
+      incrementDocumentSwitchPerformanceCounter(
+        switchOperationId,
+        "comment_projection_pass_count"
+      );
       incrementEditPerformanceCounter(operationId, "projection_pass_count");
       markEditPerformanceOperation(operationId, "visual_projection_end");
 
@@ -1228,6 +2519,19 @@ export function DocumentEditor() {
           operationId,
           "all_async_effects_settled"
         );
+        if (
+          isProjectDataLoadingRef.current ||
+          pendingDocumentSwitchPerformanceRef.current?.operationId !==
+            switchOperationId
+        ) {
+          return;
+        }
+        markDocumentSwitchPerformance(
+          switchOperationId,
+          "comment_rail_positioned",
+          { latest: true }
+        );
+        finishDocumentSwitchPerformanceOperation(switchOperationId);
       }, 120);
     }
 
@@ -1295,76 +2599,19 @@ export function DocumentEditor() {
     };
   }, [
     activeCommentState,
-    comments,
+    activeDocumentKey,
+    activeComments,
     documentVersion,
     headings,
     isReadingBookmarkEmphasized,
     markdown,
     mode,
+    activePatches,
     patches,
+    projectHandle,
     readingBookmark,
     reanchorSession
   ]);
-
-  useEffect(
-    () => () => {
-      if (readingBookmarkEmphasisTimeoutRef.current !== null) {
-        window.clearTimeout(readingBookmarkEmphasisTimeoutRef.current);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (!isReadingBookmarkMenuOpen) {
-      return;
-    }
-
-    const focusFrame = window.requestAnimationFrame(() => {
-      readingBookmarkRemoveButtonRef.current?.focus();
-    });
-
-    function closeReadingBookmarkMenu(event: PointerEvent) {
-      if (
-        event.target instanceof Node &&
-        (readingBookmarkMenuRef.current?.contains(event.target) ||
-          readingBookmarkMarkerRef.current?.contains(event.target))
-      ) {
-        return;
-      }
-
-      setIsReadingBookmarkMenuOpen(false);
-    }
-
-    function handleReadingBookmarkMenuKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Escape") {
-        return;
-      }
-
-      event.preventDefault();
-      setIsReadingBookmarkMenuOpen(false);
-      readingBookmarkMarkerRef.current?.focus();
-    }
-
-    window.addEventListener("pointerdown", closeReadingBookmarkMenu);
-    window.addEventListener("keydown", handleReadingBookmarkMenuKeyDown);
-
-    return () => {
-      window.cancelAnimationFrame(focusFrame);
-      window.removeEventListener("pointerdown", closeReadingBookmarkMenu);
-      window.removeEventListener("keydown", handleReadingBookmarkMenuKeyDown);
-    };
-  }, [isReadingBookmarkMenuOpen]);
-
-  useEffect(() => {
-    if (
-      !readingBookmark ||
-      readingBookmarkPosition === null ||
-      mode !== "visual"
-    ) {
-      setIsReadingBookmarkMenuOpen(false);
-    }
-  }, [mode, readingBookmark, readingBookmarkPosition]);
 
   useEffect(() => {
     const previewProposal = reanchorSession?.previewProposal;
@@ -1376,7 +2623,7 @@ export function DocumentEditor() {
     const animationFrameId = window.requestAnimationFrame(() => {
       const container = editorDocumentRef.current;
       const previewComment = createReanchorPreviewComment({
-        comments,
+        comments: activeComments,
         proposal: previewProposal,
         targetCommentId: reanchorSession.commentId
       });
@@ -1390,7 +2637,7 @@ export function DocumentEditor() {
         container,
         headings,
         markdown,
-        patches
+        patches: activePatches
       });
 
       if (range) {
@@ -1399,11 +2646,26 @@ export function DocumentEditor() {
     });
 
     return () => window.cancelAnimationFrame(animationFrameId);
-  }, [comments, headings, markdown, mode, patches, reanchorSession]);
+  }, [
+    activeComments,
+    activePatches,
+    headings,
+    markdown,
+    mode,
+    reanchorSession
+  ]);
 
   useEffect(() => {
     const activeCommentIds = getActiveCommentIds(activeCommentState);
-    const activeCommentKey = activeCommentIds.join(",");
+    const activeCommentKey = activeDocumentId
+      ? activeCommentIds
+          .map((commentId) =>
+            createDocumentScopedKey(
+              createCommentRef(activeDocumentId, commentId)
+            )
+          )
+          .join(",")
+      : "";
 
     if (!activeCommentKey) {
       lastScrolledActiveCommentKeyRef.current = null;
@@ -1450,7 +2712,15 @@ export function DocumentEditor() {
     });
 
     return () => window.cancelAnimationFrame(animationFrameId);
-  }, [activeCommentState, comments, headings, markdown, mode, patches]);
+  }, [
+    activeCommentState,
+    activeDocumentId,
+    comments,
+    headings,
+    markdown,
+    mode,
+    patches
+  ]);
 
   const handleSaveChanges = useCallback(async () => {
     if (!fileName || isSaving || isProjectDataLoading) {
@@ -1471,6 +2741,10 @@ export function DocumentEditor() {
       setSaveFeedback(null);
 
       try {
+        let recoveryId: string | null = null;
+        try {
+          recoveryId = await persistActiveRecoveryNow();
+        } catch {}
         const result = await saveProjectState({
           comments,
           markdown,
@@ -1481,6 +2755,19 @@ export function DocumentEditor() {
         setProjectHandle(projectHandle);
         setBaselineMarkdown(markdown);
         setRestoredMarkdown(null);
+        if (recoveryId) {
+          try {
+            await deleteDocumentRecovery(recoveryId);
+            setDocumentRecoveryPresentation(null);
+            setProjectRecoveryDocumentIds((current) =>
+              current.filter(
+                (documentId) =>
+                  documentId !== projectHandle.document?.document_id
+              )
+            );
+          } catch {}
+        }
+        setDeviceRecoveryWarning(null);
         setSaveStatus("idle");
         setSaveFeedback({
           kind: "success",
@@ -1514,9 +2801,20 @@ export function DocumentEditor() {
     setSaveFeedback(null);
 
     try {
+      let recoveryId: string | null = null;
+      try {
+        recoveryId = await persistActiveRecoveryNow();
+      } catch {}
       await saveMarkdownToFileHandle(activeFileHandle, markdown);
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      if (recoveryId) {
+        try {
+          await deleteDocumentRecovery(recoveryId);
+          setDocumentRecoveryPresentation(null);
+        } catch {}
+      }
+      setDeviceRecoveryWarning(null);
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -1529,7 +2827,7 @@ export function DocumentEditor() {
         message: getSaveErrorMessage(error)
       });
     }
-  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, markdown, patches, projectHandle]);
+  }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, markdown, patches, persistActiveRecoveryNow, projectHandle]);
 
   useEffect(() => {
     if (!fileName) {
@@ -1547,27 +2845,82 @@ export function DocumentEditor() {
     return () => window.removeEventListener("keydown", handleSaveShortcut);
   }, [fileName, handleSaveChanges]);
 
-  function handleFileLoaded(loadedFile: LoadedMarkdownFile) {
+  async function handleFileLoaded(loadedFile: LoadedMarkdownFile) {
+    const requestId = deviceRecoveryLoadRequestRef.current + 1;
+    deviceRecoveryLoadRequestRef.current = requestId;
+    let standaloneInstance: LocalStandaloneFileRecord | null = null;
+    let preparedRecovery: PreparedDocumentRecovery | null = null;
+    let recoveryStorageError: string | null = null;
+
+    if (loadedFile.fileHandle) {
+      try {
+        const matched = await findStandaloneInstanceForFile(
+          loadedFile.fileHandle as StoredFileHandle
+        );
+        standaloneInstance = await rememberStandaloneFileInstance({
+          fileHandle: loadedFile.fileHandle as StoredFileHandle,
+          fileName: loadedFile.fileName,
+          localFileId: matched?.local_file_id ?? createLocalStandaloneFileId()
+        });
+        const recovery = await readRecovery(
+          getStandaloneDocumentRecoveryId(standaloneInstance.local_file_id)
+        );
+        if (
+          recovery?.owner_type === "standalone_file" &&
+          recovery.local_file_id === standaloneInstance.local_file_id
+        ) {
+          preparedRecovery = await prepareDocumentRecovery({
+            recovery,
+            savedMarkdown: loadedFile.markdown
+          });
+        }
+      } catch (error) {
+        recoveryStorageError = getDeviceRecoveryErrorMessage(error);
+      }
+    }
+
+    if (requestId !== deviceRecoveryLoadRequestRef.current) {
+      return;
+    }
     setFileName(loadedFile.fileName);
-    setMarkdown(loadedFile.markdown);
+    setMarkdown(preparedRecovery?.markdown ?? loadedFile.markdown);
     setBaselineMarkdown(loadedFile.markdown);
     setActiveFileHandle(loadedFile.fileHandle);
     setProjectHandle(null);
+    setProjectDocuments([]);
+    setVersionEntries([]);
+    setIsProjectDataLoading(false);
+    setLocalProjectInstanceId(null);
+    setStandaloneFileInstance(standaloneInstance);
     setProjectRecovery(null);
-    setRestoredMarkdown(null);
-    setAvailableDraft(null);
+    setRestoredMarkdown(
+      preparedRecovery?.presentation?.kind === "recovered"
+        ? preparedRecovery.markdown
+        : null
+    );
+    setDocumentRecoveryPresentation(
+      preparedRecovery?.presentation ?? null
+    );
+    setProjectRecoveryDocumentIds([]);
     setSaveStatus("idle");
-    setSaveFeedback(null);
+    if (recoveryStorageError) {
+      setDeviceRecoveryWarning(recoveryStorageError);
+    } else if (!preparedRecovery && loadedFile.fileHandle) {
+      setDeviceRecoveryWarning(null);
+      setSaveFeedback(null);
+    }
     setSnapshotDialog(null);
-    setIsPdfExportPreviewOpen(false);
+    setPdfExportTarget(null);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
-    setCommentContextMenu(null);
+    setSelectionActions(null);
     setComments([]);
     setPatches([]);
+    setReviewBatches([]);
+    setReviewQueueOverrides(null);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
     setPatchGroupListDialog(null);
@@ -1576,60 +2929,13 @@ export function DocumentEditor() {
     setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setReviewBatchCancelDialog(null);
+    setIsGuidedReviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
     setMode("visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
-  }
-
-  function handleRestoreDraft() {
-    if (!availableDraft) {
-      return;
-    }
-
-    setFileName(availableDraft.fileName);
-    setMarkdown(availableDraft.markdown);
-    setBaselineMarkdown(null);
-    setActiveFileHandle(null);
-    setProjectHandle(null);
-    setProjectRecovery(null);
-    setRestoredMarkdown(availableDraft.markdown);
-    setAvailableDraft(null);
-    setSaveStatus("idle");
-    setSaveFeedback(null);
-    setSnapshotDialog(null);
-    setIsPdfExportPreviewOpen(false);
-    setMarkdownSelection({ end: 0, start: 0 });
-    setMarkdownSelectionRequest(null);
-    setVisualSelectionDraft(null);
-    setCommentAddRequest(null);
-    setCommentReplyRequest(null);
-    setCommentContextMenu(null);
-    setComments([]);
-    setPatches([]);
-    setSelectedPatchId(null);
-    setSelectedPatchGroupId(null);
-    setPatchGroupListDialog(null);
-    setPatchReviewCommentScopeId(null);
-    setPatchReviewGroupScopeId(null);
-    setRecentlyAppliedPatchId(null);
-    setCommentsError(null);
-    setChatGptPromptDialog(null);
-    setDocumentLevelExportGuardDialog(null);
-    setMarkCommentFocusGuardDialog(null);
-    setChatGptImportDialog(null);
-    setMode("visual");
-    setDocumentVersion((currentVersion) => currentVersion + 1);
-  }
-
-  function handleDiscardDraft() {
-    if (!availableDraft) {
-      return;
-    }
-
-    deleteDocumentDraft(availableDraft.fileName);
-    setAvailableDraft(null);
   }
 
   function handleMarkdownChange(
@@ -1637,6 +2943,12 @@ export function DocumentEditor() {
     source: DocumentMutationSource,
     hint?: MarkdownMutationHint
   ) {
+    if (reanchorSession) {
+      return;
+    }
+
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
     const operationId = startEditPerformanceOperation({
       newMarkdownLength: nextMarkdown.length,
       oldMarkdownLength: markdown.length,
@@ -1701,12 +3013,16 @@ export function DocumentEditor() {
       hunkCount: changeSet?.edits.length
     });
 
-    if (!changeSet || comments.length === 0) {
+    if (!changeSet) {
       markEditPerformanceOperation(
         performanceOperationId,
         "state_update_requested"
       );
       setMarkdown(nextMarkdown);
+      const nextPatches = requirePendingPatchTargetRevalidation(patches);
+      if (nextPatches !== patches) {
+        setPatches(nextPatches);
+      }
       return;
     }
 
@@ -1717,7 +3033,7 @@ export function DocumentEditor() {
     const validationStartedAt = performance.now();
     const affectedAnchorCount = countManualChangeSetIntersectingSelectedTextAnchors({
       changeSet,
-      comments,
+      comments: activeComments,
     });
     const safety = isSafeManualAnchorTransformChangeSet({
       affectedAnchorCount,
@@ -1743,6 +3059,27 @@ export function DocumentEditor() {
         "state_update_requested"
       );
       setMarkdown(nextMarkdown);
+      const nextPatches = requirePendingPatchTargetRevalidation(patches);
+      if (nextPatches !== patches) {
+        setPatches(nextPatches);
+      }
+      return;
+    }
+
+    const nextPatches = transformPendingPatchTargetProvenances({
+      edits: changeSet.edits,
+      patches
+    });
+
+    if (comments.length === 0) {
+      markEditPerformanceOperation(
+        performanceOperationId,
+        "state_update_requested"
+      );
+      setMarkdown(nextMarkdown);
+      if (nextPatches !== patches) {
+        setPatches(nextPatches);
+      }
       return;
     }
 
@@ -1766,6 +3103,9 @@ export function DocumentEditor() {
 
     if (mutationResult.comments !== comments) {
       setComments(mutationResult.comments);
+    }
+    if (nextPatches !== patches) {
+      setPatches(nextPatches);
     }
   }
 
@@ -1815,7 +3155,29 @@ export function DocumentEditor() {
         return;
       }
 
+      const matchedInstance = await findStandaloneInstanceForFile(
+        fileHandle as StoredFileHandle
+      );
+      const nextStandaloneInstance = await rememberStandaloneFileInstance({
+        fileHandle: fileHandle as StoredFileHandle,
+        fileName: fileHandle.name,
+        localFileId:
+          matchedInstance?.local_file_id ?? createLocalStandaloneFileId()
+      });
+      if (
+        standaloneFileInstance?.local_file_id ===
+        nextStandaloneInstance.local_file_id
+      ) {
+        await clearRecoveryRecordAfterSave(
+          getStandaloneDocumentRecoveryId(
+            nextStandaloneInstance.local_file_id
+          )
+        );
+      } else {
+        setDocumentRecoveryPresentation(null);
+      }
       setActiveFileHandle(fileHandle);
+      setStandaloneFileInstance(nextStandaloneInstance);
       setFileName(fileHandle.name);
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
@@ -1866,7 +3228,7 @@ export function DocumentEditor() {
         return;
       }
 
-      loadProjectIntoEditor(loadedProject);
+      await loadProjectIntoEditor(loadedProject);
       setSaveFeedback({
         kind: loadedProject.recovery ? "info" : "success",
         message: loadedProject.recovery
@@ -1882,6 +3244,325 @@ export function DocumentEditor() {
     }
   }
 
+  async function refreshRecentProjectState(): Promise<void> {
+    try {
+      const recent = await readMostRecentProjectInstance();
+      setRecentProject(recent);
+      if (!recent) {
+        setRecentProjectPermission("unavailable");
+        setRecentProjectRecoveryCount(0);
+        return;
+      }
+      const [permission, recoveries] = await Promise.all([
+        getDirectoryPermission(recent.directory_handle),
+        listProjectDocumentRecoveries({
+          localInstanceId: recent.local_instance_id,
+          projectId: recent.project_id
+        })
+      ]);
+      setRecentProjectPermission(permission);
+      setRecentProjectRecoveryCount(recoveries.length);
+    } catch {
+      setRecentProject(null);
+      setRecentProjectPermission("unavailable");
+      setRecentProjectRecoveryCount(0);
+    }
+  }
+
+  async function handleResumeProject(): Promise<void> {
+    if (!recentProject || isResumingProject || isSaving) {
+      return;
+    }
+    setIsResumingProject(true);
+    setResumeProjectError(null);
+    try {
+      let loadedProject: LoadedPatchmarkProject | null = null;
+      let selectedDirectory: StoredDirectoryHandle | null = null;
+      const storedDirectory = recentProject.directory_handle;
+
+      if (isUsableStoredDirectoryHandle(storedDirectory)) {
+        let permission = await getDirectoryPermission(storedDirectory);
+        if (permission === "prompt") {
+          permission = await requestDirectoryPermission(storedDirectory);
+          setRecentProjectPermission(permission);
+        }
+        if (permission === "granted" || permission === "unavailable") {
+          try {
+            loadedProject = await openProjectFolderHandle(
+              storedDirectory as unknown as PatchmarkDirectoryHandle
+            );
+            selectedDirectory = storedDirectory;
+          } catch (error) {
+            if (permission === "granted") {
+              throw error;
+            }
+          }
+        }
+      }
+
+      if (!loadedProject) {
+        loadedProject = await openProjectFolder();
+        if (!loadedProject) {
+          return;
+        }
+        selectedDirectory = (loadedProject.project.projectDirectoryHandle ??
+          loadedProject.project.directoryHandle) as StoredDirectoryHandle;
+      }
+
+      const openedIdentity = getProjectDocumentIdentity(loadedProject.project);
+      if (openedIdentity.projectId !== recentProject.project_id) {
+        throw new Error(
+          `This folder is a different Patchmark project. Expected ${recentProject.project_title_snapshot}.`
+        );
+      }
+
+      if (
+        selectedDirectory &&
+        storedDirectory &&
+        selectedDirectory !== storedDirectory
+      ) {
+        const entryIdentity = await compareEntryIdentity(
+          storedDirectory,
+          selectedDirectory
+        );
+        if (
+          entryIdentity !== "same" &&
+          !window.confirm(
+            "Patchmark could not prove that this is the same local folder instance. The portable project identity matches, but this may be a copied project. Continue with this folder? Recovery content will still be validated against the saved document before use."
+          )
+        ) {
+          return;
+        }
+      }
+      if (
+        selectedDirectory &&
+        !storedDirectory &&
+        recentProjectRecoveryCount > 0 &&
+        !window.confirm(
+          "Patchmark no longer has the original directory handle, so it cannot prove that this is the same local folder instance rather than a copy. The portable project identity matches. Continue with content-fingerprint validation for each recovered document?"
+        )
+      ) {
+        return;
+      }
+
+      const documents = await getProjectDocumentList(loadedProject.project);
+      const preferred = documents.find(
+        (document) =>
+          document.document_id === recentProject.last_document_id &&
+          document.status === "active" &&
+          document.availability === "available"
+      );
+      if (
+        preferred &&
+        preferred.document_id !==
+          getProjectDocumentIdentity(loadedProject.project).documentId
+      ) {
+        loadedProject = await openProjectDocument(
+          loadedProject.project,
+          preferred.document_id
+        );
+      }
+      await loadProjectIntoEditor(loadedProject, {
+        localInstanceId: recentProject.local_instance_id
+      });
+      setSaveFeedback({
+        kind: "success",
+        message: `Resumed ${getProjectTitle(loadedProject.project)} from its authoritative local folder.`
+      });
+    } catch (error) {
+      setResumeProjectError(getProjectErrorMessage(error));
+    } finally {
+      setIsResumingProject(false);
+    }
+  }
+
+  async function handleDeleteRecentDeviceData(): Promise<void> {
+    if (
+      !recentProject ||
+      !window.confirm(
+        `Delete device-local resume and unsaved recovery data for ${recentProject.project_title_snapshot}? Project files will not be changed.`
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteProjectInstanceRecoveryData(recentProject.local_instance_id);
+      setRecentProject(null);
+      setRecentProjectRecoveryCount(0);
+      setRecentProjectPermission("unavailable");
+      setResumeProjectError(null);
+    } catch (error) {
+      setResumeProjectError(getDeviceRecoveryErrorMessage(error));
+    }
+  }
+
+  function handleDeleteLegacyRecovery(storageKey: string): void {
+    if (
+      !window.confirm(
+        "Delete this quarantined browser recovery record? No project or Markdown file will be changed."
+      )
+    ) {
+      return;
+    }
+    deleteLegacyUnscopedDocumentDraft(storageKey);
+    setLegacyUnscopedDrafts(readLegacyUnscopedDocumentDrafts());
+  }
+
+  function handleToggleRecoveryReview(): void {
+    setDocumentRecoveryPresentation((current) =>
+      current ? { ...current, reviewOpen: !current.reviewOpen } : current
+    );
+  }
+
+  async function handleDiscardRecoveredChanges(): Promise<void> {
+    const presentation = documentRecoveryPresentation;
+    if (
+      !presentation ||
+      presentation.kind === "missing" ||
+      !window.confirm(
+        "Discard the recovered unsaved Markdown for this exact document? Saved files and review history will not be changed."
+      )
+    ) {
+      return;
+    }
+    try {
+      await deleteDocumentRecovery(presentation.record.recovery_id);
+      setMarkdown(presentation.savedMarkdown);
+      setBaselineMarkdown(presentation.savedMarkdown);
+      setRestoredMarkdown(null);
+      setDocumentRecoveryPresentation(null);
+      removeRecoveryDocumentId(presentation.record);
+      await reloadActiveReviewStoresAfterRecoveryDiscard();
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Discarded only the device-local recovery buffer. Saved Markdown and project review stores were not changed."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getDeviceRecoveryErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleKeepSavedDocument(): Promise<void> {
+    const presentation = documentRecoveryPresentation;
+    if (
+      !presentation ||
+      presentation.kind !== "conflict" ||
+      !window.confirm(
+        "Keep the current saved Markdown and delete only this device-local recovery buffer?"
+      )
+    ) {
+      return;
+    }
+    await handleDiscardRecoveredChangesWithoutConfirmation(presentation);
+  }
+
+  function handleUseRecoveredWorkingCopy(): void {
+    const presentation = documentRecoveryPresentation;
+    if (
+      !presentation ||
+      presentation.kind !== "conflict" ||
+      !window.confirm(
+        "Use the recovered Markdown as the current dirty working copy? This will not write the file until you use Save Changes."
+      )
+    ) {
+      return;
+    }
+    setMarkdown(presentation.record.markdown);
+    setRestoredMarkdown(presentation.record.markdown);
+    setDocumentRecoveryPresentation({
+      ...presentation,
+      kind: "recovered",
+      reviewOpen: false
+    });
+    setSaveFeedback({
+      kind: "info",
+      message:
+        "Recovered changes are now the dirty working copy. The saved file has not been changed."
+    });
+  }
+
+  async function handleDiscardRecoveredChangesWithoutConfirmation(
+    presentation: DocumentRecoveryPresentation
+  ): Promise<void> {
+    try {
+      await deleteDocumentRecovery(presentation.record.recovery_id);
+      setMarkdown(presentation.savedMarkdown);
+      setBaselineMarkdown(presentation.savedMarkdown);
+      setRestoredMarkdown(null);
+      setDocumentRecoveryPresentation(null);
+      removeRecoveryDocumentId(presentation.record);
+      await reloadActiveReviewStoresAfterRecoveryDiscard();
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Kept the saved document and deleted only its device-local recovery buffer."
+      });
+    } catch (error) {
+      setSaveFeedback({
+        kind: "error",
+        message: getDeviceRecoveryErrorMessage(error)
+      });
+    }
+  }
+
+  function removeRecoveryDocumentId(record: DocumentRecoveryRecord): void {
+    if (record.owner_type !== "project_document") {
+      return;
+    }
+    setProjectRecoveryDocumentIds((current) =>
+      current.filter((documentId) => documentId !== record.document_id)
+    );
+    setRecentProjectRecoveryCount((current) => Math.max(0, current - 1));
+  }
+
+  async function reloadActiveReviewStoresAfterRecoveryDiscard(): Promise<void> {
+    if (!projectHandle || projectHandle.documentAvailability === "missing") {
+      return;
+    }
+    const [savedComments, savedPatches] = await Promise.all([
+      readProjectComments(projectHandle),
+      readProjectPatches(projectHandle)
+    ]);
+    setComments(savedComments);
+    setPatches(savedPatches);
+  }
+
+  async function persistActiveRecoveryBestEffort(): Promise<string | null> {
+    try {
+      return await persistActiveRecoveryNow();
+    } catch {
+      return null;
+    }
+  }
+
+  async function clearRecoveryRecordAfterSave(
+    recoveryId: string | null
+  ): Promise<void> {
+    if (!recoveryId) {
+      return;
+    }
+    try {
+      await deleteDocumentRecovery(recoveryId);
+      setDocumentRecoveryPresentation((current) =>
+        current?.record.recovery_id === recoveryId ? null : current
+      );
+      if (projectHandle?.document) {
+        setProjectRecoveryDocumentIds((current) =>
+          current.filter(
+            (documentId) => documentId !== projectHandle.document?.document_id
+          )
+        );
+        void refreshRecentProjectState();
+      }
+    } catch {
+      return;
+    }
+  }
+
   async function handleRestoreProjectRecovery() {
     if (!projectHandle || !projectRecovery?.canRestore || isSaving) {
       return;
@@ -1891,7 +3572,9 @@ export function DocumentEditor() {
     setSaveFeedback(null);
     try {
       const restoredProject = await restoreProjectLastKnownGood(projectHandle);
-      loadProjectIntoEditor(restoredProject);
+      await loadProjectIntoEditor(restoredProject, {
+        localInstanceId: localProjectInstanceId
+      });
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -1945,7 +3628,7 @@ export function DocumentEditor() {
         return;
       }
 
-      loadProjectIntoEditor(loadedProject);
+      await loadProjectIntoEditor(loadedProject);
       setSaveFeedback({
         kind: "success",
         message: "Created Patchmark project from the current document."
@@ -1957,6 +3640,582 @@ export function DocumentEditor() {
         message: getProjectErrorMessage(error)
       });
     }
+  }
+
+  function handleOpenLegacyProjectAssembly() {
+    if (isSaving) {
+      return;
+    }
+    if (!canOpenProjectFolder()) {
+      setSaveStatus("unavailable");
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "Project assembly requires a browser with File System Access API support."
+      });
+      return;
+    }
+    setSaveFeedback(null);
+    setIsLegacyProjectAssemblyOpen(true);
+  }
+
+  function handleLegacyProjectAssemblyComplete(
+    loadedProject: LoadedPatchmarkProject
+  ) {
+    void loadProjectIntoEditor(loadedProject).then(() => {
+      setIsLegacyProjectAssemblyOpen(false);
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Created a new multi-document project. Source projects remain unchanged."
+      });
+    });
+  }
+
+  async function flushActiveDocumentForBoundary(
+    project: PatchmarkProjectHandle,
+    reason: string
+  ) {
+    if (project.documentAvailability === "missing") {
+      return;
+    }
+    const recoveryId = await persistActiveRecoveryBestEffort();
+    await saveProjectState({
+      comments,
+      markdown,
+      patches,
+      project,
+      reason
+    });
+    setBaselineMarkdown(markdown);
+    setRestoredMarkdown(null);
+    await clearRecoveryRecordAfterSave(recoveryId);
+  }
+
+  async function handleSelectProjectDocument(
+    documentId: string,
+    options: { continueReading?: boolean } = {}
+  ) {
+    if (
+      !projectHandle ||
+      !isMultiDocumentProject(projectHandle) ||
+      projectHandle.document?.document_id === documentId
+    ) {
+      return;
+    }
+    if (
+      reanchorSession &&
+      !window.confirm(
+        "Cancel re-anchor and switch documents? Your selected replacement has not been saved."
+      )
+    ) {
+      return;
+    }
+    if (reanchorSession) {
+      cancelReanchorMode();
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    const requestId = documentSwitchRequestRef.current + 1;
+    documentSwitchRequestRef.current = requestId;
+    setRequestedProjectDocumentId(documentId);
+    const performanceOperationId = startDocumentSwitchPerformanceOperation({
+      cache: "not_used",
+      documentBytes: new TextEncoder().encode(markdown).byteLength,
+      projectId: getProjectDocumentIdentity(projectHandle).projectId,
+      sourceDocumentId: getProjectDocumentScopeId(projectHandle),
+      targetDocumentId: documentId,
+      trigger: options.continueReading ? "bookmark" : "navigator"
+    });
+    pendingDocumentSwitchPerformanceRef.current = {
+      operationId: performanceOperationId,
+      targetDocumentId: documentId
+    };
+    persistProjectDocumentUiState(
+      projectHandle,
+      {
+        activeCommentState,
+        markdownSelection,
+        mode,
+        scrollY: window.scrollY
+      },
+      localProjectInstanceId
+    );
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "current_editor_flushed"
+    );
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      const recoveryStartedAt = performance.now();
+      const sourceRecoveryId = await persistActiveRecoveryBestEffort();
+      if (sourceRecoveryId) {
+        incrementDocumentSwitchPerformanceCounter(
+          performanceOperationId,
+          "recovery_records_written"
+        );
+      }
+      recordDocumentSwitchPerformanceDuration(
+        performanceOperationId,
+        "persist_or_clear_recovery_state",
+        performance.now() - recoveryStartedAt
+      );
+      markDocumentSwitchPerformance(
+        performanceOperationId,
+        "source_recovery_persisted"
+      );
+      const loaded = await switchProjectDocument({
+        comments,
+        documentId,
+        markdown,
+        patches,
+        project: projectHandle,
+        performanceOperationId
+      });
+      setBaselineMarkdown(markdown);
+      setRestoredMarkdown(null);
+      const recoveryCleanupStartedAt = performance.now();
+      await clearRecoveryRecordAfterSave(sourceRecoveryId);
+      if (sourceRecoveryId) {
+        incrementDocumentSwitchPerformanceCounter(
+          performanceOperationId,
+          "recovery_records_cleared"
+        );
+      }
+      recordDocumentSwitchPerformanceDuration(
+        performanceOperationId,
+        "persist_or_clear_recovery_state",
+        performance.now() - recoveryCleanupStartedAt
+      );
+      if (requestId !== documentSwitchRequestRef.current) {
+        return;
+      }
+      const targetDocumentKey = createProjectDocumentKey(
+        createProjectDocumentIdentity(
+          loaded.project.projectManifest!.project_id,
+          documentId
+        )
+      );
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId,
+        performanceOperationId,
+        pendingBookmarkDocumentKey: options.continueReading
+          ? targetDocumentKey
+          : null
+      });
+      if (requestId === documentSwitchRequestRef.current) {
+        setRequestedProjectDocumentId(null);
+      }
+      setSaveFeedback({
+        kind: loaded.project.documentAvailability === "missing" ? "info" : "success",
+        message:
+          loaded.project.documentAvailability === "missing"
+            ? `The registered file ${loaded.project.document?.path} is missing.`
+            : `Opened ${loaded.project.document?.display_title}.`
+      });
+    } catch (error) {
+      if (requestId !== documentSwitchRequestRef.current) {
+        return;
+      }
+      setRequestedProjectDocumentId(null);
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: `Could not switch documents. ${getProjectErrorMessage(error)}`
+      });
+    }
+  }
+
+  async function handleContinueReadingFromNavigator(documentId: string) {
+    if (!projectHandle) {
+      return;
+    }
+    if (projectHandle.document?.document_id === documentId) {
+      await handleContinueReading();
+      return;
+    }
+    await handleSelectProjectDocument(documentId, { continueReading: true });
+  }
+
+  async function handleCreateProjectDocument({
+    displayTitle,
+    groupId,
+    path,
+    role
+  }: {
+    displayTitle: string;
+    groupId?: string | null;
+    path: string;
+    role: PatchmarkDocumentRole;
+  }) {
+    if (!projectHandle || isSaving) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    let activeProject = projectHandle;
+    try {
+      await flushActiveDocumentForBoundary(activeProject, "before_create_document");
+      if (!isMultiDocumentProject(activeProject)) {
+        const converted = await convertProjectToMultiDocument(activeProject);
+        activeProject = converted.project;
+        await loadProjectIntoEditor(converted, {
+          localInstanceId: localProjectInstanceId
+        });
+      }
+      const loaded = await createNewProjectDocument({
+        displayTitle,
+        groupId,
+        path,
+        project: activeProject,
+        role
+      });
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId
+      });
+      setSaveFeedback({
+        kind: "success",
+        message: `Created ${loaded.project.document?.display_title}.`
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleAddExistingProjectDocument(
+    groupId?: string | null
+  ) {
+    if (!projectHandle || isSaving) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    try {
+      const selected = await openMarkdownFileWithPicker();
+      if (!selected) {
+        return;
+      }
+      if (!selected.fileHandle) {
+        throw new Error(
+          "Patchmark needs a filesystem handle to verify that this file is inside the project."
+        );
+      }
+      const path = await resolveDocumentPathFromFileHandle(
+        projectHandle,
+        selected.fileHandle
+      );
+      setSaveStatus("saving");
+      setSaveFeedback(null);
+      await flushActiveDocumentForBoundary(
+        projectHandle,
+        "before_add_existing_document"
+      );
+      let activeProject = projectHandle;
+      if (!isMultiDocumentProject(activeProject)) {
+        const converted = await convertProjectToMultiDocument(activeProject);
+        activeProject = converted.project;
+        await loadProjectIntoEditor(converted, {
+          localInstanceId: localProjectInstanceId
+        });
+      }
+      const loaded = await addExistingDocumentToProject({
+        groupId,
+        path,
+        project: activeProject,
+        role: null
+      });
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId
+      });
+      setSaveFeedback({
+        kind: "success",
+        message: `Added ${loaded.project.document?.display_title} without changing its Markdown.`
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(error)
+      });
+    }
+  }
+
+  async function handleUpdateProjectDocument(
+    documentId: string,
+    changes: { displayTitle?: string; role?: PatchmarkDocumentRole }
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await updateProjectDocumentMetadata({
+        documentId,
+        project: projectHandle,
+        ...(changes.displayTitle !== undefined
+          ? { displayTitle: changes.displayTitle }
+          : {}),
+        ...(changes.role !== undefined ? { role: changes.role } : {})
+      });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Updated document metadata." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleMoveProjectDocument(
+    documentId: string,
+    direction: "up" | "down"
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    try {
+      await moveProjectDocument({ direction, documentId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleCreateProjectDocumentGroup(title: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await createProjectDocumentGroup({ project: projectHandle, title });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: `Created ${title} group.` });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleRenameProjectDocumentGroup(
+    groupId: string,
+    title: string
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await renameProjectDocumentGroup({ groupId, project: projectHandle, title });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Renamed document group." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleMoveProjectDocumentGroup(
+    groupId: string,
+    direction: "up" | "down"
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    try {
+      await moveProjectDocumentGroup({ direction, groupId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleMoveProjectDocumentToGroup(
+    documentId: string,
+    groupId: string | null
+  ) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await moveProjectDocumentToGroup({ documentId, groupId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Moved document metadata only." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleRemoveProjectDocumentGroup(groupId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      await deleteProjectDocumentGroup({ groupId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({
+        kind: "success",
+        message: "Removed group. Its documents are now ungrouped."
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleArchiveProjectDocument(documentId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    setSaveFeedback(null);
+    try {
+      const isActive = projectHandle.document?.document_id === documentId;
+      if (isActive && !confirmTransientDraftLoss()) {
+        setSaveStatus("idle");
+        return;
+      }
+      if (isActive) {
+        persistProjectDocumentUiState(
+          projectHandle,
+          {
+            activeCommentState,
+            markdownSelection,
+            mode,
+            scrollY: window.scrollY
+          },
+          localProjectInstanceId
+        );
+        await flushActiveDocumentForBoundary(projectHandle, "before_archive_document");
+      }
+      await archiveProjectDocument({ documentId, project: projectHandle });
+      const documents = await getProjectDocumentList(projectHandle);
+      setProjectDocuments(documents);
+      if (isActive) {
+        const nextDocument =
+          documents.find(
+            (document) =>
+              document.status === "active" && document.availability === "available"
+          ) ?? documents.find((document) => document.status === "active");
+        if (!nextDocument) {
+          throw new Error("No active document remains after archive.");
+        }
+        await loadProjectIntoEditor(
+          await openProjectDocument(projectHandle, nextDocument.document_id),
+          { localInstanceId: localProjectInstanceId }
+        );
+      } else {
+        setSaveStatus("idle");
+      }
+      setSaveFeedback({ kind: "success", message: "Archived document metadata only." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleRestoreProjectDocument(documentId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    setSaveStatus("saving");
+    try {
+      await restoreProjectDocument({ documentId, project: projectHandle });
+      setProjectDocuments(await getProjectDocumentList(projectHandle));
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Restored document." });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  async function handleLocateProjectDocument(documentId: string) {
+    if (!projectHandle || isSaving || !isMultiDocumentProject(projectHandle)) {
+      return;
+    }
+    if (!confirmTransientDraftLoss()) {
+      return;
+    }
+    try {
+      const selected = await openMarkdownFileWithPicker();
+      if (!selected?.fileHandle) {
+        return;
+      }
+      const path = await resolveDocumentPathFromFileHandle(
+        projectHandle,
+        selected.fileHandle
+      );
+      setSaveStatus("saving");
+      persistProjectDocumentUiState(
+        projectHandle,
+        {
+          activeCommentState,
+          markdownSelection,
+          mode,
+          scrollY: window.scrollY
+        },
+        localProjectInstanceId
+      );
+      await flushActiveDocumentForBoundary(
+        projectHandle,
+        "before_locate_document"
+      );
+      const loaded = await locateProjectDocument({
+        documentId,
+        path,
+        project: projectHandle
+      });
+      await loadProjectIntoEditor(loaded, {
+        localInstanceId: localProjectInstanceId
+      });
+      setSaveFeedback({
+        kind: "success",
+        message: `Located ${loaded.project.document?.display_title}.`
+      });
+    } catch (error) {
+      setSaveStatus("failed");
+      setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
+    }
+  }
+
+  function confirmTransientDraftLoss(): boolean {
+    if (!commentAddRequest && !commentReplyRequest) {
+      return true;
+    }
+    return window.confirm(
+      "Switching documents will discard the unsubmitted comment or reply draft. Continue?"
+    );
   }
 
   async function handleCreateSnapshot() {
@@ -1983,6 +4242,7 @@ export function DocumentEditor() {
       }
 
       setProjectHandle(snapshotResult.project);
+      setVersionEntries(snapshotResult.project.manifest.versions ?? []);
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
@@ -2002,6 +4262,23 @@ export function DocumentEditor() {
       setSaveFeedback({
         kind: "info",
         message: "ChatGPT prompt generation is available in Project Folder Mode."
+      });
+      return;
+    }
+
+    if (activeReviewBatch) {
+      handleOpenGuidedReview();
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${activeReviewBatch.batch_id} is already awaiting a response for this document.`
+      });
+      return;
+    }
+    if (pendingReviewResponseBatch) {
+      handleOpenGuidedReview();
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${pendingReviewResponseBatch.batch_id} has a response summary awaiting acknowledgment.`
       });
       return;
     }
@@ -2059,63 +4336,101 @@ export function DocumentEditor() {
       return;
     }
 
-    openChatGptPromptDialog({
+    void createManualReviewBatch({
       dedicatedDocumentReview: documentLevelFocusedComments.length === 1,
       focusedComments
     });
   }
 
-  function openChatGptPromptDialog({
+  async function createManualReviewBatch({
     dedicatedDocumentReview,
     focusedComments
   }: {
     dedicatedDocumentReview: boolean;
     focusedComments: PatchmarkComment[];
   }) {
-    if (!projectHandle) {
+    if (!projectHandle || isCommentBusy) {
       return;
     }
-
+    const operationProject = projectHandle;
+    const operationDocumentId = getProjectDocumentScopeId(operationProject);
+    const operationGeneration = operationProject.persistence.generation;
+    const operationMarkdown = markdown;
+    const operationComments = comments;
+    const operationPatches = patches;
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
-    const fileTimestamp = createFileSafeTimestamp(exportedAt);
-    const exportPayload = createFocusedCommentsExportPayload({
-      comments: focusedComments,
-      dedicatedDocumentReview,
-      exportedAt,
-      exportId,
-      headings,
-      markdown,
-      patches,
-      project: projectHandle
-    });
-    const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
-    const promptText = createFocusedCommentsChatGptPrompt(jsonText, {
-      dedicatedDocumentReview,
-      observedAt: exportedAt.slice(0, 10)
-    });
-    const fileNamePrefix = dedicatedDocumentReview
-      ? "document-comment"
-      : "focused-comments";
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    setSaveFeedback(null);
 
-    setChatGptPromptDialog({
-      commentIds: focusedComments.map((comment) => comment.id),
-      dedicatedDocumentReview,
-      exportedAt,
-      exportId,
-      payloadFileName: `${fileTimestamp}-${fileNamePrefix}-payload.json`,
-      promptFileName: `${fileTimestamp}-${fileNamePrefix}-prompt.md`,
-      jsonText,
-      promptText
-    });
-    setSaveFeedback({
-      kind: "info",
-      message: dedicatedDocumentReview
-        ? "Generated a dedicated ChatGPT prompt for one document-level comment."
-        : `Generated a ChatGPT prompt for ${focusedComments.length} focused comment${
-            focusedComments.length === 1 ? "" : "s"
-          }.`
-    });
+    try {
+      const result = await createTrackedReviewBatchExport({
+        algorithmVersion: null,
+        batchType: "manual",
+        buildPrompt: (reviewBatchEnvelope) =>
+          buildFocusedCommentsPromptPreview({
+            comments: focusedComments,
+            dedicatedDocumentReview,
+            exportedAt,
+            exportId,
+            headings: parseMarkdownHeadings(operationMarkdown),
+            markdown: operationMarkdown,
+            patches: operationPatches,
+            project: operationProject,
+            reviewBatchEnvelope
+          }),
+        comments: focusedComments,
+        documentGeneration: operationGeneration,
+        documentTitle:
+          operationProject.document?.display_title ??
+          operationProject.manifest.project_name,
+        markdown: operationMarkdown,
+        now: exportedAt,
+        overLimitWarning: false,
+        patches: operationPatches,
+        project: operationProject,
+        section: null,
+        source: "manual",
+        validateBeforeCommit: () => {
+          if (
+            activeDocumentIdRef.current === operationDocumentId &&
+            (markdownRef.current !== operationMarkdown ||
+              commentsRef.current !== operationComments ||
+              patchesRef.current !== operationPatches)
+          ) {
+            throw new Error(
+              "The document or comments changed during export. Generate a fresh prompt and try again."
+            );
+          }
+        }
+      });
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        return;
+      }
+      setReviewBatches(result.batches);
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: result.batch,
+          jsonText: result.jsonText,
+          promptText: result.promptText
+        })
+      );
+      setSaveFeedback({
+        kind: "success",
+        message: dedicatedDocumentReview
+          ? "Generated and saved a tracked prompt for one document-level comment."
+          : `Generated and saved a tracked prompt for ${focusedComments.length} focused comment${
+              focusedComments.length === 1 ? "" : "s"
+            }. Focus marks were left unchanged.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
   }
 
   function handleGenerateDedicatedDocumentPromptFromGuard() {
@@ -2142,7 +4457,7 @@ export function DocumentEditor() {
     }
 
     setDocumentLevelExportGuardDialog(null);
-    openChatGptPromptDialog({
+    void createManualReviewBatch({
       dedicatedDocumentReview: true,
       focusedComments: [documentComment]
     });
@@ -2194,7 +4509,7 @@ export function DocumentEditor() {
         "Unmarked other comments for this dedicated ChatGPT round."
       );
       setDocumentLevelExportGuardDialog(null);
-      openChatGptPromptDialog({
+      await createManualReviewBatch({
         dedicatedDocumentReview: true,
         focusedComments: [documentComment]
       });
@@ -2204,7 +4519,13 @@ export function DocumentEditor() {
   }
 
   async function handleCopyChatGptPrompt() {
-    if (!chatGptPromptDialog) {
+    if (
+      !chatGptPromptDialog ||
+      !isDocumentScopeCurrent(
+        chatGptPromptDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2216,12 +4537,26 @@ export function DocumentEditor() {
       return;
     }
 
+    const batch = reviewBatches.find(
+      (candidate) => candidate.batch_id === chatGptPromptDialog.batchId
+    );
+    if (!projectHandle || !batch) {
+      setSaveFeedback({
+        kind: "error",
+        message: "The saved Review Batch is no longer available."
+      });
+      return;
+    }
+
     try {
-      await navigator.clipboard.writeText(chatGptPromptDialog.promptText);
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
+      const promptText = await readExactReviewBatchPrompt({
+        batch,
+        project: projectHandle
+      });
+      await navigator.clipboard.writeText(promptText);
       setSaveFeedback({
         kind: "success",
-        message: "Prompt copied. Focused comments marked as exported."
+        message: "Copied the exact saved Review Batch prompt."
       });
     } catch (error) {
       setSaveFeedback({
@@ -2231,34 +4566,14 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleSaveChatGptPrompt() {
-    if (!projectHandle || !chatGptPromptDialog) {
-      return;
-    }
-
-    try {
-      const filePath = await writeProjectContextPack({
-        contents: chatGptPromptDialog.promptText,
-        fileName: chatGptPromptDialog.promptFileName,
-        project: projectHandle
-      });
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
-      setSaveFeedback({
-        kind: "success",
-        message: `Prompt saved to ${filePath}. Focused comments marked as exported.`
-      });
-    } catch (error) {
-      const message = getProjectErrorMessage(error);
-      setCommentsError(message);
-      setSaveFeedback({
-        kind: "error",
-        message
-      });
-    }
-  }
-
   async function handleCopyFocusedJsonPayload() {
-    if (!chatGptPromptDialog) {
+    if (
+      !chatGptPromptDialog?.jsonText ||
+      !isDocumentScopeCurrent(
+        chatGptPromptDialog,
+        activeDocumentIdRef.current
+      )
+    ) {
       return;
     }
 
@@ -2272,10 +4587,9 @@ export function DocumentEditor() {
 
     try {
       await navigator.clipboard.writeText(chatGptPromptDialog.jsonText);
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
       setSaveFeedback({
         kind: "success",
-        message: "JSON payload copied. Focused comments marked as exported."
+        message: "JSON payload copied."
       });
     } catch (error) {
       setSaveFeedback({
@@ -2285,29 +4599,544 @@ export function DocumentEditor() {
     }
   }
 
-  async function handleSaveFocusedJsonPayload() {
-    if (!projectHandle || !chatGptPromptDialog) {
+  async function handleGenerateGuidedReviewBatch(
+    proposalSession: GuidedReviewProposalSession
+  ) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isCommentBusy
+    ) {
+      return;
+    }
+    if (activeReviewBatch) {
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${activeReviewBatch.batch_id} is already awaiting a response for this document.`
+      });
+      return;
+    }
+    if (pendingReviewResponseBatch) {
+      setSaveFeedback({
+        kind: "info",
+        message: `Review Batch ${pendingReviewResponseBatch.batch_id} has a response summary awaiting acknowledgment.`
+      });
       return;
     }
 
-    try {
-      const filePath = await writeProjectContextPack({
-        contents: chatGptPromptDialog.jsonText,
-        fileName: chatGptPromptDialog.payloadFileName,
-        project: projectHandle
+    const operationProject = projectHandle;
+    const operationIdentity = activeDocumentIdentity;
+    const operationMarkdown = markdown;
+    const operationComments = comments;
+    const operationPatches = patches;
+    const operationDeferredCommentIds = new Set(deferredReviewCommentIds);
+    const operationBuildPromptPreview = ({
+      batchType,
+      selectedCommentIds
+    }: {
+      batchType: "follow_up" | "document_level" | "section";
+      selectedCommentIds: string[];
+    }) => {
+      const commentsById = new Map(
+        operationComments.map((comment) => [comment.id, comment])
+      );
+      const selectedComments = selectedCommentIds.flatMap((commentId) => {
+        const comment = commentsById.get(commentId);
+        return comment ? [comment] : [];
       });
-      await markFocusedExportCommentsAsExported(chatGptPromptDialog);
+      return buildFocusedCommentsPromptPreview({
+        comments: selectedComments,
+        dedicatedDocumentReview: batchType === "document_level",
+        exportedAt: REVIEW_QUEUE_PREVIEW_EXPORTED_AT,
+        exportId: REVIEW_QUEUE_PREVIEW_EXPORT_ID,
+        headings: parseMarkdownHeadings(operationMarkdown),
+        markdown: operationMarkdown,
+        patches: operationPatches,
+        project: operationProject,
+        reviewBatchEnvelope: {
+          review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
+          project_id: operationIdentity.projectId,
+          document_id: operationIdentity.documentId,
+          ordered_comment_ids: selectedCommentIds
+        }
+      }).promptText;
+    };
+    const freshQueue = deriveReviewQueue({
+      activeExportEvidence: [],
+      buildPromptPreview: operationBuildPromptPreview,
+      comments: operationComments,
+      deferredCommentIds: operationDeferredCommentIds,
+      documentGeneration: operationProject.persistence.generation,
+      documentId: operationIdentity.documentId,
+      markdown: operationMarkdown,
+      patches: operationPatches,
+      projectId: operationIdentity.projectId
+    });
+    const validatedSession = validateGuidedReviewSessionSelection({
+      buildPromptPreview: operationBuildPromptPreview,
+      queue: freshQueue,
+      session: proposalSession
+    });
+
+    const commentsById = new Map(
+      operationComments.map((comment) => [comment.id, comment])
+    );
+    const selectedComments = validatedSession.selectedCommentIds.flatMap(
+      (commentId) => {
+        const comment = commentsById.get(commentId);
+        return comment ? [comment] : [];
+      }
+    );
+    const section: ReviewBatchSectionSnapshot | null =
+      validatedSession.batchType === "section"
+        ? {
+            section_key_snapshot: validatedSession.sectionKey!,
+            heading_snapshot: validatedSession.sectionHeadingSnapshot
+          }
+        : null;
+    const exportedAt = new Date().toISOString();
+    const exportId = createCommentExportId(exportedAt);
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    setSaveFeedback(null);
+
+    try {
+      const result = await createTrackedReviewBatchExport({
+        algorithmVersion: freshQueue.algorithmVersion,
+        batchType: validatedSession.batchType,
+        buildPrompt: (reviewBatchEnvelope) =>
+          buildFocusedCommentsPromptPreview({
+            comments: selectedComments,
+            dedicatedDocumentReview:
+              validatedSession.batchType === "document_level",
+            exportedAt,
+            exportId,
+            headings: parseMarkdownHeadings(operationMarkdown),
+            markdown: operationMarkdown,
+            patches: operationPatches,
+            project: operationProject,
+            reviewBatchEnvelope
+          }),
+        comments: selectedComments,
+        documentGeneration: operationProject.persistence.generation,
+        documentTitle:
+          operationProject.document?.display_title ??
+          operationProject.manifest.project_name,
+        markdown: operationMarkdown,
+        now: exportedAt,
+        overLimitWarning: validatedSession.overLimitWarning,
+        patches: operationPatches,
+        project: operationProject,
+        section,
+        selectionAdjustment: {
+          base_proposal_comment_ids:
+            validatedSession.baseProposalCommentIds,
+          final_comment_ids: validatedSession.selectedCommentIds,
+          transiently_removed_comment_ids:
+            validatedSession.transientlyRemovedCommentIds,
+          transiently_added_comment_ids:
+            validatedSession.transientlyAddedCommentIds
+        },
+        source: "guided_review",
+        validateBeforeCommit: () => {
+          if (
+            activeDocumentKeyRef.current !==
+              createProjectDocumentKey(operationIdentity) ||
+            markdownRef.current !== operationMarkdown ||
+            commentsRef.current !== operationComments ||
+            patchesRef.current !== operationPatches
+          ) {
+            throw new Error(
+              "The document or comments changed during export. Review the refreshed proposal and try again."
+            );
+          }
+        }
+      });
+      if (
+        activeDocumentKeyRef.current !==
+        createProjectDocumentKey(operationIdentity)
+      ) {
+        return;
+      }
+      setReviewBatches(result.batches);
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: result.batch,
+          jsonText: result.jsonText,
+          promptText: result.promptText
+        })
+      );
       setSaveFeedback({
         kind: "success",
-        message: `JSON payload saved to ${filePath}. Focused comments marked as exported.`
+        message: `Generated and saved tracked Review Batch ${result.batch.batch_id}.`
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
       setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleDeferGuidedReviewComment(commentId: string) {
+    if (!projectHandle || !activeDocumentIdentity || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationIdentity = activeDocumentIdentity;
+    const operationDocumentKey = createProjectDocumentKey(operationIdentity);
+    const operationComments = comments;
+    const expectedDocumentGeneration = operationProject.persistence.generation;
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const overrides = await deferReviewComment({
+        commentId,
+        comments: operationComments,
+        deferredAt: new Date().toISOString(),
+        expectedDocumentGeneration,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setReviewQueueOverrides(overrides);
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentId} is deferred from Guided Review. The comment remains open.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      }
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleRestoreGuidedReviewComment(commentId: string) {
+    if (!projectHandle || !activeDocumentIdentity || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationIdentity = activeDocumentIdentity;
+    const operationDocumentKey = createProjectDocumentKey(operationIdentity);
+    const expectedDocumentGeneration = operationProject.persistence.generation;
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const overrides = await restoreDeferredReviewComment({
+        commentId,
+        expectedDocumentGeneration,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setReviewQueueOverrides(overrides);
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentId} returned to lifecycle-based review classification.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      }
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  function handleOpenGuidedReview() {
+    setIsGuidedReviewOpen(true);
+    const legacyBatch =
+      pendingReviewResponseBatch?.status === "response_received"
+        ? pendingReviewResponseBatch
+        : null;
+    if (
+      !projectHandle ||
+      !legacyBatch?.import_id ||
+      isCommentBusy ||
+      !hasExactImportedReviewBatchContributions({
+        batch: legacyBatch,
+        comments,
+        importId: legacyBatch.import_id,
+        patches
+      })
+    ) {
+      return;
+    }
+
+    const operationProject = projectHandle;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: legacyBatch.document_id,
+      projectId: legacyBatch.project_id
+    });
+    const analysis = analyzeImportedReviewBatchResponse({
+      analyzedAt: new Date().toISOString(),
+      batch: legacyBatch,
+      comments,
+      importId: legacyBatch.import_id,
+      patches: activePatches
+    });
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    void upgradeLegacyReviewBatchResponse({
+      analysis,
+      batchId: legacyBatch.batch_id,
+      project: operationProject
+    })
+      .then((batches) => {
+        if (activeDocumentKeyRef.current !== operationDocumentKey) {
+          return;
+        }
+        setReviewBatches(batches);
+      })
+      .catch((error) => {
+        if (activeDocumentKeyRef.current !== operationDocumentKey) {
+          return;
+        }
+        const message = getProjectErrorMessage(error);
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      })
+      .finally(() => setIsCommentBusy(false));
+  }
+
+  async function handleAcknowledgeReviewBatchResponse() {
+    if (!projectHandle || !pendingReviewResponseBatch || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationBatch = pendingReviewResponseBatch;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: operationBatch.document_id,
+      projectId: operationBatch.project_id
+    });
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const batches = await acknowledgeReviewBatchResponse({
+        acknowledgedAt: new Date().toISOString(),
+        batchId: operationBatch.batch_id,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setReviewBatches(batches);
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Review Batch response acknowledged. Replies, patches, and comments remain unchanged."
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setCommentsError(message);
+        setSaveFeedback({ kind: "error", message });
+      }
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  function handleReviewResponseComment(commentId: string) {
+    const deletedTombstone = projectHandle
+      ? getDeletedCommentTombstone(
+          projectHandle.manifest.comment_deletion_tombstones ?? [],
+          commentId
+        )
+      : null;
+    if (deletedTombstone) {
+      setSaveFeedback({
+        kind: "info",
+        message: "This comment was permanently deleted."
+      });
+      return;
+    }
+    if (
+      !pendingReviewResponseBatch ||
+      !pendingReviewResponseBatch.ordered_comment_ids.includes(commentId) ||
+      !comments.some((comment) => comment.id === commentId)
+    ) {
       setSaveFeedback({
         kind: "error",
-        message
+        message: "The selected Review Batch comment is no longer available."
       });
+      return;
+    }
+    setIsGuidedReviewOpen(false);
+    setActiveCommentState({
+      kind: "comment",
+      commentId
+    });
+  }
+
+  async function handleOpenActiveReviewBatchPrompt() {
+    if (!projectHandle || !activeReviewBatch || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationBatch = activeReviewBatch;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: operationBatch.document_id,
+      projectId: operationBatch.project_id
+    });
+    setIsCommentBusy(true);
+    try {
+      const promptText = await readExactReviewBatchPrompt({
+        batch: operationBatch,
+        project: operationProject
+      });
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: operationBatch,
+          promptText
+        })
+      );
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleCopyActiveReviewBatchPrompt() {
+    if (!projectHandle || !activeReviewBatch || isCommentBusy) {
+      return;
+    }
+    if (!navigator.clipboard) {
+      setSaveFeedback({
+        kind: "error",
+        message: "Clipboard copy is not available in this browser."
+      });
+      return;
+    }
+    const operationProject = projectHandle;
+    const operationBatch = activeReviewBatch;
+    const operationDocumentKey = createProjectDocumentKey({
+      documentId: operationBatch.document_id,
+      projectId: operationBatch.project_id
+    });
+    setIsCommentBusy(true);
+    try {
+      const promptText = await readExactReviewBatchPrompt({
+        batch: operationBatch,
+        project: operationProject
+      });
+      await navigator.clipboard.writeText(promptText);
+      if (activeDocumentKeyRef.current !== operationDocumentKey) {
+        return;
+      }
+      setSaveFeedback({
+        kind: "success",
+        message: "Copied the exact saved Review Batch prompt."
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  function handleRequestCancelActiveReviewBatch() {
+    if (!activeReviewBatch) {
+      return;
+    }
+    setReviewBatchCancelDialog({
+      batchId: activeReviewBatch.batch_id,
+      documentId: activeReviewBatch.document_id,
+      projectId: activeReviewBatch.project_id
+    });
+  }
+
+  function handleReviewBatchCancelDialogKeyDown(
+    event: ReactKeyboardEvent<HTMLElement>
+  ) {
+    if (event.key === "Escape" && !isCommentBusy) {
+      event.preventDefault();
+      setReviewBatchCancelDialog(null);
+      return;
+    }
+    if (event.key !== "Tab" || !reviewBatchCancelDialogRef.current) {
+      return;
+    }
+    const focusable = Array.from(
+      reviewBatchCancelDialogRef.current.querySelectorAll<HTMLButtonElement>(
+        "button:not([disabled])"
+      )
+    );
+    const first = focusable[0];
+    const last = focusable.at(-1);
+    if (!first || !last) {
+      return;
+    }
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  async function handleConfirmCancelReviewBatch() {
+    if (!projectHandle || !reviewBatchCancelDialog || isCommentBusy) {
+      return;
+    }
+    const operationProject = projectHandle;
+    const operation = reviewBatchCancelDialog;
+    if (
+      createProjectDocumentKey(getProjectDocumentIdentity(operationProject)) !==
+      createProjectDocumentKey(operation)
+    ) {
+      setReviewBatchCancelDialog(null);
+      return;
+    }
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      const batches = await cancelReviewBatch({
+        batchId: operation.batchId,
+        cancelledAt: new Date().toISOString(),
+        project: operationProject
+      });
+      if (
+        activeDocumentKeyRef.current !== createProjectDocumentKey(operation)
+      ) {
+        return;
+      }
+      setReviewBatches(batches);
+      setReviewBatchCancelDialog(null);
+      setChatGptPromptDialog(null);
+      setSaveFeedback({
+        kind: "success",
+        message:
+          "Review Batch cancelled. Its saved context pack was kept and no review or document data was deleted."
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({ kind: "error", message });
+    } finally {
+      setIsCommentBusy(false);
     }
   }
 
@@ -2320,8 +5149,13 @@ export function DocumentEditor() {
       return;
     }
 
+    const identity = getProjectDocumentIdentity(projectHandle);
     setChatGptImportDialog({
+      documentId: identity.documentId,
       error: null,
+      errorCode: null,
+      projectId: identity.projectId,
+      repairPrompt: CHATGPT_IMPORT_REPAIR_PROMPT,
       responseJson: "",
       sourceChatUrl: ""
     });
@@ -2332,29 +5166,74 @@ export function DocumentEditor() {
   ) {
     event.preventDefault();
 
-    if (!projectHandle || !chatGptImportDialog || isCommentBusy) {
+    if (
+      !projectHandle ||
+      !chatGptImportDialog ||
+      isCommentBusy ||
+      activeDocumentKeyRef.current !==
+        createProjectDocumentKey(chatGptImportDialog)
+    ) {
       return;
     }
 
     let parsedResponse: PatchmarkCommentReplyImport;
     let sourceChatUrl: string | undefined;
+    let responseAssociation: ReturnType<
+      typeof associateReviewBatchResponse
+    >;
+    let dependencyBaseDocumentState:
+      | "changed"
+      | "current"
+      | "unknown" = "unknown";
+    let dependencyValidationMarkdown = markdown;
+    let dependencyBaseDocumentSha256 = "";
 
     try {
       parsedResponse = parsePatchmarkCommentReplyImport(
         chatGptImportDialog.responseJson
       );
+      responseAssociation = associateReviewBatchResponse({
+        batches: reviewBatches,
+        response: parsedResponse,
+        target: getProjectDocumentIdentity(projectHandle)
+      });
+      if (responseAssociation.kind === "exact") {
+        validateExactReviewBatchResponseComments({
+          batch: responseAssociation.batch,
+          response: parsedResponse
+        });
+        dependencyValidationMarkdown = (
+          await readExactReviewBatchDocumentSnapshot({
+            batch: responseAssociation.batch,
+            currentMarkdown: markdown,
+            project: projectHandle
+          })
+        ).markdown;
+        dependencyBaseDocumentState = "current";
+      }
       validateAtomicTablePatchImport({
-        markdown,
+        markdown: dependencyValidationMarkdown,
         patchProposals: parsedResponse.patch_proposals
       });
+      dependencyBaseDocumentSha256 = await createContentSha256(
+        dependencyValidationMarkdown
+      );
       sourceChatUrl = normalizeSourceChatUrl(
         chatGptImportDialog.sourceChatUrl
       );
     } catch (error) {
       const message = getProjectErrorMessage(error);
+      const repairPrompt = createChatGptImportRepairPrompt(error);
       setChatGptImportDialog({
         ...chatGptImportDialog,
-        error: message
+        error: message,
+        errorCode:
+          error instanceof AtomicTablePatchValidationError ||
+          error instanceof PatchDependencyValidationError ||
+          error instanceof ReviewBatchDocumentSnapshotError
+            ? error.code
+            : null,
+        repairPrompt
       });
       setSaveFeedback({
         kind: "error",
@@ -2371,7 +5250,9 @@ export function DocumentEditor() {
       const importedAt = new Date().toISOString();
       const importId = createCommentImportId(importedAt);
       const safeTimestamp = createFileSafeTimestamp(importedAt);
-      const knownCommentIds = new Set(comments.map((comment) => comment.id));
+      const knownCommentIds = new Set(
+        activeComments.map((comment) => comment.id)
+      );
       const unknownCommentIds = getUnknownImportCommentIds(
         parsedResponse,
         knownCommentIds
@@ -2390,6 +5271,16 @@ export function DocumentEditor() {
         patchProposals: parsedResponse.patch_proposals,
         sourceChatUrl
       });
+      validateImportedPatchDependencySimulation({
+        baseDocumentSha256: dependencyBaseDocumentSha256,
+        baseDocumentState: dependencyBaseDocumentState,
+        comments,
+        documentId: chatGptImportDialog.documentId,
+        existingPatches:
+          responseAssociation.kind === "exact" ? [] : existingPatches,
+        importedPatches,
+        markdown: dependencyValidationMarkdown
+      });
       const { nextComments, openQuestionsAttached, repliesAttached } =
         createImportedCommentThreads({
           comments,
@@ -2404,34 +5295,80 @@ export function DocumentEditor() {
         (commentId) =>
           `Response referenced a comment that was not found: ${commentId}`
       );
+      if (activeReviewBatch && responseAssociation.kind !== "exact") {
+        importWarnings.push(
+          "The response did not include exact Review Batch identity. The active batch remains awaiting an associated response."
+        );
+      }
       const importWrapper = {
         import_id: importId,
         imported_at: importedAt,
+        target_document: getProjectDocumentExportIdentity(projectHandle),
         source_chat_url: sourceChatUrl,
         sources: parsedResponse.sources,
         raw_response: parsedResponse,
         warnings: importWarnings
       };
 
-      await writeProjectImport({
+      const nextPatches = [...existingPatches, ...importedPatches];
+      const responseAnalysis =
+        responseAssociation.kind === "exact"
+          ? analyzeImportedReviewBatchResponse({
+              analyzedAt: importedAt,
+              batch: responseAssociation.batch,
+              comments: nextComments,
+              importId,
+              patches: nextPatches
+            })
+          : null;
+      const nextReviewBatches =
+        responseAssociation.kind === "exact" && responseAnalysis
+          ? createRespondedReviewBatchRecords({
+              analysis: responseAnalysis,
+              batchId: responseAssociation.batch.batch_id,
+              batches: reviewBatches,
+              importId,
+              responseReceivedAt: importedAt
+            })
+          : reviewBatches;
+      const importRelativePath = await writeProjectImport({
         contents: `${JSON.stringify(importWrapper, null, 2)}\n`,
         fileName: `${safeTimestamp}-comment-reply-import.json`,
         project: projectHandle
       });
 
-      const nextPatches = [...existingPatches, ...importedPatches];
-      await saveProjectState({
-        comments: nextComments,
-        markdown,
-        patches: nextPatches,
-        project: projectHandle,
-        reason: "import_chatgpt_response"
-      });
+      try {
+        await saveProjectState({
+          comments: nextComments,
+          markdown,
+          patches: nextPatches,
+          reviewBatches: nextReviewBatches,
+          project: projectHandle,
+          reason: "import_chatgpt_response",
+          rollbackOnFailure: true
+        });
+      } catch (error) {
+        await removeProjectImport({
+          project: projectHandle,
+          relativePath: importRelativePath
+        }).catch(() => false);
+        throw error;
+      }
+
+      if (
+        activeDocumentKeyRef.current !==
+          createProjectDocumentKey(chatGptImportDialog)
+      ) {
+        return;
+      }
 
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      commentsRef.current = nextComments;
+      patchesRef.current = nextPatches;
       setComments(nextComments);
       setPatches(nextPatches);
+      setReviewBatches(nextReviewBatches);
       setChatGptImportDialog(null);
       setSaveFeedback({
         kind: importWarnings.length > 0 ? "info" : "success",
@@ -2444,40 +5381,30 @@ export function DocumentEditor() {
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
-      setCommentsError(message);
-      setChatGptImportDialog({
-        ...chatGptImportDialog,
-        error: message
-      });
-      setSaveFeedback({
-        kind: "error",
-        message
-      });
+      const repairPrompt = createChatGptImportRepairPrompt(error);
+      if (
+        activeDocumentKeyRef.current ===
+        createProjectDocumentKey(chatGptImportDialog)
+      ) {
+        setCommentsError(message);
+        setChatGptImportDialog({
+          ...chatGptImportDialog,
+          error: message,
+          errorCode:
+            error instanceof AtomicTablePatchValidationError ||
+            error instanceof PatchDependencyValidationError
+              ? error.code
+              : null,
+          repairPrompt
+        });
+        setSaveFeedback({
+          kind: "error",
+          message
+        });
+      }
     } finally {
       setIsCommentBusy(false);
     }
-  }
-
-  async function markFocusedExportCommentsAsExported(
-    exportDialog: ChatGptPromptDialogState
-  ) {
-    const exportedCommentIds = new Set(exportDialog.commentIds);
-    const nextComments = comments.map((comment) =>
-      exportedCommentIds.has(comment.id) && comment.status === "open"
-        ? {
-            ...comment,
-            export_state: {
-              ...comment.export_state,
-              focus_state: "exported" as const,
-              last_exported_at: exportDialog.exportedAt,
-              last_export_id: exportDialog.exportId
-            },
-            updated_at: exportDialog.exportedAt
-          }
-        : comment
-    );
-
-    await persistComments(nextComments, "Marked focused comments as exported.");
   }
 
   async function handleViewSnapshot(
@@ -2488,12 +5415,21 @@ export function DocumentEditor() {
       return;
     }
 
+    const versionRef = createVersionRef(
+      getProjectDocumentScopeId(projectHandle),
+      version.id
+    );
     try {
-      const snapshotMarkdown = await readProjectVersionMarkdown(
+      const snapshotMarkdown = await readProjectVersionMarkdownByRef(
         projectHandle,
+        versionRef,
         version
       );
+      if (!isDocumentScopeCurrent(versionRef, activeDocumentIdRef.current)) {
+        return;
+      }
       setSnapshotDialog({
+        documentId: versionRef.documentId,
         displayTitle,
         kind: "view",
         snapshotMarkdown,
@@ -2515,13 +5451,22 @@ export function DocumentEditor() {
       return;
     }
 
+    const versionRef = createVersionRef(
+      getProjectDocumentScopeId(projectHandle),
+      version.id
+    );
     try {
-      const snapshotMarkdown = await readProjectVersionMarkdown(
+      const snapshotMarkdown = await readProjectVersionMarkdownByRef(
         projectHandle,
+        versionRef,
         version
       );
+      if (!isDocumentScopeCurrent(versionRef, activeDocumentIdRef.current)) {
+        return;
+      }
       setSnapshotDialog({
         currentMarkdown: markdown,
+        documentId: versionRef.documentId,
         displayTitle,
         kind: "compare",
         snapshotMarkdown,
@@ -2861,10 +5806,397 @@ export function DocumentEditor() {
     await persistComments(nextComments, "Removed comment from ChatGPT export queue.");
   }
 
-  async function handleDeleteComment(commentId: string) {
-    const nextComments = comments.filter((comment) => comment.id !== commentId);
+  async function handlePrepareMoveCommentsToTrash(
+    commentIds: string[],
+    unsavedDraftCommentIds: string[]
+  ) {
+    if (!projectHandle || !activeDocumentIdentity) {
+      throw new Error("Comments require an active project document.");
+    }
 
-    await persistComments(nextComments, "Deleted comment.");
+    return buildCommentTrashSummary({
+      activeReanchorCommentId: reanchorSession?.commentId ?? null,
+      anchorStatuses: Object.fromEntries(
+        Object.entries(commentAnchorSummaries).map(([commentId, summary]) => [
+          commentId,
+          summary.status
+        ])
+      ),
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: activeDocumentIdentity.documentId,
+      patches,
+      projectId: activeDocumentIdentity.projectId,
+      reviewBatches,
+      unsavedDraftCommentIds
+    });
+  }
+
+  async function handleMoveCommentsToTrash({
+    commentIds,
+    expectedSelectionFingerprint,
+    unsavedDraftCommentIds
+  }: {
+    commentIds: string[];
+    expectedSelectionFingerprint: string;
+    unsavedDraftCommentIds: string[];
+  }) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error("Wait for the active document operation to finish.");
+    }
+
+    const operationDocumentId = activeDocumentIdentity.documentId;
+    const operationProjectId = activeDocumentIdentity.projectId;
+    const timestamp = new Date().toISOString();
+    const operationId = `comment_trash_${
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : timestamp.replaceAll(/[^0-9]/g, "")
+    }`;
+    const result = moveCommentsToTrash({
+      activeReanchorCommentId: reanchorSession?.commentId ?? null,
+      anchorStatuses: Object.fromEntries(
+        Object.entries(commentAnchorSummaries).map(([commentId, summary]) => [
+          commentId,
+          summary.status
+        ])
+      ),
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: operationDocumentId,
+      expectedSelectionFingerprint,
+      operationId,
+      patches,
+      projectId: operationProjectId,
+      reviewBatches,
+      timestamp,
+      unsavedDraftCommentIds
+    });
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      await saveProjectState({
+        comments: result.comments,
+        project: projectHandle,
+        reason: operationId,
+        rollbackOnFailure: true
+      });
+      if (
+        activeDocumentIdRef.current !== operationDocumentId ||
+        activeProjectIdRef.current !== operationProjectId
+      ) {
+        throw new Error(
+          "The active document changed before the Trash operation completed."
+        );
+      }
+
+      const selectedIds = new Set(commentIds);
+      commentsRef.current = result.comments;
+      setComments(result.comments);
+      setActiveCommentState((current) => {
+        if (
+          current.kind === "comment" &&
+          selectedIds.has(current.commentId)
+        ) {
+          return { kind: "none" };
+        }
+        if (current.kind === "anchor_group") {
+          const remaining = current.commentIds.filter(
+            (commentId) => !selectedIds.has(commentId)
+          );
+          return remaining.length === 0
+            ? { kind: "none" }
+            : remaining.length === 1
+              ? { kind: "comment", commentId: remaining[0] }
+              : { kind: "anchor_group", commentIds: remaining };
+        }
+        return current;
+      });
+      setCommentReplyRequest((current) =>
+        current && selectedIds.has(current.commentId) ? null : current
+      );
+      setDocumentLevelExportGuardDialog(null);
+      setMarkCommentFocusGuardDialog(null);
+      setPatchReviewCommentScopeId((current) =>
+        current && selectedIds.has(current) ? null : current
+      );
+      setPatchGroupListDialog((current) =>
+        current?.commentId && selectedIds.has(current.commentId) ? null : current
+      );
+      if (selectedPatch?.comment_id && selectedIds.has(selectedPatch.comment_id)) {
+        setSelectedPatchId(null);
+        setSelectedPatchGroupId(null);
+        setPatchReviewGroupScopeId(null);
+      }
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentIds.length} comment${
+          commentIds.length === 1 ? "" : "s"
+        } moved to Trash.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message: `${message} No comments were moved to Trash.`
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handleRestoreCommentsFromTrash(commentIds: string[]) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error("Wait for the active document operation to finish.");
+    }
+
+    const operationDocumentId = activeDocumentIdentity.documentId;
+    const operationProjectId = activeDocumentIdentity.projectId;
+    const nextComments = restoreCommentsFromTrash({
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: operationDocumentId,
+      projectId: operationProjectId,
+      timestamp: new Date().toISOString()
+    });
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      await saveProjectState({
+        comments: nextComments,
+        project: projectHandle,
+        reason: `comment_restore:${commentIds.join(",")}`,
+        rollbackOnFailure: true
+      });
+      if (
+        activeDocumentIdRef.current !== operationDocumentId ||
+        activeProjectIdRef.current !== operationProjectId
+      ) {
+        throw new Error(
+          "The active document changed before the Restore operation completed."
+        );
+      }
+      commentsRef.current = nextComments;
+      setComments(nextComments);
+      setSaveFeedback({
+        kind: "success",
+        message: `${commentIds.length} comment${
+          commentIds.length === 1 ? "" : "s"
+        } restored. Current anchors were re-evaluated.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message: `${message} No comments were restored.`
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
+  }
+
+  async function handlePreparePermanentDeleteComments(
+    commentIds: string[],
+    unsavedDraftCommentIds: string[],
+    mode: CommentPermanentDeletionMode
+  ) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !reviewQueueOverrides
+    ) {
+      throw new Error("Permanent deletion requires an active project document.");
+    }
+
+    return buildPermanentDeletionSummary({
+      commentIds,
+      comments: commentsRef.current,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: activeDocumentIdentity.documentId,
+      inFlightImport: false,
+      inFlightMutation: Boolean(reanchorSession),
+      mode,
+      patches: patchesRef.current,
+      projectId: activeDocumentIdentity.projectId,
+      reviewBatches,
+      reviewQueueOverrides,
+      tombstones: projectHandle.manifest.comment_deletion_tombstones ?? [],
+      unsavedDraftCommentIds
+    });
+  }
+
+  async function handlePermanentlyDeleteComments({
+    commentIds,
+    confirmationPhrase,
+    expectedSelectionFingerprint,
+    mode,
+    unsavedDraftCommentIds
+  }: {
+    commentIds: string[];
+    confirmationPhrase: string;
+    expectedSelectionFingerprint: string;
+    mode: CommentPermanentDeletionMode;
+    unsavedDraftCommentIds: string[];
+  }) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !reviewQueueOverrides ||
+      isCommentBusy ||
+      reanchorSession ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error("Wait for the active document operation to finish.");
+    }
+
+    const operationDocumentId = activeDocumentIdentity.documentId;
+    const operationProjectId = activeDocumentIdentity.projectId;
+    const timestamp = new Date().toISOString();
+    const operationId = `comment_delete_${
+      typeof crypto.randomUUID === "function"
+        ? crypto.randomUUID()
+        : timestamp.replaceAll(/[^0-9]/g, "")
+    }`;
+    const sharedInput = {
+      comments: commentsRef.current,
+      confirmationPhrase,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
+      documentId: operationDocumentId,
+      inFlightImport: false,
+      inFlightMutation: false,
+      manifest: projectHandle.manifest,
+      operationId,
+      patches: patchesRef.current,
+      projectId: operationProjectId,
+      reviewBatches,
+      reviewQueueOverrides,
+      timestamp,
+      unsavedDraftCommentIds
+    };
+    const result =
+      mode === "empty_trash"
+        ? emptyCommentTrash({
+            ...sharedInput,
+            expectedTrashFingerprint: expectedSelectionFingerprint
+          })
+        : permanentlyDeleteComments({
+            ...sharedInput,
+            commentIds,
+            expectedSelectionFingerprint,
+            mode
+          });
+
+    setIsCommentBusy(true);
+    setCommentsError(null);
+    try {
+      await saveProjectState({
+        comments: result.comments,
+        manifest: result.manifest,
+        patches: result.patches,
+        project: projectHandle,
+        reason: operationId,
+        reviewQueueOverrides: result.reviewQueueOverrides,
+        rollbackOnFailure: true
+      });
+      if (
+        activeDocumentIdRef.current !== operationDocumentId ||
+        activeProjectIdRef.current !== operationProjectId
+      ) {
+        throw new Error(
+          "The active document changed before permanent deletion completed."
+        );
+      }
+
+      const deletedIds = new Set(commentIds);
+      commentsRef.current = result.comments;
+      patchesRef.current = result.patches;
+      setComments(result.comments);
+      setPatches(result.patches);
+      setReviewQueueOverrides(result.reviewQueueOverrides);
+      setActiveCommentState((current) => {
+        if (
+          current.kind === "comment" &&
+          deletedIds.has(current.commentId)
+        ) {
+          return { kind: "none" };
+        }
+        if (current.kind === "anchor_group") {
+          const remaining = current.commentIds.filter(
+            (commentId) => !deletedIds.has(commentId)
+          );
+          return remaining.length === 0
+            ? { kind: "none" }
+            : remaining.length === 1
+              ? { kind: "comment", commentId: remaining[0] }
+              : { kind: "anchor_group", commentIds: remaining };
+        }
+        return current;
+      });
+      setCommentReplyRequest((current) =>
+        current && deletedIds.has(current.commentId) ? null : current
+      );
+      setDocumentLevelExportGuardDialog(null);
+      setMarkCommentFocusGuardDialog(null);
+      setPatchReviewCommentScopeId((current) =>
+        current && deletedIds.has(current) ? null : current
+      );
+      setPatchGroupListDialog((current) =>
+        current?.commentId && deletedIds.has(current.commentId) ? null : current
+      );
+      if (selectedPatch?.comment_id && deletedIds.has(selectedPatch.comment_id)) {
+        setSelectedPatchId(null);
+        setSelectedPatchGroupId(null);
+        setPatchReviewGroupScopeId(null);
+      }
+      setSaveFeedback({
+        kind: "success",
+        message:
+          mode === "empty_trash"
+            ? `Trash emptied for ${
+                projectHandle.document?.display_title ??
+                projectHandle.manifest.project_name
+              }. ${result.summary.selectedComments} comment${
+                result.summary.selectedComments === 1 ? "" : "s"
+              } permanently deleted.`
+            : `${result.summary.selectedComments} comment${
+                result.summary.selectedComments === 1 ? "" : "s"
+              } permanently deleted. Accepted Markdown changes remain.`
+      });
+    } catch (error) {
+      const message = getProjectErrorMessage(error);
+      setCommentsError(message);
+      setSaveFeedback({
+        kind: "error",
+        message: `${message} Trash remains unchanged.`
+      });
+      throw error;
+    } finally {
+      setIsCommentBusy(false);
+    }
   }
 
   async function handleFindComment(comment: PatchmarkComment) {
@@ -3059,6 +6391,17 @@ export function DocumentEditor() {
     setSelectedPatchId(reviewablePatches[nextIndex].id);
   }
 
+  function handleReviewPatchDependency(patch: PatchmarkPatch) {
+    const group =
+      patchGroups.find((candidate) => candidate.id === getDerivedPatchGroupId(patch)) ??
+      null;
+
+    setSelectedPatchGroupId(group?.id ?? null);
+    setPatchReviewGroupScopeId(group?.id ?? null);
+    setPatchReviewCommentScopeId(null);
+    setSelectedPatchId(patch.id);
+  }
+
   function handleFindPatchAnchorText(patch: PatchmarkPatch) {
     if (patch.status === "accepted") {
       const anchorStatus = getAppliedPatchAnchorStatus(markdown, patch, patches);
@@ -3202,16 +6545,24 @@ export function DocumentEditor() {
       markdown,
       currentPatch,
       patches,
-      comments
+      comments,
+      getProjectDocumentIdentity(projectHandle).documentId
     );
     const currentPatchApplicability =
       currentPatchAnchorStatus.kind === "pending"
         ? currentPatchAnchorStatus.applicability
         : "not_found";
-    const acceptBlocker = getPatchAcceptDisabledMessage(
-      currentPatch,
-      currentPatchApplicability
-    );
+    const dependencyStatus = getPatchDependencyReviewStatus({
+      applicability: currentPatchApplicability,
+      patch: currentPatch,
+      patches
+    });
+    const acceptBlocker =
+      getPatchDependencyBlockerMessage(dependencyStatus) ??
+      getPatchAcceptDisabledMessage(
+        currentPatch,
+        currentPatchApplicability
+      );
 
     if (acceptBlocker) {
       setSaveFeedback({
@@ -3264,11 +6615,11 @@ export function DocumentEditor() {
         throw new Error("Patchmark could not create a pre-apply safety snapshot.");
       }
 
-      const nextMarkdown = replaceSingleOccurrenceAt({
-        replacement: currentPatch.suggested_text,
-        search: currentPatch.original_text,
+      const nextMarkdown = applyPatchReplacementAt({
+        markdown,
+        originalText: currentPatch.original_text,
         start: originalStart,
-        text: markdown
+        suggestedText: currentPatch.suggested_text
       });
       const replacementStart = originalStart;
       const replacementEnd = replacementStart + currentPatch.suggested_text.length;
@@ -3298,25 +6649,34 @@ export function DocumentEditor() {
         },
         source: "patch_apply"
       });
-      const nextPatches = patches.map((candidate) =>
-        candidate.id === currentPatch.id
-          ? {
-              ...candidate,
-              anchor_recovery_history: currentPatch.anchor_recovery_history,
-              original_text: currentPatch.original_text,
-              previous_original_text: currentPatch.previous_original_text,
-              reanchored_at: currentPatch.reanchored_at,
-              reanchor_reason: currentPatch.reanchor_reason,
-              status: "accepted" as const,
-              resolved_at: appliedAt,
-              accepted_at: appliedAt,
-              applied_at: appliedAt,
-              pre_apply_snapshot_id: snapshotResult.version.id,
-              pre_apply_snapshot_file: snapshotResult.version.file,
-              ...appliedAnchorMetadata
-            }
-          : candidate
-      );
+      const nextPatches = transformPendingPatchTargetProvenances({
+        edits: [
+          {
+            oldStart: originalStart,
+            oldEnd: originalEnd,
+            insertedText: currentPatch.suggested_text
+          }
+        ],
+        patches: patches.map((candidate) =>
+          candidate.id === currentPatch.id
+            ? {
+                ...candidate,
+                anchor_recovery_history: currentPatch.anchor_recovery_history,
+                original_text: currentPatch.original_text,
+                previous_original_text: currentPatch.previous_original_text,
+                reanchored_at: currentPatch.reanchored_at,
+                reanchor_reason: currentPatch.reanchor_reason,
+                status: "accepted" as const,
+                resolved_at: appliedAt,
+                accepted_at: appliedAt,
+                applied_at: appliedAt,
+                pre_apply_snapshot_id: snapshotResult.version.id,
+                pre_apply_snapshot_file: snapshotResult.version.file,
+                ...appliedAnchorMetadata
+              }
+            : candidate
+        )
+      });
 
       const linkedCommentMissing =
         Boolean(currentPatch.comment_id) && !mutationResult.linkedCommentFound;
@@ -3417,7 +6777,8 @@ export function DocumentEditor() {
             original_text: tableRowRebase.currentRowText,
             previous_original_text: currentPatch.original_text,
             reanchored_at: reanchoredAt,
-            reanchor_reason: "table_row_normalized_match" as const
+            reanchor_reason: "table_row_normalized_match" as const,
+            target_provenance: undefined
           }
         : candidate
     );
@@ -3668,6 +7029,8 @@ export function DocumentEditor() {
     if (!projectHandle || reanchorSession) {
       return;
     }
+    const documentIdentity = getProjectDocumentIdentity(projectHandle);
+    const documentId = documentIdentity.documentId;
 
     const comment = comments.find((candidate) => candidate.id === commentId);
 
@@ -3691,7 +7054,7 @@ export function DocumentEditor() {
           ? "not_found"
           : "active");
 
-    setCommentContextMenu(null);
+    setSelectionActions(null);
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
     setMarkdownSelection({ end: 0, start: 0 });
@@ -3705,15 +7068,23 @@ export function DocumentEditor() {
         resolution
       }),
       commentId,
+      documentId,
       documentHash: createDocumentHash(markdown),
       documentVersion,
       error: null,
       previousActiveCommentState: activeCommentState,
       previousStatus,
-      previewProposal: null
+      previewProposal: null,
+      previewReturnScrollY: null,
+      projectId: documentIdentity.projectId,
+      selectionDraft: null,
+      selectionHelp: "Select non-empty text inside the current document.",
+      selectionLatencyMs: null,
+      startedAt: performance.now(),
+      startedMode: mode,
+      startedScrollY: window.scrollY
     });
     setActiveCommentState({ kind: "comment", commentId });
-    setSaveFeedback(null);
   }
 
   function cancelReanchorMode() {
@@ -3721,19 +7092,38 @@ export function DocumentEditor() {
       return;
     }
 
+    const commentId = reanchorSession.commentId;
     setReanchorConfirmation(null);
     setReanchorSession(null);
     setMarkdownSelection({ end: 0, start: 0 });
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
-    setActiveCommentState(reanchorSession.previousActiveCommentState);
+    if (
+      isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+    ) {
+      setActiveCommentState(reanchorSession.previousActiveCommentState);
+    }
+    restoreFocusToCommentCard(commentId);
+  }
+
+  function restoreFocusToCommentCard(commentId: string) {
+    window.requestAnimationFrame(() => {
+      document
+        .getElementById(`patchmark-comment-card-${commentId}`)
+        ?.focus({ preventScroll: true });
+    });
   }
 
   function createProposalForRange(
     range: { end: number; start: number },
     source: "candidate" | "markdown" | "visual"
   ): HumanReanchorProposal | null {
-    if (!reanchorSession || !projectHandle) {
+    if (
+      !reanchorSession ||
+      !projectHandle ||
+      reanchorSession.projectId !== activeProjectIdRef.current ||
+      !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+    ) {
       return null;
     }
 
@@ -3747,10 +7137,13 @@ export function DocumentEditor() {
 
     try {
       return createHumanReanchorProposal({
+        commentId: reanchorSession.commentId,
+        documentId: reanchorSession.documentId,
         documentGeneration: reanchorSession.documentVersion,
         headings,
         markdown,
         previousAnchor: comment.anchor,
+        projectId: reanchorSession.projectId,
         range,
         saveGeneration: projectHandle.manifest.save_generation ?? 0,
         source
@@ -3780,7 +7173,9 @@ export function DocumentEditor() {
         ? {
             ...current,
             error: null,
-            previewProposal: proposal
+            previewProposal: proposal,
+            previewReturnScrollY:
+              current.previewReturnScrollY ?? window.scrollY
           }
         : current
     );
@@ -3809,27 +7204,33 @@ export function DocumentEditor() {
     setReanchorConfirmation(proposal);
   }
 
+  function handleReturnFromReanchorPreview() {
+    if (!reanchorSession || reanchorSession.previewReturnScrollY === null) {
+      return;
+    }
+
+    const returnScrollY = reanchorSession.previewReturnScrollY;
+    setReanchorSession({
+      ...reanchorSession,
+      previewProposal: null,
+      previewReturnScrollY: null
+    });
+    window.requestAnimationFrame(() => {
+      window.scrollTo({ top: returnScrollY });
+    });
+  }
+
   function handleUseSelectionForReanchor() {
     if (!reanchorSession) {
       return;
     }
 
-    const selectionDraft =
-      mode === "markdown"
-        ? createMarkdownSelectionDraft(markdown, markdownSelection)
-        : visualSelectionDraft ??
-          createVisualSelectionDraftResult({
-            container: editorDocumentRef.current,
-            markdown
-          }).draft;
-    const start = getDraftMarkdownStartOffset(selectionDraft);
-    const end = selectionDraft?.markdownEndOffset;
+    const selectionDraft = reanchorSession.selectionDraft;
+    const selectionRange = getDraftMarkdownRange(selectionDraft);
 
     if (
       !selectionDraft ||
-      typeof start !== "number" ||
-      typeof end !== "number" ||
-      end <= start
+      !selectionRange
     ) {
       setReanchorSession({
         ...reanchorSession,
@@ -3839,7 +7240,7 @@ export function DocumentEditor() {
     }
 
     const proposal = createProposalForRange(
-      { start, end },
+      selectionRange,
       mode === "visual" ? "visual" : "markdown"
     );
 
@@ -3860,7 +7261,14 @@ export function DocumentEditor() {
       !reanchorSession ||
       !reanchorConfirmation ||
       !projectHandle ||
-      isCommentBusy
+      isCommentBusy ||
+      reanchorSession.projectId !== activeProjectIdRef.current ||
+      reanchorConfirmation.projectId !== activeProjectIdRef.current ||
+      !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current) ||
+      !isDocumentScopeCurrent(
+        reanchorConfirmation,
+        activeDocumentIdRef.current
+      )
     ) {
       return;
     }
@@ -3880,7 +7288,9 @@ export function DocumentEditor() {
 
     const result = applyHumanReanchor({
       comment,
+      currentDocumentId: getProjectDocumentScopeId(projectHandle),
       currentDocumentGeneration: documentVersion,
+      currentProjectId: getProjectDocumentIdentity(projectHandle).projectId,
       currentSaveGeneration: projectHandle.manifest.save_generation ?? 0,
       markdown,
       patches,
@@ -3899,6 +7309,7 @@ export function DocumentEditor() {
         kind: "info",
         message: "This comment is already anchored to that text."
       });
+      restoreFocusToCommentCard(comment.id);
       return;
     }
 
@@ -3933,6 +7344,11 @@ export function DocumentEditor() {
         project: projectHandle,
         reason: `human_reanchor:${comment.id}`
       });
+      if (
+        !isDocumentScopeCurrent(reanchorSession, activeDocumentIdRef.current)
+      ) {
+        return;
+      }
       lastScrolledActiveCommentKeyRef.current = null;
       setComments(nextComments);
       setReanchorConfirmation(null);
@@ -3943,9 +7359,21 @@ export function DocumentEditor() {
       setActiveCommentState({ kind: "comment", commentId: comment.id });
       setSaveFeedback({
         kind: "success",
-        message: "Comment anchor updated."
+        message: "Comment re-anchored."
       });
-    } catch {
+      restoreFocusToCommentCard(comment.id);
+    } catch (error) {
+      setReanchorSession((current) =>
+        current &&
+        current.projectId === reanchorSession.projectId &&
+        current.documentId === reanchorSession.documentId &&
+        current.commentId === reanchorSession.commentId
+          ? {
+              ...current,
+              error: `Unable to update the comment anchor. ${getProjectErrorMessage(error)} The previous anchor remains authoritative.`
+            }
+          : current
+      );
       setSaveFeedback({
         kind: "error",
         message:
@@ -3965,17 +7393,163 @@ export function DocumentEditor() {
     });
   }
 
+  function handleEditorModeChange(nextMode: EditorMode) {
+    if (nextMode === mode) {
+      return;
+    }
+
+    setMode(nextMode);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setMarkdownSelectionRequest(null);
+    setVisualSelectionDraft(null);
+    setSelectionActions(null);
+    setReanchorSession((current) =>
+      current
+        ? {
+            ...current,
+            error: null,
+            previewProposal: null,
+            selectionDraft: null,
+            selectionHelp: `Select non-empty text in ${
+              nextMode === "visual" ? "Visual Mode" : "Markdown Mode"
+            }.`,
+            selectionLatencyMs: null
+          }
+        : current
+    );
+  }
+
+  function handleMarkdownSelectionChange(
+    nextSelection: MarkdownSelection,
+    sourceElement?: HTMLTextAreaElement
+  ) {
+    const selectionStartedAt = performance.now();
+    setMarkdownSelection(nextSelection);
+
+    if (mode !== "markdown") {
+      return;
+    }
+
+    const selectionResult = createMarkdownSelectionDraftResult(
+      markdown,
+      nextSelection
+    );
+
+    if (reanchorSession) {
+      setSelectionActions(null);
+      const selectionRange = getDraftMarkdownRange(selectionResult.draft);
+      const selectionHelp = selectionRange
+        ? null
+        : selectionResult.help ??
+          "Select non-empty text inside the current Markdown document.";
+
+      setReanchorSession((current) => {
+        if (
+          !current ||
+          current.projectId !== activeProjectIdRef.current ||
+          current.documentId !== activeDocumentIdRef.current ||
+          current.documentVersion !== documentVersion
+        ) {
+          return current;
+        }
+
+        return {
+          ...current,
+          error: null,
+          previewProposal: null,
+          selectionDraft: selectionResult.draft,
+          selectionHelp,
+          selectionLatencyMs: Math.max(
+            0,
+            performance.now() - selectionStartedAt
+          )
+        };
+      });
+      return;
+    }
+
+    if (
+      !activeDocumentIdentity ||
+      !activeDocumentKey ||
+      !isProjectMode ||
+      isProjectRecoveryReadOnly ||
+      isCommentBusy ||
+      requestedProjectDocumentId !== null ||
+      commentAddRequest?.scope === "selected_text"
+    ) {
+      setSelectionActions(null);
+      return;
+    }
+
+    if (!selectionResult.draft) {
+      setSelectionActions(null);
+      return;
+    }
+
+    const selectionStart = getDraftMarkdownStartOffset(selectionResult.draft);
+    const targetHeading =
+      typeof selectionStart === "number"
+        ? getHeadingContainingOffset(markdown, headings, selectionStart)
+        : undefined;
+    const sourceRect = sourceElement?.getBoundingClientRect();
+    const anchorRect = sourceRect
+      ? createPointAffordanceRect(
+          Math.min(sourceRect.right - 24, sourceRect.left + sourceRect.width * 0.7),
+          Math.min(sourceRect.bottom - 24, sourceRect.top + 88)
+        )
+      : createPointAffordanceRect(
+          Math.max(16, window.innerWidth / 2),
+          Math.max(16, window.innerHeight / 3)
+        );
+    const documentFingerprint = createDocumentHash(markdown);
+    const selectionFingerprint = createSelectionActionFingerprint({
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentVersion,
+      draft: selectionResult.draft,
+      projectId: activeDocumentIdentity.projectId,
+      targetHeadingLine: targetHeading?.line ?? null
+    });
+    const current = selectionActionsRef.current;
+    const preservesOpenChooser =
+      current?.presentation === "chooser" &&
+      current.documentKey === activeDocumentKey &&
+      current.documentVersion === documentVersion &&
+      current.selectionFingerprint === selectionFingerprint;
+    const presentation: SelectionActionsPresentation = preservesOpenChooser
+      ? "chooser"
+      : "compact";
+    const position = getSelectionActionsPosition({
+      anchorRect,
+      presentation
+    });
+
+    setSelectionActions({
+      anchorRect,
+      documentFingerprint,
+      documentId: activeDocumentIdentity.documentId,
+      documentKey: activeDocumentKey,
+      documentVersion,
+      presentation,
+      projectId: activeDocumentIdentity.projectId,
+      selectedDraft: selectionResult.draft,
+      selectedTextPositionTop: null,
+      selectionFingerprint,
+      selectionHelp: selectionResult.help,
+      selectionLatencyMs: Math.max(0, performance.now() - selectionStartedAt),
+      targetHeadingLine: targetHeading?.line ?? null,
+      trigger: preservesOpenChooser ? current.trigger : "selection",
+      x: position.x,
+      y: position.y
+    });
+  }
+
   function handleEditorMouseUp() {
     if (mode !== "visual") {
       return;
     }
 
-    setVisualSelectionDraft(
-      createVisualSelectionDraftResult({
-        container: editorDocumentRef.current,
-        markdown
-      }).draft
-    );
+    syncVisualCommentSelection({ clearInvalidReanchorSelection: true });
   }
 
   function handleEditorClick(event: React.MouseEvent<HTMLDivElement>) {
@@ -4021,17 +7595,30 @@ export function DocumentEditor() {
     event.preventDefault();
 
     if (isReanchorMode) {
-      setCommentContextMenu(null);
+      setSelectionActions(null);
       return;
     }
 
-    const selectionResult =
+    const capturedSelectionResult =
       mode === "markdown"
         ? createMarkdownSelectionDraftResult(markdown, markdownSelection)
         : createVisualSelectionDraftResult({
             container: editorDocumentRef.current,
             markdown
           });
+    const selectionResult: SelectedCommentAnchorDraftResult =
+      mode === "visual" &&
+      capturedSelectionResult.draft &&
+      !isPointInsideVisualSelection({
+        clientX: event.clientX,
+        clientY: event.clientY,
+        container: editorDocumentRef.current
+      })
+        ? {
+            draft: null,
+            help: null
+          }
+        : capturedSelectionResult;
     const initialSelectedDraft = selectionResult.draft;
     const headingForSelection =
       typeof initialSelectedDraft?.markdownStartOffset === "number"
@@ -4072,73 +7659,660 @@ export function DocumentEditor() {
       setVisualSelectionDraft(selectedDraft);
     }
 
-    const menuPosition = getCommentContextMenuPosition({
-      container: editorDocumentRef.current,
-      event,
-      selectionRect: selectionResult.affordanceRect ?? null
+    const anchorRect =
+      selectionResult.affordanceRect ??
+      createPointAffordanceRect(event.clientX, event.clientY);
+    const position = getSelectionActionsPosition({
+      anchorRect,
+      presentation: "chooser"
     });
+    const documentFingerprint = createDocumentHash(markdown);
+    const projectId = activeDocumentIdentity?.projectId ?? "";
+    const documentId = activeDocumentIdentity?.documentId ?? "";
+    const targetHeadingLine = headingForSelection?.line ?? null;
 
-    setCommentContextMenu({
-      defaultHeadingLine: headingForSelection?.line ?? null,
-      selectionHelp: selectionResult.help,
+    setSelectionActions({
+      anchorRect,
+      documentFingerprint,
+      documentId,
+      documentKey:
+        activeDocumentKey ?? `standalone:${fileName}:${documentVersion}`,
+      documentVersion,
+      presentation: "chooser",
+      projectId,
       selectedDraft,
       selectedTextPositionTop,
-      x: menuPosition.x,
-      y: menuPosition.y
+      selectionFingerprint: createSelectionActionFingerprint({
+        documentFingerprint,
+        documentId,
+        documentVersion,
+        draft: selectedDraft,
+        projectId,
+        targetHeadingLine
+      }),
+      selectionHelp: selectionResult.help,
+      selectionLatencyMs: null,
+      targetHeadingLine,
+      trigger: "context_menu",
+      x: position.x,
+      y: position.y
     });
   }
 
-  function handleOpenCommentFromMenu(scope: CommentAnchorScope) {
-    if (!commentContextMenu) {
+  function handleOpenSelectionActions(
+    trigger: "keyboard" | "selection" = "selection"
+  ) {
+    const current = selectionActionsRef.current;
+
+    if (!current || current.presentation === "chooser") {
       return;
     }
 
-    const selectedDraft =
-      commentContextMenu.selectedDraft?.anchorSource === "visual"
-        ? commentContextMenu.selectedDraft
+    if (!isSelectionActionsStateCurrent(current)) {
+      rejectStaleSelectionActions();
+      return;
+    }
+
+    const position = getSelectionActionsPosition({
+      anchorRect: current.anchorRect,
+      presentation: "chooser"
+    });
+    setSelectionActions({
+      ...current,
+      presentation: "chooser",
+      trigger,
+      x: position.x,
+      y: position.y
+    });
+  }
+
+  async function handleStartRewrite(
+    actionId: Extract<SelectionActionId, "rewrite_selected_text" | "rewrite_section">,
+    actionState: SelectionActionsState
+  ) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !localProjectInstanceId ||
+      isDirty ||
+      isProjectRecoveryReadOnly ||
+      documentRecoveryPresentation?.kind === "conflict" ||
+      isSaving ||
+      isCommentBusy ||
+      isRewriteBusy ||
+      rewriteDraftAvailable
+    ) {
+      setSaveFeedback({
+        kind: "info",
+        message: rewriteDraftAvailable
+          ? "A rewrite draft already exists for this document. Resume or discard it first."
+          : "Save the document and resolve any recovery state before starting a rewrite."
+      });
+      return;
+    }
+    const range = getDraftMarkdownRange(actionState.selectedDraft);
+    const kind = actionId === "rewrite_section" ? "section" : "selection";
+    setIsRewriteBusy(true);
+    setSaveFeedback(null);
+    let createdSession: RewriteSession | null = null;
+    try {
+      const captured = captureRewriteTarget({
+        end: range?.end,
+        headingLine: actionState.targetHeadingLine,
+        kind,
+        markdown,
+        start: range?.start
+      });
+      const nextSession = await createRewriteSession({
+        baseDocumentGeneration: projectHandle.persistence.generation,
+        baseText: captured.text,
+        documentId: activeDocumentIdentity.documentId,
+        documentTitle:
+          projectHandle.document?.display_title ?? projectHandle.manifest.project_name,
+        localProjectInstanceId,
+        markdown,
+        projectId: activeDocumentIdentity.projectId,
+        projectTitle: getProjectTitle(projectHandle),
+        target: captured.target
+      });
+      createdSession = nextSession;
+      const persisted = await persistRewriteSessionToProject(
+        nextSession,
+        "create_human_rewrite_session"
+      );
+      rewriteReturnFocusRef.current =
+        document.activeElement instanceof HTMLElement ? document.activeElement : null;
+      setRewritePersistenceSource("project");
+      setRewriteDraftAvailable(persisted.session);
+      setRewriteSession(persisted.session);
+      setSelectionActions(null);
+      setVisualSelectionDraft(null);
+      setMarkdownSelection({ start: 0, end: 0 });
+    } catch (rewriteError) {
+      if (
+        rewriteError instanceof RewriteSessionPersistenceError &&
+        rewriteError.recoverySaved
+      ) {
+        setRewritePersistenceSource("recovery_only");
+        if (createdSession) {
+          setRewriteDraftAvailable(createdSession);
+          setRewriteSession(createdSession);
+          setSelectionActions(null);
+          setVisualSelectionDraft(null);
+          setMarkdownSelection({ start: 0, end: 0 });
+        }
+        setSaveFeedback({
+          kind: "error",
+          message:
+            "The rewrite draft could not be moved into the project. It remains available only in this browser."
+        });
+      } else {
+        setSaveFeedback({ kind: "error", message: getProjectErrorMessage(rewriteError) });
+      }
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  async function handleDiscardRewriteSession(session: RewriteSession) {
+    setIsRewriteBusy(true);
+    try {
+      const coordinator = requireRewritePersistenceCoordinator(session);
+      await coordinator.discard(session);
+      setRewriteSession(null);
+      setRewriteDraftAvailable(null);
+      setRewriteRecoveryConflict(null);
+      setSaveFeedback({
+        kind: "info",
+        message: "Discarded the project rewrite draft. The document was not changed."
+      });
+      window.requestAnimationFrame(() => rewriteReturnFocusRef.current?.focus());
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  async function handleResolveRewriteRecoveryConflict(
+    choice: "project" | "recovery"
+  ) {
+    if (!rewriteRecoveryConflict || !rewritePersistenceCoordinatorRef.current) {
+      return;
+    }
+    setIsRewriteBusy(true);
+    try {
+      const resolved = await rewritePersistenceCoordinatorRef.current.resolveConflict(
+        rewriteRecoveryConflict,
+        choice
+      );
+      setRewriteDraftAvailable(resolved);
+      setRewriteSession(null);
+      setRewriteRecoveryConflict(null);
+      setRewritePersistenceSource("project");
+      setSaveFeedback({
+        kind: "success",
+        message:
+          choice === "project"
+            ? "Using the project-backed Human Rewrite draft."
+            : "The browser recovery draft was saved as a new project revision."
+      });
+    } catch (conflictError) {
+      setSaveFeedback({
+        kind: "error",
+        message: getProjectErrorMessage(conflictError)
+      });
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  async function persistRewriteSessionToProject(
+    session: RewriteSession,
+    reason: string,
+    recoveryFallbackSession?: RewriteSession
+  ): Promise<RewriteProjectSaveResult> {
+    const coordinator = requireRewritePersistenceCoordinator(session);
+    const startedAt = performance.now();
+    const result = await coordinator.persist(
+      session,
+      reason,
+      recoveryFallbackSession
+    );
+    if (typeof window !== "undefined") {
+      window.dispatchEvent(
+        new CustomEvent("patchmark:rewrite-persistence", {
+          detail: {
+            durationMs: performance.now() - startedAt,
+            queueLength: result.queueLength,
+            reason,
+            revision: result.session.authoritative_revision
+          }
+        })
+      );
+    }
+    setRewritePersistenceSource("project");
+    return result;
+  }
+
+  function requireRewritePersistenceCoordinator(
+    session: RewriteSession
+  ): RewriteSessionPersistenceCoordinator {
+    const coordinator = rewritePersistenceCoordinatorRef.current;
+    if (
+      !coordinator ||
+      !activeDocumentIdentity ||
+      session.project_id !== activeDocumentIdentity.projectId ||
+      session.document_id !== activeDocumentIdentity.documentId
+    ) {
+      throw new Error("The Human Rewrite persistence owner is no longer active.");
+    }
+    return coordinator;
+  }
+
+  async function createRewriteImpactResult(
+    session: RewriteSession
+  ): Promise<
+    RewriteWorkspaceImpactResult & {
+      mutation?: DocumentMutationResult;
+      nextMarkdown?: string;
+      resolved?: { end: number; start: number; text: string };
+    }
+  > {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      session.project_id !== activeDocumentIdentity.projectId ||
+      session.document_id !== activeDocumentIdentity.documentId ||
+      session.local_project_instance_id !== localProjectInstanceId
+    ) {
+      throw new Error("This rewrite session does not belong to the active project document.");
+    }
+    const resolved = resolveRewriteTarget({
+      baseText: session.base_text,
+      markdown,
+      target: session.target
+    });
+    if (
+      !resolved ||
+      (await createContentSha256(resolved.text)) !== session.base_text_sha256
+    ) {
+      return {
+        status: "stale",
+        message:
+          "This text changed after the rewrite session began. Refresh the reference text before applying."
+      };
+    }
+    const nextMarkdown = `${markdown.slice(0, resolved.start)}${session.human_draft}${markdown.slice(resolved.end)}`;
+    const bookmarkAdapter = readingBookmark
+      ? createReadingBookmarkAnchorAdapter(readingBookmark)
+      : null;
+    const simulatedComments = bookmarkAdapter
+      ? [...comments, bookmarkAdapter]
+      : comments;
+    const mutation = orchestrateDocumentMutation({
+      comments: simulatedComments,
+      createdAt: new Date().toISOString(),
+      edits: [
+        {
+          oldStart: resolved.start,
+          oldEnd: resolved.end,
+          insertedText: session.human_draft
+        }
+      ],
+      newMarkdown: nextMarkdown,
+      oldMarkdown: markdown,
+      source: "human_rewrite"
+    });
+    const simulations = mutation.commentImpacts.map<RewriteCommentSimulation>(
+      (impactItem) => ({
+        commentId: impactItem.commentId,
+        outcome: impactItem.outcome,
+        validationStatus: impactItem.validation.status
+      })
+    );
+    const bookmarkSimulation = bookmarkAdapter
+      ? simulations.find((item) => item.commentId === bookmarkAdapter.id) ?? null
+      : null;
+    return {
+      status: "ready",
+      analysis: analyzeRewriteImpact({
+        bookmark: readingBookmark,
+        bookmarkSimulation,
+        commentSimulation: simulations,
+        comments,
+        markdown,
+        patches,
+        reviewBatches,
+        target: resolved
+      }),
+      mutation,
+      nextMarkdown,
+      resolved
+    };
+  }
+
+  async function handleRefreshRewriteReference(
+    session: RewriteSession
+  ): Promise<RewriteSession> {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      session.project_id !== activeDocumentIdentity.projectId ||
+      session.document_id !== activeDocumentIdentity.documentId ||
+      session.local_project_instance_id !== localProjectInstanceId
+    ) {
+      throw new Error("This rewrite session no longer belongs to the active document.");
+    }
+    const resolved = resolveRewriteTargetForRefresh({
+      baseText: session.base_text,
+      markdown,
+      target: session.target
+    });
+    if (!resolved) {
+      throw new Error(
+        "Patchmark could not uniquely resolve the current target. Keep the draft and start a new rewrite from the intended text."
+      );
+    }
+    const now = new Date().toISOString();
+    const [baseDocumentSha256, baseTextSha256] = await Promise.all([
+      createContentSha256(markdown),
+      createContentSha256(resolved.text)
+    ]);
+    const refreshed: RewriteSession = {
+      ...session,
+      target: refreshRewriteTarget({ markdown, resolved, target: session.target }),
+      base_document_generation: projectHandle.persistence.generation,
+      base_document_sha256: baseDocumentSha256,
+      base_text_sha256: baseTextSha256,
+      base_text: resolved.text,
+      reference_history: [
+        ...session.reference_history,
+        {
+          base_document_generation: session.base_document_generation,
+          base_document_sha256: session.base_document_sha256,
+          base_text_sha256: session.base_text_sha256,
+          base_text: session.base_text,
+          refreshed_at: now
+        }
+      ],
+      review_rounds: session.review_rounds.map((round) =>
+        round.status === "awaiting_response"
+          ? { ...round, status: "cancelled" as const, cancelled_at: now }
+          : round
+      ),
+      stale_reference: false,
+      updated_at: now
+    };
+    const persisted = await persistRewriteSessionToProject(
+      refreshed,
+      "refresh_human_rewrite_reference"
+    );
+    setRewriteDraftAvailable(persisted.session);
+    setRewriteSession(persisted.session);
+    return persisted.session;
+  }
+
+  async function handleApplyHumanRewrite(
+    session: RewriteSession,
+    previewAnalysis: RewriteImpactAnalysis
+  ): Promise<void> {
+    void previewAnalysis;
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      isDirty ||
+      isSaving ||
+      isCommentBusy ||
+      isProjectRecoveryReadOnly ||
+      documentRecoveryPresentation?.kind === "conflict" ||
+      requestedProjectDocumentId !== null
+    ) {
+      throw new Error(
+        "Handle unsaved document changes, recovery conflicts, and in-flight operations before applying the rewrite."
+      );
+    }
+    if (!session.human_draft.trim()) {
+      throw new Error("My rewrite cannot be empty in this version of Patchmark.");
+    }
+    setIsRewriteBusy(true);
+    setSaveStatus("saving");
+    let preparedSnapshot: Awaited<ReturnType<typeof prepareProjectMutationSnapshot>> | null = null;
+    let authoritativeCommitSucceeded = false;
+    try {
+      const currentImpact = await createRewriteImpactResult(session);
+      if (currentImpact.status === "stale") {
+        throw new Error(currentImpact.message);
+      }
+      if (
+        !currentImpact.mutation ||
+        !currentImpact.nextMarkdown ||
+        !currentImpact.resolved
+      ) {
+        throw new Error("Patchmark could not prepare the rewrite mutation.");
+      }
+      const appliedAt = new Date().toISOString();
+      const appliedTextSha256 = await createContentSha256(session.human_draft);
+      preparedSnapshot = await prepareProjectMutationSnapshot({
+        audit: {
+          author_type: "human",
+          mutation_type: "human_rewrite",
+          rewrite_session_id: session.rewrite_session_id,
+          target_kind: session.target.kind,
+          heading_snapshot: session.target.heading_snapshot,
+          base_text_sha256: session.base_text_sha256,
+          applied_text_sha256: appliedTextSha256,
+          semantic_review_status: getCurrentRewriteReview(session)
+            ? "reviewed"
+            : "not_reviewed"
+        },
+        markdown,
+        project: projectHandle,
+        reason: `before human rewrite ${session.rewrite_session_id}`
+      });
+      const bookmarkAdapter = readingBookmark
+        ? createReadingBookmarkAnchorAdapter(readingBookmark)
         : null;
+      const persistedComments = bookmarkAdapter
+        ? currentImpact.mutation.comments.filter(
+            (comment) => comment.id !== bookmarkAdapter.id
+          )
+        : currentImpact.mutation.comments;
+      const transformedBookmark = bookmarkAdapter
+        ? currentImpact.mutation.comments.find(
+            (comment) => comment.id === bookmarkAdapter.id
+          ) ?? bookmarkAdapter
+        : null;
+      const nextManifest =
+        transformedBookmark &&
+        (transformedBookmark.anchor.kind === "section" ||
+          transformedBookmark.anchor.kind === "selected_text")
+          ? setDocumentReadingBookmark({
+              anchor: transformedBookmark.anchor,
+              document: activeDocumentIdentity,
+              manifest: preparedSnapshot.manifest,
+              timestamp: appliedAt
+            }).manifest
+          : preparedSnapshot.manifest;
+      const nextPatches = transformPendingPatchTargetProvenances({
+        edits: [
+          {
+            oldStart: currentImpact.resolved.start,
+            oldEnd: currentImpact.resolved.end,
+            insertedText: session.human_draft
+          }
+        ],
+        patches: markPendingPatchesAfterHumanRewrite({
+          analysis: currentImpact.analysis,
+          appliedAt,
+          patches,
+          session
+        })
+      });
+      const coordinator = requireRewritePersistenceCoordinator(session);
+      await coordinator.commitApplied({
+        comments: persistedComments,
+        manifest: nextManifest,
+        markdown: currentImpact.nextMarkdown,
+        patches: nextPatches,
+        session,
+        versionId: preparedSnapshot.version.id
+      });
+      authoritativeCommitSucceeded = true;
+      setMarkdown(currentImpact.nextMarkdown);
+      setBaselineMarkdown(currentImpact.nextMarkdown);
+      setRestoredMarkdown(null);
+      setComments(persistedComments);
+      setPatches(nextPatches);
+      setVersionEntries(projectHandle.manifest.versions ?? []);
+      setDocumentVersion((currentVersion) => currentVersion + 1);
+      setRewriteSession(null);
+      setRewriteDraftAvailable(null);
+      setRewriteRecoveryConflict(null);
+      setRewritePersistenceSource("project");
+      setSaveStatus("idle");
+      setSaveFeedback({ kind: "success", message: "Human rewrite applied." });
+      jumpToMarkdownSelection(
+        currentImpact.resolved.start,
+        currentImpact.resolved.start + session.human_draft.length
+      );
+    } catch (applyError) {
+      if (preparedSnapshot && !authoritativeCommitSucceeded) {
+        await discardPreparedProjectMutationSnapshot({
+          project: projectHandle,
+          snapshotFileName: preparedSnapshot.snapshotFileName
+        });
+      }
+      setSaveStatus("failed");
+      throw applyError;
+    } finally {
+      setIsRewriteBusy(false);
+    }
+  }
+
+  function handleSelectionAction(actionId: SelectionActionId) {
+    const current = selectionActionsRef.current;
+
+    if (!current || !isSelectionActionsStateCurrent(current)) {
+      rejectStaleSelectionActions();
+      return;
+    }
+
+    if (actionId === "bookmark") {
+      void handleSetReadingBookmarkFromSelectionActions(current);
+      return;
+    }
+
+    if (
+      actionId === "rewrite_selected_text" ||
+      actionId === "rewrite_section"
+    ) {
+      void handleStartRewrite(actionId, current);
+      return;
+    }
+
+    const scope: CommentAnchorScope =
+      actionId === "selected_text"
+        ? "selected_text"
+        : actionId === "section"
+          ? "section"
+          : "document";
+    if (
+      (scope === "selected_text" && !current.selectedDraft) ||
+      (scope === "section" && !current.targetHeadingLine)
+    ) {
+      rejectStaleSelectionActions();
+      return;
+    }
+
     const positionTop =
       scope === "selected_text" &&
-      commentContextMenu.selectedTextPositionTop !== null
-        ? commentContextMenu.selectedTextPositionTop
+      current.selectedTextPositionTop !== null
+        ? current.selectedTextPositionTop
         : measurePendingCommentTop({
             scope,
-            selectedDraft: commentContextMenu.selectedDraft,
-            targetHeadingLine: commentContextMenu.defaultHeadingLine
+            selectedDraft: current.selectedDraft,
+            targetHeadingLine: current.targetHeadingLine
           });
 
     setVisualSelectionDraft(
-      selectedDraft
+      current.selectedDraft?.anchorSource === "visual"
+        ? current.selectedDraft
+        : null
     );
     setCommentAddRequest({
       nonce: Date.now(),
       positionTop,
       scope,
-      targetHeadingLine: commentContextMenu.defaultHeadingLine
+      targetHeadingLine: current.targetHeadingLine
     });
-    setCommentContextMenu(null);
+    setSelectionActions(null);
   }
 
-  async function handleSetReadingBookmarkFromMenu() {
+  function handleOpenWholeDocumentComment() {
     if (
-      !projectHandle ||
-      !commentContextMenu ||
-      isReadingBookmarkBusy ||
-      isProjectRecoveryReadOnly
+      !activeDocumentKey ||
+      !isProjectMode ||
+      isProjectRecoveryReadOnly ||
+      isCommentBusy ||
+      isReanchorMode
     ) {
       return;
     }
 
-    const scope: CommentAnchorScope = commentContextMenu.selectedDraft
+    const positionTop = measurePendingCommentTop({
+      scope: "document",
+      selectedDraft: null,
+      targetHeadingLine: null
+    });
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    setCommentAddRequest({
+      nonce: Date.now(),
+      positionTop,
+      scope: "document",
+      targetHeadingLine: null
+    });
+  }
+
+  function handleCommentComposerClosed(reason: "cancel" | "submit") {
+    setCommentAddRequest(null);
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+
+    if (reason !== "cancel") {
+      return;
+    }
+
+    restoreEditorFocus();
+  }
+
+  async function handleSetReadingBookmarkFromSelectionActions(
+    actionState: SelectionActionsState
+  ) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !activeDocumentKey ||
+      isReadingBookmarkBusy ||
+      isProjectRecoveryReadOnly ||
+      !isSelectionActionsStateCurrent(actionState)
+    ) {
+      return;
+    }
+
+    const operationDocument = activeDocumentIdentity;
+    const operationDocumentKey = activeDocumentKey;
+    const scope: CommentAnchorScope = actionState.selectedDraft
       ? "selected_text"
       : "section";
 
-    if (scope === "section" && !commentContextMenu.defaultHeadingLine) {
+    if (scope === "section" && !actionState.targetHeadingLine) {
       setSaveFeedback({
         kind: "info",
         message: "Select text or open the menu inside a section to set a bookmark."
       });
-      setCommentContextMenu(null);
+      setSelectionActions(null);
       return;
     }
 
@@ -4146,11 +8320,11 @@ export function DocumentEditor() {
       headings,
       markdown,
       selection: markdownSelection,
-      selectedDraft: commentContextMenu.selectedDraft,
+      selectedDraft: actionState.selectedDraft,
       values: {
         anchorScope: scope,
         comment: "",
-        targetHeadingLine: commentContextMenu.defaultHeadingLine,
+        targetHeadingLine: actionState.targetHeadingLine,
         type: "note"
       }
     });
@@ -4159,80 +8333,146 @@ export function DocumentEditor() {
       return;
     }
 
-    const next = setDocumentReadingBookmark({
-      anchor,
-      manifest: projectHandle.manifest,
-      timestamp: new Date().toISOString()
-    });
-
-    setCommentContextMenu(null);
-    setIsReadingBookmarkBusy(true);
+    setSelectionActions(null);
+    setReadingBookmarkBusyDocumentKey(operationDocumentKey);
 
     try {
-      await saveProjectState({
-        manifest: next.manifest,
+      await updateProjectManifestMetadata({
         project: projectHandle,
-        reason: "set_reading_bookmark"
+        reason: "set_reading_bookmark",
+        update: (currentManifest) =>
+          setDocumentReadingBookmark({
+            anchor,
+            document: operationDocument,
+            manifest: currentManifest,
+            timestamp: new Date().toISOString()
+          }).manifest
       });
-      setProjectHandle({
-        ...projectHandle,
-        manifest: { ...projectHandle.manifest }
-      });
-      setSaveFeedback({
-        kind: "success",
-        message: "Reading bookmark set."
-      });
+      setProjectDocuments((currentDocuments) =>
+        currentDocuments.map((document) =>
+          document.document_id === operationDocument.documentId
+            ? { ...document, hasReadingBookmark: true }
+            : document
+        )
+      );
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setProjectHandle((currentProject) =>
+          currentProject === projectHandle
+            ? { ...projectHandle, manifest: { ...projectHandle.manifest } }
+            : currentProject
+        );
+        setSaveFeedback({
+          kind: "success",
+          message: "Reading bookmark set."
+        });
+      }
     } catch (error) {
-      setSaveFeedback({
-        kind: "error",
-        message: getProjectErrorMessage(error)
-      });
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setSaveFeedback({
+          kind: "error",
+          message: getProjectErrorMessage(error)
+        });
+      }
     } finally {
-      setIsReadingBookmarkBusy(false);
+      setReadingBookmarkBusyDocumentKey((currentKey) =>
+        currentKey === operationDocumentKey ? null : currentKey
+      );
     }
   }
 
   async function handleRemoveReadingBookmark() {
-    if (!projectHandle || !readingBookmark || isReadingBookmarkBusy) {
+    if (
+      !projectHandle ||
+      !activeDocumentIdentity ||
+      !activeDocumentKey ||
+      !readingBookmark ||
+      isReadingBookmarkBusy
+    ) {
       return;
     }
 
-    const nextManifest = removeDocumentReadingBookmark({
-      manifest: projectHandle.manifest
-    });
-    setIsReadingBookmarkMenuOpen(false);
-    setIsReadingBookmarkBusy(true);
+    const operationDocument = activeDocumentIdentity;
+    const operationDocumentKey = activeDocumentKey;
+    setReadingBookmarkMenuDocumentKey((currentKey) =>
+      currentKey === operationDocumentKey ? null : currentKey
+    );
+    setReadingBookmarkBusyDocumentKey(operationDocumentKey);
 
     try {
-      await saveProjectState({
-        manifest: nextManifest,
+      await updateProjectManifestMetadata({
         project: projectHandle,
-        reason: "remove_reading_bookmark"
+        reason: "remove_reading_bookmark",
+        update: (currentManifest) =>
+          removeDocumentReadingBookmark({
+            document: operationDocument,
+            manifest: currentManifest
+          })
       });
-      setProjectHandle({
-        ...projectHandle,
-        manifest: { ...projectHandle.manifest }
-      });
-      setIsReadingBookmarkEmphasized(false);
-      setSaveFeedback({
-        kind: "success",
-        message: "Reading bookmark removed."
-      });
+      if (activeProjectIdRef.current === operationDocument.projectId) {
+        setProjectDocuments((currentDocuments) =>
+          currentDocuments.map((document) =>
+            document.document_id === operationDocument.documentId
+              ? { ...document, hasReadingBookmark: false }
+              : document
+          )
+        );
+      }
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setProjectHandle((currentProject) =>
+          currentProject === projectHandle
+            ? { ...projectHandle, manifest: { ...projectHandle.manifest } }
+            : currentProject
+        );
+        setReadingBookmarkEmphasizedDocumentKey(null);
+        setSaveFeedback({
+          kind: "success",
+          message: "Reading bookmark removed."
+        });
+      }
     } catch (error) {
-      setSaveFeedback({
-        kind: "error",
-        message: getProjectErrorMessage(error)
-      });
+      if (activeDocumentKeyRef.current === operationDocumentKey) {
+        setSaveFeedback({
+          kind: "error",
+          message: getProjectErrorMessage(error)
+        });
+      }
     } finally {
-      setIsReadingBookmarkBusy(false);
+      setReadingBookmarkBusyDocumentKey((currentKey) =>
+        currentKey === operationDocumentKey ? null : currentKey
+      );
     }
   }
 
-  function handleContinueReading() {
-    if (
-      !readingBookmark ||
-      readingBookmarkResolution?.state !== "available"
-    ) {
+  async function handleContinueReading() {
+    if (!activeDocumentKey) {
+      return;
+    }
+    await continueReadingAtBookmark({
+      bookmark: readingBookmark,
+      documentKey: activeDocumentKey,
+      markdown,
+      mode,
+      patches
+    });
+  }
+
+  async function continueReadingAtBookmark({
+    bookmark,
+    documentKey,
+    markdown: targetMarkdown,
+    mode: targetMode,
+    patches: targetPatches
+  }: ReadingBookmarkNavigationRequest) {
+    if (activeDocumentKeyRef.current !== documentKey || !bookmark) {
+      return;
+    }
+
+    const resolution = resolveReadingBookmark({
+      bookmark,
+      markdown: targetMarkdown,
+      patches: targetPatches
+    });
+    if (resolution.state !== "available") {
       setSaveFeedback({
         kind: "info",
         message:
@@ -4241,83 +8481,170 @@ export function DocumentEditor() {
       return;
     }
 
-    if (mode === "markdown") {
-      jumpToMarkdownSelection(
-        readingBookmarkResolution.start,
-        readingBookmarkResolution.end
-      );
+    if (targetMode === "markdown") {
+      jumpToMarkdownSelection(resolution.start, resolution.end);
     } else {
-      const container = editorDocumentRef.current;
-      const range = container
-        ? getVisualProjectionPrimaryRange(
-            findVisualCommentAnchorProjection({
-              comment: createReadingBookmarkAnchorAdapter(readingBookmark),
-              container,
-              headings,
-              markdown,
-              patches
-            })
-          )
-        : null;
-
-      if (!range) {
-        setSaveFeedback({
-          kind: "info",
-          message:
-            "The reading bookmark is available in Markdown Mode but could not be shown visually."
-        });
+      const range = await waitForVisualReadingBookmarkRange({
+        bookmark,
+        container: editorDocumentRef.current,
+        documentKey,
+        getActiveDocumentKey: () => activeDocumentKeyRef.current,
+        headings: parseMarkdownHeadings(targetMarkdown),
+        markdown: targetMarkdown,
+        patches: targetPatches
+      });
+      if (!range || activeDocumentKeyRef.current !== documentKey) {
+        if (activeDocumentKeyRef.current === documentKey) {
+          setSaveFeedback({
+            kind: "info",
+            message:
+              "The reading bookmark is available in Markdown Mode but could not be shown visually."
+          });
+        }
         return;
       }
 
       scrollRangeIntoViewportIfNeeded(range);
-      setIsReadingBookmarkEmphasized(true);
-
+      setReadingBookmarkEmphasizedDocumentKey(documentKey);
       if (readingBookmarkEmphasisTimeoutRef.current !== null) {
         window.clearTimeout(readingBookmarkEmphasisTimeoutRef.current);
       }
-
       readingBookmarkEmphasisTimeoutRef.current = window.setTimeout(() => {
         readingBookmarkEmphasisTimeoutRef.current = null;
-        setIsReadingBookmarkEmphasized(false);
+        setReadingBookmarkEmphasizedDocumentKey((currentKey) =>
+          currentKey === documentKey ? null : currentKey
+        );
       }, 1800);
     }
 
-    setSaveFeedback({
-      kind: "success",
-      message: "Continued reading at the saved bookmark."
-    });
+    if (activeDocumentKeyRef.current === documentKey) {
+      setSaveFeedback({
+        kind: "success",
+        message: "Continued reading at the saved bookmark."
+      });
+    }
   }
 
-  function getCommentContextMenuPosition({
-    container,
-    event,
-    selectionRect
+  function getSelectionActionsPosition({
+    anchorRect,
+    presentation
   }: {
-    container: HTMLElement | null;
-    event: React.MouseEvent<HTMLDivElement>;
-    selectionRect: CommentAffordanceRect | null;
+    anchorRect: CommentAffordanceRect;
+    presentation: SelectionActionsPresentation;
   }): { x: number; y: number } {
-    const containerRect = container
-      ? toCommentAffordanceRect(container.getBoundingClientRect())
+    const menuSize =
+      presentation === "compact"
+        ? COMMENT_SELECTION_ACTION_SIZE
+        : {
+            height: Math.min(440, Math.max(240, window.innerHeight - 16)),
+            width:
+              window.innerWidth <= 520
+                ? Math.max(280, window.innerWidth - 16)
+                : Math.min(360, Math.max(280, window.innerWidth - 16))
+          };
+    const containerRect = editorDocumentRef.current
+      ? toCommentAffordanceRect(
+          editorDocumentRef.current.getBoundingClientRect()
+        )
       : null;
+    const canFitMenuInVisibleContainer = Boolean(
+      containerRect &&
+        Math.min(containerRect.right, window.innerWidth - 8) -
+          Math.max(containerRect.left, 8) >=
+          menuSize.width &&
+        Math.min(containerRect.bottom, window.innerHeight - 8) -
+          Math.max(containerRect.top, 8) >=
+          menuSize.height
+    );
     const bounds = createCommentAffordanceBounds({
-      containerRect,
-      menuSize: COMMENT_AFFORDANCE_MENU_SIZE,
+      containerRect: canFitMenuInVisibleContainer ? containerRect : null,
+      menuSize,
       viewportHeight: window.innerHeight,
       viewportWidth: window.innerWidth
     });
-    const anchorRect =
-      selectionRect ?? createPointAffordanceRect(event.clientX, event.clientY);
+    const toolbarRect = editorDocumentRef.current
+      ?.querySelector<HTMLElement>(".mdxeditor-toolbar")
+      ?.getBoundingClientRect();
+    const safeBounds =
+      toolbarRect && toolbarRect.bottom > 0 && toolbarRect.top <= 0
+        ? {
+            ...bounds,
+            top: Math.min(
+              bounds.bottom - menuSize.height,
+              Math.max(bounds.top, toolbarRect.bottom + 8)
+            )
+          }
+        : bounds;
     const position = placeCommentAffordance({
       anchorRect,
-      bounds,
-      menuSize: COMMENT_AFFORDANCE_MENU_SIZE
+      bounds: safeBounds,
+      menuSize
     });
 
     return {
       x: Math.round(position.x),
       y: Math.round(position.y)
     };
+  }
+
+  function isSelectionActionsStateCurrent(
+    actionState: SelectionActionsState
+  ): boolean {
+    if (
+      !activeDocumentIdentity ||
+      actionState.projectId !== activeDocumentIdentity.projectId ||
+      actionState.documentId !== activeDocumentIdentity.documentId ||
+      actionState.documentKey !== activeDocumentKey ||
+      actionState.documentVersion !== documentVersion
+    ) {
+      return false;
+    }
+
+    const documentFingerprint = createDocumentHash(markdown);
+
+    return (
+      actionState.documentFingerprint === documentFingerprint &&
+      actionState.selectionFingerprint ===
+        createSelectionActionFingerprint({
+          documentFingerprint,
+          documentId: actionState.documentId,
+          documentVersion: actionState.documentVersion,
+          draft: actionState.selectedDraft,
+          projectId: actionState.projectId,
+          targetHeadingLine: actionState.targetHeadingLine
+        })
+    );
+  }
+
+  function rejectStaleSelectionActions() {
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setSaveFeedback({
+      kind: "info",
+      message:
+        "That selection is no longer current. Select document text again."
+    });
+    restoreEditorFocus();
+  }
+
+  function handleCancelSelectionActions() {
+    setSelectionActions(null);
+    setVisualSelectionDraft(null);
+    setMarkdownSelection({ end: 0, start: 0 });
+    window.getSelection()?.removeAllRanges();
+    restoreEditorFocus();
+  }
+
+  function restoreEditorFocus() {
+    window.requestAnimationFrame(() => {
+      const editorSelector =
+        mode === "visual"
+          ? '[aria-label="editable markdown"]'
+          : '[aria-label="Markdown Mode"]';
+      editorDocumentRef.current
+        ?.querySelector<HTMLElement>(editorSelector)
+        ?.focus({ preventScroll: true });
+    });
   }
 
   function measurePendingCommentTop({
@@ -4382,10 +8709,21 @@ export function DocumentEditor() {
 
   async function persistComments(
     nextComments: PatchmarkComment[],
-    successMessage: string
+    successMessage: string,
+    expectedDocumentId?: string
   ) {
     if (!projectHandle || isCommentBusy) {
       return;
+    }
+    const operationDocumentId =
+      expectedDocumentId ?? getProjectDocumentScopeId(projectHandle);
+    if (
+      getProjectDocumentScopeId(projectHandle) !== operationDocumentId ||
+      activeDocumentIdRef.current !== operationDocumentId
+    ) {
+      throw new Error(
+        "The target document changed before the comment operation began."
+      );
     }
 
     setIsCommentBusy(true);
@@ -4399,8 +8737,14 @@ export function DocumentEditor() {
         project: projectHandle,
         reason: "update_comment_state"
       });
+      if (activeDocumentIdRef.current !== operationDocumentId) {
+        throw new Error(
+          "The target document changed before the comment operation completed."
+        );
+      }
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
+      commentsRef.current = nextComments;
       setComments(nextComments);
       setSaveFeedback({
         kind: "success",
@@ -4419,27 +8763,281 @@ export function DocumentEditor() {
     }
   }
 
-  function loadProjectIntoEditor(loadedProject: LoadedPatchmarkProject) {
+  async function loadProjectIntoEditor(
+    loadedProject: LoadedPatchmarkProject,
+    options: {
+      localInstanceId?: string | null;
+      pendingBookmarkDocumentKey?: string | null;
+      performanceOperationId?: string | null;
+    } = {}
+  ): Promise<void> {
+    const performanceOperationId = options.performanceOperationId;
+    const recoveryStartedAt = performance.now();
+    const requestId = deviceRecoveryLoadRequestRef.current + 1;
+    deviceRecoveryLoadRequestRef.current = requestId;
+    const identity = getProjectDocumentIdentity(loadedProject.project);
+    const projectDirectory =
+      loadedProject.project.projectDirectoryHandle ??
+      loadedProject.project.directoryHandle;
+    const loadedDocumentTitle =
+      loadedProject.project.document?.display_title ??
+      loadedProject.project.manifest.project_name;
+    const reviewStateStartedAt = performance.now();
+    const reviewStatePromise =
+      loadedProject.project.documentAvailability === "missing"
+        ? Promise.resolve([
+            [],
+            [],
+            [],
+            [],
+            createEmptyReviewQueueOverrides(identity)
+          ] as [
+            PatchmarkVersionEntry[],
+            PatchmarkComment[],
+            PatchmarkPatch[],
+            PatchmarkReviewBatch[],
+            PatchmarkReviewQueueOverrides
+          ])
+        : Promise.all([
+            listProjectVersions(loadedProject.project),
+            readProjectComments(loadedProject.project),
+            readProjectPatches(loadedProject.project),
+            listReviewBatches(loadedProject.project),
+            getReviewQueueOverrides(loadedProject.project)
+          ]);
+    const canReuseNavigatorState = Boolean(
+      projectHandle?.projectManifest &&
+        loadedProject.project.projectManifest &&
+        projectHandle.projectManifest.project_id ===
+          loadedProject.project.projectManifest.project_id &&
+        projectHandle.projectManifest.manifest_revision ===
+          loadedProject.project.projectManifest.manifest_revision &&
+        projectDocumentsRef.current.length > 0
+    );
+    const navigatorStartedAt = performance.now();
+    const navigatorPromise = canReuseNavigatorState
+      ? Promise.resolve(
+          projectDocumentsRef.current.map((document) =>
+            document.document_id === identity.documentId
+              ? {
+                  ...document,
+                  availability:
+                    loadedProject.project.documentAvailability ?? "available"
+                }
+              : document
+          )
+        )
+      : getProjectDocumentList(loadedProject.project);
+    let instanceId =
+      options.localInstanceId ?? createLocalProjectInstanceId();
+    let instance: LocalProjectInstanceRecord | null = null;
+    let recoveries: ProjectDocumentRecoveryRecord[] = [];
+    const isKnownSessionInstance = Boolean(
+      options.localInstanceId &&
+        localProjectInstanceId === options.localInstanceId &&
+        activeProjectIdRef.current === identity.projectId
+    );
+    try {
+      const existingInstance = isKnownSessionInstance
+        ? recentProject
+        : options.localInstanceId
+          ? await readProjectInstance(options.localInstanceId)
+          : await findProjectInstanceForDirectory({
+              directoryHandle: projectDirectory as StoredDirectoryHandle,
+              projectId: identity.projectId
+            });
+      if (
+        existingInstance &&
+        existingInstance.project_id !== identity.projectId
+      ) {
+        throw new Error(
+          "The selected local project instance does not match this project identity."
+        );
+      }
+      instanceId =
+        options.localInstanceId ??
+        existingInstance?.local_instance_id ??
+        instanceId;
+      if (isKnownSessionInstance) {
+        const recovery = await readRecovery(
+          getProjectDocumentRecoveryId({
+            documentId: identity.documentId,
+            localInstanceId: instanceId,
+            projectId: identity.projectId
+          })
+        );
+        recoveries =
+          recovery?.owner_type === "project_document" ? [recovery] : [];
+        instance = existingInstance;
+      } else {
+        instance = await rememberProjectInstance({
+          directoryHandle: projectDirectory as StoredDirectoryHandle,
+          documentId: identity.documentId,
+          documentTitle: loadedDocumentTitle,
+          groupId: loadedProject.project.document?.group_id ?? null,
+          localInstanceId: instanceId,
+          projectId: identity.projectId,
+          projectTitle: getProjectTitle(loadedProject.project)
+        });
+        recoveries = await listProjectDocumentRecoveries({
+          localInstanceId: instanceId,
+          projectId: identity.projectId
+        });
+      }
+      setDeviceRecoveryWarning(null);
+    } catch (error) {
+      setDeviceRecoveryWarning(getDeviceRecoveryErrorMessage(error));
+    }
+    const activeRecovery = recoveries.find(
+      (recovery) => recovery.document_id === identity.documentId
+    );
+    const currentGroupTitle = loadedProject.project.document?.group_id
+      ? getProjectDocumentGroups(loadedProject.project).find(
+          (group) =>
+            group.group_id === loadedProject.project.document?.group_id
+        )?.title ?? null
+      : null;
+    const activeRecoveryForPresentation = activeRecovery
+      ? {
+          ...activeRecovery,
+          project_title_snapshot: getProjectTitle(loadedProject.project),
+          document_title_snapshot: loadedDocumentTitle,
+          group_title_snapshot: currentGroupTitle
+        }
+      : null;
+    const preparedRecovery = activeRecovery
+      ? loadedProject.project.documentAvailability === "missing"
+        ? {
+            markdown: loadedProject.markdown,
+            presentation: {
+              kind: "missing" as const,
+              record: activeRecoveryForPresentation!,
+              reviewOpen: false,
+              savedMarkdown: loadedProject.markdown
+            }
+          }
+        : await prepareDocumentRecovery({
+            recovery: activeRecoveryForPresentation!,
+            savedMarkdown: loadedProject.markdown
+          })
+      : null;
+    const clearedRecoveryId = preparedRecovery?.clearedRecoveryId;
+    const recoveryDocumentIds = isKnownSessionInstance
+      ? Array.from(
+          new Set([
+            ...projectRecoveryDocumentIdsRef.current.filter(
+              (documentId) =>
+                documentId !== identity.documentId || Boolean(activeRecovery)
+            ),
+            ...(activeRecovery ? [activeRecovery.document_id] : [])
+          ])
+        ).filter(
+          (documentId) =>
+            !clearedRecoveryId || documentId !== identity.documentId
+        )
+      : recoveries
+          .filter(
+            (recovery) =>
+              !clearedRecoveryId || recovery.recovery_id !== clearedRecoveryId
+          )
+          .map((recovery) => recovery.document_id);
+    const restoredUiState = readProjectDocumentUiState(
+      loadedProject.project,
+      instanceId
+    );
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "load_target_recovery_and_ui_state",
+      performance.now() - recoveryStartedAt
+    );
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "target_recovery_decision_ready"
+    );
+    const loadedDocumentId = getProjectDocumentScopeId(loadedProject.project);
+    const [
+      documents,
+      [
+        versions,
+        projectComments,
+        projectPatches,
+        projectReviewBatches,
+        projectReviewQueueOverrides
+      ]
+    ] =
+      await Promise.all([navigatorPromise, reviewStatePromise]);
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "deserialize_current_review_state",
+      performance.now() - reviewStateStartedAt
+    );
+    recordDocumentSwitchPerformanceDuration(
+      performanceOperationId,
+      "load_project_navigator_state",
+      performance.now() - navigatorStartedAt
+    );
+    if (requestId !== deviceRecoveryLoadRequestRef.current) {
+      return;
+    }
+    pendingReadingBookmarkNavigationRef.current =
+      options.pendingBookmarkDocumentKey ?? null;
     setProjectHandle(loadedProject.project);
+    setProjectDocuments(documents);
+    setLocalProjectInstanceId(instanceId);
+    setStandaloneFileInstance(null);
     setProjectRecovery(loadedProject.recovery ?? null);
-    setFileName(loadedProject.project.manifest.document_file);
-    setMarkdown(loadedProject.markdown);
+    setFileName(
+      loadedProject.project.document?.path ??
+        loadedProject.project.manifest.document_file
+    );
+    setMarkdown(preparedRecovery?.markdown ?? loadedProject.markdown);
     setBaselineMarkdown(loadedProject.markdown);
     setActiveFileHandle(null);
-    setRestoredMarkdown(null);
-    setAvailableDraft(null);
+    setRestoredMarkdown(
+      preparedRecovery?.presentation?.kind === "recovered"
+        ? preparedRecovery.markdown
+        : null
+    );
+    setDocumentRecoveryPresentation(
+      preparedRecovery?.presentation ?? null
+    );
+    setProjectRecoveryDocumentIds(recoveryDocumentIds);
+    if (instance && !isKnownSessionInstance) {
+      setRecentProject(instance);
+      setRecentProjectRecoveryCount(recoveryDocumentIds.length);
+      setRecentProjectPermission(
+        await getDirectoryPermission(instance.directory_handle)
+      );
+    }
+    setResumeProjectError(null);
     setSaveStatus("idle");
     setSnapshotDialog(null);
-    setIsPdfExportPreviewOpen(false);
-    setMarkdownSelection({ end: 0, start: 0 });
+    setIsLegacyProjectAssemblyOpen(false);
+    setMarkdownSelection(
+      restoredUiState?.markdownSelection ?? { end: 0, start: 0 }
+    );
     setMarkdownSelectionRequest(null);
     setVisualSelectionDraft(null);
     setCommentAddRequest(null);
     setCommentReplyRequest(null);
-    setCommentContextMenu(null);
-    setComments([]);
-    setPatches([]);
-    setIsProjectDataLoading(true);
+    setSelectionActions(null);
+    setReanchorSession(null);
+    setReanchorConfirmation(null);
+    setCommentPositions({});
+    setReadingBookmarkPosition(null);
+    setReadingBookmarkEmphasizedDocumentKey(null);
+    setReadingBookmarkMenuDocumentKey(null);
+    setVersionEntries(versions);
+    setComments(projectComments);
+    setPatches(projectPatches);
+    setReviewBatches(projectReviewBatches);
+    setReviewQueueOverrides(projectReviewQueueOverrides);
+    setDocumentActiveCommentState({
+      documentId: loadedDocumentId,
+      state: restoredUiState?.activeCommentState ?? { kind: "none" }
+    });
+    lastScrolledActiveCommentKeyRef.current = null;
+    setIsProjectDataLoading(false);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
     setPatchGroupListDialog(null);
@@ -4448,11 +9046,70 @@ export function DocumentEditor() {
     setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
+    setReviewBatchCancelDialog(null);
+    setIsGuidedReviewOpen(false);
     setDocumentLevelExportGuardDialog(null);
     setMarkCommentFocusGuardDialog(null);
     setChatGptImportDialog(null);
-    setMode("visual");
+    setMode(restoredUiState?.mode ?? "visual");
     setDocumentVersion((currentVersion) => currentVersion + 1);
+    updateDocumentSwitchPerformanceMetadata(performanceOperationId, {
+      comments: getActiveComments(projectComments).length,
+      patches: projectPatches.length,
+      versions: versions.length
+    });
+    markDocumentSwitchPerformance(performanceOperationId, "review_state_ready");
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "target_state_update_requested"
+    );
+    if (restoredUiState) {
+      window.requestAnimationFrame(() => {
+        window.scrollTo({ top: restoredUiState.scrollY });
+      });
+    }
+    const loadedDocumentKey = createProjectDocumentKey(identity);
+    if (pendingReadingBookmarkNavigationRef.current === loadedDocumentKey) {
+      const loadedBookmark = getDocumentReadingBookmark({
+        document: identity,
+        manifest: loadedProject.project.manifest
+      });
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
+          if (
+            requestId !== deviceRecoveryLoadRequestRef.current ||
+            pendingReadingBookmarkNavigationRef.current !== loadedDocumentKey
+          ) {
+            return;
+          }
+          pendingReadingBookmarkNavigationRef.current = null;
+          void continueReadingAtBookmarkRef.current?.({
+            bookmark: loadedBookmark,
+            documentKey: loadedDocumentKey,
+            markdown: preparedRecovery?.markdown ?? loadedProject.markdown,
+            mode: modeRef.current,
+            patches: projectPatches
+          });
+        });
+      });
+    }
+    if (isKnownSessionInstance) {
+      void rememberProjectInstance({
+        directoryHandle: projectDirectory as StoredDirectoryHandle,
+        documentId: identity.documentId,
+        documentTitle: loadedDocumentTitle,
+        groupId: loadedProject.project.document?.group_id ?? null,
+        localInstanceId: instanceId,
+        projectId: identity.projectId,
+        projectTitle: getProjectTitle(loadedProject.project)
+      })
+        .then((record) => {
+          if (activeDocumentIdRef.current === identity.documentId) {
+            setRecentProject(record);
+          }
+        })
+        .catch(() => undefined);
+    }
   }
 
   return (
@@ -4462,8 +9119,79 @@ export function DocumentEditor() {
       aria-label="Patchmark editor"
     >
       <aside className="document-sidebar" aria-label="Document navigation">
+        {projectHandle ? (
+          <ProjectDocumentNavigator
+            activeDocumentId={
+              getActiveProjectDocument(projectHandle)?.document_id ??
+              "legacy-document"
+            }
+            busy={
+              isSaving ||
+              isProjectDataLoading ||
+              isCommentBusy ||
+              isReadingBookmarkBusy
+            }
+            requestedDocumentId={requestedProjectDocumentId}
+            selectionBusy={
+              isProjectDataLoading ||
+              isCommentBusy ||
+              isReadingBookmarkBusy ||
+              (isSaving && requestedProjectDocumentId === null)
+            }
+            documents={projectDocuments}
+            groups={projectGroups}
+            legacy={!isMultiDocumentProject(projectHandle)}
+            projectId={getProjectDocumentIdentity(projectHandle).projectId}
+            projectTitle={getProjectTitle(projectHandle)}
+            recoveryDocumentIds={projectRecoveryDocumentIds}
+            onAddExisting={(groupId) =>
+              void handleAddExistingProjectDocument(groupId)
+            }
+            onArchive={(documentId) =>
+              void handleArchiveProjectDocument(documentId)
+            }
+            onCreate={(request) => void handleCreateProjectDocument(request)}
+            onCreateGroup={(title) =>
+              void handleCreateProjectDocumentGroup(title)
+            }
+            onContinueReading={(documentId) =>
+              void handleContinueReadingFromNavigator(documentId)
+            }
+            onLocate={(documentId) =>
+              void handleLocateProjectDocument(documentId)
+            }
+            onMove={(documentId, direction) =>
+              void handleMoveProjectDocument(documentId, direction)
+            }
+            onMoveGroup={(groupId, direction) =>
+              void handleMoveProjectDocumentGroup(groupId, direction)
+            }
+            onMoveToGroup={(documentId, groupId) =>
+              void handleMoveProjectDocumentToGroup(documentId, groupId)
+            }
+            onRemoveGroup={(groupId) =>
+              void handleRemoveProjectDocumentGroup(groupId)
+            }
+            onRename={(documentId, displayTitle) =>
+              void handleUpdateProjectDocument(documentId, { displayTitle })
+            }
+            onRenameGroup={(groupId, title) =>
+              void handleRenameProjectDocumentGroup(groupId, title)
+            }
+            onRestore={(documentId) =>
+              void handleRestoreProjectDocument(documentId)
+            }
+            onRoleChange={(documentId, role) =>
+              void handleUpdateProjectDocument(documentId, { role })
+            }
+            onSelect={(documentId) =>
+              void handleSelectProjectDocument(documentId)
+            }
+          />
+        ) : null}
         <DocumentOutline headings={headings} />
         <VersionHistoryPanel
+          key={`version-history:${activeDocumentId ?? "none"}`}
           comments={comments}
           isProjectMode={isProjectMode}
           patches={patches}
@@ -4489,13 +9217,20 @@ export function DocumentEditor() {
               >
                 Open Project Folder
               </button>
-            <button
-              type="button"
-              disabled={!fileName || isSaving || isReanchorMode}
-              onClick={handleCreateProjectFromCurrentDocument}
-            >
-              Create Project From Current Document
-            </button>
+              <button
+                type="button"
+                disabled={isSaving || isReanchorMode}
+                onClick={handleOpenLegacyProjectAssembly}
+              >
+                Create Project From Existing Patchmark Projects
+              </button>
+              <button
+                type="button"
+                disabled={!fileName || isProjectMode || isSaving || isReanchorMode}
+                onClick={handleCreateProjectFromCurrentDocument}
+              >
+                Create Project From Current Document
+              </button>
             <button
               type="button"
               disabled={isSaving || isCommentBusy || isReanchorMode}
@@ -4510,6 +9245,21 @@ export function DocumentEditor() {
             >
               Import ChatGPT Response
             </button>
+            <button
+              type="button"
+              disabled={
+                !projectHandle ||
+                isSaving ||
+                isCommentBusy ||
+                isProjectDataLoading ||
+                isProjectRecoveryReadOnly ||
+                isReanchorMode ||
+                projectHandle.documentAvailability === "missing"
+              }
+              onClick={handleOpenGuidedReview}
+            >
+              Guided Review
+            </button>
           </div>
 
             <div className="workspace-status" aria-label="Workspace status">
@@ -4519,16 +9269,33 @@ export function DocumentEditor() {
               </span>
               {projectHandle ? (
                 <>
-                  <span>Project: {projectHandle.manifest.project_name}</span>
-                  <span>Document: {projectHandle.manifest.document_file}</span>
+                  <span>Project: {getProjectTitle(projectHandle)}</span>
+                  {activeDocumentGroup ? (
+                    <span>Group: {activeDocumentGroup.title}</span>
+                  ) : null}
+                  <span>
+                    Document:{" "}
+                    {projectHandle.document?.display_title ??
+                      projectHandle.manifest.document_file}
+                  </span>
                 </>
               ) : null}
             </div>
 
             {fileName ? (
               <div className="document-meta">
-                <span>{isProjectMode ? "Project document" : "Loaded file"}</span>
-                <strong title={fileName}>{fileName}</strong>
+                <span>{isProjectMode ? "Project / document" : "Loaded file"}</span>
+                <strong title={fileName}>
+                  {projectHandle
+                    ? [
+                        getProjectTitle(projectHandle),
+                        activeDocumentGroup?.title,
+                        projectHandle.document?.display_title ?? fileName
+                      ]
+                        .filter(Boolean)
+                        .join(" / ")
+                    : fileName}
+                </strong>
                 <DocumentStatus status={documentStatus} />
               </div>
             ) : null}
@@ -4547,7 +9314,14 @@ export function DocumentEditor() {
                 markdown={markdown}
                 onCreateSnapshot={handleCreateSnapshot}
                 onDownload={handleDownload}
-                onExportPdf={() => setIsPdfExportPreviewOpen(true)}
+                onExportPdf={() =>
+                  setPdfExportTarget({
+                    documentId:
+                      projectHandle?.document?.document_id ?? null,
+                    fileName,
+                    markdown
+                  })
+                }
                 onSaveAs={handleSaveAs}
                 onSaveChanges={handleSaveChanges}
                 showCreateSnapshot={isProjectMode}
@@ -4556,12 +9330,13 @@ export function DocumentEditor() {
                 <div
                   className="reading-bookmark-controls"
                   aria-label="Reading bookmark controls"
+                  key={`controls:${activeDocumentKey}`}
                 >
                   {readingBookmarkResolution?.state === "available" ? (
                     <button
                       type="button"
                       disabled={isReadingBookmarkBusy || isReanchorMode}
-                      onClick={handleContinueReading}
+                      onClick={() => void handleContinueReading()}
                     >
                       Continue reading
                     </button>
@@ -4571,11 +9346,7 @@ export function DocumentEditor() {
                       <button
                         type="button"
                         disabled={isReadingBookmarkBusy || isReanchorMode}
-                        onClick={() =>
-                          void handleRemoveReadingBookmark().catch(
-                            () => undefined
-                          )
-                        }
+                        onClick={() => void handleRemoveReadingBookmark()}
                       >
                         Remove unavailable bookmark
                       </button>
@@ -4587,14 +9358,14 @@ export function DocumentEditor() {
                 <button
                   type="button"
                   aria-pressed={mode === "visual"}
-                  onClick={() => setMode("visual")}
+                  onClick={() => handleEditorModeChange("visual")}
                 >
                   Visual Mode
                 </button>
                 <button
                   type="button"
                   aria-pressed={mode === "markdown"}
-                  onClick={() => setMode("markdown")}
+                  onClick={() => handleEditorModeChange("markdown")}
                 >
                   Markdown Mode
                 </button>
@@ -4634,6 +9405,12 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
+        {deviceRecoveryWarning ? (
+          <div className="document-save-banner document-save-banner-error" role="alert">
+            {deviceRecoveryWarning}
+          </div>
+        ) : null}
+
         {saveFeedback ? (
           <div
             className={`document-save-banner document-save-banner-${saveFeedback.kind}`}
@@ -4643,103 +9420,84 @@ export function DocumentEditor() {
           </div>
         ) : null}
 
-        {reanchorSession ? (
-          <section className="reanchor-mode-panel" aria-label="Re-anchor comment">
-            <div className="reanchor-mode-header">
-              <div>
-                <span>Re-anchoring comment</span>
-                <strong>{reanchorSession.commentId}</strong>
-                <p>
-                  Choose a suggested location or select new text in the document.
-                  Document editing is temporarily read-only.
-                </p>
-              </div>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={cancelReanchorMode}
-              >
-                Cancel
-              </button>
-            </div>
-
-            {reanchorSession.candidates.length > 0 ? (
-              <div className="reanchor-candidate-list">
-                {reanchorSession.candidates.map((candidate, index) => (
-                  <article
-                    className="reanchor-candidate-card"
-                    data-previewed={
-                      reanchorSession.previewProposal?.id === candidate.id
-                        ? "true"
-                        : undefined
-                    }
-                    key={candidate.id}
-                  >
-                    <span>Possible location {index + 1}</span>
-                    <strong>
-                      {candidate.containingHeading ?? "Document beginning"}
-                    </strong>
-                    <small>{candidate.structureLabel}</small>
-                    <p>“…{candidate.contextExcerpt.slice(0, 220)}…”</p>
-                    <div>
-                      <button
-                        type="button"
-                        onClick={() => handleShowReanchorCandidate(candidate)}
-                      >
-                        Show in document
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => handleUseReanchorCandidate(candidate)}
-                      >
-                        Use this location
-                      </button>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <p className="reanchor-empty-candidates">
-                Patchmark did not find a safe suggested location. Select the
-                relevant current text manually.
-              </p>
-            )}
-
-            <div className="reanchor-manual-selection">
-              <div>
-                <strong>Select new text manually</strong>
-                <span>
-                  Current mode: {mode === "visual" ? "Visual Mode" : "Markdown Mode"}
-                </span>
-              </div>
-              <button
-                type="button"
-                disabled={!selectedCommentDraft || isCommentBusy}
-                onClick={handleUseSelectionForReanchor}
-              >
-                Use selection as new anchor
-              </button>
-            </div>
-
-            {reanchorSession.error ? (
-              <p className="comments-error" role="alert">
-                {reanchorSession.error}
-              </p>
-            ) : null}
-          </section>
+        {rewriteRecoveryConflict && !rewriteSession ? (
+          <RewriteRecoveryConflictBanner
+            conflict={rewriteRecoveryConflict}
+            onCancel={() => {
+              setSaveFeedback({
+                kind: "info",
+                message: "Recovery decision postponed. No draft was changed."
+              });
+            }}
+            onRecover={() => void handleResolveRewriteRecoveryConflict("recovery")}
+            onUseProject={() => void handleResolveRewriteRecoveryConflict("project")}
+          />
         ) : null}
 
-        {!fileName && availableDraft ? (
-          <DraftRestoreBanner
-            draft={availableDraft}
-            onRestore={handleRestoreDraft}
-            onDiscard={handleDiscardDraft}
+        {rewriteDraftAvailable && !rewriteSession && !rewriteRecoveryConflict ? (
+          <RewriteResumeBanner
+            session={rewriteDraftAvailable}
+            onResume={() => {
+              rewriteReturnFocusRef.current =
+                document.activeElement instanceof HTMLElement
+                  ? document.activeElement
+                  : null;
+              setRewriteSession(rewriteDraftAvailable);
+            }}
+            onDiscard={() => {
+              if (
+                window.confirm(
+                  "Discard this rewrite draft? The document and review stores will not be changed."
+                )
+              ) {
+                void handleDiscardRewriteSession(rewriteDraftAvailable);
+              }
+            }}
+          />
+        ) : null}
+
+        {requestedProjectDocumentId ? (
+          <div className="document-switch-loading" role="status">
+            Opening {projectDocuments.find(
+              (document) =>
+                document.document_id === requestedProjectDocumentId
+            )?.display_title ?? "document"}…
+          </div>
+        ) : null}
+
+        {!fileName && recentProject ? (
+          <ProjectResumeBanner
+            busy={isResumingProject || isSaving}
+            error={resumeProjectError}
+            permission={recentProjectPermission}
+            project={recentProject}
+            recoveryCount={recentProjectRecoveryCount}
+            onDeleteDeviceData={() => void handleDeleteRecentDeviceData()}
+            onResume={() => void handleResumeProject()}
+          />
+        ) : null}
+
+        {!fileName ? (
+          <LegacyRecoveryPanel
+            drafts={legacyUnscopedDrafts}
+            onDelete={handleDeleteLegacyRecovery}
+          />
+        ) : null}
+
+        {fileName && documentRecoveryPresentation ? (
+          <DocumentRecoveryBanner
+            presentation={documentRecoveryPresentation}
+            onDiscard={() => void handleDiscardRecoveredChanges()}
+            onKeepSaved={() => void handleKeepSavedDocument()}
+            onToggleReview={handleToggleRecoveryReview}
+            onUseRecovered={handleUseRecoveredWorkingCopy}
           />
         ) : null}
 
         <div
           ref={editorDocumentRef}
           className="editor-body"
+          data-document-key={activeDocumentKey ?? undefined}
           onClick={handleEditorClick}
           onContextMenu={handleEditorContextMenu}
           onMouseUp={handleEditorMouseUp}
@@ -4747,12 +9505,16 @@ export function DocumentEditor() {
           {fileName ? (
             mode === "visual" ? (
               <VisualMarkdownEditor
-                key={documentVersion}
                 markdown={markdown}
                 onMarkdownChange={(nextMarkdown) =>
                   handleMarkdownChange(nextMarkdown, "manual_visual")
                 }
-                readOnly={isProjectRecoveryReadOnly || isReanchorMode}
+                readOnly={
+                  isProjectRecoveryReadOnly ||
+                  requestedProjectDocumentId !== null
+                }
+                resetKey={documentVersion}
+                selectionOnly={isReanchorMode}
               />
             ) : (
               <MarkdownSourceEditor
@@ -4760,8 +9522,12 @@ export function DocumentEditor() {
                 onMarkdownChange={(nextMarkdown, hint) =>
                   handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
-                onSelectionChange={setMarkdownSelection}
-                readOnly={isProjectRecoveryReadOnly || isReanchorMode}
+                onSelectionChange={handleMarkdownSelectionChange}
+                readOnly={
+                  isProjectRecoveryReadOnly ||
+                  isReanchorMode ||
+                  requestedProjectDocumentId !== null
+                }
                 selectionRequest={markdownSelectionRequest}
               />
             )
@@ -4778,22 +9544,26 @@ export function DocumentEditor() {
           )}
           {mode === "visual" &&
           readingBookmark &&
-          readingBookmarkPosition !== null ? (
+          readingBookmarkPosition?.documentKey === activeDocumentKey ? (
             <div
+              key={`marker:${activeDocumentKey}`}
               className="reading-bookmark-marker"
-              style={{ top: readingBookmarkPosition }}
+              style={{ top: readingBookmarkPosition.top }}
             >
               <button
                 ref={readingBookmarkMarkerRef}
                 type="button"
-                aria-controls="reading-bookmark-action-menu"
+                aria-controls={readingBookmarkMenuId}
                 aria-expanded={isReadingBookmarkMenuOpen}
                 aria-haspopup="menu"
                 aria-label="Current reading bookmark. Open bookmark actions."
                 className="reading-bookmark-indicator"
                 onClick={(event) => {
                   event.stopPropagation();
-                  setIsReadingBookmarkMenuOpen((isOpen) => !isOpen);
+                  const markerDocumentKey = activeDocumentKey;
+                  setReadingBookmarkMenuDocumentKey((currentKey) =>
+                    currentKey === markerDocumentKey ? null : markerDocumentKey
+                  );
                 }}
                 title="Current reading bookmark"
               >
@@ -4802,10 +9572,11 @@ export function DocumentEditor() {
               {isReadingBookmarkMenuOpen ? (
                 <div
                   ref={readingBookmarkMenuRef}
-                  id="reading-bookmark-action-menu"
+                  id={readingBookmarkMenuId}
                   className="reading-bookmark-action-menu"
                   role="menu"
                   aria-label="Reading bookmark actions"
+                  key={`menu:${activeDocumentKey}`}
                   onClick={(event) => event.stopPropagation()}
                 >
                   <button
@@ -4813,9 +9584,7 @@ export function DocumentEditor() {
                     type="button"
                     role="menuitem"
                     disabled={isReadingBookmarkBusy || isReanchorMode}
-                    onClick={() =>
-                      void handleRemoveReadingBookmark().catch(() => undefined)
-                    }
+                    onClick={() => void handleRemoveReadingBookmark()}
                   >
                     Remove bookmark
                   </button>
@@ -4826,24 +9595,229 @@ export function DocumentEditor() {
         </div>
       </div>
 
-      <aside className="comments-rail" aria-label="Document comments">
+      <aside
+        ref={commentsRailRef}
+        className="comments-rail"
+        aria-label="Document comments"
+      >
+        {reanchorSession ? (
+          <section
+            ref={reanchorWorkspaceRef}
+            aria-label="Re-anchor comment"
+            aria-describedby="reanchor-workspace-instructions"
+            className="reanchor-mode-panel reanchor-workspace"
+            data-comment-id={reanchorSession.commentId}
+            data-document-id={reanchorSession.documentId}
+            data-editor-generation={reanchorSession.documentVersion}
+            data-mode={mode}
+            data-project-id={reanchorSession.projectId}
+            data-render-count={reanchorWorkspaceRenderCountRef.current + 1}
+            data-selection-latency-ms={
+              reanchorSession.selectionLatencyMs?.toFixed(2)
+            }
+            data-start-scroll-y={Math.round(reanchorSession.startedScrollY)}
+            data-start-mode={reanchorSession.startedMode}
+            data-testid="reanchor-workspace"
+            style={
+              reanchorWorkspaceStyle ?? {
+                visibility: "hidden"
+              }
+            }
+            tabIndex={-1}
+          >
+            <div className="reanchor-mode-header">
+              <div>
+                <span>Re-anchor comment</span>
+                <strong>{reanchorSession.commentId}</strong>
+                <p id="reanchor-workspace-instructions">
+                  Select the current text this comment should reference.
+                  Document editing is temporarily read-only, but text remains
+                  selectable.
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label={`Cancel re-anchor for ${reanchorSession.commentId}`}
+                disabled={isCommentBusy}
+                onClick={cancelReanchorMode}
+              >
+                Cancel
+              </button>
+            </div>
+
+            <div className="reanchor-original-anchor">
+              <span>Original anchor</span>
+              <blockquote>
+                {reanchorOriginalAnchor?.selected_text ??
+                  "The historical selected text is unavailable."}
+              </blockquote>
+              <small>
+                {reanchorOriginalAnchor?.containing_heading ??
+                  "No containing section"}
+              </small>
+            </div>
+
+            {reanchorSession.candidates.length > 0 ? (
+              <div className="reanchor-candidate-list">
+                <strong>Suggested locations</strong>
+                {reanchorSession.candidates.map((candidate, index) => (
+                  <article
+                    className="reanchor-candidate-card"
+                    data-previewed={
+                      reanchorSession.previewProposal?.id === candidate.id
+                        ? "true"
+                        : undefined
+                    }
+                    key={candidate.id}
+                  >
+                    <span>Candidate {index + 1}</span>
+                    <strong>
+                      {candidate.containingHeading ?? "Document beginning"}
+                    </strong>
+                    <small>
+                      {candidate.structureLabel} · {candidate.confidence} confidence
+                    </small>
+                    <p>{candidate.reason}</p>
+                    <blockquote>“…{candidate.contextExcerpt.slice(0, 220)}…”</blockquote>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => handleShowReanchorCandidate(candidate)}
+                      >
+                        Preview candidate
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => handleUseReanchorCandidate(candidate)}
+                      >
+                        Review this location
+                      </button>
+                    </div>
+                  </article>
+                ))}
+                {reanchorSession.previewReturnScrollY !== null ? (
+                  <button
+                    type="button"
+                    onClick={handleReturnFromReanchorPreview}
+                  >
+                    Return to previous position
+                  </button>
+                ) : null}
+              </div>
+            ) : (
+              <p className="reanchor-empty-candidates">
+                No safe automatic location was found. Select replacement text
+                manually in the document.
+              </p>
+            )}
+
+            <div className="reanchor-manual-selection">
+              <div>
+                <strong>Current selection</strong>
+                <span>
+                  {mode === "visual" ? "Visual Mode" : "Markdown Mode"}
+                </span>
+              </div>
+              <div
+                className="reanchor-selection-status"
+                aria-live="polite"
+                data-selection-context={
+                  reanchorSession.selectionDraft?.anchorContext.kind
+                }
+                data-selection-text={
+                  reanchorSession.selectionDraft?.selectedText
+                }
+                role="status"
+              >
+                {reanchorSession.selectionDraft && reanchorSelectionRange ? (
+                  <>
+                    <blockquote>
+                      {reanchorSession.selectionDraft.selectedText.slice(0, 320)}
+                      {reanchorSession.selectionDraft.selectedText.length > 320
+                        ? "…"
+                        : ""}
+                    </blockquote>
+                    <span>
+                      {reanchorSession.selectionDraft.selectedText.length} characters
+                      {" · "}
+                      {reanchorSession.selectionDraft.anchorContext.kind.replaceAll(
+                        "_",
+                        " "
+                      )}
+                    </span>
+                  </>
+                ) : (
+                  <p>{reanchorSession.selectionHelp}</p>
+                )}
+              </div>
+              <button
+                ref={reanchorWorkspacePrimaryRef}
+                type="button"
+                disabled={!reanchorSelectionRange || isCommentBusy}
+                onClick={handleUseSelectionForReanchor}
+                onMouseDown={(event) => event.preventDefault()}
+              >
+                Use selection as new anchor
+              </button>
+            </div>
+
+            <p className="reanchor-scope-note">
+              Re-anchoring changes where this comment points. It does not resolve
+              the comment or rewrite, accept, or rebase linked patches.
+            </p>
+            {reanchorHasLinkedStalePatch ? (
+              <p className="reanchor-stale-patch-note">
+                Linked patch proposals remain unchanged and may still require an
+                updated ChatGPT response.
+              </p>
+            ) : null}
+
+            {reanchorSession.error ? (
+              <p className="comments-error" role="alert">
+                {reanchorSession.error}
+              </p>
+            ) : null}
+          </section>
+        ) : null}
         <CommentsPanel
+          key={`comments:${activeDocumentId ?? "none"}`}
           addRequest={commentAddRequest}
           activeCommentState={activeCommentState}
           anchorSummaries={commentAnchorSummaries}
           commentPositions={commentPositions}
-          comments={comments}
+          comments={activeComments}
+          documentId={activeDocumentIdentity?.documentId ?? null}
+          documentTitle={
+            projectHandle?.document?.display_title ??
+            projectHandle?.manifest.project_name ??
+            "current document"
+          }
           defaultSectionLine={defaultCommentHeading?.line ?? null}
           error={commentsError}
           headings={headings}
           isBusy={isCommentBusy || isReanchorMode}
+          isDocumentCommentAvailable={
+            isProjectMode &&
+            !isProjectRecoveryReadOnly &&
+            !isReanchorMode &&
+            requestedProjectDocumentId === null
+          }
           isProjectMode={isProjectMode}
           onAddComment={handleAddComment}
-          onDeleteComment={handleDeleteComment}
+          onCloseAddComment={handleCommentComposerClosed}
+          onMoveCommentsToTrash={handleMoveCommentsToTrash}
+          onPermanentlyDeleteComments={handlePermanentlyDeleteComments}
+          onOpenReviewBatch={() => setIsGuidedReviewOpen(true)}
+          onPrepareMoveCommentsToTrash={handlePrepareMoveCommentsToTrash}
+          onPreparePermanentDeleteComments={
+            handlePreparePermanentDeleteComments
+          }
+          onRestoreCommentsFromTrash={handleRestoreCommentsFromTrash}
           onEditComment={handleEditComment}
           onEditReply={handleEditCommentReply}
           onFindComment={handleFindComment}
           onMarkCommentForExport={handleMarkCommentForExport}
+          onOpenDocumentComment={handleOpenWholeDocumentComment}
           onReopenComment={handleReopenComment}
           onReplyComment={handleReplyToComment}
           onReviewCommentPatches={handleReviewCommentPatches}
@@ -4856,82 +9830,35 @@ export function DocumentEditor() {
           pendingPatchGroupTotal={pendingPatchGroups.length}
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           pendingPatchTotal={pendingPatches.length}
+          projectId={activeDocumentIdentity?.projectId ?? null}
           replyRequest={commentReplyRequest}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
+          trashedComments={trashedComments}
         />
       </aside>
 
-      {commentContextMenu ? (
-        <div
-          className="comment-context-menu"
-          style={{ left: commentContextMenu.x, top: commentContextMenu.y }}
-          role="menu"
-          aria-label="Patchmark document menu"
-          onClick={(event) => event.stopPropagation()}
-        >
-          {!isProjectMode ? (
-            <span className="comment-context-menu-note">
-              Comments require Project Folder Mode.
-            </span>
-          ) : null}
-          {commentContextMenu.selectedDraft || commentContextMenu.selectionHelp ? (
-            <button
-              type="button"
-              role="menuitem"
-              disabled={!isProjectMode || !commentContextMenu.selectedDraft}
-              onClick={() => handleOpenCommentFromMenu("selected_text")}
-            >
-              Add Comment to Selection
-            </button>
-          ) : null}
-          {isProjectMode && commentContextMenu.selectionHelp ? (
-            <span className="comment-context-menu-note">
-              {SHORT_SELECTION_HELP}
-            </span>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!isProjectMode || !commentContextMenu.defaultHeadingLine}
-            onClick={() => handleOpenCommentFromMenu("section")}
-          >
-            Add Comment to Section
-          </button>
-          <button
-            type="button"
-            role="menuitem"
-            disabled={!isProjectMode}
-            onClick={() => handleOpenCommentFromMenu("document")}
-          >
-            Add Comment to Document
-          </button>
-          {isProjectMode && !commentContextMenu.defaultHeadingLine ? (
-            <span className="comment-context-menu-note">
-              No section detected here.
-            </span>
-          ) : null}
-          <button
-            type="button"
-            role="menuitem"
-            disabled={
-              !isProjectMode ||
-              isReadingBookmarkBusy ||
-              (!commentContextMenu.selectedDraft &&
-                !commentContextMenu.defaultHeadingLine)
-            }
-            onClick={() =>
-              void handleSetReadingBookmarkFromMenu().catch(() => undefined)
-            }
-          >
-            Set reading bookmark
-          </button>
-          {!isProjectMode ? (
-            <span className="comment-context-menu-note">
-              Reading bookmarks require Project Folder Mode.
-            </span>
-          ) : null}
-        </div>
+      {shouldRenderSelectionActions && selectionActions ? (
+        <SelectionActionsChooser
+          compactButtonRef={commentSelectionActionButtonRef}
+          contextLabel={selectionActionsContextLabel}
+          excerpt={selectionActions.selectedDraft?.selectedText ?? null}
+          onActivate={handleSelectionAction}
+          onCancel={handleCancelSelectionActions}
+          onOpen={() => {
+            const trigger =
+              pendingSelectionActionsTriggerRef.current ?? "selection";
+            pendingSelectionActionsTriggerRef.current = null;
+            handleOpenSelectionActions(trigger);
+          }}
+          options={selectionActionOptions}
+          presentation={selectionActions.presentation}
+          sectionLabel={selectionActionsSectionLabel}
+          selectionLatencyMs={selectionActions.selectionLatencyMs}
+          trigger={selectionActions.trigger}
+          x={selectionActions.x}
+          y={selectionActions.y}
+        />
       ) : null}
 
       {reanchorSession && reanchorConfirmation ? (
@@ -4939,6 +9866,7 @@ export function DocumentEditor() {
           <section
             className="comment-export-dialog reanchor-confirmation-dialog"
             aria-label="Confirm comment re-anchor"
+            data-testid="reanchor-confirmation"
           >
             <header className="snapshot-dialog-header">
               <div>
@@ -4954,7 +9882,7 @@ export function DocumentEditor() {
                 disabled={isCommentBusy}
                 onClick={() => setReanchorConfirmation(null)}
               >
-                Cancel
+                Choose different text
               </button>
             </header>
             <div className="reanchor-confirmation-body">
@@ -4985,6 +9913,17 @@ export function DocumentEditor() {
                 <p>{reanchorConfirmation.contextExcerpt}</p>
               </section>
             </div>
+            {reanchorHasLinkedStalePatch ? (
+              <p className="reanchor-stale-patch-note">
+                This changes the comment location only. Linked patch proposals
+                remain unchanged and may still require an updated ChatGPT response.
+              </p>
+            ) : null}
+            {reanchorSession.error ? (
+              <p className="comments-error" role="alert">
+                {reanchorSession.error}
+              </p>
+            ) : null}
             <div className="comment-export-actions reanchor-confirmation-actions">
               <button
                 className="document-action-primary"
@@ -4997,27 +9936,34 @@ export function DocumentEditor() {
               <button
                 type="button"
                 disabled={isCommentBusy}
-                onClick={() => setReanchorConfirmation(null)}
+                onClick={cancelReanchorMode}
               >
-                Cancel
+                Cancel re-anchor
               </button>
             </div>
           </section>
         </div>
       ) : null}
 
-      {snapshotDialog ? (
+      {snapshotDialog && snapshotDialog.documentId === activeDocumentId ? (
         <SnapshotDialog
           dialog={snapshotDialog}
           onClose={() => setSnapshotDialog(null)}
         />
       ) : null}
 
-      {isPdfExportPreviewOpen && fileName ? (
+      {isLegacyProjectAssemblyOpen ? (
+        <LegacyProjectAssemblyDialog
+          onClose={() => setIsLegacyProjectAssemblyOpen(false)}
+          onComplete={handleLegacyProjectAssemblyComplete}
+        />
+      ) : null}
+
+      {pdfExportTarget ? (
         <PdfExportPreview
-          fileName={fileName}
-          markdown={markdown}
-          onClose={() => setIsPdfExportPreviewOpen(false)}
+          fileName={pdfExportTarget.fileName}
+          markdown={pdfExportTarget.markdown}
+          onClose={() => setPdfExportTarget(null)}
         />
       ) : null}
 
@@ -5239,6 +10185,71 @@ export function DocumentEditor() {
         </div>
       ) : null}
 
+      {isGuidedReviewOpen && guidedReviewQueue && projectHandle ? (
+        <GuidedReviewWizard
+          activeBatch={activeReviewBatch}
+          buildPromptPreview={guidedReviewPromptPreviewBuilder}
+          comments={activeComments}
+          deferredCommentIds={deferredReviewCommentIds}
+          deletedCommentIds={
+            new Set(
+              projectHandle?.manifest.comment_deletion_tombstones?.map(
+                (tombstone) => tombstone.comment_id
+              ) ?? []
+            )
+          }
+          documentChangedSinceExport={Boolean(
+            activeReviewBatch &&
+              (activeReviewBatch.batch_record_generation !==
+                projectHandle.persistence.generation ||
+                markdown !== projectHandle.persistence.documentText)
+          )}
+          documentTitle={
+            projectHandle.document?.display_title ??
+            projectHandle.manifest.project_name
+          }
+          generationBlockedReason={
+            documentRecoveryPresentation?.kind === "conflict"
+              ? "Resolve the recovery conflict before generating a tracked prompt."
+              : isProjectRecoveryReadOnly
+                ? "Restore a writable project state before generating a tracked prompt."
+                : null
+          }
+          isBusy={isCommentBusy}
+          onAcknowledgeResponse={handleAcknowledgeReviewBatchResponse}
+          onCancelBatch={handleRequestCancelActiveReviewBatch}
+          onClose={() => setIsGuidedReviewOpen(false)}
+          onCopyPrompt={() => void handleCopyActiveReviewBatchPrompt()}
+          onDeferComment={handleDeferGuidedReviewComment}
+          onGenerateTrackedPrompt={handleGenerateGuidedReviewBatch}
+          onImportResponse={handleOpenChatGptImportDialog}
+          onOpenContextPack={() =>
+            void handleOpenActiveReviewBatchPrompt()
+          }
+          onReanchorComment={(commentId) => {
+            setIsGuidedReviewOpen(false);
+            handleStartReanchor(commentId);
+          }}
+          onRestoreDeferredComment={handleRestoreGuidedReviewComment}
+          onReviewResponseComment={handleReviewResponseComment}
+          onReviewComments={() => {
+            const target = guidedReviewQueue.comments.find(
+              (comment) => comment.state === "awaiting_human_review"
+            );
+            setIsGuidedReviewOpen(false);
+            if (target) {
+              setActiveCommentState({
+                kind: "comment",
+                commentId: target.commentId
+              });
+            }
+          }}
+          queue={guidedReviewQueue}
+          responseBatch={pendingReviewResponseBatch}
+          workingStateKey={guidedReviewWorkingStateKey}
+        />
+      ) : null}
+
       {chatGptPromptDialog ? (
         <div className="snapshot-dialog-backdrop">
           <section
@@ -5258,9 +10269,9 @@ export function DocumentEditor() {
                     : "Generate ChatGPT Prompt"}
                 </h2>
                 <p>
-                  {chatGptPromptDialog.dedicatedDocumentReview
-                    ? "This Markdown prompt is dedicated to one whole-document comment. Copying or saving marks only that comment as exported."
-                    : "This Markdown prompt is ready to paste into ChatGPT. Copying or saving marks focused comments as exported, but does not resolve them."}
+                  This is the exact historical prompt saved for Review Batch{" "}
+                  {chatGptPromptDialog.batchId}. Copying reads the committed
+                  context pack and never regenerates current content.
                 </p>
               </div>
               <button type="button" onClick={() => setChatGptPromptDialog(null)}>
@@ -5275,37 +10286,69 @@ export function DocumentEditor() {
               >
                 Copy Prompt
               </button>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={handleSaveChatGptPrompt}
-              >
-                Save Prompt
-              </button>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={handleCopyFocusedJsonPayload}
-              >
-                Copy JSON Payload
-              </button>
-              <button
-                type="button"
-                disabled={isCommentBusy}
-                onClick={handleSaveFocusedJsonPayload}
-              >
-                Save JSON Payload
-              </button>
+              {chatGptPromptDialog.jsonText ? (
+                <button
+                  type="button"
+                  disabled={isCommentBusy}
+                  onClick={handleCopyFocusedJsonPayload}
+                >
+                  Copy JSON Payload
+                </button>
+              ) : null}
               <span>{chatGptPromptDialog.promptFileName}</span>
             </div>
             <label className="comment-export-json">
               <span>Generated prompt</span>
               <textarea readOnly value={chatGptPromptDialog.promptText} />
             </label>
-            <details className="comment-export-payload-details">
-              <summary>JSON Payload</summary>
-              <textarea readOnly value={chatGptPromptDialog.jsonText} />
-            </details>
+            {chatGptPromptDialog.jsonText ? (
+              <details className="comment-export-payload-details">
+                <summary>JSON Payload</summary>
+                <textarea readOnly value={chatGptPromptDialog.jsonText} />
+              </details>
+            ) : null}
+          </section>
+        </div>
+      ) : null}
+
+      {reviewBatchCancelDialog ? (
+        <div className="snapshot-dialog-backdrop">
+          <section
+            aria-label="Cancel Review Batch"
+            aria-modal="true"
+            className="comment-export-dialog"
+            onKeyDown={handleReviewBatchCancelDialogKeyDown}
+            ref={reviewBatchCancelDialogRef}
+            role="dialog"
+          >
+            <header className="snapshot-dialog-header">
+              <div>
+                <span>Review Batch</span>
+                <h2>Cancel this exported batch?</h2>
+                <p>
+                  Its comments may return to the Guided Review queue. The saved
+                  context pack will be kept. No comments, replies, patches, or
+                  document content will be deleted.
+                </p>
+              </div>
+            </header>
+            <div className="comment-export-actions">
+              <button
+                disabled={isCommentBusy}
+                onClick={() => void handleConfirmCancelReviewBatch()}
+                ref={reviewBatchCancelPrimaryButtonRef}
+                type="button"
+              >
+                Cancel exported batch
+              </button>
+              <button
+                disabled={isCommentBusy}
+                onClick={() => setReviewBatchCancelDialog(null)}
+                type="button"
+              >
+                Keep batch
+              </button>
+            </div>
           </section>
         </div>
       ) : null}
@@ -5336,12 +10379,21 @@ export function DocumentEditor() {
               </button>
             </header>
             {chatGptImportDialog.error ? (
-              <div className="comment-import-error" role="alert">
+              <div
+                className="comment-import-error"
+                data-error-code={chatGptImportDialog.errorCode ?? undefined}
+                role="alert"
+              >
                 <p>{chatGptImportDialog.error}</p>
-                <label>
-                  <span>Repair prompt</span>
-                  <textarea readOnly value={CHATGPT_IMPORT_REPAIR_PROMPT} />
-                </label>
+                {chatGptImportDialog.repairPrompt ? (
+                  <label>
+                    <span>Repair prompt</span>
+                    <textarea
+                      readOnly
+                      value={chatGptImportDialog.repairPrompt}
+                    />
+                  </label>
+                ) : null}
               </div>
             ) : null}
             <div className="comment-import-fields">
@@ -5355,6 +10407,7 @@ export function DocumentEditor() {
                     setChatGptImportDialog({
                       ...chatGptImportDialog,
                       error: null,
+                      errorCode: null,
                       sourceChatUrl: event.target.value
                     })
                   }
@@ -5369,6 +10422,7 @@ export function DocumentEditor() {
                     setChatGptImportDialog({
                       ...chatGptImportDialog,
                       error: null,
+                      errorCode: null,
                       responseJson: event.target.value
                     })
                   }
@@ -5427,6 +10481,13 @@ export function DocumentEditor() {
           hasMultipleReviewablePatches={reviewablePatches.length > 1}
           isPatchActionBusy={isSaving}
           markdown={markdown}
+          dependencyStatus={
+            selectedPatchDependencyStatus ??
+            getPatchDependencyReviewStatus({
+              patch: selectedPatch,
+              patches
+            })
+          }
           onAcceptPatch={() => handleAcceptPatch(selectedPatch)}
           onBackToGroup={
             selectedPatchDerivedGroup
@@ -5449,6 +10510,7 @@ export function DocumentEditor() {
           }
           onNextPatch={() => handleNavigatePatchReview(1)}
           onPreviousPatch={() => handleNavigatePatchReview(-1)}
+          onReviewDependency={handleReviewPatchDependency}
           onRejectPatch={() => handleRejectPatch(selectedPatch)}
           onUpdatePatchAnchor={() => handleUpdatePatchAnchor(selectedPatch)}
           patch={selectedPatch}
@@ -5460,6 +10522,28 @@ export function DocumentEditor() {
           project={projectHandle}
           showApplyCompletion={recentlyAppliedPatchId === selectedPatch.id}
           reviewablePatchCount={reviewablePatches.length}
+        />
+      ) : null}
+      {rewriteSession ? (
+        <RewriteWorkspace
+          initialPersistenceSource={rewritePersistenceSource}
+          isApplying={isRewriteBusy}
+          session={rewriteSession}
+          onAnalyzeImpact={createRewriteImpactResult}
+          onApply={handleApplyHumanRewrite}
+          onClose={() => {
+            setRewriteSession(null);
+            window.requestAnimationFrame(() =>
+              rewriteReturnFocusRef.current?.focus()
+            );
+          }}
+          onDiscard={handleDiscardRewriteSession}
+          onPersistSession={persistRewriteSessionToProject}
+          onRefreshReference={handleRefreshRewriteReference}
+          onSessionChange={(nextSession) => {
+            setRewriteSession(nextSession);
+            setRewriteDraftAvailable(nextSession);
+          }}
         />
       ) : null}
     </section>
@@ -5763,6 +10847,12 @@ function PatchGroupPatchCard({
     patch,
     patches: allPatches
   });
+  const dependencyStatus = getPatchDependencyReviewStatus({
+    applicability:
+      anchorStatus.kind === "pending" ? anchorStatus.applicability : undefined,
+    patch,
+    patches: allPatches
+  });
 
   return (
     <article
@@ -5772,7 +10862,7 @@ function PatchGroupPatchCard({
         <div className="patch-group-patch-heading">
           <strong>{patchTitle}</strong>
           <span className={`patch-status-badge patch-status-badge-${displayState}`}>
-            {getPatchStatusBadgeLabel(displayState)}
+            {getPatchStatusBadgeLabel(displayState, patch)}
           </span>
         </div>
         <span>
@@ -5784,6 +10874,9 @@ function PatchGroupPatchCard({
             Refines: {followUpRelationship.display_title}
           </span>
         ) : null}
+        {dependencyStatus.totalCount > 0 ? (
+          <span>{formatPatchDependencySummary(dependencyStatus)}</span>
+        ) : null}
         <details className="patch-group-technical-details">
           <summary>Details</summary>
           <span>Patch ID: {patch.id}</span>
@@ -5794,7 +10887,7 @@ function PatchGroupPatchCard({
       </div>
       <p>{patch.reason}</p>
       <button type="button" onClick={() => onReviewPatch(patch)}>
-        {getPatchReviewButtonLabel(displayState)}
+        {getPatchReviewButtonLabel(displayState, patch)}
       </button>
     </article>
   );
@@ -5803,6 +10896,7 @@ function PatchGroupPatchCard({
 function PatchReviewDialog({
   anchorStatus,
   comment,
+  dependencyStatus,
   followUpRelationship,
   hasMultipleReviewablePatches,
   isPatchActionBusy,
@@ -5815,6 +10909,7 @@ function PatchReviewDialog({
   onNextPatch,
   onPreviousPatch,
   onRejectPatch,
+  onReviewDependency,
   onUpdatePatchAnchor,
   patch,
   patchGroup,
@@ -5825,6 +10920,7 @@ function PatchReviewDialog({
 }: {
   anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
+  dependencyStatus: PatchDependencyReviewStatus;
   followUpRelationship: PatchFollowUpRelationship | null;
   hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
@@ -5837,6 +10933,7 @@ function PatchReviewDialog({
   onNextPatch: () => void;
   onPreviousPatch: () => void;
   onRejectPatch: () => void;
+  onReviewDependency: (patch: PatchmarkPatch) => void;
   onUpdatePatchAnchor: () => void;
   patch: PatchmarkPatch;
   patchGroup: DerivedPatchGroup | null;
@@ -5881,9 +10978,14 @@ function PatchReviewDialog({
     patch,
     anchorStatus.kind === "pending" ? anchorStatus.applicability : "not_found"
   );
+  const dependencyBlockerMessage =
+    getPatchDependencyBlockerMessage(dependencyStatus);
   const sourceReferenceWarnings = getPatchSourceReferenceWarnings(patch);
   const canAcceptPatch =
-    patch.status === "pending" && !acceptDisabledMessage && !isPatchActionBusy;
+    patch.status === "pending" &&
+    !dependencyBlockerMessage &&
+    !acceptDisabledMessage &&
+    !isPatchActionBusy;
   const canRejectPatch = patch.status === "pending" && !isPatchActionBusy;
   const canUpdatePatchAnchor =
     anchorStatus.kind === "pending" &&
@@ -5951,10 +11053,10 @@ function PatchReviewDialog({
               <span
                 className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
               >
-                {getPatchStatusBadgeLabel(patchDisplayState)}
+                {getPatchStatusBadgeLabel(patchDisplayState, patch)}
               </span>
             </div>
-            <p>{getPatchReviewIntro(patchDisplayState)}</p>
+            <p>{getPatchReviewIntro(patchDisplayState, patch)}</p>
           </div>
           <button type="button" onClick={onClose}>
             Close
@@ -5998,8 +11100,8 @@ function PatchReviewDialog({
               >
                 Reject Patch
               </button>
-              {acceptDisabledMessage ? (
-                <span>{acceptDisabledMessage}</span>
+              {dependencyBlockerMessage || acceptDisabledMessage ? (
+                <span>{dependencyBlockerMessage ?? acceptDisabledMessage}</span>
               ) : (
                 <span>
                   Accepting creates a safety snapshot. The linked comment stays open.
@@ -6031,6 +11133,38 @@ function PatchReviewDialog({
           <strong>{getPatchReviewAnchorLabel(anchorStatus)}</strong>
           <span>{getPatchReviewAnchorDetail(anchorStatus)}</span>
         </div>
+
+        {dependencyStatus.totalCount > 0 ? (
+          <div className="patch-dependency-summary" role="status">
+            <div>
+              <strong>
+                Requires {dependencyStatus.totalCount} patch
+                {dependencyStatus.totalCount === 1 ? "" : "es"}
+              </strong>
+              <span>{formatPatchDependencySummary(dependencyStatus)}</span>
+            </div>
+            <div className="patch-dependency-list">
+              {dependencyStatus.directDependencies.map((dependency) => (
+                <div key={dependency.id}>
+                  <span>
+                    {getPatchDependencyStatusSymbol(dependency.patch)}{" "}
+                    {dependency.patch
+                      ? getPatchDisplayTitle(dependency.patch)
+                      : `Unavailable prerequisite ${dependency.id}`}
+                  </span>
+                  {dependency.patch ? (
+                    <button
+                      type="button"
+                      onClick={() => onReviewDependency(dependency.patch as PatchmarkPatch)}
+                    >
+                      Review required patch
+                    </button>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {followUpRelationship ? (
           <div className="patch-follow-up-context" role="note">
@@ -6124,7 +11258,7 @@ function PatchReviewDialog({
                   <span
                     className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
                   >
-                    {getPatchStatusBadgeLabel(patchDisplayState)}
+                    {getPatchStatusBadgeLabel(patchDisplayState, patch)}
                   </span>
                 </dd>
               </div>
@@ -7219,6 +12353,160 @@ function getAcceptedOriginalSourceNote(
   return "Exact persisted Markdown that existed before this patch was applied.";
 }
 
+type ProjectDocumentUiState = {
+  activeCommentState: ActiveCommentState;
+  markdownSelection: MarkdownSelection;
+  mode: EditorMode;
+  scrollY: number;
+};
+
+function persistProjectDocumentUiState(
+  project: PatchmarkProjectHandle,
+  state: ProjectDocumentUiState,
+  localInstanceId: string | null
+): void {
+  const key = getProjectDocumentUiStateKey(project, localInstanceId);
+  if (!key) {
+    return;
+  }
+  try {
+    window.localStorage.setItem(key, JSON.stringify(state));
+  } catch {
+    return;
+  }
+}
+
+function readProjectDocumentUiState(
+  project: PatchmarkProjectHandle,
+  localInstanceId: string | null
+): ProjectDocumentUiState | null {
+  const key = getProjectDocumentUiStateKey(project, localInstanceId);
+  if (!key) {
+    return null;
+  }
+  try {
+    const legacyKey = getProjectDocumentUiStateKey(project, null);
+    const value = JSON.parse(
+      window.localStorage.getItem(key) ??
+        (legacyKey && legacyKey !== key
+          ? window.localStorage.getItem(legacyKey)
+          : null) ??
+        "null"
+    ) as unknown;
+    if (
+      !value ||
+      typeof value !== "object" ||
+      !("mode" in value) ||
+      (value.mode !== "visual" && value.mode !== "markdown") ||
+      !("scrollY" in value) ||
+      typeof value.scrollY !== "number" ||
+      !("markdownSelection" in value) ||
+      !value.markdownSelection ||
+      typeof value.markdownSelection !== "object" ||
+      !("start" in value.markdownSelection) ||
+      !("end" in value.markdownSelection) ||
+      typeof value.markdownSelection.start !== "number" ||
+      typeof value.markdownSelection.end !== "number"
+    ) {
+      return null;
+    }
+    return {
+      activeCommentState: parseStoredActiveCommentState(
+        "activeCommentState" in value ? value.activeCommentState : null
+      ),
+      markdownSelection: {
+        start: value.markdownSelection.start,
+        end: value.markdownSelection.end
+      },
+      mode: value.mode,
+      scrollY: value.scrollY
+    };
+  } catch {
+    return null;
+  }
+}
+
+function parseStoredActiveCommentState(value: unknown): ActiveCommentState {
+  if (!value || typeof value !== "object" || !("kind" in value)) {
+    return { kind: "none" };
+  }
+  if (value.kind === "comment" && "commentId" in value) {
+    return typeof value.commentId === "string" && value.commentId.trim()
+      ? { kind: "comment", commentId: value.commentId }
+      : { kind: "none" };
+  }
+  if (
+    value.kind === "anchor_group" &&
+    "commentIds" in value &&
+    Array.isArray(value.commentIds) &&
+    value.commentIds.every(
+      (commentId): commentId is string =>
+        typeof commentId === "string" && Boolean(commentId.trim())
+    )
+  ) {
+    return value.commentIds.length > 0
+      ? { kind: "anchor_group", commentIds: value.commentIds }
+      : { kind: "none" };
+  }
+  return { kind: "none" };
+}
+
+function getProjectDocumentUiStateKey(
+  project: PatchmarkProjectHandle,
+  localInstanceId: string | null
+): string | null {
+  if (!project.projectManifest || !project.document) {
+    return null;
+  }
+  const instanceScope = localInstanceId
+    ? `${localInstanceId}:`
+    : "";
+  return `patchmark:document-ui:${instanceScope}${project.projectManifest.project_id}:${project.document.document_id}`;
+}
+
+async function prepareDocumentRecovery({
+  recovery,
+  savedMarkdown
+}: {
+  recovery: DocumentRecoveryRecord;
+  savedMarkdown: string;
+}): Promise<PreparedDocumentRecovery> {
+  const decision = await evaluateRecoveryContent(recovery, savedMarkdown);
+  if (decision.kind === "already_saved") {
+    await deleteDocumentRecovery(recovery.recovery_id);
+    return {
+      clearedRecoveryId: recovery.recovery_id,
+      markdown: savedMarkdown,
+      presentation: null
+    };
+  }
+  if (decision.kind === "safe_recovery") {
+    return {
+      markdown: recovery.markdown,
+      presentation: {
+        kind: "recovered",
+        record: recovery,
+        reviewOpen: false,
+        savedMarkdown
+      }
+    };
+  }
+  return {
+    markdown: savedMarkdown,
+    presentation: {
+      kind: "conflict",
+      record: recovery,
+      reviewOpen: false,
+      savedMarkdown
+    }
+  };
+}
+
+function getDeviceRecoveryErrorMessage(error: unknown): string {
+  const detail = error instanceof Error ? error.message : String(error);
+  return `Device-local recovery is unavailable. ${detail}`;
+}
+
 function getDocumentStatus({
   isDirty,
   markdown,
@@ -7257,6 +12545,110 @@ function getDraftMarkdownStartOffset(
   );
 }
 
+function getDraftMarkdownRange(
+  draft: SelectedCommentAnchorDraft | null
+): { end: number; start: number } | null {
+  const start = getDraftMarkdownStartOffset(draft);
+  const end = draft?.markdownEndOffset;
+
+  return typeof start === "number" &&
+    typeof end === "number" &&
+    end > start
+    ? { end, start }
+    : null;
+}
+
+function areSelectedCommentDraftsEqual(
+  first: SelectedCommentAnchorDraft | null,
+  second: SelectedCommentAnchorDraft | null
+): boolean {
+  return (
+    first?.anchorSource === second?.anchorSource &&
+    first?.selectedText === second?.selectedText &&
+    first?.markdownStartOffset === second?.markdownStartOffset &&
+    first?.markdownEndOffset === second?.markdownEndOffset &&
+    first?.anchorContext.kind === second?.anchorContext.kind
+  );
+}
+
+function createSelectionActionFingerprint({
+  documentFingerprint,
+  documentId,
+  documentVersion,
+  draft,
+  projectId,
+  targetHeadingLine
+}: {
+  documentFingerprint: string;
+  documentId: string;
+  documentVersion: number;
+  draft: SelectedCommentAnchorDraft | null;
+  projectId: string;
+  targetHeadingLine: number | null;
+}): string {
+  return createDocumentHash(
+    JSON.stringify({
+      anchorContext: draft?.anchorContext ?? null,
+      anchorSource: draft?.anchorSource ?? null,
+      documentFingerprint,
+      documentId,
+      documentVersion,
+      markdownEndOffset: draft?.markdownEndOffset ?? null,
+      markdownStartOffset: draft?.markdownStartOffset ?? null,
+      projectId,
+      selectedText: draft?.selectedText ?? null,
+      targetHeadingLine
+    })
+  );
+}
+
+function getSelectionActionsContextLabel(
+  draft: SelectedCommentAnchorDraft
+): string {
+  if (draft.anchorContext.kind === "table_cell") {
+    return "Surrounding table cell";
+  }
+
+  if (DOCUMENT_MARKDOWN_LINK_PATTERN.test(draft.selectedText)) {
+    return "Linked text";
+  }
+
+  if (/\n\s*\n/.test(draft.selectedText)) {
+    return "Supported multi-block range";
+  }
+
+  switch (draft.anchorContext.kind) {
+    case "heading":
+      return "Heading";
+    case "list_item":
+      return "List item";
+    case "blockquote":
+      return "Block quote";
+    case "sentence":
+      return "Sentence";
+    case "paragraph":
+      return "Paragraph";
+    default:
+      return "Document text";
+  }
+}
+
+function areReanchorWorkspaceStylesEqual(
+  first: ReanchorWorkspaceStyle | null,
+  second: ReanchorWorkspaceStyle
+): boolean {
+  return Boolean(
+    first &&
+      first.left === second.left &&
+      first.right === second.right &&
+      first.top === second.top &&
+      first.bottom === second.bottom &&
+      first.width === second.width &&
+      first["--reanchor-workspace-max-height"] ===
+        second["--reanchor-workspace-max-height"]
+  );
+}
+
 function getSaveErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message) {
     return `Save failed: ${error.message}`;
@@ -7271,6 +12663,25 @@ function getProjectErrorMessage(error: unknown): string {
   }
 
   return "Project folder action failed. Your Markdown is still in Patchmark.";
+}
+
+function createChatGptImportRepairPrompt(error: unknown): string {
+  if (
+    error instanceof ReviewBatchDocumentSnapshotError ||
+    ((error instanceof AtomicTablePatchValidationError ||
+      error instanceof PatchDependencyValidationError) &&
+      !error.repairPromptEligible)
+  ) {
+    return "";
+  }
+
+  const specializedPrompt =
+    createAtomicTableRepairPrompt(error) ||
+    createPatchDependencyRepairPrompt(error);
+
+  return specializedPrompt
+    ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${specializedPrompt}`
+    : CHATGPT_IMPORT_REPAIR_PROMPT;
 }
 
 function createNextCommentId(comments: PatchmarkComment[]): string {
@@ -7308,6 +12719,7 @@ function getFocusedCommentsForExport(
 ): PatchmarkComment[] {
   return comments.filter(
     (comment) =>
+      !comment.trashed_at &&
       comment.status === "open" &&
       (comment.export_state.focus_state === "in_focus" ||
         comment.export_state.focus_state === "awaiting_reply")
@@ -7326,14 +12738,37 @@ function createFileSafeTimestamp(exportedAt: string): string {
     .replace("Z", "");
 }
 
+function createReviewBatchPromptDialogState({
+  batch,
+  jsonText,
+  promptText
+}: {
+  batch: PatchmarkReviewBatch;
+  jsonText?: string;
+  promptText: string;
+}): ChatGptPromptDialogState {
+  return {
+    batchId: batch.batch_id,
+    dedicatedDocumentReview: batch.batch_type === "document_level",
+    documentId: batch.document_id,
+    promptFileName:
+      batch.context_pack.relative_path.split("/").at(-1) ??
+      batch.context_pack.relative_path,
+    ...(jsonText ? { jsonText } : {}),
+    promptText
+  };
+}
+
 function createFocusedCommentsChatGptPrompt(
   jsonText: string,
   {
     dedicatedDocumentReview,
-    observedAt
+    observedAt,
+    reviewBatchEnvelope
   }: {
     dedicatedDocumentReview: boolean;
     observedAt: string;
+    reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
   }
 ): string {
   const dedicatedDocumentReviewNote = dedicatedDocumentReview
@@ -7355,6 +12790,18 @@ For reference-cleanup tasks, preserve necessary references in the actual Markdow
 Prefer small exact patches over rewriting the whole document, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 `
     : "";
+  const reviewBatchResponseRules = reviewBatchEnvelope
+    ? `
+- Preserve and return the exact \`review_batch_id\`, \`project_id\`, and \`document_id\` from the exported Review Batch envelope.
+- Preserve each exact \`comment_id\`; do not infer or rewrite document-local comment identity.
+`
+    : "";
+  const reviewBatchResponseFields = reviewBatchEnvelope
+    ? `  "review_batch_id": ${JSON.stringify(reviewBatchEnvelope.review_batch_id)},
+  "project_id": ${JSON.stringify(reviewBatchEnvelope.project_id)},
+  "document_id": ${JSON.stringify(reviewBatchEnvelope.document_id)},
+`
+    : "";
 
   return `# Patchmark Focused Comments Review
 
@@ -7373,11 +12820,20 @@ Do not describe a new proposal as a revision of an already accepted patch. Earli
 ## Collaboration Rules
 
 - Reply to each exported comment by \`comment_id\`.
+${reviewBatchResponseRules}
 - Do not resolve comments.
 - Only the human user can resolve comments in Patchmark.
 - If a comment needs clarification, ask a question linked to that \`comment_id\`.
 - If you suggest a document change, return a patch proposal linked to the \`comment_id\`.
 - If one comment requires multiple document changes, return multiple \`patch_proposals\` with the same \`comment_id\`.
+- Every patch proposal must include a unique response-local \`patch_key\` and a \`depends_on\` array.
+- Use an empty \`depends_on\` array for an independent patch.
+- When one patch supplies context or preserves information required by another patch, list its \`patch_key\` in the dependent patch's \`depends_on\` array.
+- Keep dependencies within this response and within the same \`comment_id\`.
+- Before returning coordinated patches, simulate them in dependency order and confirm every dependent \`original_text\` resolves to exactly one intended target.
+- When a patch copies or moves a complete structural region and a dependent patch later edits the original occurrence, preserve a uniquely identifying owning parent heading where possible and do not use a duplicated child heading as the only scope.
+- Use one atomic patch when copied and original structural regions cannot remain independently identifiable after prerequisite simulation.
+- Dependencies never cause automatic acceptance. Every patch remains a separate human decision.
 - Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.
 - Each \`patch_proposal\` must have its own exact \`original_text\` and \`suggested_text\`.
 - Patch proposals must use exact Markdown from the supplied context as \`original_text\`.
@@ -7395,6 +12851,8 @@ ${dedicatedDocumentReviewNote}
 ${CHATGPT_ATOMIC_TABLE_PROMPT_RULES}
 
 ${CHATGPT_TERMINOLOGY_CLARIFICATION_PROMPT_RULES}
+
+${CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES}
 
 ## Required Response Format
 
@@ -7423,6 +12881,8 @@ If the comment asks to make references inline, every reference that remains nece
 Do not remove a final references/source-notes section unless the relevant source information has been preserved in the proposed document text through inline Markdown links or another visible Markdown source format.
 
 If you propose deleting a Source Notes / References section, explain in \`risk\` whether visible source information would be lost.
+
+A patch that removes a Sources, Source Notes, or References section must depend on every patch needed to preserve those visible source URLs elsewhere in the document.
 
 Do not include footnotes.
 
@@ -7499,6 +12959,7 @@ Source preservation rule:
 - If \`published_at\` is known, write a concise human-readable date near the link, such as \`— published 31 March 2026\`.
 - If \`updated_at\` is relevant, write both dates, such as \`— published 12 January 2025; updated 3 June 2026\`.
 - If \`published_at\` is \`null\`, write \`publication date unavailable\` and include the observation date near the link.
+- A dependent source-link patch may rely on a declared prerequisite that inserts one visible publication/observation-date disclosure in the same target section. Include that prerequisite's \`patch_key\` in \`depends_on\`.
 - For prices, menus, availability, delivery fees, opening hours, promotions, and other dynamic facts, include the observation date even when a publication date exists.
 - Keep ISO-style dates in source metadata and human-readable dates in document Markdown.
 - Do not rely only on \`suggested_text_sources\` when the task asks for inline references.
@@ -7522,8 +12983,8 @@ Use this exact protocol:
 \`\`\`json
 {
   "protocol": "patchmark.comment_reply_import",
-  "protocol_version": 1,
-  "summary": "Brief summary of what you did.",
+  "protocol_version": 2,
+${reviewBatchResponseFields}  "summary": "Brief summary of what you did.",
   "replies": [
     {
       "comment_id": "PM-COMMENT-0001",
@@ -7534,6 +12995,8 @@ Use this exact protocol:
   ],
   "patch_proposals": [
     {
+      "patch_key": "add-example-source",
+      "depends_on": [],
       "comment_id": "PM-COMMENT-0001",
       "display_title": "Add concise human-readable patch title",
       "target_heading": "## Example Heading",
@@ -7810,6 +13273,13 @@ function createImportedPatchProposals({
   );
   const groupIndexesByCommentId = new Map<string, number>();
   const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
+  const patchIdsByKey = new Map(
+    validPatchProposals.flatMap((patchProposal, index) =>
+      patchProposal.patch_key
+        ? [[patchProposal.patch_key, createNextPatchId(existingPatches, index)]]
+        : []
+    )
+  );
 
   return validPatchProposals.map((patchProposal, index) => {
     const currentGroupIndex =
@@ -7829,6 +13299,24 @@ function createImportedPatchProposals({
       comment_id: patchProposal.comment_id,
       source_import_id: importId,
       source_chat_url: sourceChatUrl,
+      source_patch_key: patchProposal.patch_key,
+      depends_on_patch_ids: patchProposal.depends_on?.map((dependencyKey) => {
+        const dependencyPatchId = patchIdsByKey.get(dependencyKey);
+
+        if (!dependencyPatchId) {
+          throw new PatchDependencyValidationError({
+            code: "missing_patch_dependency",
+            dependencyKey,
+            message: `Patch ${patchProposal.patch_key ?? index + 1} references a dependency that was not assigned an internal patch ID.`,
+            patchKey: patchProposal.patch_key
+          });
+        }
+
+        return dependencyPatchId;
+      }),
+      depends_on_patch_keys_snapshot: patchProposal.depends_on
+        ? [...patchProposal.depends_on]
+        : undefined,
       display_title: patchProposal.display_title,
       target_heading: patchProposal.target_heading,
       original_text: patchProposal.original_text,
@@ -8358,7 +13846,8 @@ function getPatchReviewAnchorStatus(
   markdown: string,
   patch: PatchmarkPatch,
   patches: PatchmarkPatch[] = [],
-  comments: PatchmarkComment[] = []
+  comments: PatchmarkComment[] = [],
+  documentId?: string
 ): PatchReviewAnchorStatus {
   if (patch.status === "accepted") {
     return getAppliedPatchAnchorStatus(markdown, patch, patches);
@@ -8366,6 +13855,7 @@ function getPatchReviewAnchorStatus(
 
   const pendingResolution = resolvePendingPatchTarget({
     comments,
+    documentId,
     markdown,
     patch,
     patches
@@ -9299,6 +14789,45 @@ function getPatchAcceptDisabledMessage(
   return null;
 }
 
+function formatPatchDependencySummary(
+  status: PatchDependencyReviewStatus
+): string {
+  const parts = [
+    status.acceptedCount > 0 ? `${status.acceptedCount} accepted` : null,
+    status.pendingCount > 0
+      ? `${status.pendingCount} awaiting review`
+      : null,
+    status.rejectedCount > 0 ? `${status.rejectedCount} rejected` : null,
+    status.unavailableCount > 0
+      ? `${status.unavailableCount} unavailable`
+      : null
+  ].filter((part): part is string => Boolean(part));
+
+  if (status.state === "dependency_validation_stale") {
+    parts.push("current document needs revalidation");
+  }
+
+  return parts.join(" · ");
+}
+
+function getPatchDependencyStatusSymbol(
+  patch: PatchmarkPatch | null
+): string {
+  if (!patch || patch.status === "stale") {
+    return "!";
+  }
+
+  if (patch.status === "accepted") {
+    return "✓";
+  }
+
+  if (patch.status === "rejected") {
+    return "×";
+  }
+
+  return "○";
+}
+
 function getPatchSourceReferenceWarnings(patch: PatchmarkPatch): string[] {
   const warnings: string[] = [];
 
@@ -9351,24 +14880,12 @@ function getPatchResolvedStatusMessage(patch: PatchmarkPatch): string {
   }
 
   if (patch.status === "stale") {
-    return "Stale";
+    return patch.human_rewrite_impact
+      ? "Needs review after human rewrite"
+      : "Stale";
   }
 
   return "Pending";
-}
-
-function replaceSingleOccurrenceAt({
-  replacement,
-  search,
-  start,
-  text
-}: {
-  replacement: string;
-  search: string;
-  start: number;
-  text: string;
-}): string {
-  return text.slice(0, start) + replacement + text.slice(start + search.length);
 }
 
 function createAppliedPatchAnchorMetadata({
@@ -9532,6 +15049,12 @@ function orchestrateDocumentMutation({
   let unchangedCount = 0;
 
   const nextComments = comments.map((comment) => {
+    if (isCommentTrashed(comment)) {
+      if (patchContext?.linkedCommentId === comment.id) {
+        linkedCommentFound = true;
+      }
+      return comment;
+    }
     const classificationStartedAt = performance.now();
     const classification = classifyCommentDocumentMutation({
       comment,
@@ -9897,6 +15420,7 @@ function isManualDocumentMutationSource(source: DocumentMutationSource): boolean
     source === "composition" ||
     source === "cut" ||
     source === "formatter" ||
+    source === "human_rewrite" ||
     source === "manual_source" ||
     source === "manual_visual" ||
     source === "move" ||
@@ -9919,6 +15443,10 @@ function getMarkdownChangeSetSource(
 
   if (source === "patch_apply") {
     return "patch_apply";
+  }
+
+  if (source === "human_rewrite") {
+    return "manual_source";
   }
 
   return source;
@@ -11879,6 +17407,9 @@ function recoverPersistableStaleCommentAnchors({
   let didRecover = false;
   const recoveredAt = new Date().toISOString();
   const recoveredComments = comments.map((comment) => {
+    if (isCommentTrashed(comment)) {
+      return comment;
+    }
     const latestNeedsReviewImpact = getLatestNeedsReviewPatchImpact(comment);
 
     if (
@@ -12505,7 +18036,10 @@ function getPatchDisplayState(
   return "pending";
 }
 
-function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
+function getPatchStatusBadgeLabel(
+  displayState: PatchDisplayState,
+  patch?: PatchmarkPatch
+): string {
   if (displayState === "applied") {
     return "APPLIED";
   }
@@ -12523,13 +18057,18 @@ function getPatchStatusBadgeLabel(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "STALE BEFORE APPLY";
+    return patch?.human_rewrite_impact
+      ? "NEEDS REVIEW AFTER HUMAN REWRITE"
+      : "STALE BEFORE APPLY";
   }
 
   return "PENDING";
 }
 
-function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
+function getPatchReviewButtonLabel(
+  displayState: PatchDisplayState,
+  patch?: PatchmarkPatch
+): string {
   if (displayState === "applied" || displayState === "applied_evolved") {
     return "View applied patch";
   }
@@ -12539,7 +18078,9 @@ function getPatchReviewButtonLabel(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "View stale patch";
+    return patch?.human_rewrite_impact
+      ? "Review after human rewrite"
+      : "View stale patch";
   }
 
   return "Review patch";
@@ -12567,7 +18108,10 @@ function formatPatchTitleSource(
   return "Technical fallback";
 }
 
-function getPatchReviewIntro(displayState: PatchDisplayState): string {
+function getPatchReviewIntro(
+  displayState: PatchDisplayState,
+  patch?: PatchmarkPatch
+): string {
   if (displayState === "applied") {
     return "This patch has already been applied. Review is read-only.";
   }
@@ -12581,7 +18125,9 @@ function getPatchReviewIntro(displayState: PatchDisplayState): string {
   }
 
   if (displayState === "stale") {
-    return "This patch went stale before apply. Review is read-only.";
+    return patch?.human_rewrite_impact
+      ? "This proposal overlaps a later human rewrite and needs review against the current document. It cannot be applied automatically."
+      : "This patch went stale before apply. Review is read-only.";
   }
 
   if (displayState === "needs_review") {
@@ -12607,7 +18153,9 @@ function getPatchLifecycleDetail(patch: PatchmarkPatch): string | null {
   }
 
   if (patch.status === "stale") {
-    return "Stale patch";
+    return patch.human_rewrite_impact
+      ? "Needs review after human rewrite"
+      : "Stale patch";
   }
 
   return null;
@@ -12746,15 +18294,53 @@ function createChatGptImportSummaryMessage({
   ];
 
   if (warnings.length > 0) {
-    summary.push(`Some response items referenced comments that were not found: ${
-      warnings
-        .map((warning) => warning.split(": ").at(-1))
-        .filter(Boolean)
-        .join(", ")
-    }`);
+    summary.push(warnings.join(" "));
   }
 
   return summary.join(" ");
+}
+
+function buildFocusedCommentsPromptPreview({
+  comments,
+  dedicatedDocumentReview,
+  exportedAt,
+  exportId,
+  headings,
+  markdown,
+  patches,
+  project,
+  reviewBatchEnvelope
+}: {
+  comments: PatchmarkComment[];
+  dedicatedDocumentReview: boolean;
+  exportedAt: string;
+  exportId: string;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+  project: PatchmarkProjectHandle;
+  reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
+}): { jsonText: string; promptText: string } {
+  const exportPayload = createFocusedCommentsExportPayload({
+    comments,
+    dedicatedDocumentReview,
+    exportedAt,
+    exportId,
+    headings,
+    markdown,
+    patches,
+    project,
+    reviewBatchEnvelope
+  });
+  const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
+  return {
+    jsonText,
+    promptText: createFocusedCommentsChatGptPrompt(jsonText, {
+      dedicatedDocumentReview,
+      observedAt: exportedAt.slice(0, 10),
+      reviewBatchEnvelope
+    })
+  };
 }
 
 function createFocusedCommentsExportPayload({
@@ -12765,7 +18351,8 @@ function createFocusedCommentsExportPayload({
   headings,
   markdown,
   patches,
-  project
+  project,
+  reviewBatchEnvelope
 }: {
   comments: PatchmarkComment[];
   dedicatedDocumentReview: boolean;
@@ -12775,6 +18362,7 @@ function createFocusedCommentsExportPayload({
   markdown: string;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
 }) {
   const tableContexts = createCanonicalTableContextsForExport({
     comments,
@@ -12789,9 +18377,11 @@ function createFocusedCommentsExportPayload({
     export_scope: dedicatedDocumentReview
       ? "dedicated_document_comment"
       : "focused_comments",
+    ...(reviewBatchEnvelope
+      ? { review_batch: reviewBatchEnvelope }
+      : {}),
     project: {
-      project_name: project.manifest.project_name,
-      document_file: project.manifest.document_file,
+      ...getProjectDocumentExportIdentity(project),
       exported_at: exportedAt
     },
     instructions_for_chatgpt: {
@@ -12799,12 +18389,23 @@ function createFocusedCommentsExportPayload({
         "You are helping review and improve a Markdown document through Patchmark comments.",
       rules: [
         "Reply to each exported comment by comment_id.",
+        ...(reviewBatchEnvelope
+          ? [
+              "Return the exact review_batch_id, project_id, and document_id in the response root.",
+              "Preserve every exact document-local comment_id from the Review Batch envelope."
+            ]
+          : []),
         "Do not resolve comments. Only the human resolves comments.",
         "Earlier accepted patches linked to a comment may be included as related_patch_history. Treat them as immutable history.",
         "Treat the supplied current Markdown and current anchor context as the source of truth.",
         "Answer the latest user follow-up in the existing comment discussion.",
         "Any further document change must be a new patch using exact original_text from the current supplied Markdown, not a revision of an accepted patch.",
         "If you suggest a document change, return a patch proposal linked to the comment_id.",
+        "Return patchmark.comment_reply_import protocol version 2. Every patch proposal must include a unique response-local patch_key and a depends_on array.",
+        "Use an empty depends_on array for independent patches. Declare same-response, same-comment prerequisites when another patch supplies required validation context or source preservation.",
+        "Before returning coordinated patches, simulate them in dependency order and confirm every dependent original_text resolves to exactly one intended target.",
+        "When one patch copies or moves a complete structural region and a dependent patch edits the original occurrence, preserve a uniquely identifying owning parent heading where possible; do not rely on a duplicated child heading alone, and use one atomic patch if the occurrences cannot remain independently identifiable.",
+        "Dependencies never cause automatic acceptance; every patch remains a separate human decision.",
         "If more information is needed, ask a clarification question linked to the comment_id.",
         "Prefer several small exact patch proposals over one large rewrite, except when a change must be atomic to preserve valid Markdown structure. Structural table changes must use one complete-table patch.",
         "For structural table changes, copy the complete table into original_text and return the complete resulting table in suggested_text.",
@@ -13443,10 +19044,13 @@ function getBrowserSelectionSnapshotWithin(
     range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
       ? (range.commonAncestorContainer as Element)
       : range.commonAncestorContainer.parentElement;
+  const tableCellElement = commonAncestor?.closest("td, th") ?? null;
   const blockElement =
+    tableCellElement ??
     commonAncestor?.closest(
-      "p, li, blockquote, td, th, h1, h2, h3, h4, h5, h6, pre, code"
-    ) ?? null;
+      "p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, code"
+    ) ??
+    null;
   const blockText = normalizeDomText(blockElement?.textContent ?? selectedText);
   const selectedRangeInBlock = blockElement
     ? getSelectionOffsetsInsideElement(blockElement, range, selectedText)
@@ -13461,6 +19065,39 @@ function getBrowserSelectionSnapshotWithin(
     selectedStartInBlock: selectedRangeInBlock?.start,
     selectedText
   };
+}
+
+function isPointInsideVisualSelection({
+  clientX,
+  clientY,
+  container
+}: {
+  clientX: number;
+  clientY: number;
+  container: HTMLElement | null;
+}): boolean {
+  const selection = window.getSelection();
+
+  if (
+    !container ||
+    !selection ||
+    selection.isCollapsed ||
+    selection.rangeCount === 0 ||
+    !selection.anchorNode ||
+    !selection.focusNode ||
+    !container.contains(selection.anchorNode) ||
+    !container.contains(selection.focusNode)
+  ) {
+    return false;
+  }
+
+  return Array.from(selection.getRangeAt(0).getClientRects()).some(
+    (rect) =>
+      clientX >= rect.left - 2 &&
+      clientX <= rect.right + 2 &&
+      clientY >= rect.top - 2 &&
+      clientY <= rect.bottom + 2
+  );
 }
 
 function getBrowserSelectionAffordanceRect({
@@ -15440,8 +21077,55 @@ function measureReadingBookmarkPosition({
   const primaryRect = range ? getPrimaryRangeClientRect(range) : null;
 
   return primaryRect
-    ? Math.max(8, Math.round(primaryRect.top - container.getBoundingClientRect().top))
+    ? Math.max(
+        8,
+        Math.round(primaryRect.top - container.getBoundingClientRect().top)
+      )
     : null;
+}
+
+async function waitForVisualReadingBookmarkRange({
+  bookmark,
+  container,
+  documentKey,
+  getActiveDocumentKey,
+  headings,
+  markdown,
+  patches
+}: {
+  bookmark: PatchmarkReadingBookmark;
+  container: HTMLElement | null;
+  documentKey: string;
+  getActiveDocumentKey: () => string | null;
+  headings: ReturnType<typeof parseMarkdownHeadings>;
+  markdown: string;
+  patches: PatchmarkPatch[];
+}): Promise<Range | null> {
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    if (
+      !container ||
+      getActiveDocumentKey() !== documentKey ||
+      container.dataset.documentKey !== documentKey
+    ) {
+      return null;
+    }
+    const range = getVisualProjectionPrimaryRange(
+      findVisualCommentAnchorProjection({
+        comment: createReadingBookmarkAnchorAdapter(bookmark),
+        container,
+        headings,
+        markdown,
+        patches
+      })
+    );
+    if (range && getPrimaryRangeClientRect(range)) {
+      return range;
+    }
+    await new Promise<void>((resolve) =>
+      window.requestAnimationFrame(() => resolve())
+    );
+  }
+  return null;
 }
 
 function isPointInsideRangeClientRects(
@@ -15577,16 +21261,13 @@ function updateVisualReadingBookmarkHighlight({
   patches?: PatchmarkPatch[];
 }): void {
   const highlightApi = getCssHighlightApi();
-
   if (!highlightApi) {
     return;
   }
-
   if (!bookmark || !container || !emphasized || mode !== "visual") {
     highlightApi.registry.delete(READING_BOOKMARK_HIGHLIGHT_NAME);
     return;
   }
-
   const projection = findVisualCommentAnchorProjection({
     comment: createReadingBookmarkAnchorAdapter(bookmark),
     container,
@@ -15594,7 +21275,6 @@ function updateVisualReadingBookmarkHighlight({
     markdown,
     patches
   });
-
   setVisualCommentHighlightRegistry({
     Highlight: highlightApi.Highlight,
     name: READING_BOOKMARK_HIGHLIGHT_NAME,

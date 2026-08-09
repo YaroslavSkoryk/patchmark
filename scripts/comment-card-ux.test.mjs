@@ -308,7 +308,7 @@ const needsReviewImpact = {
   );
   assert.equal(
     documentEditorSource.includes(
-      "activeCommentState,\n    comments,\n    documentVersion,\n    headings,\n    markdown,\n    mode"
+      "activeCommentState,\n    activeDocumentKey,\n    activeComments,\n    documentVersion,\n    headings,\n    isReadingBookmarkEmphasized,\n    markdown,\n    mode,\n    activePatches,\n    patches,\n    projectHandle,\n    readingBookmark,\n    reanchorSession"
     ),
     true
   );

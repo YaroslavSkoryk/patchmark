@@ -1,6 +1,8 @@
 import {
   resolveCanonicalCommentTarget,
   type CanonicalTargetCandidate,
+  type CanonicalTargetConfidence,
+  type CanonicalTargetMethod,
   type CanonicalTargetResolution
 } from "./canonical-target-resolution.ts";
 import { appendConciseAnchorHistory } from "./comment-anchor-history.ts";
@@ -35,18 +37,23 @@ type SelectedTextAnchor = Extract<
 export type HumanReanchorSource = "candidate" | "markdown" | "visual";
 
 export type HumanReanchorCandidate = {
+  confidence: CanonicalTargetConfidence;
   containingHeading?: string;
   contextExcerpt: string;
   id: string;
   range: TextRange;
+  reason: string;
   selectedText: string;
   structureLabel: string;
 };
 
 export type HumanReanchorProposal = HumanReanchorCandidate & {
   anchor: SelectedTextAnchor;
+  commentId: string;
+  documentId: string;
   documentGeneration: number;
   documentHash: string;
+  projectId: string;
   saveGeneration: number;
   source: HumanReanchorSource;
 };
@@ -93,15 +100,20 @@ export function createHumanReanchorCandidates({
     )
     .map((candidate) =>
       createHumanReanchorCandidate({
+        confidence: candidate.confidence,
         headings,
         markdown,
-        range: candidate.range
+        range: candidate.range,
+        reason: getCandidateReason(candidate.supportingMethods)
       })
     );
 }
 
 export function createHumanReanchorProposal({
+  commentId,
+  documentId,
   documentGeneration,
+  projectId,
   saveGeneration,
   markdown,
   headings = parseMarkdownHeadings(markdown),
@@ -109,7 +121,10 @@ export function createHumanReanchorProposal({
   range,
   source
 }: {
+  commentId: string;
+  documentId: string;
   documentGeneration: number;
+  projectId: string;
   saveGeneration: number;
   headings?: MarkdownHeading[];
   markdown: string;
@@ -120,8 +135,22 @@ export function createHumanReanchorProposal({
   if (!isCurrentRange(markdown, range) || range.end <= range.start) {
     throw new Error("Choose a non-empty location in the current document.");
   }
+  if (!documentId.trim()) {
+    throw new Error("Document identity is required for human re-anchor.");
+  }
+  if (!projectId.trim() || !commentId.trim()) {
+    throw new Error(
+      "Project and comment identity are required for human re-anchor."
+    );
+  }
 
-  const candidate = createHumanReanchorCandidate({ headings, markdown, range });
+  const candidate = createHumanReanchorCandidate({
+    confidence: "high",
+    headings,
+    markdown,
+    range,
+    reason: getProposalReason(source)
+  });
 
   return {
     ...candidate,
@@ -132,8 +161,11 @@ export function createHumanReanchorProposal({
       range,
       source
     }),
+    commentId,
+    documentId,
     documentGeneration,
     documentHash: createDocumentHash(markdown),
+    projectId,
     saveGeneration,
     source
   };
@@ -141,7 +173,9 @@ export function createHumanReanchorProposal({
 
 export function applyHumanReanchor({
   comment,
+  currentDocumentId,
   currentDocumentGeneration,
+  currentProjectId,
   currentSaveGeneration,
   markdown,
   patches = [],
@@ -149,7 +183,9 @@ export function applyHumanReanchor({
   timestamp
 }: {
   comment: PatchmarkComment;
+  currentDocumentId: string;
   currentDocumentGeneration: number;
+  currentProjectId: string;
   currentSaveGeneration: number;
   markdown: string;
   patches?: PatchmarkPatch[];
@@ -168,6 +204,9 @@ export function applyHumanReanchor({
   }
 
   if (
+    currentProjectId !== proposal.projectId ||
+    currentDocumentId !== proposal.documentId ||
+    comment.id !== proposal.commentId ||
     currentDocumentGeneration !== proposal.documentGeneration ||
     currentSaveGeneration !== proposal.saveGeneration ||
     createDocumentHash(markdown) !== proposal.documentHash ||
@@ -178,7 +217,7 @@ export function applyHumanReanchor({
     return {
       kind: "stale",
       message:
-        "The document changed while you were choosing an anchor. Please select the location again."
+        "The document changed or switched while you were choosing an anchor. Please select the location again."
     };
   }
 
@@ -319,13 +358,17 @@ export function createHumanReanchorCandidateId(range: TextRange): string {
 }
 
 function createHumanReanchorCandidate({
+  confidence = "high",
   headings,
   markdown,
-  range
+  range,
+  reason = "Selected manually in the current document."
 }: {
+  confidence?: CanonicalTargetConfidence;
   headings: MarkdownHeading[];
   markdown: string;
   range: TextRange;
+  reason?: string;
 }): HumanReanchorCandidate {
   const heading = getHeadingContainingOffset(markdown, headings, range.start);
   const selectedText = markdown.slice(range.start, range.end);
@@ -337,13 +380,47 @@ function createHumanReanchorCandidate({
     : getRangeStructureLabel(selectedText);
 
   return {
+    confidence,
     containingHeading: heading?.text,
     contextExcerpt: createContextExcerpt(markdown, range),
     id: createHumanReanchorCandidateId(range),
     range: { ...range },
+    reason,
     selectedText,
     structureLabel
   };
+}
+
+function getCandidateReason(methods: CanonicalTargetMethod[]): string {
+  if (methods.includes("exact")) {
+    return "Exact text match in the current document.";
+  }
+  if (methods.includes("normalized") || methods.includes("markdown_plain")) {
+    return "Normalized text match in the current document.";
+  }
+  if (
+    methods.includes("context") ||
+    methods.includes("linked_comment_context") ||
+    methods.includes("linked_comment_structure")
+  ) {
+    return "Contextual match using the historical anchor surroundings.";
+  }
+  if (
+    methods.includes("table_structural") ||
+    methods.includes("accepted_patch_replacement")
+  ) {
+    return "Structural match derived from the current table or patch history.";
+  }
+  return "Deterministic candidate from the current anchor history.";
+}
+
+function getProposalReason(source: HumanReanchorSource): string {
+  if (source === "candidate") {
+    return "Suggested location selected for human confirmation.";
+  }
+  return source === "markdown"
+    ? "Selected manually in Markdown Mode."
+    : "Selected manually in Visual Mode.";
 }
 
 function createSelectedTextAnchorFromRange({

@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import {
   COMMENT_AFFORDANCE_MENU_SIZE,
+  COMMENT_SELECTION_ACTION_SIZE,
   chooseSelectionAffordanceRect,
   createCommentAffordanceBounds,
   createPointAffordanceRect,
@@ -147,6 +148,29 @@ function rect(left, top, right, bottom) {
 
     assert.equal(position.x >= editorBounds.left, true);
     assert.equal(position.x + menuSize.width <= editorBounds.right, true);
+  }
+}
+
+{
+  const actionSize = COMMENT_SELECTION_ACTION_SIZE;
+  const edgeSelections = [
+    rect(302, 102, 350, 122),
+    rect(850, 102, 898, 122),
+    rect(302, 672, 350, 698),
+    rect(850, 672, 898, 698)
+  ];
+
+  for (const anchorRect of edgeSelections) {
+    const position = placeCommentAffordance({
+      anchorRect,
+      bounds: editorBounds,
+      menuSize: actionSize
+    });
+
+    assert.equal(position.x >= editorBounds.left, true);
+    assert.equal(position.x + actionSize.width <= editorBounds.right, true);
+    assert.equal(position.y >= editorBounds.top, true);
+    assert.equal(position.y + actionSize.height <= editorBounds.bottom, true);
   }
 }
 

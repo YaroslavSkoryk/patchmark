@@ -16,22 +16,34 @@ const MdxEditorClient = dynamic(
 );
 
 type VisualMarkdownEditorProps = {
+  ariaLabel?: string;
   markdown: string;
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
+  resetKey: number;
+  selectionOnly?: boolean;
+  showToolbar?: boolean;
 };
 
 export function VisualMarkdownEditor({
+  ariaLabel,
   markdown,
   onMarkdownChange,
-  readOnly = false
+  readOnly = false,
+  resetKey,
+  selectionOnly = false,
+  showToolbar = true
 }: VisualMarkdownEditorProps) {
   return (
     <div className="visual-editor-shell">
       <MdxEditorClient
+        ariaLabel={ariaLabel}
         markdown={markdown}
         onMarkdownChange={onMarkdownChange}
         readOnly={readOnly}
+        resetKey={resetKey}
+        selectionOnly={selectionOnly}
+        showToolbar={showToolbar}
       />
     </div>
   );

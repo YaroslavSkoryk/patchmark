@@ -1,5 +1,7 @@
 # Patchmark
 
+Implementation notes for structural reply imports are documented in [Atomic structural patches](docs/atomic-structural-patches.md).
+
 Markdown-first document editor with Visual Mode and Markdown Mode.
 
 ## Getting Started
@@ -30,7 +32,9 @@ Patchmark can work in Single File Mode or Project Folder Mode.
 
 ### Project Folder Mode
 
-Project Folder Mode stores the clean document separately from Patchmark metadata:
+Project Folder Mode stores clean Markdown documents separately from Patchmark metadata.
+Legacy projects continue to use the original single-document layout until a second
+document is explicitly created or added:
 
 ```text
 Project Folder/
@@ -62,9 +66,111 @@ Snapshots can be viewed or compared with the current in-memory Markdown without 
 Restore is intentionally not implemented yet.
 
 Project comments are stored in `.patchmark/comments.json`, not in `document.md`.
-Right-click in the document to add notes, questions, risks, research needs, and decision points.
+Selecting supported text in Visual or Markdown Mode shows a `+ Comment` action
+beside the selection. It opens one shared chooser for Selected text, Current
+section, Whole document, and Set reading bookmark. `Alt+Shift+M` opens that same
+chooser, and right-click is only an alternative trigger for the same actions.
+The Comments rail also keeps a permanent `Comment on whole document` action
+that requires no selection.
 The right-side Comments rail displays saved comments beside their approximate anchors.
 Comments can apply to selected Markdown text, a whole section, or the whole document.
-Comments can be resolved, reopened, edited, or deleted without changing the Markdown document.
+Comments can be resolved, reopened, edited, moved to document-scoped Trash,
+and restored without changing the Markdown document. Bulk selection is separate
+from ChatGPT focus marks, acts only on visible active comments, and commits one
+all-or-nothing soft-deletion mutation. Permanent deletion is not available.
+Cancelling the composer creates no comment or project write. See
+`docs/comment-creation.md` for selection, positioning, and accessibility details.
+See [`docs/bulk-comment-trash-and-restore.md`](docs/bulk-comment-trash-and-restore.md)
+for Trash metadata, Review Batch blockers, atomic persistence, and restoration.
+
+Unresolved selected-text comments can be repaired through a viewport-stable
+human Re-anchor workspace. It preserves scroll context, captures Visual or
+Markdown selections while editing is read-only, and requires explicit atomic
+confirmation. Re-anchoring never repairs or rebases linked patches. See
+`docs/comment-reanchor.md`.
 
 Git is optional and can be used manually around the project folder, but Patchmark does not run Git commands yet.
+
+### Multi-Document Projects
+
+After explicit conversion, a project has a versioned document registry and one
+independent review store per registered Markdown document:
+
+```text
+Project Folder/
+  action-plan.md
+  ready-to-eat-investigation.md
+  .patchmark/
+    project.json
+    documents/
+      doc_.../
+        document.json
+        manifest.json
+        comments.json
+        patches.json
+        save-commit.json
+        versions/
+        recovery/
+    migrations/
+    transactions/
+```
+
+- `.patchmark/project.json` is the multi-document commit marker and stores only portable project registry metadata.
+- Markdown paths are relative to the project root; outside files, traversal, `.patchmark` paths, and symbolic links are rejected.
+- Documents are registered explicitly. Patchmark never scans and auto-registers every Markdown file.
+- Each document keeps independent comments, patches, anchors, generations, snapshots, recovery, imports, context packs, and exports.
+- `project_id` and `document_id` identify project-level owners. Review-object IDs are local to their owning document, so project-wide identity is `(document_id, local_id)`.
+- Display-title and role changes never rename or edit the Markdown file.
+- Archive is reversible metadata only; it does not delete Markdown or review history.
+- Missing registered files retain their document identity and review store and can be repaired with **Locate file**.
+- Active document, editor mode, selection, and scroll restoration are device-local browser state.
+
+See [`docs/phase-a-core-multi-document.md`](docs/phase-a-core-multi-document.md)
+for the persistence model, conversion state machine, safety rules, and current
+Phase A non-goals.
+
+Phase A.1 also supports **Create Project From Existing Patchmark Projects** for
+copying two or more validated legacy projects into a new destination while
+preserving independent review stores. See
+[`docs/phase-a-1-legacy-project-assembly.md`](docs/phase-a-1-legacy-project-assembly.md)
+for source immutability, collision handling, manifest-last assembly, recovery,
+and provenance rules.
+
+Phase A.2 preserves duplicate legacy comment, patch, reply, and version IDs when
+they belong to different documents. Project-level UI and asynchronous operations
+carry `document_id`, while document-bound stores may continue using local IDs.
+See [`docs/phase-a-2-document-scoped-identity.md`](docs/phase-a-2-document-scoped-identity.md).
+
+Phase A.3 adds flat, metadata-only document groups to the existing navigator.
+Groups never move files or own document review state, and schema-v1 projects
+remain flat until the first group mutation. See
+[`docs/phase-a-3-document-groups.md`](docs/phase-a-3-document-groups.md).
+
+Project resume and document-scoped crash recovery reopen the authoritative local
+project and bind unsaved Markdown only to a verified local project instance,
+`project_id`, and `document_id`. Legacy filename-only drafts are quarantined. See
+[`docs/project-resume-and-document-recovery.md`](docs/project-resume-and-document-recovery.md).
+
+Multi-document switching uses a measured save-before-switch critical path,
+target-only loading, batched editor initialization, and development-only phase
+diagnostics. See
+[`docs/multi-document-switching-performance.md`](docs/multi-document-switching-performance.md).
+
+Guided Review Phase 1 adds a deterministic, document-scoped review queue and a
+read-only dry-run preview. It proposes the next follow-up, whole-document, or
+same-H2 comment batch without marking, exporting, persisting, deferring, or
+resolving anything. See
+[`docs/guided-review-phase-1-review-queue.md`](docs/guided-review-phase-1-review-queue.md).
+
+Guided Review Phase 2 adds persistent, document-scoped Review Batches for both
+Guided Review proposals and manual focused-comment exports. Each batch owns one
+exact fingerprinted context pack, enforces one active export per document, can
+be safely reopened or cancelled, and clears active queue evidence only after an
+exactly identified response imports successfully. See
+[`docs/guided-review-phase-2-review-batches.md`](docs/guided-review-phase-2-review-batches.md).
+
+Guided Review Phase 3 replaces the diagnostic preview with an accessible,
+document-scoped wizard for queue understanding, transparent deterministic
+proposals, transient same-section adjustments, persistent defer and restore,
+tracked export, active-batch management, and minimal exact response receipt. See
+[`docs/guided-review-phase-3-wizard.md`](docs/guided-review-phase-3-wizard.md).

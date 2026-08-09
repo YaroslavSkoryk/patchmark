@@ -1,9 +1,25 @@
+import type {
+  PersistedProjectDocumentIdentity
+} from "./document-scoped-identity.ts";
+
 export type PatchmarkVersionEntry = {
   id: string;
   file: string;
   created_at: string;
   reason: string;
   content_hash?: string;
+  mutation?: PatchmarkVersionMutationAudit;
+};
+
+export type PatchmarkVersionMutationAudit = {
+  author_type: "human";
+  mutation_type: "human_rewrite";
+  rewrite_session_id: string;
+  target_kind: "selection" | "section";
+  heading_snapshot: string | null;
+  base_text_sha256: string;
+  applied_text_sha256: string;
+  semantic_review_status: "reviewed" | "not_reviewed";
 };
 
 export type PatchmarkCommentType =
@@ -88,7 +104,10 @@ export type PatchmarkSourceReference = {
 
 export type PatchmarkCommentReplyImport = {
   protocol: "patchmark.comment_reply_import";
-  protocol_version: 1;
+  protocol_version: 1 | 2;
+  review_batch_id?: string;
+  project_id?: string;
+  document_id?: string;
   summary?: string;
   sources?: PatchmarkSourceReference[];
   replies: Array<{
@@ -99,6 +118,8 @@ export type PatchmarkCommentReplyImport = {
     sources?: PatchmarkSourceReference[];
   }>;
   patch_proposals: Array<{
+    patch_key?: string;
+    depends_on?: string[];
     comment_id: string;
     display_title?: string;
     title?: string;
@@ -201,20 +222,17 @@ export type PatchCommentImpactKind =
 export type PatchmarkManifest = {
   schema_version: 1;
   project_id?: string;
+  document_id?: string;
   project_name: string;
   document_file: "document.md";
   created_at: string;
   updated_at: string;
   current_version?: string;
   versions?: PatchmarkVersionEntry[];
-  reading_bookmarks?: Record<string, PatchmarkReadingBookmark>;
+  reading_bookmark?: PatchmarkReadingBookmark;
+  comment_deletion_tombstones?: PatchmarkCommentDeletionTombstone[];
   save_generation?: number;
   save_commit_id?: string;
-};
-
-export type PatchmarkDocumentIdentity = {
-  project_id: string;
-  document_file: string;
 };
 
 export type PatchmarkReadingBookmarkAnchor = Extract<
@@ -224,10 +242,27 @@ export type PatchmarkReadingBookmarkAnchor = Extract<
 
 export type PatchmarkReadingBookmark = {
   format_version: 1;
-  document: PatchmarkDocumentIdentity;
+  document: PersistedProjectDocumentIdentity;
   anchor: PatchmarkReadingBookmarkAnchor;
   created_at: string;
   updated_at: string;
+};
+
+export type PatchmarkDeletedPatchTombstone = {
+  patch_id: string;
+  status: PatchmarkPatchStatus;
+};
+
+export type PatchmarkCommentDeletionTombstone = {
+  schema_version: 1;
+  project_id: string;
+  document_id: string;
+  comment_id: string;
+  permanently_deleted_at: string;
+  permanent_delete_operation_id: string;
+  original_status: PatchmarkCommentStatus;
+  had_accepted_patches: boolean;
+  patches: PatchmarkDeletedPatchTombstone[];
 };
 
 export type PatchmarkLegacyCommentAnchorHistoryEntry = {
@@ -302,6 +337,9 @@ export type PatchmarkSaveCommit = {
     comments: PatchmarkPersistedFileCommit;
     patches: PatchmarkPersistedFileCommit;
     manifest: PatchmarkPersistedFileCommit;
+    review_batches?: PatchmarkPersistedFileCommit;
+    review_queue_overrides?: PatchmarkPersistedFileCommit;
+    rewrite_sessions?: PatchmarkPersistedFileCommit;
   };
 };
 
@@ -347,6 +385,9 @@ export type PatchmarkComment = {
   created_at: string;
   updated_at: string;
   resolved_at?: string;
+  trashed_at?: string;
+  trash_operation_id?: string;
+  restored_at?: string;
 };
 
 export type PatchmarkPatchStatus =
@@ -354,6 +395,26 @@ export type PatchmarkPatchStatus =
   | "accepted"
   | "rejected"
   | "stale";
+
+export type PatchmarkPatchTargetProvenance = {
+  schema_version: 1;
+  document_id: string;
+  patch_key: string;
+  base_document_sha256: string;
+  base_start: number;
+  base_end: number;
+  current_start: number;
+  current_end: number;
+  original_text_fingerprint: string;
+  target_heading?: string;
+  heading_ancestry: string[];
+  base_occurrence_count: 1;
+  resolution_method:
+    | "exact_full_text"
+    | "heading_scoped_full_text"
+    | "normalized_full_text";
+  mapping_state: "mapped" | "requires_revalidation";
+};
 
 export type PatchmarkPatch = {
   id: string;
@@ -364,8 +425,12 @@ export type PatchmarkPatch = {
   comment_id?: string;
   source_import_id?: string;
   source_chat_url?: string;
+  source_patch_key?: string;
+  depends_on_patch_ids?: string[];
+  depends_on_patch_keys_snapshot?: string[];
   display_title?: string;
   target_heading?: string;
+  target_provenance?: PatchmarkPatchTargetProvenance;
   original_text: string;
   suggested_text: string;
   suggested_text_sources?: PatchmarkSourceReference[];
@@ -397,6 +462,13 @@ export type PatchmarkPatch = {
   previous_original_text?: string;
   reanchored_at?: string;
   reanchor_reason?: "table_row_normalized_match";
+  human_rewrite_impact?: {
+    rewrite_session_id: string;
+    applied_at: string;
+    target_kind: "selection" | "section";
+    heading_snapshot: string | null;
+    reason: "overlapping_human_rewrite";
+  };
 };
 
 export type PatchmarkPatchGroup = {

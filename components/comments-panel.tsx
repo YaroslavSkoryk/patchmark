@@ -14,6 +14,11 @@ import {
   createFloatingCommentLayout,
   getStageRelativePreferredTop
 } from "@/lib/comments/floating-comment-layout";
+import {
+  getLatestDocumentSwitchPerformanceOperationId,
+  incrementDocumentSwitchPerformanceCounter,
+  recordDocumentSwitchPerformanceDuration
+} from "@/lib/performance/document-switch-performance";
 import { sortCommentsByLastKnownAnchorPosition } from "@/lib/comments/comment-anchor-position";
 import {
   getVisibleAnchorStatus,
@@ -25,6 +30,15 @@ import {
   getCleanCommentAnchorLabel,
   getCollapsedCommentTarget
 } from "@/lib/comments/comment-card-display";
+import {
+  createCommentTrashSelectionKey,
+  getVisibleActiveComments,
+  type CommentTrashSummary
+} from "@/lib/comments/comment-trash-operations";
+import type {
+  CommentPermanentDeletionMode,
+  CommentPermanentDeletionSummary
+} from "@/lib/comments/comment-permanent-deletion-operations";
 import {
   type CommentAnchorStatus,
   type PatchmarkComment,
@@ -83,13 +97,39 @@ type CommentsPanelProps = {
   anchorSummaries: Record<string, CommentAnchorSummary>;
   commentPositions: Record<string, number>;
   comments: PatchmarkComment[];
+  documentId: string | null;
+  documentTitle: string;
   defaultSectionLine: number | null;
   error: string | null;
   headings: MarkdownHeading[];
   isBusy: boolean;
+  isDocumentCommentAvailable: boolean;
   isProjectMode: boolean;
   onAddComment: (values: CommentFormValues) => Promise<void>;
-  onDeleteComment: (commentId: string) => Promise<void>;
+  onCloseAddComment: (reason: "cancel" | "submit") => void;
+  onMoveCommentsToTrash: (request: {
+    commentIds: string[];
+    expectedSelectionFingerprint: string;
+    unsavedDraftCommentIds: string[];
+  }) => Promise<void>;
+  onPermanentlyDeleteComments: (request: {
+    commentIds: string[];
+    confirmationPhrase: string;
+    expectedSelectionFingerprint: string;
+    mode: CommentPermanentDeletionMode;
+    unsavedDraftCommentIds: string[];
+  }) => Promise<void>;
+  onOpenReviewBatch: (batchId: string) => void;
+  onPrepareMoveCommentsToTrash: (
+    commentIds: string[],
+    unsavedDraftCommentIds: string[]
+  ) => Promise<CommentTrashSummary>;
+  onPreparePermanentDeleteComments: (
+    commentIds: string[],
+    unsavedDraftCommentIds: string[],
+    mode: CommentPermanentDeletionMode
+  ) => Promise<CommentPermanentDeletionSummary>;
+  onRestoreCommentsFromTrash: (commentIds: string[]) => Promise<void>;
   onEditComment: (
     commentId: string,
     values: Pick<CommentFormValues, "comment" | "type">
@@ -101,6 +141,7 @@ type CommentsPanelProps = {
   ) => Promise<void>;
   onFindComment: (comment: PatchmarkComment) => Promise<void>;
   onMarkCommentForExport: (commentId: string) => Promise<void>;
+  onOpenDocumentComment: () => void;
   onReopenComment: (commentId: string) => Promise<void>;
   onReplyComment: (commentId: string, content: string) => Promise<void>;
   onReviewCommentPatches: (commentId: string) => void;
@@ -113,9 +154,11 @@ type CommentsPanelProps = {
   pendingPatchGroupTotal: number;
   pendingPatchCountsByCommentId: Record<string, number>;
   pendingPatchTotal: number;
+  projectId: string | null;
   replyRequest: CommentReplyRequest | null;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
+  trashedComments: PatchmarkComment[];
 };
 
 const commentTypeOptions: PatchmarkCommentType[] = [
@@ -133,6 +176,21 @@ const COMMENT_FLOATING_DRAFT_ID = "PM-COMMENT-DRAFT-FORM";
 const COMMENT_FLOATING_STAGE_MIN_HEIGHT = 220;
 const COMMENT_LAYOUT_DEBUG_STORAGE_KEY = "patchmark:debug-comment-layout";
 const COMPACT_COMMENT_COMPOSER_QUERY = "(max-width: 900px)";
+
+type ActiveCommentFilter = "all" | "open" | "resolved";
+type TrashCommentFilter = "all" | "open" | "resolved";
+type CommentTrashDialogState = {
+  commentIds: string[];
+  summary: CommentTrashSummary;
+  unsavedDraftCommentIds: string[];
+};
+type CommentPermanentDeletionDialogState = {
+  commentIds: string[];
+  confirmationInput: string;
+  mode: CommentPermanentDeletionMode;
+  summary: CommentPermanentDeletionSummary;
+  unsavedDraftCommentIds: string[];
+};
 
 type FloatingLayoutItem =
   | {
@@ -157,17 +215,27 @@ export function CommentsPanel({
   anchorSummaries,
   commentPositions,
   comments,
+  documentId,
+  documentTitle,
   defaultSectionLine,
   error,
   headings,
   isBusy,
+  isDocumentCommentAvailable,
   isProjectMode,
   onAddComment,
-  onDeleteComment,
+  onCloseAddComment,
+  onMoveCommentsToTrash,
+  onPermanentlyDeleteComments,
+  onOpenReviewBatch,
+  onPrepareMoveCommentsToTrash,
+  onPreparePermanentDeleteComments,
+  onRestoreCommentsFromTrash,
   onEditComment,
   onEditReply,
   onFindComment,
   onMarkCommentForExport,
+  onOpenDocumentComment,
   onReopenComment,
   onReplyComment,
   onReviewCommentPatches,
@@ -180,12 +248,16 @@ export function CommentsPanel({
   pendingPatchGroupTotal,
   pendingPatchCountsByCommentId,
   pendingPatchTotal,
+  projectId,
   replyRequest,
   selectedAnchorContextKind,
-  selectedTextPreview
+  selectedTextPreview,
+  trashedComments
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
   const handledReplyRequestNonceRef = useRef<number | null>(null);
+  const addFormRef = useRef<HTMLFormElement | null>(null);
+  const addCommentInputRef = useRef<HTMLTextAreaElement | null>(null);
   const [isAdding, setIsAdding] = useState(false);
   const [addScope, setAddScope] = useState<CommentAnchorScope>("document");
   const [addType, setAddType] = useState<PatchmarkCommentType>("note");
@@ -204,9 +276,73 @@ export function CommentsPanel({
   const [editReplyContent, setEditReplyContent] = useState("");
   const [replyEditError, setReplyEditError] = useState("");
   const [formError, setFormError] = useState("");
+  const [activeFilter, setActiveFilter] =
+    useState<ActiveCommentFilter>("all");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [isSelectionMode, setIsSelectionMode] = useState(false);
+  const [selectedCommentKeys, setSelectedCommentKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const [selectionNotice, setSelectionNotice] = useState("");
+  const [trashDialog, setTrashDialog] =
+    useState<CommentTrashDialogState | null>(null);
+  const [permanentDeletionDialog, setPermanentDeletionDialog] =
+    useState<CommentPermanentDeletionDialogState | null>(null);
+  const [trashFilter, setTrashFilter] = useState<TrashCommentFilter>("all");
+  const [selectedTrashKeys, setSelectedTrashKeys] = useState<Set<string>>(
+    () => new Set()
+  );
+  const moveToTrashButtonRef = useRef<HTMLButtonElement | null>(null);
+  const trashSummaryRef = useRef<HTMLElement | null>(null);
+  const trashDialogReturnFocusRef = useRef<HTMLElement | null>(null);
+  const permanentDeletionReturnFocusRef = useRef<HTMLElement | null>(null);
   const isCompactCommentComposer = useCompactCommentComposer();
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
+  const visibleComments = useMemo(() => {
+    return getVisibleActiveComments({
+      comments,
+      searchQuery,
+      status: activeFilter
+    });
+  }, [activeFilter, comments, searchQuery]);
+  const visibleTrashedComments = useMemo(
+    () =>
+      trashedComments.filter(
+        (comment) => trashFilter === "all" || comment.status === trashFilter
+      ),
+    [trashFilter, trashedComments]
+  );
+  const selectedCommentIds = useMemo(
+    () =>
+      comments
+        .filter((comment) =>
+          selectedCommentKeys.has(
+            createCommentTrashSelectionKey({
+              commentId: comment.id,
+              documentId: documentId ?? "",
+              projectId: projectId ?? ""
+            })
+          )
+        )
+        .map((comment) => comment.id),
+    [comments, documentId, projectId, selectedCommentKeys]
+  );
+  const selectedTrashCommentIds = useMemo(
+    () =>
+      trashedComments
+        .filter((comment) =>
+          selectedTrashKeys.has(
+            createCommentTrashSelectionKey({
+              commentId: comment.id,
+              documentId: documentId ?? "",
+              projectId: projectId ?? ""
+            })
+          )
+        )
+        .map((comment) => comment.id),
+    [documentId, projectId, selectedTrashKeys, trashedComments]
+  );
 
   const openAddForm = useCallback((
     preferredScope?: CommentAnchorScope,
@@ -257,6 +393,30 @@ export function CommentsPanel({
     );
   }, [addRequest, openAddForm]);
 
+  useEffect(() => {
+    if (!isAdding) {
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      addFormRef.current?.scrollIntoView({ block: "nearest" });
+      addCommentInputRef.current?.focus({ preventScroll: true });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [isAdding]);
+
+  function closeAddForm(reason: "cancel" | "submit") {
+    setAddComment("");
+    setAddTargetLine("");
+    setAddPositionTop(null);
+    setAddType("note");
+    setAddScope("document");
+    setIsAdding(false);
+    setFormError("");
+    onCloseAddComment(reason);
+  }
+
   async function handleAddComment(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setFormError("");
@@ -285,12 +445,7 @@ export function CommentsPanel({
         targetHeadingLine: addTargetLine ? Number(addTargetLine) : null,
         type: addType
       });
-      setAddComment("");
-      setAddTargetLine("");
-      setAddPositionTop(null);
-      setAddType("note");
-      setAddScope("document");
-      setIsAdding(false);
+      closeAddForm("submit");
     } catch {
       setFormError("Could not save comment. Your draft is still here.");
     }
@@ -472,20 +627,238 @@ export function CommentsPanel({
     }
   }
 
-  async function handleDeleteComment(commentId: string) {
-    if (!window.confirm("Delete this comment?")) {
+  function getSelectionKey(commentId: string): string {
+    return createCommentTrashSelectionKey({
+      commentId,
+      documentId: documentId ?? "",
+      projectId: projectId ?? ""
+    });
+  }
+
+  function getUnsavedDraftCommentIds(): string[] {
+    return [
+      ...(replyingCommentId && replyComment.trim()
+        ? [replyingCommentId]
+        : []),
+      ...(editingCommentId &&
+      (editComment !==
+        comments.find((comment) => comment.id === editingCommentId)?.comment ||
+        editType !==
+          comments.find((comment) => comment.id === editingCommentId)?.type)
+        ? [editingCommentId]
+        : []),
+      ...(editingReply && editReplyContent.trim()
+        ? [editingReply.commentId]
+        : [])
+    ];
+  }
+
+  function clearBulkSelection(notice = "") {
+    setSelectedCommentKeys(new Set());
+    setSelectionNotice(notice);
+  }
+
+  function updateActiveFilter(nextFilter: ActiveCommentFilter) {
+    setActiveFilter(nextFilter);
+    if (isSelectionMode && selectedCommentKeys.size > 0) {
+      clearBulkSelection("Selection cleared because the active filter changed.");
+    }
+  }
+
+  function updateSearchQuery(nextQuery: string) {
+    setSearchQuery(nextQuery);
+    if (isSelectionMode && selectedCommentKeys.size > 0) {
+      clearBulkSelection("Selection cleared because the comment search changed.");
+    }
+  }
+
+  function toggleSelectedComment(commentId: string) {
+    const key = getSelectionKey(commentId);
+    setSelectedCommentKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+    setSelectionNotice("");
+  }
+
+  function toggleSelectedTrashComment(commentId: string) {
+    const key = getSelectionKey(commentId);
+    setSelectedTrashKeys((current) => {
+      const next = new Set(current);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      return next;
+    });
+  }
+
+  async function openTrashConfirmation(
+    commentIds: string[],
+    returnFocusElement?: HTMLElement | null
+  ) {
+    if (commentIds.length === 0) {
       return;
     }
 
     try {
-      await onDeleteComment(commentId);
-    } catch {
-      setFormError("Could not delete comment.");
+      const activeElement =
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement !== document.body
+          ? document.activeElement
+          : null;
+      trashDialogReturnFocusRef.current =
+        returnFocusElement ?? activeElement ?? moveToTrashButtonRef.current;
+      const unsavedDraftCommentIds = getUnsavedDraftCommentIds();
+      const summary = await onPrepareMoveCommentsToTrash(
+        commentIds,
+        unsavedDraftCommentIds
+      );
+      setTrashDialog({
+        commentIds,
+        summary,
+        unsavedDraftCommentIds
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Could not prepare the Trash summary."
+      );
+    }
+  }
+
+  async function confirmMoveCommentsToTrash() {
+    if (!trashDialog || trashDialog.summary.blockers.length > 0) {
+      return;
+    }
+
+    try {
+      await onMoveCommentsToTrash({
+        commentIds: trashDialog.commentIds,
+        expectedSelectionFingerprint: trashDialog.summary.selectionFingerprint,
+        unsavedDraftCommentIds: trashDialog.unsavedDraftCommentIds
+      });
+      setTrashDialog(null);
+      setIsSelectionMode(false);
+      clearBulkSelection();
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Could not move comments to Trash. The selection is available to retry."
+      );
+    }
+  }
+
+  async function restoreComments(commentIds: string[]) {
+    if (commentIds.length === 0) {
+      return;
+    }
+
+    try {
+      await onRestoreCommentsFromTrash(commentIds);
+      setSelectedTrashKeys(new Set());
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Could not restore comments from Trash."
+      );
+    }
+  }
+
+  async function openPermanentDeletionConfirmation({
+    commentIds,
+    mode,
+    returnFocusElement
+  }: {
+    commentIds: string[];
+    mode: CommentPermanentDeletionMode;
+    returnFocusElement?: HTMLElement | null;
+  }) {
+    if (commentIds.length === 0) {
+      return;
+    }
+    try {
+      const activeElement =
+        document.activeElement instanceof HTMLElement &&
+        document.activeElement !== document.body
+          ? document.activeElement
+          : null;
+      permanentDeletionReturnFocusRef.current =
+        returnFocusElement ?? activeElement;
+      const unsavedDraftCommentIds = getUnsavedDraftCommentIds();
+      const summary = await onPreparePermanentDeleteComments(
+        commentIds,
+        unsavedDraftCommentIds,
+        mode
+      );
+      setPermanentDeletionDialog({
+        commentIds,
+        confirmationInput: "",
+        mode,
+        summary,
+        unsavedDraftCommentIds
+      });
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Could not prepare the permanent-deletion summary."
+      );
+    }
+  }
+
+  async function confirmPermanentDeletion() {
+    if (
+      !permanentDeletionDialog ||
+      permanentDeletionDialog.summary.blockers.length > 0
+    ) {
+      return;
+    }
+    try {
+      await onPermanentlyDeleteComments({
+        commentIds: permanentDeletionDialog.commentIds,
+        confirmationPhrase: permanentDeletionDialog.confirmationInput,
+        expectedSelectionFingerprint:
+          permanentDeletionDialog.summary.selectionFingerprint,
+        mode: permanentDeletionDialog.mode,
+        unsavedDraftCommentIds:
+          permanentDeletionDialog.unsavedDraftCommentIds
+      });
+      setPermanentDeletionDialog(null);
+      setSelectedTrashKeys(new Set());
+      window.requestAnimationFrame(() => trashSummaryRef.current?.focus());
+    } catch (error) {
+      setFormError(
+        error instanceof Error
+          ? error.message
+          : "Permanent deletion failed. Trash remains unchanged."
+      );
     }
   }
 
   const addForm = isAdding ? (
-    <form className="comment-form comment-form-popover" onSubmit={handleAddComment}>
+    <form
+      ref={addFormRef}
+      aria-label="Add comment"
+      className="comment-form comment-form-popover"
+      data-testid="comment-composer"
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          closeAddForm("cancel");
+        }
+      }}
+      onSubmit={handleAddComment}
+    >
       <CommentAnchorPreview
         anchorContextKind={selectedAnchorContextKind}
         headings={headings}
@@ -497,6 +870,9 @@ export function CommentsPanel({
       <label>
         <span>Comment text</span>
         <textarea
+          ref={addCommentInputRef}
+          aria-label="Comment text"
+          data-comment-composer-input
           required
           value={addComment}
           onChange={(event) => setAddComment(event.target.value)}
@@ -509,10 +885,7 @@ export function CommentsPanel({
         <button
           type="button"
           disabled={isBusy}
-          onClick={() => {
-            setIsAdding(false);
-            setAddPositionTop(null);
-          }}
+          onClick={() => closeAddForm("cancel")}
         >
           Cancel
         </button>
@@ -535,6 +908,112 @@ export function CommentsPanel({
           {formError ? (
             <p className="comments-error" role="alert">
               {formError}
+            </p>
+          ) : null}
+          <div className="comments-primary-actions">
+            <button
+              type="button"
+              disabled={
+                isBusy || !isDocumentCommentAvailable || isAdding
+              }
+              onClick={onOpenDocumentComment}
+            >
+              Comment on whole document
+            </button>
+            <span>Scope: Whole document</span>
+            <button
+              type="button"
+              disabled={isBusy || comments.length === 0}
+              aria-pressed={isSelectionMode}
+              onClick={() => {
+                if (isSelectionMode) {
+                  setIsSelectionMode(false);
+                  clearBulkSelection();
+                } else {
+                  setIsSelectionMode(true);
+                  setSelectionNotice("");
+                }
+              }}
+            >
+              {isSelectionMode ? "Exit selection mode" : "Select comments"}
+            </button>
+          </div>
+          <div className="comment-filter-bar">
+            <label>
+              <span>Find comments</span>
+              <input
+                type="search"
+                value={searchQuery}
+                onChange={(event) => updateSearchQuery(event.target.value)}
+              />
+            </label>
+            <label>
+              <span>Active comments</span>
+              <select
+                value={activeFilter}
+                onChange={(event) =>
+                  updateActiveFilter(event.target.value as ActiveCommentFilter)
+                }
+              >
+                <option value="all">All active</option>
+                <option value="open">Open</option>
+                <option value="resolved">Resolved</option>
+              </select>
+            </label>
+            <span>
+              {visibleComments.length} of {comments.length} active
+            </span>
+          </div>
+          {isSelectionMode ? (
+            <div
+              className="comment-bulk-action-bar"
+              aria-label="Bulk comment actions"
+            >
+              <strong aria-live="polite">
+                {selectedCommentIds.length} comment
+                {selectedCommentIds.length === 1 ? "" : "s"} selected
+              </strong>
+              <button
+                type="button"
+                disabled={isBusy || visibleComments.length === 0}
+                onClick={() => {
+                  setSelectedCommentKeys(
+                    new Set(visibleComments.map((comment) => getSelectionKey(comment.id)))
+                  );
+                  setSelectionNotice(
+                    `${visibleComments.length} visible comment${
+                      visibleComments.length === 1 ? "" : "s"
+                    } selected.`
+                  );
+                }}
+              >
+                Select all visible
+              </button>
+              <button
+                type="button"
+                disabled={selectedCommentIds.length === 0}
+                onClick={() => clearBulkSelection("Selection cleared.")}
+              >
+                Clear selection
+              </button>
+              <button
+                ref={moveToTrashButtonRef}
+                type="button"
+                disabled={isBusy || selectedCommentIds.length === 0}
+                onClick={(event) =>
+                  void openTrashConfirmation(
+                    selectedCommentIds,
+                    event.currentTarget
+                  )
+                }
+              >
+                Move to Trash
+              </button>
+            </div>
+          ) : null}
+          {selectionNotice ? (
+            <p className="comment-selection-notice" role="status">
+              {selectionNotice}
             </p>
           ) : null}
           {pendingPatchTotal > 0 ? (
@@ -564,12 +1043,14 @@ export function CommentsPanel({
             activeCommentState={activeCommentState}
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
-            comments={comments}
+            comments={visibleComments}
             editingCommentId={editingCommentId}
             editComment={editComment}
             editType={editType}
             isBusy={isBusy}
-            onDeleteComment={handleDeleteComment}
+            onDeleteComment={async (commentId) =>
+              openTrashConfirmation([commentId])
+            }
             onEditComment={handleEditComment}
             onEditReply={handleEditReply}
             onFindComment={onFindComment}
@@ -601,6 +1082,10 @@ export function CommentsPanel({
             replyEditError={replyEditError}
             replyingCommentId={replyingCommentId}
             replyComment={replyComment}
+            isSelectionMode={isSelectionMode}
+            onToggleSelection={toggleSelectedComment}
+            selectedCommentKeys={selectedCommentKeys}
+            getSelectionKey={getSelectionKey}
           />
           {isCompactCommentComposer && addForm
             ? createPortal(
@@ -617,6 +1102,209 @@ export function CommentsPanel({
                 document.body
               )
             : null}
+          <details className="comment-trash-section">
+            <summary ref={trashSummaryRef} tabIndex={-1}>
+              Trash · {trashedComments.length}
+            </summary>
+            <div className="comment-trash-controls">
+              <label>
+                <span>Show</span>
+                <select
+                  value={trashFilter}
+                  onChange={(event) => {
+                    setTrashFilter(event.target.value as TrashCommentFilter);
+                    setSelectedTrashKeys(new Set());
+                  }}
+                >
+                  <option value="all">All trashed</option>
+                  <option value="open">Originally open</option>
+                  <option value="resolved">Originally resolved</option>
+                </select>
+              </label>
+              {visibleTrashedComments.length > 0 ? (
+                <>
+                  <button
+                    type="button"
+                    disabled={isBusy}
+                    onClick={() =>
+                      setSelectedTrashKeys(
+                        new Set(
+                          visibleTrashedComments.map((comment) =>
+                            getSelectionKey(comment.id)
+                          )
+                        )
+                      )
+                    }
+                  >
+                    Select all shown
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selectedTrashCommentIds.length === 0}
+                    onClick={() => setSelectedTrashKeys(new Set())}
+                  >
+                    Clear
+                  </button>
+                  <button
+                    type="button"
+                    disabled={isBusy || selectedTrashCommentIds.length === 0}
+                    onClick={() => void restoreComments(selectedTrashCommentIds)}
+                  >
+                    Restore selected · {selectedTrashCommentIds.length}
+                  </button>
+                  <button
+                    className="destructive-action"
+                    type="button"
+                    disabled={isBusy || selectedTrashCommentIds.length === 0}
+                    onClick={(event) =>
+                      void openPermanentDeletionConfirmation({
+                        commentIds: selectedTrashCommentIds,
+                        mode:
+                          selectedTrashCommentIds.length === 1
+                            ? "individual"
+                            : "selected",
+                        returnFocusElement: event.currentTarget
+                      })
+                    }
+                  >
+                    Delete selected forever · {selectedTrashCommentIds.length}
+                  </button>
+                </>
+              ) : null}
+              {trashedComments.length > 0 ? (
+                <button
+                  className="destructive-action"
+                  type="button"
+                  disabled={isBusy}
+                  onClick={(event) =>
+                    void openPermanentDeletionConfirmation({
+                      commentIds: trashedComments.map((comment) => comment.id),
+                      mode: "empty_trash",
+                      returnFocusElement: event.currentTarget
+                    })
+                  }
+                >
+                  Empty Trash for {documentTitle}
+                </button>
+              ) : null}
+            </div>
+            {visibleTrashedComments.length === 0 ? (
+              <p className="comments-empty">Trash is empty for this view.</p>
+            ) : (
+              <ol className="comment-trash-list">
+                {visibleTrashedComments.map((comment) => {
+                  const patchSummary =
+                    patchGroupSummariesByCommentId[comment.id] ?? null;
+                  const selected = selectedTrashKeys.has(
+                    getSelectionKey(comment.id)
+                  );
+                  return (
+                    <li key={comment.id}>
+                      <article className="trashed-comment-card">
+                        <label className="comment-selection-control">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select trashed comment ${comment.id}`}
+                            checked={selected}
+                            disabled={isBusy}
+                            onChange={() =>
+                              toggleSelectedTrashComment(comment.id)
+                            }
+                          />
+                          <span>Select {comment.id}</span>
+                        </label>
+                        <div className="comment-card-meta">
+                          <strong>{comment.id}</strong>
+                          <span>Originally {comment.status}</span>
+                        </div>
+                        <p>{comment.comment}</p>
+                        <dl className="comment-trash-metadata">
+                          <div>
+                            <dt>Anchor</dt>
+                            <dd>
+                              {anchorSummaries[comment.id]?.status ??
+                                comment.anchor.kind}
+                            </dd>
+                          </div>
+                          <div>
+                            <dt>Replies</dt>
+                            <dd>{comment.thread.length}</dd>
+                          </div>
+                          <div>
+                            <dt>Patches</dt>
+                            <dd>{patchSummary?.patchCount ?? 0}</dd>
+                          </div>
+                          <div>
+                            <dt>Trashed</dt>
+                            <dd>
+                              {formatCommentDate(comment.trashed_at ?? "")}
+                            </dd>
+                          </div>
+                        </dl>
+                        <div className="trashed-comment-actions">
+                          <button
+                            type="button"
+                            disabled={isBusy}
+                            onClick={() => void restoreComments([comment.id])}
+                          >
+                            Restore
+                          </button>
+                          <button
+                            className="destructive-action"
+                            type="button"
+                            disabled={isBusy}
+                            onClick={(event) =>
+                              void openPermanentDeletionConfirmation({
+                                commentIds: [comment.id],
+                                mode: "individual",
+                                returnFocusElement: event.currentTarget
+                              })
+                            }
+                          >
+                            Delete forever
+                          </button>
+                        </div>
+                      </article>
+                    </li>
+                  );
+                })}
+              </ol>
+            )}
+          </details>
+          {trashDialog ? (
+            <BulkCommentTrashDialog
+              dialog={trashDialog}
+              isBusy={isBusy}
+              onCancel={() => {
+                setTrashDialog(null);
+                window.requestAnimationFrame(() =>
+                  trashDialogReturnFocusRef.current?.focus()
+                );
+              }}
+              onConfirm={() => void confirmMoveCommentsToTrash()}
+              onOpenReviewBatch={onOpenReviewBatch}
+            />
+          ) : null}
+          {permanentDeletionDialog ? (
+            <CommentPermanentDeletionDialog
+              dialog={permanentDeletionDialog}
+              documentTitle={documentTitle}
+              isBusy={isBusy}
+              onCancel={() => {
+                setPermanentDeletionDialog(null);
+                window.requestAnimationFrame(() =>
+                  permanentDeletionReturnFocusRef.current?.focus()
+                );
+              }}
+              onChangeConfirmation={(confirmationInput) =>
+                setPermanentDeletionDialog((current) =>
+                  current ? { ...current, confirmationInput } : current
+                )
+              }
+              onConfirm={() => void confirmPermanentDeletion()}
+              onOpenReviewBatch={onOpenReviewBatch}
+            />
+          ) : null}
         </>
       )}
     </section>
@@ -650,7 +1338,9 @@ type CommentGroupProps = {
   replyEditError: string;
   editType: PatchmarkCommentType;
   emptyMessage: string;
+  getSelectionKey: (commentId: string) => string;
   isBusy: boolean;
+  isSelectionMode: boolean;
   label: string;
   onDeleteComment: (commentId: string) => Promise<void>;
   onEditComment: (event: React.FormEvent<HTMLFormElement>) => Promise<void>;
@@ -667,6 +1357,7 @@ type CommentGroupProps = {
   onSetEditReplyContent: (content: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
   onSetReplyComment: (comment: string) => void;
+  onToggleSelection: (commentId: string) => void;
   onStartEditing: (comment: PatchmarkComment) => void;
   onStartEditingReply: (
     comment: PatchmarkComment,
@@ -682,6 +1373,7 @@ type CommentGroupProps = {
   quiet?: boolean;
   replyingCommentId: string | null;
   replyComment: string;
+  selectedCommentKeys: Set<string>;
 };
 
 type FloatingCommentListProps = Omit<
@@ -706,7 +1398,9 @@ function FloatingCommentList({
   editReplyContent,
   replyEditError,
   editType,
+  getSelectionKey,
   isBusy,
+  isSelectionMode,
   onDeleteComment,
   onEditComment,
   onEditReply,
@@ -722,6 +1416,7 @@ function FloatingCommentList({
   onSetEditReplyContent,
   onSetEditType,
   onSetReplyComment,
+  onToggleSelection,
   onStartEditing,
   onStartEditingReply,
   onStartReplying,
@@ -732,7 +1427,8 @@ function FloatingCommentList({
   patchGroupSummariesByCommentId,
   pendingPatchCountsByCommentId,
   replyingCommentId,
-  replyComment
+  replyComment,
+  selectedCommentKeys
 }: FloatingCommentListProps) {
   const floatingItemRefs = useRef<Record<string, HTMLLIElement | null>>({});
   const floatingStageRef = useRef<HTMLOListElement | null>(null);
@@ -741,20 +1437,28 @@ function FloatingCommentList({
     Record<string, number>
   >({});
   const [floatingStageOffsetTop, setFloatingStageOffsetTop] = useState(0);
-  const positionedComments = comments
-    .filter((comment) => commentPositions[comment.id] !== undefined)
-    .sort((firstComment, secondComment) => {
-      const firstTop = commentPositions[firstComment.id] ?? 0;
-      const secondTop = commentPositions[secondComment.id] ?? 0;
+  const positionedComments = useMemo(
+    () =>
+      comments
+        .filter((comment) => commentPositions[comment.id] !== undefined)
+        .sort((firstComment, secondComment) => {
+          const firstTop = commentPositions[firstComment.id] ?? 0;
+          const secondTop = commentPositions[secondComment.id] ?? 0;
 
-      return (
-        firstTop - secondTop ||
-        firstComment.created_at.localeCompare(secondComment.created_at) ||
-        firstComment.id.localeCompare(secondComment.id)
-      );
-    });
-  const unpositionedComments = comments.filter(
-    (comment) => commentPositions[comment.id] === undefined
+          return (
+            firstTop - secondTop ||
+            firstComment.created_at.localeCompare(secondComment.created_at) ||
+            firstComment.id.localeCompare(secondComment.id)
+          );
+        }),
+    [commentPositions, comments]
+  );
+  const unpositionedComments = useMemo(
+    () =>
+      comments.filter(
+        (comment) => commentPositions[comment.id] === undefined
+      ),
+    [commentPositions, comments]
   );
   const floatingLayoutItems = useMemo(
     () =>
@@ -815,6 +1519,7 @@ function FloatingCommentList({
     }
 
     function measureFloatingItems() {
+      const measurementStartedAt = performance.now();
       const nextMeasuredItemHeights: Record<string, number> = {};
       const nextFloatingStageOffsetTop = getFloatingStageOffsetTop(
         floatingStageRef.current
@@ -854,6 +1559,21 @@ function FloatingCommentList({
         )
           ? currentMeasuredItemHeights
           : nextMeasuredItemHeights
+      );
+      const operationId = getLatestDocumentSwitchPerformanceOperationId();
+      recordDocumentSwitchPerformanceDuration(
+        operationId,
+        "comment_rail_dom_measurement",
+        performance.now() - measurementStartedAt
+      );
+      incrementDocumentSwitchPerformanceCounter(
+        operationId,
+        "comment_rail_layout_pass_count"
+      );
+      incrementDocumentSwitchPerformanceCounter(
+        operationId,
+        "comment_cards_measured",
+        itemIds.size
       );
     }
 
@@ -972,8 +1692,12 @@ function FloatingCommentList({
                     editReplyContent={editReplyContent}
                     replyEditError={replyEditError}
                     editType={editType}
+                    isSelected={selectedCommentKeys.has(
+                      getSelectionKey(item.comment.id)
+                    )}
                     isActive={isCommentActive(activeCommentState, item.comment.id)}
                     isBusy={isBusy}
+                    isSelectionMode={isSelectionMode}
                     onDeleteComment={onDeleteComment}
                     onEditComment={onEditComment}
                     onEditReply={onEditReply}
@@ -994,6 +1718,7 @@ function FloatingCommentList({
                     onSetEditReplyContent={onSetEditReplyContent}
                     onSetEditType={onSetEditType}
                     onSetReplyComment={onSetReplyComment}
+                    onToggleSelection={onToggleSelection}
                     onStartEditing={onStartEditing}
                     onStartEditingReply={onStartEditingReply}
                     onStartReplying={onStartReplying}
@@ -1032,7 +1757,9 @@ function FloatingCommentList({
           replyEditError={replyEditError}
           editType={editType}
           emptyMessage="No unpositioned comments."
+          getSelectionKey={getSelectionKey}
           isBusy={isBusy}
+          isSelectionMode={isSelectionMode}
           label="Unpositioned comments"
           onDeleteComment={onDeleteComment}
           onEditComment={onEditComment}
@@ -1049,6 +1776,7 @@ function FloatingCommentList({
           onSetEditReplyContent={onSetEditReplyContent}
           onSetEditType={onSetEditType}
           onSetReplyComment={onSetReplyComment}
+          onToggleSelection={onToggleSelection}
           onStartEditing={onStartEditing}
           onStartEditingReply={onStartEditingReply}
           onStartReplying={onStartReplying}
@@ -1060,6 +1788,7 @@ function FloatingCommentList({
           pendingPatchCountsByCommentId={pendingPatchCountsByCommentId}
           replyingCommentId={replyingCommentId}
           replyComment={replyComment}
+          selectedCommentKeys={selectedCommentKeys}
         />
       ) : null}
     </div>
@@ -1260,7 +1989,9 @@ function CommentGroup({
   replyEditError,
   editType,
   emptyMessage,
+  getSelectionKey,
   isBusy,
+  isSelectionMode,
   label,
   onDeleteComment,
   onEditComment,
@@ -1277,6 +2008,7 @@ function CommentGroup({
   onSetEditReplyContent,
   onSetEditType,
   onSetReplyComment,
+  onToggleSelection,
   onStartEditing,
   onStartEditingReply,
   onStartReplying,
@@ -1288,6 +2020,7 @@ function CommentGroup({
   pendingPatchCountsByCommentId,
   replyingCommentId,
   replyComment,
+  selectedCommentKeys,
   quiet = false
 }: CommentGroupProps) {
   return (
@@ -1309,8 +2042,12 @@ function CommentGroup({
                   editReplyContent={editReplyContent}
                   replyEditError={replyEditError}
                   editType={editType}
+                  isSelected={selectedCommentKeys.has(
+                    getSelectionKey(comment.id)
+                  )}
                   isActive={isCommentActive(activeCommentState, comment.id)}
                   isBusy={isBusy}
+                  isSelectionMode={isSelectionMode}
                   onDeleteComment={onDeleteComment}
                   onEditComment={onEditComment}
                   onEditReply={onEditReply}
@@ -1331,6 +2068,7 @@ function CommentGroup({
                   onSetEditReplyContent={onSetEditReplyContent}
                   onSetEditType={onSetEditType}
                   onSetReplyComment={onSetReplyComment}
+                  onToggleSelection={onToggleSelection}
                   onStartEditing={onStartEditing}
                   onStartEditingReply={onStartEditingReply}
                   onStartReplying={onStartReplying}
@@ -1381,6 +2119,8 @@ type CommentCardProps = {
   editType: PatchmarkCommentType;
   isActive: boolean;
   isBusy: boolean;
+  isSelected: boolean;
+  isSelectionMode: boolean;
   onActivateComment: (commentId: string) => void;
   onClearActiveComment: () => void;
   onDeleteComment: (commentId: string) => Promise<void>;
@@ -1397,6 +2137,7 @@ type CommentCardProps = {
   onSetEditReplyContent: (content: string) => void;
   onSetEditType: (type: PatchmarkCommentType) => void;
   onSetReplyComment: (comment: string) => void;
+  onToggleSelection: (commentId: string) => void;
   onStartEditing: (comment: PatchmarkComment) => void;
   onStartEditingReply: (
     comment: PatchmarkComment,
@@ -1493,6 +2234,8 @@ function CommentCard({
   editType,
   isActive,
   isBusy,
+  isSelected,
+  isSelectionMode,
   onActivateComment,
   onClearActiveComment,
   onDeleteComment,
@@ -1509,6 +2252,7 @@ function CommentCard({
   onSetEditReplyContent,
   onSetEditType,
   onSetReplyComment,
+  onToggleSelection,
   onStartEditing,
   onStartEditingReply,
   onStartReplying,
@@ -1541,7 +2285,8 @@ function CommentCard({
       latestPatchImpact
     }
   );
-  const isCompact = !isActive && !isEditing && !isReplying;
+  const isCompact =
+    isSelectionMode || (!isActive && !isEditing && !isReplying);
   const collapsedTarget = getCollapsedCommentTarget({
     comment,
     fallbackLabel: anchorSummary.label,
@@ -1551,14 +2296,20 @@ function CommentCard({
   return (
     <article
       id={`patchmark-comment-card-${comment.id}`}
-      aria-label={`${isActive ? "Active comment" : "Comment"} ${comment.id}`}
+      aria-label={`${isActive ? "Active comment" : "Comment"} ${comment.id}${
+        isSelectionMode ? (isSelected ? ", selected" : ", not selected") : ""
+      }`}
       aria-current={isActive ? "true" : undefined}
       className={`comment-card ${quiet ? "comment-card-quiet" : ""} ${
         isCompact ? "comment-card-compact" : "comment-card-active"
       }`}
       data-active={isActive ? "true" : undefined}
-      tabIndex={isCompact ? 0 : undefined}
+      tabIndex={isCompact ? 0 : -1}
       onClick={(event) => {
+        if (isSelectionMode && !isInteractiveCommentTarget(event.target)) {
+          onToggleSelection(comment.id);
+          return;
+        }
         if (isCompact && !isInteractiveCommentTarget(event.target)) {
           onActivateComment(comment.id);
         }
@@ -1569,9 +2320,25 @@ function CommentCard({
         }
 
         event.preventDefault();
-        onActivateComment(comment.id);
+        if (isSelectionMode) {
+          onToggleSelection(comment.id);
+        } else {
+          onActivateComment(comment.id);
+        }
       }}
     >
+      {isSelectionMode ? (
+        <label className="comment-selection-control">
+          <input
+            type="checkbox"
+            aria-label={`Select comment ${comment.id} for Trash`}
+            checked={isSelected}
+            disabled={isBusy}
+            onChange={() => onToggleSelection(comment.id)}
+          />
+          <span>Select {comment.id}</span>
+        </label>
+      ) : null}
       {isCompact ? (
         <>
           <div className="comment-card-meta">
@@ -1989,12 +2756,407 @@ function CommentCard({
               disabled={isBusy}
               onClick={() => onDeleteComment(comment.id)}
             >
-              Delete
+              Move to Trash
             </button>
           </div>
         </>
       )}
     </article>
+  );
+}
+
+function BulkCommentTrashDialog({
+  dialog,
+  isBusy,
+  onCancel,
+  onConfirm,
+  onOpenReviewBatch
+}: {
+  dialog: CommentTrashDialogState;
+  isBusy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+  onOpenReviewBatch: (batchId: string) => void;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const { summary } = dialog;
+  const activeBatchBlockers = summary.blockers.filter(
+    (blocker) => blocker.kind === "active_review_batch"
+  );
+  const reanchorBlockers = summary.blockers.filter(
+    (blocker) => blocker.kind === "active_reanchor"
+  );
+  const draftBlockers = summary.blockers.filter(
+    (blocker) => blocker.kind === "unsaved_draft"
+  );
+  const isBlocked = summary.blockers.length > 0;
+
+  useEffect(() => {
+    cancelButtonRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="dialog-backdrop">
+      <section
+        ref={dialogRef}
+        aria-describedby="comment-trash-dialog-description"
+        aria-labelledby="comment-trash-dialog-title"
+        aria-modal="true"
+        className="dialog-card comment-trash-dialog"
+        role="dialog"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+            return;
+          }
+          if (event.key !== "Tab" || !dialogRef.current) {
+            return;
+          }
+          const focusable = Array.from(
+            dialogRef.current.querySelectorAll<HTMLElement>(
+              "button:not([disabled]), input:not([disabled]), select:not([disabled]), [href]"
+            )
+          );
+          const first = focusable[0];
+          const last = focusable.at(-1);
+          if (!first || !last) {
+            return;
+          }
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+      >
+        <h2 id="comment-trash-dialog-title">
+          {isBlocked
+            ? "Cannot move these comments to Trash"
+            : `Move ${summary.selectedComments} comment${
+                summary.selectedComments === 1 ? "" : "s"
+              } to Trash?`}
+        </h2>
+        <p id="comment-trash-dialog-description">
+          This preserves comment threads, anchors, patch history, imports, and
+          Review Batch provenance for later restoration.
+        </p>
+        <dl className="comment-trash-summary">
+          <div>
+            <dt>Selected comments</dt>
+            <dd>{summary.selectedComments}</dd>
+          </div>
+          <div>
+            <dt>Replies</dt>
+            <dd>{summary.replies}</dd>
+          </div>
+          <div>
+            <dt>Pending patches</dt>
+            <dd>{summary.pendingPatches}</dd>
+          </div>
+          <div>
+            <dt>Accepted patches</dt>
+            <dd>{summary.acceptedPatches}</dd>
+          </div>
+          <div>
+            <dt>Rejected patches</dt>
+            <dd>{summary.rejectedPatches}</dd>
+          </div>
+          <div>
+            <dt>Unresolved anchors</dt>
+            <dd>{summary.unresolvedAnchors}</dd>
+          </div>
+          <div>
+            <dt>Linked to Review Batches</dt>
+            <dd>{summary.linkedReviewBatchComments}</dd>
+          </div>
+          <div>
+            <dt>Blocked comments</dt>
+            <dd>{summary.blockedComments}</dd>
+          </div>
+        </dl>
+        {summary.acceptedPatches > 0 ? (
+          <p className="comment-trash-warning">
+            Changes already applied to the Markdown will remain.
+          </p>
+        ) : null}
+        {activeBatchBlockers.map((blocker) =>
+          blocker.kind === "active_review_batch" ? (
+            <div className="comment-trash-blocker" role="alert" key={blocker.batchId}>
+              <p>
+                {blocker.commentIds.length} selected comment
+                {blocker.commentIds.length === 1 ? "" : "s"} belong
+                {blocker.commentIds.length === 1 ? "s" : ""} to an exported batch
+                awaiting ChatGPT. Import the response or cancel that batch first.
+              </p>
+              <button
+                type="button"
+                onClick={() => {
+                  onCancel();
+                  onOpenReviewBatch(blocker.batchId);
+                }}
+              >
+                Open active Review Batch
+              </button>
+            </div>
+          ) : null
+        )}
+        {reanchorBlockers.length > 0 ? (
+          <p className="comment-trash-blocker" role="alert">
+            Finish or cancel the active re-anchor session before moving its
+            comment to Trash.
+          </p>
+        ) : null}
+        {draftBlockers.length > 0 ? (
+          <p className="comment-trash-blocker" role="alert">
+            Save, cancel, or explicitly discard the selected comment or reply
+            draft first. No draft was discarded.
+          </p>
+        ) : null}
+        <div className="dialog-actions">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            disabled={isBusy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          {!isBlocked ? (
+            <button type="button" disabled={isBusy} onClick={onConfirm}>
+              Move {summary.selectedComments} comment
+              {summary.selectedComments === 1 ? "" : "s"} to Trash
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function CommentPermanentDeletionDialog({
+  dialog,
+  documentTitle,
+  isBusy,
+  onCancel,
+  onChangeConfirmation,
+  onConfirm,
+  onOpenReviewBatch
+}: {
+  dialog: CommentPermanentDeletionDialogState;
+  documentTitle: string;
+  isBusy: boolean;
+  onCancel: () => void;
+  onChangeConfirmation: (value: string) => void;
+  onConfirm: () => void;
+  onOpenReviewBatch: (batchId: string) => void;
+}) {
+  const dialogRef = useRef<HTMLElement | null>(null);
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const { summary } = dialog;
+  const isBlocked = summary.blockers.length > 0;
+  const phraseMatches =
+    dialog.confirmationInput.trim() === summary.confirmationPhrase;
+  const title =
+    dialog.mode === "empty_trash"
+      ? `Permanently delete ${summary.selectedComments} comment${
+          summary.selectedComments === 1 ? "" : "s"
+        } from ${documentTitle}?`
+      : summary.selectedComments === 1
+        ? "Delete this comment forever?"
+        : `Permanently delete ${summary.selectedComments} comments?`;
+
+  useEffect(() => {
+    cancelButtonRef.current?.focus();
+  }, []);
+
+  return (
+    <div className="dialog-backdrop">
+      <section
+        ref={dialogRef}
+        aria-describedby="comment-permanent-deletion-description"
+        aria-labelledby="comment-permanent-deletion-title"
+        aria-modal="true"
+        className="dialog-card comment-permanent-deletion-dialog"
+        role="dialog"
+        onKeyDown={(event) => {
+          if (event.key === "Escape") {
+            event.preventDefault();
+            onCancel();
+            return;
+          }
+          if (event.key !== "Tab" || !dialogRef.current) {
+            return;
+          }
+          const focusable = Array.from(
+            dialogRef.current.querySelectorAll<HTMLElement>(
+              "button:not([disabled]), input:not([disabled]), [href]"
+            )
+          );
+          const first = focusable[0];
+          const last = focusable.at(-1);
+          if (!first || !last) {
+            return;
+          }
+          if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }}
+      >
+        <h2 id="comment-permanent-deletion-title">
+          {isBlocked ? "Cannot permanently delete these comments" : title}
+        </h2>
+        <div id="comment-permanent-deletion-description">
+          <p>
+            This permanently removes comment threads, anchors, and review
+            proposal content from the active Patchmark document store.
+          </p>
+          <p>Accepted Markdown changes will remain.</p>
+          <p>
+            Previously exported prompts, imported-response archives, downloaded
+            files, and external backups may still contain copies.
+          </p>
+          <p>This cannot be undone inside Patchmark.</p>
+        </div>
+        <dl className="comment-trash-summary">
+          <div>
+            <dt>Comments</dt>
+            <dd>{summary.selectedComments}</dd>
+          </div>
+          <div>
+            <dt>Replies</dt>
+            <dd>{summary.replies}</dd>
+          </div>
+          <div>
+            <dt>Pending patches</dt>
+            <dd>{summary.pendingPatches}</dd>
+          </div>
+          <div>
+            <dt>Accepted patches</dt>
+            <dd>{summary.acceptedPatches}</dd>
+          </div>
+          <div>
+            <dt>Rejected patches</dt>
+            <dd>{summary.rejectedPatches}</dd>
+          </div>
+          <div>
+            <dt>Review Batch references</dt>
+            <dd>{summary.reviewBatchReferences}</dd>
+          </div>
+          <div>
+            <dt>Imports</dt>
+            <dd>{summary.imports}</dd>
+          </div>
+          <div>
+            <dt>Minimal tombstones</dt>
+            <dd>{summary.tombstones}</dd>
+          </div>
+        </dl>
+        {summary.blockers.map((blocker, index) => {
+          if (blocker.kind === "active_review_batch") {
+            return (
+              <div
+                className="comment-trash-blocker"
+                key={`${blocker.kind}:${blocker.batchId}`}
+                role="alert"
+              >
+                <p>
+                  {blocker.commentIds.length} comment
+                  {blocker.commentIds.length === 1 ? "" : "s"} belong to an
+                  exported Review Batch awaiting ChatGPT.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onCancel();
+                    onOpenReviewBatch(blocker.batchId);
+                  }}
+                >
+                  Open active Review Batch
+                </button>
+              </div>
+            );
+          }
+          const messages = {
+            corrupt_historical_reference: `Historical reference ${
+              blocker.kind === "corrupt_historical_reference"
+                ? blocker.reference
+                : ""
+            } cannot be preserved safely.`,
+            in_flight_import:
+              "Wait for the response import to finish before deleting.",
+            in_flight_mutation:
+              "Wait for the Trash, Restore, or re-anchor operation to finish.",
+            unsaved_draft:
+              "Save, cancel, or explicitly discard the associated local draft first."
+          };
+          return (
+            <p
+              className="comment-trash-blocker"
+              key={`${blocker.kind}:${index}`}
+              role="alert"
+            >
+              {messages[blocker.kind]}
+            </p>
+          );
+        })}
+        {!isBlocked ? (
+          <label className="permanent-deletion-confirmation">
+            <span>
+              Type <strong>{summary.confirmationPhrase}</strong> to confirm
+              (case-sensitive)
+            </span>
+            <input
+              aria-describedby="permanent-deletion-confirmation-status"
+              aria-label="Permanent deletion confirmation phrase"
+              autoComplete="off"
+              value={dialog.confirmationInput}
+              onChange={(event) => onChangeConfirmation(event.target.value)}
+            />
+          </label>
+        ) : null}
+        <p
+          id="permanent-deletion-confirmation-status"
+          aria-live="polite"
+          className="permanent-deletion-confirmation-status"
+        >
+          {!isBlocked && dialog.confirmationInput && !phraseMatches
+            ? "Confirmation phrase does not match."
+            : ""}
+        </p>
+        <div className="dialog-actions">
+          <button
+            ref={cancelButtonRef}
+            type="button"
+            disabled={isBusy}
+            onClick={onCancel}
+          >
+            Cancel
+          </button>
+          {!isBlocked ? (
+            <button
+              className="destructive-action"
+              type="button"
+              disabled={isBusy || !phraseMatches}
+              onClick={onConfirm}
+            >
+              {dialog.mode === "empty_trash"
+                ? `Empty Trash for ${documentTitle}`
+                : summary.selectedComments === 1
+                  ? "Delete forever"
+                  : "Delete selected forever"}
+            </button>
+          ) : null}
+        </div>
+      </section>
+    </div>
   );
 }
 

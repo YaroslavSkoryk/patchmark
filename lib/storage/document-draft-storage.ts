@@ -6,6 +6,10 @@ export type DocumentDraft = {
   updatedAt: string;
 };
 
+export type LegacyUnscopedDocumentDraft = DocumentDraft & {
+  storageKey: string;
+};
+
 export function getDocumentDraftKey(fileName: string): string {
   return `${draftKeyPrefix}${encodeURIComponent(fileName)}`;
 }
@@ -27,11 +31,18 @@ export function deleteDocumentDraft(fileName: string): void {
 }
 
 export function readMostRecentDocumentDraft(): DocumentDraft | null {
+  return readLegacyUnscopedDocumentDrafts().sort(
+    (draftA, draftB) =>
+      Date.parse(draftB.updatedAt) - Date.parse(draftA.updatedAt)
+  )[0] ?? null;
+}
+
+export function readLegacyUnscopedDocumentDrafts(): LegacyUnscopedDocumentDraft[] {
   if (!canUseLocalStorage()) {
-    return null;
+    return [];
   }
 
-  const drafts: DocumentDraft[] = [];
+  const drafts: LegacyUnscopedDocumentDraft[] = [];
 
   for (let index = 0; index < localStorage.length; index += 1) {
     const key = localStorage.key(index);
@@ -43,14 +54,21 @@ export function readMostRecentDocumentDraft(): DocumentDraft | null {
     const draft = readDraftFromKey(key);
 
     if (draft) {
-      drafts.push(draft);
+      drafts.push({ ...draft, storageKey: key });
     }
   }
 
   return drafts.sort(
     (draftA, draftB) =>
       Date.parse(draftB.updatedAt) - Date.parse(draftA.updatedAt)
-  )[0] ?? null;
+  );
+}
+
+export function deleteLegacyUnscopedDocumentDraft(storageKey: string): void {
+  if (!canUseLocalStorage() || !storageKey.startsWith(draftKeyPrefix)) {
+    return;
+  }
+  localStorage.removeItem(storageKey);
 }
 
 function readDraftFromKey(key: string): DocumentDraft | null {

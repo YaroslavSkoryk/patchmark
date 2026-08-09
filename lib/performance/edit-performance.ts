@@ -2,6 +2,7 @@ export type EditPerformanceMutationSource =
   | "composition"
   | "cut"
   | "formatter"
+  | "human_rewrite"
   | "manual_source"
   | "manual_visual"
   | "move"

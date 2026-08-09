@@ -1,0 +1,499 @@
+{
+  "protocol": "patchmark.comment_reply_import",
+  "protocol_version": 2,
+  "review_batch_id": "review_batch_9397be53-ae07-4561-8442-31da2c9b918b",
+  "project_id": "prj_0b86549a-56aa-4f37-8f4e-68cba8c958a3",
+  "document_id": "doc_49d34ef1-a7fd-4d5d-bdab-900397d07054",
+  "summary": "Moved the source information into the passages it supports and proposed removing the now-redundant final Sources section.",
+  "replies": [
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "reply": "I mapped every source note to the closest supporting passage. The proposals add visible links and source dates in the market-demand, competitor, analogue and platform sections, identify the internal strategy draft inline, and remove the final Sources section after those inline-reference changes are applied.",
+      "reply_sources": [],
+      "suggested_user_action": "apply_patch"
+    }
+  ],
+  "patch_proposals": [
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Identify internal strategy source",
+      "patch_key": "identify-internal-strategy-source",
+      "depends_on": [],
+      "target_heading": "## 2. Strategic context",
+      "original_text": "The internal **Crust Chant Action Plan, Market View and Growth Strategy** defines the business as a founder-led sourdough bakery focused on naturally leavened bread, long fermentation, consistent quality and direct customer relationships. The intended first-stage model is production and distribution rather than a café-first or restaurant-first operation. Its current channels are direct retail, subscriptions, selected wholesale, controlled delivery and selected pop-ups.",
+      "suggested_text": "The internal **Crust Chant Action Plan, Market View and Growth Strategy** (discussion draft v3, July 2026; internal founder-provided source) defines the business as a founder-led sourdough bakery focused on naturally leavened bread, long fermentation, consistent quality and direct customer relationships. The intended first-stage model is production and distribution rather than a café-first or restaurant-first operation. Its current channels are direct retail, subscriptions, selected wholesale, controlled delivery and selected pop-ups.",
+      "suggested_text_sources": [],
+      "reason": "Preserves the internal source identity at the first passage that relies on it, so the standalone source note is no longer needed.",
+      "reason_sources": [],
+      "risk": "The attribution is slightly longer, but it keeps the document self-contained without implying that the internal draft is publicly accessible.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link historical category signal",
+      "patch_key": "link-historical-category-signal",
+      "depends_on": [],
+      "target_heading": "### 4.1 What the available evidence supports",
+      "original_text": "A 2023 LINE MAN Wongnai restaurant-industry release reported that breakfast eateries, including sandwich businesses, were among the categories with the highest growth in new restaurants. This is a historical category signal, not current local demand proof. More current local evidence comes from active 2026 menus: several Bangna/Bang Phli cafés currently offer breakfast, sandwiches, sourdough products or brunch for delivery.",
+      "suggested_text": "A [2023 LINE MAN Wongnai restaurant-industry release](https://lmwn.com/line-man-wongnai-restaurants-2023-en/) — published 24 July 2023; observed 16 July 2026 — reported that breakfast eateries, including sandwich businesses, were among the categories with the highest growth in new restaurants. This is a historical category signal, not current local demand proof. More current local evidence comes from active 2026 menus: several Bangna/Bang Phli cafés currently offer breakfast, sandwiches, sourdough products or brunch for delivery.",
+      "suggested_text_sources": [
+        {
+          "title": "LINE MAN Wongnai restaurant-industry release reporting 2023 growth in breakfast eateries and sandwiches",
+          "url": "https://lmwn.com/line-man-wongnai-restaurants-2023-en/",
+          "published_at": "2023-07-24",
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Reports breakfast eateries, including sandwich businesses, among categories with high growth in new restaurants in 2023."
+        }
+      ],
+      "reason": "Places the historical category source directly beside the claim and retains the document's warning that it is not proof of current local demand.",
+      "reason_sources": [],
+      "risk": "The source is historical and should continue to be read only as category context.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link observed menu prices",
+      "patch_key": "link-observed-menu-prices",
+      "depends_on": [],
+      "target_heading": "### 4.2 Observed price and product bands",
+      "original_text": "Current menu snapshots show several practical bands:",
+      "suggested_text": "Current menu snapshots from [Crumbs Central Bangna](https://www.wongnai.com/delivery/businesses/946258uO/order), [Casa Lapin ATT U Bangna](https://www.wongnai.com/delivery/businesses/449023De/order), [NANA Coffee Roaster Bangna](https://www.wongnai.com/delivery/businesses/1487923Jr/order) and [F.I.X. Bangna – Brunch & Play](https://www.wongnai.com/delivery/businesses/2704257zH/order) — publication dates unavailable; prices observed 16 July 2026 — show several practical bands:",
+      "suggested_text_sources": [
+        {
+          "title": "Crumbs Central Bangna — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/946258uO/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the Crumbs menu items and prices used in the observed price bands."
+        },
+        {
+          "title": "Casa Lapin ATT U Bangna — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/449023De/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the Casa Lapin sandwich items and prices used in the observed price bands."
+        },
+        {
+          "title": "NANA Coffee Roaster Bangna — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/1487923Jr/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the NANA sourdough and focaccia items and prices used in the observed price bands."
+        },
+        {
+          "title": "F.I.X. Bangna – Brunch & Play — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/2704257zH/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the F.I.X. menu items, bundles and prices used in the observed price bands."
+        }
+      ],
+      "reason": "Moves the four menu references beside the price-band table that synthesizes them.",
+      "reason_sources": [],
+      "risk": "The introductory sentence becomes longer, but the table remains structurally unchanged and the dynamic-price observation date stays explicit.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Explain competitor observation dates",
+      "patch_key": "competitor-observation-dates",
+      "depends_on": [],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "### 5.1 Local operators and current status\n\n| Operator",
+      "suggested_text": "### 5.1 Local operators and current status\n\nThe linked live listing, menu, directory and social pages below have no available publication date; status, menu, price and rating details were observed 16 July 2026.\n\n| Operator",
+      "suggested_text_sources": [],
+      "reason": "Provides one clear date and publication-status qualifier for the inline links in the table without repeating the same note in every cell.",
+      "reason_sources": [],
+      "risk": "This note should be applied together with the table-row link proposals so that every new dynamic reference carries visible date context.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Horme evidence",
+      "patch_key": "link-horme-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **Horme Cafe Bangna**                       | Active Wongnai listing; open until 20:00; official Facebook also promotes GrabFood and LINE MAN. The supplied name “Horne Cafe” appears likely to refer to Horme. | Categories include Asian-style breakfast, fresh-baked croissants and homemade sandwiches.                                                                                | 4.0 from 65 ratings / 51 reviews on Wongnai.                                   | Retail café plus delivery.                                         | Broad breakfast-to-dessert day coverage; strong local awareness; demonstrates customer expectation of beverages and variety. | A broad café menu is exactly the complexity Crust Chant should avoid copying.                                                                                 |",
+      "suggested_text": "| **Horme Cafe Bangna**                       | Active [Wongnai listing and menu](https://www.wongnai.com/restaurants/590757kx-horme-cafe-bangna/menu?menuGroupId=items); open until 20:00; [official Facebook](https://www.facebook.com/hormecafe.official/) also promotes GrabFood and LINE MAN. The supplied name “Horne Cafe” appears likely to refer to Horme. | Categories include Asian-style breakfast, fresh-baked croissants and homemade sandwiches.                                                                                | 4.0 from 65 ratings / 51 reviews on Wongnai.                                   | Retail café plus delivery.                                         | Broad breakfast-to-dessert day coverage; strong local awareness; demonstrates customer expectation of beverages and variety. | A broad café menu is exactly the complexity Crust Chant should avoid copying.                                                                                 |",
+      "suggested_text_sources": [
+        {
+          "title": "Horme Cafe Bangna — Wongnai menu",
+          "url": "https://www.wongnai.com/restaurants/590757kx-horme-cafe-bangna/menu?menuGroupId=items",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows Horme Cafe's status, menu categories and public rating evidence."
+        },
+        {
+          "title": "Horme Cafe official Facebook",
+          "url": "https://www.facebook.com/hormecafe.official/",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the stated opening hours and promotion of GrabFood and LINE MAN."
+        }
+      ],
+      "reason": "Places both Horme sources inside the row containing the status, menu, rating and platform claims.",
+      "reason_sources": [],
+      "risk": "Live listing details can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Routine evidence",
+      "patch_key": "link-routine-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **Routine Coffee ’n More Bangkaew**         | Active official Wongnai x LINE MAN delivery listing; public Bang Phli directory shows open status.                                                                | Coffee, bakery and croffle-oriented offer; Black Orange 75 THB.                                                                                                          | Approximately 4.8 from 9 reviews in the current Wongnai directory.             | Retail café plus delivery.                                         | Accessible prices, early opening and simple café identity.                                                                   | Less direct evidence of artisan sandwiches; useful more as convenience/coffee competition.                                                                    |",
+      "suggested_text": "| **Routine Coffee ’n More Bangkaew**         | Active official [Wongnai x LINE MAN delivery listing](https://www.wongnai.com/delivery/businesses/977577Af/order); public [Bang Phli bakery/café directory](https://www.wongnai.com/c/24/%E0%B9%80%E0%B8%9A%E0%B9%80%E0%B8%81%E0%B8%AD%E0%B8%A3%E0%B8%B5%E0%B9%88-%E0%B9%80%E0%B8%84%E0%B9%89%E0%B8%81?areas=955&categories=24&sort.type=3) shows open status.                                                                | Coffee, bakery and croffle-oriented offer; Black Orange 75 THB.                                                                                                          | Approximately 4.8 from 9 reviews in the current Wongnai directory.             | Retail café plus delivery.                                         | Accessible prices, early opening and simple café identity.                                                                   | Less direct evidence of artisan sandwiches; useful more as convenience/coffee competition.                                                                    |",
+      "suggested_text_sources": [
+        {
+          "title": "Routine Coffee ’n More Bangkaew — Wongnai x LINE MAN delivery",
+          "url": "https://www.wongnai.com/delivery/businesses/977577Af/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows Routine Coffee ’n More's delivery status, menu and listed price example."
+        },
+        {
+          "title": "Wongnai Bang Phli bakery and café directory",
+          "url": "https://www.wongnai.com/c/24/%E0%B9%80%E0%B8%9A%E0%B9%80%E0%B8%81%E0%B8%AD%E0%B8%A3%E0%B8%B5%E0%B9%88-%E0%B9%80%E0%B8%84%E0%B9%89%E0%B8%81?areas=955&categories=24&sort.type=3",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows current local listing status and public review-count context in Bang Phli."
+        }
+      ],
+      "reason": "Places the specific delivery listing and the broader directory beside the status and rating claims they support.",
+      "reason_sources": [],
+      "risk": "Directory ordering and ratings can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Merak evidence",
+      "patch_key": "link-merak-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **Merak Cafe (Brunch and Pasta), Bangkaew** | Active official Wongnai listing with delivery; open until 18:00 and delivery hours shown.                                                                         | Brunch/pasta/café range; current visible examples include coffee 85–130 THB and recommended pasta items 130–280 THB.                                                     | 3.9 from 9 ratings / 6 reviews.                                                | Retail café plus delivery.                                         | Warm, local, family/friend positioning; demonstrates mixed meal-and-café competition.                                        | Historic reviews include a price-value concern and some execution criticism. A large mixed menu is operationally different from Crust Chant’s proposed pilot. |",
+      "suggested_text": "| **Merak Cafe (Brunch and Pasta), Bangkaew** | Active official [Wongnai listing](https://www.wongnai.com/restaurants/613817sM-merak-cafe-brunch-and-pasta-bangkaew) with delivery; open until 18:00 and delivery hours shown.                                                                         | [Current menu](https://www.wongnai.com/restaurants/613817sM-merak-cafe-%E0%B8%A1%E0%B8%B5%E0%B8%A3%E0%B8%B1%E0%B8%81-%E0%B8%84%E0%B8%B2%E0%B9%80%E0%B8%9F%E0%B9%88-%E0%B8%AA%E0%B8%B2%E0%B8%82%E0%B8%B2%E0%B8%9A%E0%B8%B2%E0%B8%87%E0%B9%81%E0%B8%81%E0%B9%89%E0%B8%A7/menu?menuGroupId=items): brunch/pasta/café range; visible examples include coffee 85–130 THB and recommended pasta items 130–280 THB.                                                     | 3.9 from 9 ratings / 6 reviews.                                                | Retail café plus delivery.                                         | Warm, local, family/friend positioning; demonstrates mixed meal-and-café competition.                                        | Historic reviews include a price-value concern and some execution criticism. A large mixed menu is operationally different from Crust Chant’s proposed pilot. |",
+      "suggested_text_sources": [
+        {
+          "title": "Merak Cafe (Brunch and Pasta), Bangkaew — Wongnai",
+          "url": "https://www.wongnai.com/restaurants/613817sM-merak-cafe-brunch-and-pasta-bangkaew",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows Merak Cafe's status, rating, delivery hours and review evidence."
+        },
+        {
+          "title": "Merak Cafe menu",
+          "url": "https://www.wongnai.com/restaurants/613817sM-merak-cafe-%E0%B8%A1%E0%B8%B5%E0%B8%A3%E0%B8%B1%E0%B8%81-%E0%B8%84%E0%B8%B2%E0%B9%80%E0%B8%9F%E0%B9%88-%E0%B8%AA%E0%B8%B2%E0%B8%82%E0%B8%B2%E0%B8%9A%E0%B8%B2%E0%B8%87%E0%B9%81%E0%B8%81%E0%B9%89%E0%B8%A7/menu?menuGroupId=items",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the menu categories and observed price examples."
+        }
+      ],
+      "reason": "Places Merak's listing and menu links in the exact cells containing the corresponding claims.",
+      "reason_sources": [],
+      "risk": "Menu prices, hours and ratings can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Kaarom evidence",
+      "patch_key": "link-kaarom-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **Kaarom Specialty Coffee Bangna**          | Official Wongnai listing exists but was marked temporarily closed until 21 July 2026 when observed. Current operation after that date should be rechecked.        | Specialty coffee and bakery; prior listed examples include ham-cheese croissant 105 THB and almond croissant 110 THB.                                                    | 5.0 from 3 ratings / 3 reviews, a very small sample.                           | Retail café; listing promotes bakery and pickup/delivery features. | Shows local acceptance of premium coffee plus bakery at accessible prices.                                                   | Temporary closure status and small review count make it weak evidence of demand.                                                                              |",
+      "suggested_text": "| **Kaarom Specialty Coffee Bangna**          | Official [Wongnai listing](https://www.wongnai.com/restaurants/2771485No-kaarom-specialty-coffee-%E0%B8%9A%E0%B8%B2%E0%B8%87%E0%B8%99%E0%B8%B2) exists but was marked temporarily closed until 21 July 2026 when observed. Current operation after that date should be rechecked.        | Specialty coffee and bakery; prior listed examples include ham-cheese croissant 105 THB and almond croissant 110 THB.                                                    | 5.0 from 3 ratings / 3 reviews, a very small sample.                           | Retail café; listing promotes bakery and pickup/delivery features. | Shows local acceptance of premium coffee plus bakery at accessible prices.                                                   | Temporary closure status and small review count make it weak evidence of demand.                                                                              |",
+      "suggested_text_sources": [
+        {
+          "title": "Kaarom Specialty Coffee Bangna — Wongnai",
+          "url": "https://www.wongnai.com/restaurants/2771485No-kaarom-specialty-coffee-%E0%B8%9A%E0%B8%B2%E0%B8%87%E0%B8%99%E0%B8%B2",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the temporary-closure notice, rating and listed menu examples."
+        }
+      ],
+      "reason": "Places the Kaarom listing directly in the row that relies on its temporary-status, menu and rating evidence.",
+      "reason_sources": [],
+      "risk": "The temporary-closure date has passed, so the row correctly retains its instruction to recheck current operation.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link FIX evidence",
+      "patch_key": "link-fix-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **F.I.X. Bangna – Brunch & Play**           | Active official Wongnai listing and active delivery menu; open until 16:00.                                                                                       | Croisnini + large drink 249 THB; sourdough + large drink 349 THB; bakery + large drink 179 THB; sourdough items around 260 THB; big breakfast 420 THB.                   | 4.4 from 6 ratings / 5 reviews.                                                | Retail brunch café plus delivery.                                  | Strong presentation, clear bundles, premium brunch positioning and halal listing.                                            | High price and broad kitchen menu; beverage production and dine-in experience support the value. Not directly comparable to a home-production sandwich pilot. |",
+      "suggested_text": "| **F.I.X. Bangna – Brunch & Play**           | Active official [Wongnai listing](https://www.wongnai.com/restaurants/2704257zH-f-i-x-bangna-brunch-play-bangna) and active [delivery menu](https://www.wongnai.com/delivery/businesses/2704257zH/order); open until 16:00.                                                                                       | Croisnini + large drink 249 THB; sourdough + large drink 349 THB; bakery + large drink 179 THB; sourdough items around 260 THB; big breakfast 420 THB.                   | 4.4 from 6 ratings / 5 reviews.                                                | Retail brunch café plus delivery.                                  | Strong presentation, clear bundles, premium brunch positioning and halal listing.                                            | High price and broad kitchen menu; beverage production and dine-in experience support the value. Not directly comparable to a home-production sandwich pilot. |",
+      "suggested_text_sources": [
+        {
+          "title": "F.I.X. Bangna – Brunch & Play — Wongnai",
+          "url": "https://www.wongnai.com/restaurants/2704257zH-f-i-x-bangna-brunch-play-bangna",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the current listing status, opening time and public rating evidence."
+        },
+        {
+          "title": "F.I.X. Bangna – Brunch & Play — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/2704257zH/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the menu products, bundles and prices."
+        }
+      ],
+      "reason": "Places F.I.X.'s listing and delivery-menu references beside the status, rating and price claims.",
+      "reason_sources": [],
+      "risk": "Live status, prices and ratings can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Crumbs evidence",
+      "patch_key": "link-crumbs-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **Crumbs, Central Bangna**                  | Active official Wongnai x LINE MAN delivery menu; open until 21:00 when observed.                                                                                 | Sourdough bagels 95–120 THB; sourdough plate 130 THB; ham-cheese sourdough 195 THB; mortadella melt 220 THB; breakfast and tuna melts 230 THB.                           | Rating was not relied upon in this study; current menu is the useful evidence. | Mall retail bakery plus delivery.                                  | Closest menu analogue: one sourdough platform supports snack, sandwich and retail bread formats. Clear price ladder.         | Mall location and long hours provide traffic and infrastructure Crust Chant would not initially have. Some menu breadth could create ingredient complexity.   |",
+      "suggested_text": "| **Crumbs, Central Bangna**                  | Active official [Wongnai x LINE MAN delivery menu](https://www.wongnai.com/delivery/businesses/946258uO/order); open until 21:00 when observed.                                                                                 | Sourdough bagels 95–120 THB; sourdough plate 130 THB; ham-cheese sourdough 195 THB; mortadella melt 220 THB; breakfast and tuna melts 230 THB.                           | Rating was not relied upon in this study; current menu is the useful evidence. | Mall retail bakery plus delivery.                                  | Closest menu analogue: one sourdough platform supports snack, sandwich and retail bread formats. Clear price ladder.         | Mall location and long hours provide traffic and infrastructure Crust Chant would not initially have. Some menu breadth could create ingredient complexity.   |",
+      "suggested_text_sources": [
+        {
+          "title": "Crumbs Central Bangna — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/946258uO/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows Crumbs' menu, prices, status and observed opening time."
+        }
+      ],
+      "reason": "Places the Crumbs menu link in the row containing the complete menu-price and status evidence.",
+      "reason_sources": [],
+      "risk": "Live menu and status details can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link NANA evidence",
+      "patch_key": "link-nana-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **NANA Coffee Roaster Bangna**              | Active official delivery menu.                                                                                                                                    | Bacon sourdough avocado 220 THB; salmon/parma/prawn versions 270–280 THB; sourdough eggs and bacon 280 THB; mushroom focaccia sandwich 300 THB; salmon focaccia 350 THB. | Rating not used as a demand proxy.                                             | Large retail café/roaster plus delivery.                           | Demonstrates a premium local ceiling and the value of visually rich, substantial open sandwiches.                            | Expensive ingredients, broad menu, beverages and venue experience make the economics unlike a lean bakery pilot.                                              |",
+      "suggested_text": "| **NANA Coffee Roaster Bangna**              | Active official [delivery menu](https://www.wongnai.com/delivery/businesses/1487923Jr/order).                                                                                                                                    | Bacon sourdough avocado 220 THB; salmon/parma/prawn versions 270–280 THB; sourdough eggs and bacon 280 THB; mushroom focaccia sandwich 300 THB; salmon focaccia 350 THB. | Rating not used as a demand proxy.                                             | Large retail café/roaster plus delivery.                           | Demonstrates a premium local ceiling and the value of visually rich, substantial open sandwiches.                            | Expensive ingredients, broad menu, beverages and venue experience make the economics unlike a lean bakery pilot.                                              |",
+      "suggested_text_sources": [
+        {
+          "title": "NANA Coffee Roaster Bangna — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/1487923Jr/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows NANA Coffee Roaster's sourdough and focaccia menu products and prices."
+        }
+      ],
+      "reason": "Places the NANA delivery-menu link in the row containing the price and format evidence.",
+      "reason_sources": [],
+      "risk": "Live menu details can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Casa Lapin evidence",
+      "patch_key": "link-casa-lapin-evidence",
+      "depends_on": [
+        "competitor-observation-dates"
+      ],
+      "target_heading": "### 5.1 Local operators and current status",
+      "original_text": "| **Casa Lapin ATT U Bangna**                 | Active official delivery menu observed.                                                                                                                           | Tamago sandwich 135 THB; mushroom-onion-cheese sourdough 135 THB; egg-bacon sandwich 185 THB.                                                                            | Current Bang Phli directory shows roughly 4.1 from 18 reviews.                 | Chain café plus delivery.                                          | Useful accessible-premium benchmark; simple familiar fillings.                                                               | Chain purchasing, beverage margin and existing customer traffic are advantages Crust Chant will not initially share.                                          |",
+      "suggested_text": "| **Casa Lapin ATT U Bangna**                 | Active official [delivery menu](https://www.wongnai.com/delivery/businesses/449023De/order) observed.                                                                                                                           | Tamago sandwich 135 THB; mushroom-onion-cheese sourdough 135 THB; egg-bacon sandwich 185 THB.                                                                            | Current [Bang Phli bakery/café directory](https://www.wongnai.com/c/24/%E0%B9%80%E0%B8%9A%E0%B9%80%E0%B8%81%E0%B8%AD%E0%B8%A3%E0%B8%B5%E0%B9%88-%E0%B9%80%E0%B8%84%E0%B9%89%E0%B8%81?areas=955&categories=24&sort.type=3) shows roughly 4.1 from 18 reviews.                 | Chain café plus delivery.                                          | Useful accessible-premium benchmark; simple familiar fillings.                                                               | Chain purchasing, beverage margin and existing customer traffic are advantages Crust Chant will not initially share.                                          |",
+      "suggested_text_sources": [
+        {
+          "title": "Casa Lapin ATT U Bangna — Wongnai x LINE MAN delivery menu",
+          "url": "https://www.wongnai.com/delivery/businesses/449023De/order",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows Casa Lapin's observed sandwich products and prices."
+        },
+        {
+          "title": "Wongnai Bang Phli bakery and café directory",
+          "url": "https://www.wongnai.com/c/24/%E0%B9%80%E0%B8%9A%E0%B9%80%E0%B8%81%E0%B8%AD%E0%B8%A3%E0%B8%B5%E0%B9%88-%E0%B9%80%E0%B8%84%E0%B9%89%E0%B8%81?areas=955&categories=24&sort.type=3",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the public rating and review-count context used for Casa Lapin."
+        }
+      ],
+      "reason": "Places the menu and directory references beside the price and rating claims they support.",
+      "reason_sources": [],
+      "risk": "Live menu and rating details can change; the section-level observation note preserves the snapshot date.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Explain analogue observation dates",
+      "patch_key": "analogue-observation-dates",
+      "depends_on": [],
+      "target_heading": "### 5.2 Wider Bangkok analogues",
+      "original_text": "### 5.2 Wider Bangkok analogues\n\n| Analogue",
+      "suggested_text": "### 5.2 Wider Bangkok analogues\n\nThe linked Wongnai pages below have no available publication date; the cited menu and customer-review evidence was observed 16 July 2026.\n\n| Analogue",
+      "suggested_text_sources": [],
+      "reason": "Provides visible publication and observation context for the two inline analogue links without overloading the table cells.",
+      "reason_sources": [],
+      "risk": "This note should be applied together with the two analogue-row link proposals.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Holey delivery review",
+      "patch_key": "link-holey-delivery-review",
+      "depends_on": [
+        "analogue-observation-dates"
+      ],
+      "target_heading": "### 5.2 Wider Bangkok analogues",
+      "original_text": "| **Holey Artisan Bakery**                       | Artisan sourdough sandwiches and panini are established in Bangkok. A delivery review reported a 320 THB two-piece tuna item discounted to 220 THB, about one-hour delivery, chewy bread and disappointing filling/value. | Conduct timed 15-, 30- and 45-minute arrival tests; define maximum distance; weigh fillings; test packaging and reheating. | One negative review does not establish general product quality or business performance. |",
+      "suggested_text": "| **Holey Artisan Bakery**                       | Artisan sourdough sandwiches and panini are established in Bangkok. A [Wongnai delivery review](https://www.wongnai.com/restaurants/236968pc-holey-artisan-bakery-sourdough-sandwich-coffee-%E0%B8%9E%E0%B8%A3%E0%B9%89%E0%B8%AD%E0%B8%A1%E0%B8%9E%E0%B8%87%E0%B8%A9%E0%B9%8C-phrom-phong) reported a 320 THB two-piece tuna item discounted to 220 THB, about one-hour delivery, chewy bread and disappointing filling/value. | Conduct timed 15-, 30- and 45-minute arrival tests; define maximum distance; weigh fillings; test packaging and reheating. | One negative review does not establish general product quality or business performance. |",
+      "suggested_text_sources": [
+        {
+          "title": "Holey Artisan Bakery — Wongnai",
+          "url": "https://www.wongnai.com/restaurants/236968pc-holey-artisan-bakery-sourdough-sandwich-coffee-%E0%B8%9E%E0%B8%A3%E0%B9%89%E0%B8%AD%E0%B8%A1%E0%B8%9E%E0%B8%87%E0%B8%A9%E0%B9%8C-phrom-phong",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the customer review used as a limited example of delivery-related bread texture and value risk."
+        }
+      ],
+      "reason": "Moves the Holey reference into the exact table row that quotes the review evidence and retains the non-representativeness warning.",
+      "reason_sources": [],
+      "risk": "A single customer review remains weak evidence and should not be treated as a general assessment of the bakery.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link sandwich-format analogue",
+      "patch_key": "link-sandwich-format-analogue",
+      "depends_on": [
+        "analogue-observation-dates"
+      ],
+      "target_heading": "### 5.2 Wider Bangkok analogues",
+      "original_text": "| **O.G. Sandwich Shop**                         | Italian-style artisan sandwiches use baguette, ciabatta and panini; a review describes both half and full portions and a 101–250 THB per-person band.                                                                     | Half/full sizing can widen accessibility and support group orders without creating separate recipes.                       | Imported premium meats and central-Bangkok demand may not fit Bangna pilot economics.   |",
+      "suggested_text": "| **O.G. Sandwich Shop**                         | [Wongnai evidence](https://www.wongnai.com/restaurants/3033037fy-o-g-sandwich-shop-%E0%B8%99%E0%B8%B2%E0%B8%87%E0%B8%A5%E0%B8%B4%E0%B9%89%E0%B8%99%E0%B8%88%E0%B8%B5%E0%B9%88) describes Italian-style artisan sandwiches using baguette, ciabatta and panini, both half and full portions, and a 101–250 THB per-person band.                                                                     | Half/full sizing can widen accessibility and support group orders without creating separate recipes.                       | Imported premium meats and central-Bangkok demand may not fit Bangna pilot economics.   |",
+      "suggested_text_sources": [
+        {
+          "title": "O.G. Sandwich Shop — Wongnai",
+          "url": "https://www.wongnai.com/restaurants/3033037fy-o-g-sandwich-shop-%E0%B8%99%E0%B8%B2%E0%B8%87%E0%B8%A5%E0%B8%B4%E0%B9%89%E0%B8%99%E0%B8%88%E0%B8%B5%E0%B9%88",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Shows the artisan bread formats, half and full portion concept, and public price band used in the analogue."
+        }
+      ],
+      "reason": "Moves the O.G. Sandwich Shop reference into the row containing the format, portion and price-band evidence.",
+      "reason_sources": [],
+      "risk": "The evidence is an analogue rather than proof that the same formats or prices will work in Bangna.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link Grab merchant context",
+      "patch_key": "link-grab-merchant-context",
+      "depends_on": [],
+      "target_heading": "### Stage 4 — Platform test",
+      "original_text": "Proceed only after direct economics and delivery quality are understood.\n\n* list one cold/tolerant product and one proven hot product;",
+      "suggested_text": "Proceed only after direct economics and delivery quality are understood.\n\nThe [Grab Thailand merchant page](https://www.grab.com/th/en/merchant/) — publication date unavailable; observed 16 July 2026 — confirms active merchant onboarding and merchant tools, but it does not provide a verified public commission basis for this model.\n\n* list one cold/tolerant product and one proven hot product;",
+      "suggested_text_sources": [
+        {
+          "title": "Grab Thailand merchant page",
+          "url": "https://www.grab.com/th/en/merchant/",
+          "published_at": null,
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Confirms active merchant onboarding and merchant tools while not supplying the verified commission assumptions required by the model."
+        }
+      ],
+      "reason": "Moves the Grab merchant reference into the platform-test stage and makes its limited evidentiary role explicit.",
+      "reason_sources": [],
+      "risk": "The public merchant page does not replace actual contract, promotion, fee or settlement terms.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Link foodpanda exit evidence",
+      "patch_key": "link-foodpanda-exit-evidence",
+      "depends_on": [],
+      "target_heading": "### Stage 4 — Platform test",
+      "original_text": "Thailand’s platform landscape has become more concentrated since foodpanda ended Thailand operations on 23 May 2025. That makes Grab and LINE MAN important but also reinforces the need not to depend on one platform for the business model.",
+      "suggested_text": "Thailand’s platform landscape has become more concentrated since foodpanda ended Thailand operations on 23 May 2025, as reported by [Reuters](https://www.reuters.com/business/retail-consumer/delivery-hero-exit-thailand-2025-04-23/) — published 23 April 2025; observed 16 July 2026. That makes Grab and LINE MAN important but also reinforces the need not to depend on one platform for the business model.",
+      "suggested_text_sources": [
+        {
+          "title": "Reuters: Delivery Hero to exit Thailand",
+          "url": "https://www.reuters.com/business/retail-consumer/delivery-hero-exit-thailand-2025-04-23/",
+          "published_at": "2025-04-23",
+          "updated_at": null,
+          "observed_at": "2026-07-16",
+          "supports": "Reports foodpanda's Thailand closure effective 23 May 2025."
+        }
+      ],
+      "reason": "Places the Reuters reference directly beside the platform-concentration claim.",
+      "reason_sources": [],
+      "risk": "The closure supports concentration context but does not by itself establish current commission levels or merchant bargaining power.",
+      "risk_sources": []
+    },
+    {
+      "comment_id": "PM-COMMENT-0019",
+      "display_title": "Remove redundant Sources section",
+      "patch_key": "remove-redundant-sources-section",
+      "depends_on": [
+        "identify-internal-strategy-source",
+        "link-historical-category-signal",
+        "link-observed-menu-prices",
+        "competitor-observation-dates",
+        "link-horme-evidence",
+        "link-routine-evidence",
+        "link-merak-evidence",
+        "link-kaarom-evidence",
+        "link-fix-evidence",
+        "link-crumbs-evidence",
+        "link-nana-evidence",
+        "link-casa-lapin-evidence",
+        "analogue-observation-dates",
+        "link-holey-delivery-review",
+        "link-sandwich-format-analogue",
+        "link-grab-merchant-context",
+        "link-foodpanda-exit-evidence"
+      ],
+      "target_heading": "## 17. Sources",
+      "original_text": "## 17. Sources\n\n### Internal source\n\n* **Crust Chant — Action Plan, Market View and Growth Strategy**, discussion draft v3, July 2026. Internal founder-provided source of truth for current strategy, products, channels, equipment and operating principles.\n\n### Market and platform context\n\n* [LINE MAN Wongnai: restaurant-industry release reporting 2023 growth in breakfast eateries/sandwiches](https://lmwn.com/line-man-wongnai-restaurants-2023-en/) — published 24 July 2023; observed 16 July 2026. Used as historical category context, not current local demand proof.\n* [Reuters: Delivery Hero to exit Thailand](https://www.reuters.com/business/retail-consumer/delivery-hero-exit-thailand-2025-04-23/) — published 23 April 2025; observed 16 July 2026. Reports foodpanda’s Thailand platform closure effective 23 May 2025.\n* [Grab Thailand merchant page](https://www.grab.com/th/en/merchant/) — publication date unavailable; observed 16 July 2026. Confirms active merchant onboarding and merchant tools; no public commission assumption was taken from it.\n\n### Bangna / Bang Phli competitors and analogues\n\n* [Horme Cafe Bangna — Wongnai menu](https://www.wongnai.com/restaurants/590757kx-horme-cafe-bangna/menu?menuGroupId=items) — publication date unavailable; status, menu categories and ratings observed 16 July 2026.\n* [Horme Cafe official Facebook](https://www.facebook.com/hormecafe.official/) — publication date unavailable; observed 16 July 2026. Used to verify delivery-platform presence and stated opening hours.\n* [Routine Coffee ’n More Bangkaew — Wongnai x LINE MAN delivery](https://www.wongnai.com/delivery/businesses/977577Af/order) — publication date unavailable; status and menu observed 16 July 2026.\n* [Wongnai Bang Phli bakery/café directory](https://www.wongnai.com/c/24/%E0%B9%80%E0%B8%9A%E0%B9%80%E0%B8%81%E0%B8%AD%E0%B8%A3%E0%B8%B5%E0%B9%88-%E0%B9%80%E0%B8%84%E0%B9%89%E0%B8%81?areas=955\\&categories=24\\&sort.type=3) — publication date unavailable; observed 16 July 2026. Used for current local listing density, statuses and review counts.\n* [Merak Cafe (Brunch and Pasta), Bangkaew — Wongnai](https://www.wongnai.com/restaurants/613817sM-merak-cafe-brunch-and-pasta-bangkaew) — publication date unavailable; status, rating, delivery hours and review evidence observed 16 July 2026.\n* [Merak Cafe menu](https://www.wongnai.com/restaurants/613817sM-merak-cafe-%E0%B8%A1%E0%B8%B5%E0%B8%A3%E0%B8%B1%E0%B8%81-%E0%B8%84%E0%B8%B2%E0%B9%80%E0%B8%9F%E0%B9%88-%E0%B8%AA%E0%B8%B2%E0%B8%82%E0%B8%B2%E0%B8%9A%E0%B8%B2%E0%B8%87%E0%B9%81%E0%B8%81%E0%B9%89%E0%B8%A7/menu?menuGroupId=items) — publication date unavailable; prices observed 16 July 2026.\n* [Kaarom Specialty Coffee Bangna — Wongnai](https://www.wongnai.com/restaurants/2771485No-kaarom-specialty-coffee-%E0%B8%9A%E0%B8%B2%E0%B8%87%E0%B8%99%E0%B8%B2) — publication date unavailable; temporary closure notice, rating and menu examples observed 16 July 2026.\n* [F.I.X. Bangna – Brunch & Play — Wongnai](https://www.wongnai.com/restaurants/2704257zH-f-i-x-bangna-brunch-play-bangna) — publication date unavailable; current status and rating observed 16 July 2026.\n* [F.I.X. Bangna – Brunch & Play — Wongnai x LINE MAN delivery menu](https://www.wongnai.com/delivery/businesses/2704257zH/order) — publication date unavailable; menu and prices observed 16 July 2026.\n* [Crumbs Central Bangna — Wongnai x LINE MAN delivery menu](https://www.wongnai.com/delivery/businesses/946258uO/order) — publication date unavailable; menu, prices and status observed 16 July 2026.\n* [NANA Coffee Roaster Bangna — Wongnai x LINE MAN delivery menu](https://www.wongnai.com/delivery/businesses/1487923Jr/order) — publication date unavailable; menu and prices observed 16 July 2026.\n* [Casa Lapin ATT U Bangna — Wongnai x LINE MAN delivery menu](https://www.wongnai.com/delivery/businesses/449023De/order) — publication date unavailable; sandwich prices observed 16 July 2026.\n\n### Wider Bangkok analogues and customer-feedback evidence\n\n* [Holey Artisan Bakery — Wongnai](https://www.wongnai.com/restaurants/236968pc-holey-artisan-bakery-sourdough-sandwich-coffee-%E0%B8%9E%E0%B8%A3%E0%B9%89%E0%B8%AD%E0%B8%A1%E0%B8%9E%E0%B8%87%E0%B8%A9%E0%B9%8C-phrom-phong) — publication date unavailable; delivery-quality review observed 16 July 2026. The review is treated as one customer report, not a representative performance measure.\n* [O.G. Sandwich Shop — Wongnai](https://www.wongnai.com/restaurants/3033037fy-o-g-sandwich-shop-%E0%B8%99%E0%B8%B2%E0%B8%87%E0%B8%A5%E0%B8%B4%E0%B9%89%E0%B8%99%E0%B8%88%E0%B8%B5%E0%B9%88) — publication date unavailable; artisan bread formats, half/full portion concept and review price band observed 16 July 2026.\n\n***",
+      "suggested_text": "",
+      "suggested_text_sources": [],
+      "reason": "Once every source has been preserved beside the passage it supports, the standalone bibliography duplicates information and can be removed.",
+      "reason_sources": [],
+      "risk": "Visible source information would be lost if this deletion were applied without the preceding inline-reference proposals. Apply it only together with those proposals.",
+      "risk_sources": []
+    }
+  ],
+  "open_questions": []
+}

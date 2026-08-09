@@ -19,8 +19,11 @@ type MarkdownWritableFileStream = {
 
 export type MarkdownFileHandle = {
   name: string;
-  getFile: () => Promise<File>;
+  kind?: "file";
+  getFile: () => Promise<Pick<File, "name" | "size" | "type" | "text">>;
   createWritable: () => Promise<MarkdownWritableFileStream>;
+  isSameEntry?: (other: MarkdownFileHandle) => Promise<boolean>;
+  isSymbolicLink?: () => Promise<boolean>;
 };
 
 export type LoadedMarkdownFile = {
@@ -140,7 +143,9 @@ export async function saveMarkdownAsFile(
   }
 }
 
-export function isMarkdownFile(file: File): boolean {
+export function isMarkdownFile(
+  file: Pick<File, "name" | "type">
+): boolean {
   return (
     /\.(md|markdown)$/i.test(file.name) ||
     file.type === "text/markdown" ||

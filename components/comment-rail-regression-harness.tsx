@@ -156,17 +156,29 @@ export function CommentRailRegressionHarness() {
             anchorSummaries={anchorSummaries}
             commentPositions={commentPositions}
             comments={comments}
+            documentId="doc_comment_rail_regression"
+            documentTitle="Comment Rail Regression"
             defaultSectionLine={null}
             error={null}
             headings={[]}
             isBusy={false}
+            isDocumentCommentAvailable
             isProjectMode
             onAddComment={noopAsyncCommentForm}
-            onDeleteComment={noopAsyncId}
+            onCloseAddComment={noopVoid}
+            onMoveCommentsToTrash={noopAsyncTrash}
+            onPermanentlyDeleteComments={noopAsyncPermanentDelete}
+            onOpenReviewBatch={noopVoidId}
+            onPrepareMoveCommentsToTrash={noopAsyncTrashSummary}
+            onPreparePermanentDeleteComments={
+              noopAsyncPermanentDeletionSummary
+            }
+            onRestoreCommentsFromTrash={noopAsyncIds}
             onEditComment={noopAsyncEditComment}
             onEditReply={noopAsyncEditReply}
             onFindComment={noopAsyncComment}
             onMarkCommentForExport={noopAsyncId}
+            onOpenDocumentComment={noopVoid}
             onReopenComment={noopAsyncId}
             onReplyComment={noopAsyncReply}
             onReviewCommentPatches={noopVoidId}
@@ -179,9 +191,11 @@ export function CommentRailRegressionHarness() {
             pendingPatchCountsByCommentId={{}}
             pendingPatchGroupTotal={0}
             pendingPatchTotal={0}
+            projectId="prj_comment_rail_regression"
             replyRequest={null}
             selectedAnchorContextKind="paragraph"
             selectedTextPreview={regressionAnchors[2].text}
+            trashedComments={[]}
           />
         </aside>
       </div>
@@ -252,6 +266,73 @@ async function noopAsyncCommentForm(values: CommentFormValues): Promise<void> {
 
 async function noopAsyncId(id: string): Promise<void> {
   void id;
+}
+
+async function noopAsyncIds(ids: string[]): Promise<void> {
+  void ids;
+}
+
+async function noopAsyncTrash(request: {
+  commentIds: string[];
+  expectedSelectionFingerprint: string;
+  unsavedDraftCommentIds: string[];
+}): Promise<void> {
+  void request;
+}
+
+async function noopAsyncPermanentDelete(request: {
+  commentIds: string[];
+  confirmationPhrase: string;
+  expectedSelectionFingerprint: string;
+  mode: "individual" | "selected" | "empty_trash";
+  unsavedDraftCommentIds: string[];
+}): Promise<void> {
+  void request;
+}
+
+async function noopAsyncTrashSummary(commentIds: string[]) {
+  return {
+    acceptedPatches: 0,
+    activeOrUnresolvedAnchors: 0,
+    blockedComments: 0,
+    blockers: [],
+    documentComments: 0,
+    linkedReviewBatchComments: 0,
+    pendingPatches: 0,
+    rejectedPatches: 0,
+    replies: 0,
+    selectedComments: commentIds.length,
+    selectionFingerprint: "regression",
+    stalePatches: 0,
+    unresolvedAnchors: 0
+  };
+}
+
+async function noopAsyncPermanentDeletionSummary(
+  commentIds: string[],
+  _unsavedDraftCommentIds: string[],
+  mode: "individual" | "selected" | "empty_trash"
+) {
+  return {
+    acceptedPatches: 0,
+    blockedComments: 0,
+    blockers: [],
+    confirmationPhrase:
+      mode === "empty_trash"
+        ? "EMPTY TRASH"
+        : commentIds.length === 1
+          ? "DELETE"
+          : `DELETE ${commentIds.length} COMMENTS`,
+    imports: 0,
+    pendingPatches: 0,
+    rejectedPatches: 0,
+    replies: 0,
+    reviewBatchReferences: 0,
+    selectedComments: commentIds.length,
+    selectionFingerprint: "regression-delete",
+    stalePatches: 0,
+    tombstones: commentIds.length
+  };
 }
 
 async function noopAsyncEditComment(

@@ -6,6 +6,7 @@ export class NodeDirectoryHandle {
   constructor(directoryPath, controller = createNodeHandleController()) {
     this.path = path.resolve(directoryPath);
     this.name = path.basename(this.path);
+    this.kind = "directory";
     this.controller = controller;
   }
 
@@ -81,13 +82,38 @@ export class NodeDirectoryHandle {
       ];
     }
   }
+
+  async resolve(possibleDescendant) {
+    if (!possibleDescendant?.path) {
+      return null;
+    }
+    const relativePath = path.relative(this.path, possibleDescendant.path);
+    if (
+      relativePath === "" ||
+      relativePath === ".." ||
+      relativePath.startsWith(`..${path.sep}`) ||
+      path.isAbsolute(relativePath)
+    ) {
+      return relativePath === "" ? [] : null;
+    }
+    return relativePath.split(path.sep);
+  }
+
+  async isSameEntry(other) {
+    return other?.kind === "directory" && other?.path === this.path;
+  }
 }
 
 class NodeFileHandle {
   constructor(filePath, controller) {
     this.path = filePath;
     this.name = path.basename(filePath);
+    this.kind = "file";
     this.controller = controller;
+  }
+
+  async isSymbolicLink() {
+    return fs.lstatSync(this.path).isSymbolicLink();
   }
 
   async getFile() {
@@ -101,6 +127,13 @@ class NodeFileHandle {
       type: "",
       async text() {
         return fs.readFileSync(filePath, "utf8");
+      },
+      async arrayBuffer() {
+        const contents = fs.readFileSync(filePath);
+        return contents.buffer.slice(
+          contents.byteOffset,
+          contents.byteOffset + contents.byteLength
+        );
       }
     };
   }

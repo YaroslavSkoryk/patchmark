@@ -1,6 +1,14 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  type KeyboardEvent as ReactKeyboardEvent,
+  type MouseEvent as ReactMouseEvent,
+  type SyntheticEvent,
+  useEffect,
+  useMemo,
+  useRef,
+  useState
+} from "react";
 import {
   BlockTypeSelect,
   BoldItalicUnderlineToggles,
@@ -26,35 +34,74 @@ import {
   listsPlugin,
   markdownShortcutPlugin,
   quotePlugin,
+  realmPlugin,
+  rootEditor$,
+  setMarkdown$,
   tablePlugin,
   thematicBreakPlugin,
   toolbarPlugin
 } from "@mdxeditor/editor";
+import { CLEAR_HISTORY_COMMAND } from "lexical";
 import { normalizeMarkdownForVisualEditor } from "@/lib/markdown/normalize-for-visual-editor";
 import {
   getLatestEditPerformanceOperationId,
   incrementEditPerformanceCounter,
   markEditPerformanceOperation
 } from "@/lib/performance/edit-performance";
+import {
+  getLatestDocumentSwitchPerformanceOperationId,
+  incrementDocumentSwitchPerformanceCounter,
+  markDocumentSwitchPerformance,
+  recordDocumentSwitchPerformanceDuration
+} from "@/lib/performance/document-switch-performance";
 
 type MdxEditorClientProps = {
+  ariaLabel?: string;
   markdown: string;
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
+  resetKey: number;
+  selectionOnly?: boolean;
+  showToolbar?: boolean;
 };
 
+const clearHistoryAfterDocumentResetPlugin = realmPlugin({
+  init(realm) {
+    realm.sub(setMarkdown$, () => {
+      const editor = realm.getValue(rootEditor$);
+      queueMicrotask(() => {
+        editor?.dispatchCommand(CLEAR_HISTORY_COMMAND, undefined);
+      });
+    });
+  }
+});
+
 export function MdxEditorClient({
+  ariaLabel = "editable markdown",
   markdown,
   onMarkdownChange,
-  readOnly = false
+  readOnly = false,
+  resetKey,
+  selectionOnly = false,
+  showToolbar = true
 }: MdxEditorClientProps) {
   const visualMarkdown = useMemo(
-    () => normalizeMarkdownForVisualEditor(markdown),
+    () => {
+      const startedAt = performance.now();
+      const normalized = normalizeMarkdownForVisualEditor(markdown);
+      recordDocumentSwitchPerformanceDuration(
+        getLatestDocumentSwitchPerformanceOperationId(),
+        "parse_and_normalize_visual_markdown",
+        performance.now() - startedAt
+      );
+      return normalized;
+    },
     [markdown]
   );
   const editorRef = useRef<MDXEditorMethods>(null);
   const editorShellRef = useRef<HTMLDivElement>(null);
   const lastSyncedMarkdownRef = useRef(visualMarkdown);
+  const lastResetKeyRef = useRef(resetKey);
   const renderErrorTimerRef = useRef<number | null>(null);
   const renderVerificationTimerRef = useRef<number | null>(null);
   const isMountedRef = useRef(false);
@@ -82,7 +129,8 @@ export function MdxEditorClient({
   useEffect(() => {
     if (
       !editorRef.current ||
-      visualMarkdown === lastSyncedMarkdownRef.current
+      (visualMarkdown === lastSyncedMarkdownRef.current &&
+        resetKey === lastResetKeyRef.current)
     ) {
       return;
     }
@@ -90,17 +138,42 @@ export function MdxEditorClient({
     try {
       editorRef.current.setMarkdown(visualMarkdown);
       lastSyncedMarkdownRef.current = visualMarkdown;
+      lastResetKeyRef.current = resetKey;
       setRenderError(null);
     } catch (error) {
       setRenderError(normalizeVisualModeError(error));
     }
-  }, [visualMarkdown]);
+  }, [resetKey, visualMarkdown]);
 
   useEffect(() => {
     const operationId = getLatestEditPerformanceOperationId();
     incrementEditPerformanceCounter(operationId, "mdx_editor_effect_count");
     markEditPerformanceOperation(operationId, "mdx_editor_settled");
+    const switchOperationId =
+      getLatestDocumentSwitchPerformanceOperationId();
+    incrementDocumentSwitchPerformanceCounter(
+      switchOperationId,
+      "mdx_editor_effect_count"
+    );
+    markDocumentSwitchPerformance(switchOperationId, "editor_initialized");
   }, [visualMarkdown]);
+
+  useEffect(() => {
+    const content = editorShellRef.current?.querySelector(".patchmark-prose");
+
+    if (!content) {
+      return;
+    }
+
+    content.setAttribute("aria-label", ariaLabel);
+    if (readOnly || selectionOnly) {
+      content.setAttribute("aria-readonly", "true");
+    }
+    return () => {
+      content.removeAttribute("aria-label");
+      content.removeAttribute("aria-readonly");
+    };
+  }, [ariaLabel, editorInstanceKey, readOnly, selectionOnly, visualMarkdown]);
 
   useEffect(() => {
     if (renderError || visualMarkdown.trim().length === 0) {
@@ -196,14 +269,81 @@ export function MdxEditorClient({
       return;
     }
 
+    if (initialMarkdownNormalize) {
+      lastSyncedMarkdownRef.current = visualMarkdown;
+      return;
+    }
+
     lastSyncedMarkdownRef.current = nextMarkdown;
     queuedRenderErrorRef.current = null;
     setRenderError(null);
     onMarkdownChange(nextMarkdown);
   }
 
+  function preventSelectionOnlyMutation(event: SyntheticEvent) {
+    if (!selectionOnly) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
+  function handleSelectionOnlyKeyDown(
+    event: ReactKeyboardEvent<HTMLDivElement>
+  ) {
+    if (!selectionOnly) {
+      return;
+    }
+
+    const key = event.key.toLowerCase();
+    const primaryModifier = event.metaKey || event.ctrlKey;
+    const mutatingShortcut =
+      primaryModifier &&
+      ["b", "i", "k", "u", "v", "x", "y", "z"].includes(key);
+    const mutatingKey =
+      !primaryModifier &&
+      !event.altKey &&
+      (event.key.length === 1 ||
+        ["Backspace", "Delete", "Enter", "Tab"].includes(event.key));
+
+    if (mutatingShortcut || mutatingKey) {
+      event.preventDefault();
+      event.stopPropagation();
+    }
+  }
+
+  function handleSelectionOnlyClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (
+      !selectionOnly ||
+      !(event.target instanceof Element) ||
+      !event.target.closest(
+        "a, button, input, select, [role='button'], [role='menuitem']"
+      )
+    ) {
+      return;
+    }
+
+    event.preventDefault();
+    event.stopPropagation();
+  }
+
   return (
-    <div ref={editorShellRef}>
+    <div
+      ref={editorShellRef}
+      className={[
+        selectionOnly ? "visual-editor-selection-only" : "",
+        showToolbar ? "" : "visual-editor-toolbar-hidden"
+      ]
+        .filter(Boolean)
+        .join(" ") || undefined}
+      onBeforeInputCapture={preventSelectionOnlyMutation}
+      onClickCapture={handleSelectionOnlyClick}
+      onCutCapture={preventSelectionOnlyMutation}
+      onDropCapture={preventSelectionOnlyMutation}
+      onKeyDownCapture={handleSelectionOnlyKeyDown}
+      onPasteCapture={preventSelectionOnlyMutation}
+    >
       {renderError && markdown.trim().length > 0 ? (
         <div className="visual-editor-error" role="alert">
           <strong>Visual Mode could not render this Markdown.</strong>
@@ -220,7 +360,7 @@ export function MdxEditorClient({
             </button>
           </div>
           <textarea
-            aria-label="Visual Mode fallback Markdown editor"
+            aria-label={`${ariaLabel} fallback Markdown editor`}
             readOnly={readOnly}
             spellCheck={false}
             value={markdown}
@@ -241,6 +381,7 @@ export function MdxEditorClient({
             headingsPlugin(),
             listsPlugin(),
             quotePlugin(),
+            clearHistoryAfterDocumentResetPlugin(),
             thematicBreakPlugin(),
             frontmatterPlugin(),
             tablePlugin(),

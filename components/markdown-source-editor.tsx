@@ -23,14 +23,21 @@ export type MarkdownMutationHint = {
 };
 
 type MarkdownSourceEditorProps = {
+  ariaLabel?: string;
+  id?: string;
   markdown: string;
   onMarkdownChange: (markdown: string, hint?: MarkdownMutationHint) => void;
-  onSelectionChange?: (selection: MarkdownSelection) => void;
+  onSelectionChange?: (
+    selection: MarkdownSelection,
+    sourceElement: HTMLTextAreaElement
+  ) => void;
   readOnly?: boolean;
   selectionRequest?: (MarkdownSelection & { nonce: number }) | null;
 };
 
 export function MarkdownSourceEditor({
+  ariaLabel = "Markdown Mode",
+  id,
   markdown,
   onMarkdownChange,
   onSelectionChange,
@@ -52,14 +59,17 @@ export function MarkdownSourceEditor({
     textarea.focus();
     textarea.setSelectionRange(start, end);
     textarea.scrollTop = getApproximateScrollTop(markdown, start);
-    onSelectionChange?.({ start, end });
+    onSelectionChange?.({ start, end }, textarea);
   }, [markdown, onSelectionChange, selectionRequest]);
 
   function emitSelection(selectionTarget: HTMLTextAreaElement) {
-    onSelectionChange?.({
-      start: selectionTarget.selectionStart,
-      end: selectionTarget.selectionEnd
-    });
+    onSelectionChange?.(
+      {
+        start: selectionTarget.selectionStart,
+        end: selectionTarget.selectionEnd
+      },
+      selectionTarget
+    );
   }
 
   function createMutationHint(
@@ -79,9 +89,11 @@ export function MarkdownSourceEditor({
   return (
     <textarea
       ref={textareaRef}
+      id={id}
       className="markdown-source-editor"
-      aria-label="Markdown Mode"
+      aria-label={ariaLabel}
       spellCheck={false}
+      wrap="soft"
       readOnly={readOnly}
       value={markdown}
       onBeforeInput={(event) => {

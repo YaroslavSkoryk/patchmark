@@ -27,6 +27,10 @@ export const COMMENT_AFFORDANCE_MENU_SIZE = {
   height: 176,
   width: 220
 };
+export const COMMENT_SELECTION_ACTION_SIZE = {
+  height: 42,
+  width: 116
+};
 
 const DEFAULT_AFFORDANCE_GAP = 8;
 const DEFAULT_VIEWPORT_MARGIN = 8;

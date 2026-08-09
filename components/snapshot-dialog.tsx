@@ -5,6 +5,7 @@ import { type PatchmarkVersionEntry } from "@/lib/project/project-types";
 
 export type SnapshotDialogState =
   | {
+      documentId: string;
       displayTitle?: string;
       kind: "view";
       version: PatchmarkVersionEntry;
@@ -12,6 +13,7 @@ export type SnapshotDialogState =
     }
   | {
       currentMarkdown: string;
+      documentId: string;
       displayTitle?: string;
       kind: "compare";
       version: PatchmarkVersionEntry;

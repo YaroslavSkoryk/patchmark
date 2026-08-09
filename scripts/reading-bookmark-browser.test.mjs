@@ -26,21 +26,15 @@ import {
 } from "./comment-rail-editor-browser-regression.test.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
-const targetText = "Resume reading from this durable sentence.";
+const targetText = "Resume reading from this equivalent durable sentence.";
+const unavailableReplacementText =
+  "The saved reading target was removed from this unsaved draft.";
 
 await run();
 
 async function run() {
   const fixtureDir = createFixture();
-  const originalDocument = readFileSync(join(fixtureDir, "document.md"), "utf8");
-  const originalComments = readFileSync(
-    join(fixtureDir, ".patchmark", "comments.json"),
-    "utf8"
-  );
-  const originalPatches = readFileSync(
-    join(fixtureDir, ".patchmark", "patches.json"),
-    "utf8"
-  );
+  const originals = captureUnrelatedFiles(fixtureDir);
   const inventory = inventoryProject(fixtureDir);
   const fixtureServer = await startFixtureFileServer(fixtureDir, inventory);
   const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
@@ -75,7 +69,6 @@ async function run() {
   try {
     const browserWsUrl = await waitForDevToolsUrl(chrome);
     const pageWsUrl = await createPage(browserWsUrl, "about:blank");
-
     pageClient = await CdpClient.connect(pageWsUrl);
     await pageClient.call("Page.enable");
     await pageClient.call("Runtime.enable");
@@ -96,85 +89,119 @@ async function run() {
     await pageClient.call("Page.navigate", { url: editorUrl });
     await waitForEditorShell(pageClient);
     await openFixture(pageClient);
-    await setBookmarkFromMarkdownMode(pageClient, fixtureDir);
-
-    assertUnrelatedFilesUnchanged({
-      fixtureDir,
-      originalComments,
-      originalDocument,
-      originalPatches
-    });
-
-    const storedManifest = readManifest(fixtureDir);
-    const storedBookmarks = Object.values(storedManifest.reading_bookmarks ?? {});
-    assert.equal(storedBookmarks.length, 1);
-    assert.equal(storedBookmarks[0].document.project_id, storedManifest.project_id);
-    assert.equal(storedBookmarks[0].document.document_file, "document.md");
-    assert.equal(storedBookmarks[0].anchor.kind, "selected_text");
-    assert.equal(storedBookmarks[0].anchor.selected_text, targetText);
+    await waitForActiveDocument(pageClient, "First chapter");
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_first");
+    await waitForNavigatorBookmarks(pageClient, 1);
+    assertStoredIdentity(fixtureDir, "doc_first");
     await waitForButtonMissing(pageClient, "Remove bookmark");
+    await clickButtonByText(pageClient, "Visual Mode");
+    await waitForVisualBookmark(pageClient, "FIRST DOCUMENT ONLY");
+
+    await selectNavigatorDocument(pageClient, "Second chapter");
+    await waitForActiveDocument(pageClient, "Second chapter");
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_second");
+    await waitForNavigatorBookmarks(pageClient, 2);
+    assertStoredIdentity(fixtureDir, "doc_second");
+    assertUnrelatedFilesUnchanged(fixtureDir, originals);
 
     await clickButtonByText(pageClient, "Visual Mode");
-    await waitForVisualBookmark(pageClient);
-    await evaluate(pageClient, {
-      expression: "window.scrollTo({ top: 0, behavior: 'auto' }); true"
-    });
-    await clickButtonByText(pageClient, "Continue reading");
-    const visualResult = await waitForVisualContinuation(pageClient);
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
+    await clickNavigatorBookmark(pageClient, "First chapter");
+    await waitForActiveDocument(pageClient, "First chapter");
+    const firstContinuation = await waitForVisualContinuation(
+      pageClient,
+      "doc_first",
+      "FIRST DOCUMENT ONLY"
+    );
+    assert.ok(firstContinuation.highlightRectCount > 0);
+    assert.equal(firstContinuation.editorCount, 1);
 
-    assert.ok(visualResult.highlightRectCount > 0);
-    assert.ok(visualResult.targetTop >= 0 && visualResult.targetTop < 760);
+    await clickNavigatorBookmark(pageClient, "Second chapter");
+    await waitForActiveDocument(pageClient, "Second chapter");
+    const secondContinuation = await waitForVisualContinuation(
+      pageClient,
+      "doc_second",
+      "SECOND DOCUMENT ONLY"
+    );
+    assert.ok(secondContinuation.highlightRectCount > 0);
+    assert.equal(secondContinuation.editorCount, 1);
 
+    await waitForButton(pageClient, "Continue reading");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
     await clickBookmarkMarker(pageClient);
     await waitForButton(pageClient, "Remove bookmark");
+    await assertBookmarkMenuMatchesActiveDocument(pageClient, "doc_second");
     await pressKey(pageClient, "Escape");
     await waitForButtonMissing(pageClient, "Remove bookmark");
-    await waitForPersistedBookmark(fixtureDir, true);
-    await waitForVisualBookmark(pageClient);
+    await waitForPersistedBookmark(fixtureDir, "doc_first", true);
+    await waitForPersistedBookmark(fixtureDir, "doc_second", true);
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
 
     await clickBookmarkMarker(pageClient);
     await waitForButton(pageClient, "Remove bookmark");
     await clickButtonByText(pageClient, "Remove bookmark");
-    await waitForPersistedBookmark(fixtureDir, false);
+    await waitForPersistedBookmark(fixtureDir, "doc_second", false);
     await waitForButtonMissing(pageClient, "Continue reading");
     await waitForElementMissing(pageClient, ".reading-bookmark-marker");
+    await waitForNavigatorBookmarks(pageClient, 1);
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
+    assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);
+    assertUnrelatedFilesUnchanged(fixtureDir, originals);
 
-    await setBookmarkFromMarkdownMode(pageClient, fixtureDir);
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_second");
+    await waitForNavigatorBookmarks(pageClient, 2);
     await clickButtonByText(pageClient, "Visual Mode");
-    await waitForVisualBookmark(pageClient);
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
     await focusElement(pageClient, ".reading-bookmark-indicator");
     await pressKey(pageClient, "Enter");
     await waitForButton(pageClient, "Remove bookmark");
-    assert.equal(
-      await getActiveElementText(pageClient),
-      "Remove bookmark"
-    );
+    assert.equal(await getActiveElementText(pageClient), "Remove bookmark");
+
+    await selectNavigatorDocument(pageClient, "First chapter");
+    await waitForActiveDocument(pageClient, "First chapter");
+    await waitForElementMissing(pageClient, ".reading-bookmark-action-menu");
+    await waitForVisualBookmark(pageClient, "FIRST DOCUMENT ONLY");
+    await waitForPersistedBookmark(fixtureDir, "doc_second", true);
+
+    await selectNavigatorDocument(pageClient, "Second chapter");
+    await waitForActiveDocument(pageClient, "Second chapter");
+    await waitForVisualBookmark(pageClient, "SECOND DOCUMENT ONLY");
+    await focusElement(pageClient, ".reading-bookmark-indicator");
     await pressKey(pageClient, "Enter");
-    await waitForPersistedBookmark(fixtureDir, false);
+    await waitForButton(pageClient, "Remove bookmark");
+    await assertBookmarkMenuMatchesActiveDocument(pageClient, "doc_second");
+    assert.equal(await getActiveElementText(pageClient), "Remove bookmark");
+    await pressKey(pageClient, "Enter");
+    await waitForPersistedBookmark(fixtureDir, "doc_second", false);
     await waitForButtonMissing(pageClient, "Continue reading");
     await waitForElementMissing(pageClient, ".reading-bookmark-marker");
-
-    await setBookmarkFromMarkdownMode(pageClient, fixtureDir);
+    await waitForNavigatorBookmarks(pageClient, 1);
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
 
     await pageClient.call("Page.reload", { ignoreCache: true });
     await waitForEditorShell(pageClient);
     await openFixture(pageClient);
+    await waitForActiveDocument(pageClient, "Second chapter");
+    await waitForNavigatorBookmarks(pageClient, 1);
+    await waitForButtonMissing(pageClient, "Continue reading");
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
+    assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);
+
+    await setBookmarkForActiveDocument(pageClient, fixtureDir, "doc_second");
+    await waitForNavigatorBookmarks(pageClient, 2);
+
+    await pageClient.call("Page.reload", { ignoreCache: true });
+    await waitForEditorShell(pageClient);
+    await openFixture(pageClient);
+    await waitForActiveDocument(pageClient, "Second chapter");
+    await waitForNavigatorBookmarks(pageClient, 2);
     await waitForButton(pageClient, "Continue reading");
+    await waitForButtonMissing(pageClient, "Remove bookmark");
     await clickButtonByText(pageClient, "Markdown Mode");
     await waitForElement(pageClient, ".markdown-source-editor");
-    await evaluate(pageClient, {
-      expression: `(() => {
-        const textarea = document.querySelector(".markdown-source-editor");
-        textarea.focus();
-        textarea.setSelectionRange(0, 0);
-        textarea.scrollTop = 0;
-        textarea.dispatchEvent(new Event("select", { bubbles: true }));
-        return true;
-      })()`
-    });
+    await resetMarkdownSelection(pageClient);
     await clickButtonByText(pageClient, "Continue reading");
     const sourceResult = await waitForMarkdownContinuation(pageClient);
-
     assert.equal(sourceResult.selectedText, targetText);
     assert.ok(sourceResult.scrollTop > 0);
 
@@ -184,16 +211,16 @@ async function run() {
     await waitForButtonMissing(pageClient, "Remove bookmark");
     await waitForButton(pageClient, "Remove unavailable bookmark");
     await clickButtonByText(pageClient, "Remove unavailable bookmark");
-    await waitForPersistedBookmark(fixtureDir, false);
+    await waitForPersistedBookmark(fixtureDir, "doc_second", false);
     await waitForTextMissing(pageClient, "Bookmark location unavailable");
-    assertUnrelatedFilesUnchanged({
-      fixtureDir,
-      originalComments,
-      originalDocument,
-      originalPatches
-    });
+    await waitForNavigatorBookmarks(pageClient, 1);
+    assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
+    assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);
+    assertUnrelatedFilesUnchanged(fixtureDir, originals);
+    await restoreOriginalMarkdownInMemory(pageClient);
+    await waitForElement(pageClient, ".document-status-saved");
 
-    console.log("Reading bookmark browser test passed.");
+    console.log("Multi-document reading bookmark browser test passed.");
   } finally {
     await pageClient?.close().catch(() => undefined);
     chrome.kill("SIGTERM");
@@ -206,13 +233,61 @@ async function run() {
 
 function createFixture() {
   const fixtureDir = mkdtempSync(join(tmpdir(), "patchmark-bookmark-project-"));
-  const patchmarkDir = join(fixtureDir, ".patchmark");
+  const metadataDir = join(fixtureDir, ".patchmark");
+  const now = "2026-07-20T00:00:00.000Z";
+  mkdirSync(join(metadataDir, "documents"), { recursive: true });
+  const documents = [
+    createDocumentFixture({
+      documentId: "doc_first",
+      documentPath: "first.md",
+      fixtureDir,
+      marker: "FIRST DOCUMENT ONLY",
+      now,
+      position: 1000,
+      title: "First chapter"
+    }),
+    createDocumentFixture({
+      documentId: "doc_second",
+      documentPath: "second.md",
+      fixtureDir,
+      marker: "SECOND DOCUMENT ONLY",
+      now,
+      position: 2000,
+      title: "Second chapter"
+    })
+  ];
+  writeFileSync(
+    join(metadataDir, "project.json"),
+    `${JSON.stringify({
+      format: "patchmark-project",
+      schema_version: 1,
+      project_id: "prj_bookmark_browser",
+      title: "Reading bookmark browser fixture",
+      created_at: now,
+      manifest_revision: 1,
+      documents
+    }, null, 2)}\n`
+  );
+  return fixtureDir;
+}
+
+function createDocumentFixture({
+  documentId,
+  documentPath,
+  fixtureDir,
+  marker,
+  now,
+  position,
+  title
+}) {
   const filler = Array.from(
     { length: 90 },
     (_, index) => `Paragraph ${index + 1} before the saved reading location.`
   );
   const markdown = [
-    "# Reading bookmark browser fixture",
+    `# ${title}`,
+    "",
+    marker,
     "",
     ...filler.flatMap((line) => [line, ""]),
     "## Saved location",
@@ -221,29 +296,67 @@ function createFixture() {
     "",
     "The document continues after the bookmark."
   ].join("\n");
-  const now = "2026-07-20T00:00:00.000Z";
-
-  mkdirSync(patchmarkDir, { recursive: true });
-  writeFileSync(join(fixtureDir, "document.md"), markdown);
-  writeFileSync(join(patchmarkDir, "comments.json"), "[]\n");
-  writeFileSync(join(patchmarkDir, "patches.json"), "[]\n");
+  const store = join(fixtureDir, ".patchmark", "documents", documentId);
+  mkdirSync(join(store, "versions"), { recursive: true });
+  mkdirSync(join(store, "context-packs"), { recursive: true });
+  mkdirSync(join(store, "imports"), { recursive: true });
+  mkdirSync(join(store, "recovery"), { recursive: true });
+  writeFileSync(join(fixtureDir, documentPath), markdown);
+  const targetStart = markdown.indexOf(targetText);
   writeFileSync(
-    join(patchmarkDir, "manifest.json"),
-    `${JSON.stringify(
+    join(store, "comments.json"),
+    `${JSON.stringify([
       {
-        schema_version: 1,
-        project_id: "PM-PROJECT-BOOKMARK-BROWSER",
-        project_name: "Reading bookmark browser fixture",
-        document_file: "document.md",
+        id: "PM-COMMENT-SHARED",
+        type: "note",
+        status: "open",
+        anchor: {
+          kind: "selected_text",
+          selected_text: targetText,
+          markdown_start_offset: targetStart,
+          markdown_end_offset: targetStart + targetText.length,
+          anchor_source: "markdown"
+        },
+        comment: `Comment coexisting with ${title} bookmark`,
+        thread: [],
+        export_state: { focus_state: "idle" },
         created_at: now,
         updated_at: now
-      },
-      null,
-      2
-    )}\n`
+      }
+    ], null, 2)}\n`
   );
-
-  return fixtureDir;
+  writeFileSync(join(store, "patches.json"), "[]\n");
+  writeFileSync(join(store, "tasks.json"), "[]\n");
+  writeFileSync(
+    join(store, "manifest.json"),
+    `${JSON.stringify({
+      schema_version: 1,
+      project_name: "Reading bookmark browser fixture",
+      document_file: "document.md",
+      created_at: now,
+      updated_at: now
+    }, null, 2)}\n`
+  );
+  writeFileSync(
+    join(store, "document.json"),
+    `${JSON.stringify({
+      format: "patchmark-document-store",
+      schema_version: 1,
+      document_id: documentId,
+      created_at: now,
+      source: "created"
+    }, null, 2)}\n`
+  );
+  return {
+    document_id: documentId,
+    path: documentPath,
+    display_title: title,
+    role: null,
+    status: "active",
+    position,
+    added_at: now,
+    archived_at: null
+  };
 }
 
 async function openFixture(pageClient) {
@@ -254,25 +367,31 @@ async function openFixture(pageClient) {
   })()`);
 }
 
-async function setBookmarkFromMarkdownMode(pageClient, fixtureDir) {
+async function setBookmarkForActiveDocument(pageClient, fixtureDir, documentId) {
   await clickButtonByText(pageClient, "Markdown Mode");
   await waitForElement(pageClient, ".markdown-source-editor");
   await selectTargetAndOpenMenu(pageClient);
-  await clickButtonByText(pageClient, "Set reading bookmark");
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = document.querySelector(
+        "[data-selection-action-option='bookmark']"
+      );
+      if (!button) throw new Error("Bookmark selection action was not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
   await waitForButton(pageClient, "Continue reading");
   await waitForButtonMissing(pageClient, "Remove bookmark");
-  await waitForPersistedBookmark(fixtureDir, true);
+  await waitForPersistedBookmark(fixtureDir, documentId, true);
 }
 
 async function clickBookmarkMarker(pageClient) {
   await evaluate(pageClient, {
     expression: `(() => {
       const marker = document.querySelector(".reading-bookmark-indicator");
-
-      if (!marker) {
-        throw new Error("Reading bookmark marker was not found.");
-      }
-
+      if (!marker) throw new Error("Reading bookmark marker was not found.");
       marker.click();
       return true;
     })()`,
@@ -280,15 +399,33 @@ async function clickBookmarkMarker(pageClient) {
   });
 }
 
+async function assertBookmarkMenuMatchesActiveDocument(pageClient, documentId) {
+  const state = await evaluate(pageClient, {
+    expression: `(() => {
+      const editor = document.querySelector(".editor-body");
+      const marker = document.querySelector(".reading-bookmark-indicator");
+      const menu = document.querySelector(".reading-bookmark-action-menu");
+      return {
+        activeDocumentKey: editor?.dataset.documentKey ?? "",
+        controls: marker?.getAttribute("aria-controls") ?? "",
+        expanded: marker?.getAttribute("aria-expanded") ?? "",
+        menuId: menu?.id ?? "",
+        markerCount: document.querySelectorAll(".reading-bookmark-indicator").length
+      };
+    })()`
+  });
+  assert.ok(state.activeDocumentKey.includes(documentId));
+  assert.equal(state.controls, state.menuId);
+  assert.ok(state.menuId.includes(encodeURIComponent(state.activeDocumentKey)));
+  assert.equal(state.expanded, "true");
+  assert.equal(state.markerCount, 1);
+}
+
 async function focusElement(pageClient, selector) {
   await evaluate(pageClient, {
     expression: `(() => {
       const element = document.querySelector(${JSON.stringify(selector)});
-
-      if (!element) {
-        throw new Error("Element was not found: ${selector}");
-      }
-
+      if (!element) throw new Error("Element was not found: ${selector}");
       element.focus();
       return true;
     })()`
@@ -327,13 +464,32 @@ async function makeBookmarkUnavailableInMemory(pageClient) {
       const textarea = document.querySelector(".markdown-source-editor");
       const nextValue = textarea.value.replace(
         ${JSON.stringify(targetText)},
-        "The saved reading target was removed from this unsaved draft."
+        ${JSON.stringify(unavailableReplacementText)}
       );
       const valueSetter = Object.getOwnPropertyDescriptor(
         HTMLTextAreaElement.prototype,
         "value"
       ).set;
+      valueSetter.call(textarea, nextValue);
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
 
+async function restoreOriginalMarkdownInMemory(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const textarea = document.querySelector(".markdown-source-editor");
+      const nextValue = textarea.value.replace(
+        ${JSON.stringify(unavailableReplacementText)},
+        ${JSON.stringify(targetText)}
+      );
+      const valueSetter = Object.getOwnPropertyDescriptor(
+        HTMLTextAreaElement.prototype,
+        "value"
+      ).set;
       valueSetter.call(textarea, nextValue);
       textarea.dispatchEvent(new Event("input", { bubbles: true }));
       return true;
@@ -347,11 +503,7 @@ async function selectTargetAndOpenMenu(pageClient) {
     expression: `(() => {
       const textarea = document.querySelector(".markdown-source-editor");
       const start = textarea.value.indexOf(${JSON.stringify(targetText)});
-
-      if (start < 0) {
-        throw new Error("Bookmark target was not found in Markdown Mode.");
-      }
-
+      if (start < 0) throw new Error("Bookmark target was not found.");
       textarea.focus();
       textarea.setSelectionRange(start, start + ${targetText.length});
       textarea.dispatchEvent(new Event("select", { bubbles: true }));
@@ -374,47 +526,121 @@ async function selectTargetAndOpenMenu(pageClient) {
     })()`,
     userGesture: true
   });
-  await waitForElement(pageClient, ".comment-context-menu");
+  await waitForElement(
+    pageClient,
+    "[data-testid='selection-actions-chooser']"
+  );
 }
 
-async function waitForVisualBookmark(pageClient) {
-  await waitFor(pageClient, "visual reading bookmark", `(() => {
-    const prose = document.querySelector(".patchmark-prose");
-    const indicator = document.querySelector(".reading-bookmark-indicator");
-    return Boolean(prose?.textContent?.includes(${JSON.stringify(targetText)}) && indicator);
+async function selectNavigatorDocument(pageClient, title) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = Array.from(document.querySelectorAll(".project-document-select"))
+        .find((candidate) => candidate.textContent?.includes(${JSON.stringify(title)}));
+      if (!button) throw new Error("Navigator document was not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function clickNavigatorBookmark(pageClient, title) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const label = ${JSON.stringify(`Continue reading in ${title}`)};
+      const button = Array.from(document.querySelectorAll(".project-document-bookmark"))
+        .find((candidate) => candidate.getAttribute("aria-label") === label);
+      if (!button) throw new Error("Navigator bookmark was not found.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function waitForActiveDocument(pageClient, title) {
+  await waitFor(pageClient, `active document ${title}`, `(() => {
+    const status = document.querySelector("[aria-label='Workspace status']");
+    const active = document.querySelector(".project-document-item[data-active='true']");
+    return Boolean(
+      status?.textContent?.includes(${JSON.stringify(`Document: ${title}`)}) &&
+      active?.textContent?.includes(${JSON.stringify(title)})
+    );
   })()`);
 }
 
-async function waitForVisualContinuation(pageClient) {
-  let latest = null;
+async function waitForNavigatorBookmarks(pageClient, expected) {
+  await waitFor(
+    pageClient,
+    `${expected} navigator bookmarks`,
+    `document.querySelectorAll(".project-document-bookmark").length === ${expected}`
+  );
+}
 
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+async function waitForVisualBookmark(pageClient, marker) {
+  await waitFor(pageClient, "visual reading bookmark", `(() => {
+    const prose = document.querySelector(".patchmark-prose");
+    const indicator = document.querySelector(".reading-bookmark-indicator");
+    return Boolean(
+      prose?.textContent?.includes(${JSON.stringify(marker)}) &&
+      prose?.textContent?.includes(${JSON.stringify(targetText)}) &&
+      indicator &&
+      document.querySelector(".comment-card")
+    );
+  })()`);
+}
+
+async function waitForVisualContinuation(pageClient, documentId, marker) {
+  let latest = null;
+  for (let attempt = 0; attempt < 120; attempt += 1) {
     latest = await evaluate(pageClient, {
       expression: `(() => {
+        const editor = document.querySelector(".editor-body");
+        const prose = document.querySelector(".patchmark-prose");
         const highlight = globalThis.CSS?.highlights?.get("patchmark-reading-bookmark-target");
         const ranges = highlight ? Array.from(highlight) : [];
         const rects = ranges.flatMap((range) => Array.from(range.getClientRects()));
         const visibleRect = rects.find((rect) => rect.width > 0 && rect.height > 0);
         return {
+          activeKey: editor?.dataset.documentKey ?? "",
+          editorCount: document.querySelectorAll(".editor-body").length,
           highlightRectCount: rects.filter((rect) => rect.width > 0 && rect.height > 0).length,
+          markerVisible: Boolean(prose?.textContent?.includes(${JSON.stringify(marker)})),
           targetTop: visibleRect?.top ?? -1
         };
       })()`
     });
-
-    if (latest.highlightRectCount > 0 && latest.targetTop >= 0) {
+    if (
+      latest.activeKey.includes(documentId) &&
+      latest.editorCount === 1 &&
+      latest.highlightRectCount > 0 &&
+      latest.markerVisible &&
+      latest.targetTop >= 0 &&
+      latest.targetTop < 760
+    ) {
       return latest;
     }
-
     await delay(50);
   }
-
   throw new Error(`Timed out waiting for bookmark emphasis: ${JSON.stringify(latest)}`);
+}
+
+async function resetMarkdownSelection(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const textarea = document.querySelector(".markdown-source-editor");
+      textarea.focus();
+      textarea.setSelectionRange(0, 0);
+      textarea.scrollTop = 0;
+      textarea.dispatchEvent(new Event("select", { bubbles: true }));
+      return true;
+    })()`
+  });
 }
 
 async function waitForMarkdownContinuation(pageClient) {
   let latest = null;
-
   for (let attempt = 0; attempt < 80; attempt += 1) {
     latest = await evaluate(pageClient, {
       expression: `(() => {
@@ -427,32 +653,19 @@ async function waitForMarkdownContinuation(pageClient) {
         };
       })()`
     });
-
-    if (latest.selectedText === targetText) {
-      return latest;
-    }
-
+    if (latest.selectedText === targetText) return latest;
     await delay(50);
   }
-
-  throw new Error(`Timed out waiting for Markdown bookmark selection: ${JSON.stringify(latest)}`);
+  throw new Error(`Timed out waiting for Markdown continuation: ${JSON.stringify(latest)}`);
 }
 
-async function waitForPersistedBookmark(fixtureDir, expected) {
+async function waitForPersistedBookmark(fixtureDir, documentId, expected) {
   for (let attempt = 0; attempt < 120; attempt += 1) {
-    const manifest = readManifest(fixtureDir);
-    const hasBookmark = Object.keys(manifest.reading_bookmarks ?? {}).length > 0;
-
-    if (hasBookmark === expected) {
-      return;
-    }
-
+    const hasBookmark = Boolean(readManifest(fixtureDir, documentId).reading_bookmark);
+    if (hasBookmark === expected) return;
     await delay(50);
   }
-
-  throw new Error(
-    `Timed out waiting for persisted bookmark state ${String(expected)}.`
-  );
+  throw new Error(`Timed out waiting for ${documentId} bookmark ${String(expected)}.`);
 }
 
 async function waitForButton(pageClient, text) {
@@ -498,36 +711,105 @@ async function waitForTextMissing(pageClient, text) {
 }
 
 async function waitFor(pageClient, label, expression) {
-  for (let attempt = 0; attempt < 160; attempt += 1) {
-    if (await evaluate(pageClient, { expression })) {
-      return;
-    }
-
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await evaluate(pageClient, { expression })) return;
     await delay(50);
   }
-
   throw new Error(`Timed out waiting for ${label}.`);
 }
 
-function readManifest(fixtureDir) {
+function readManifest(fixtureDir, documentId) {
   return JSON.parse(
-    readFileSync(join(fixtureDir, ".patchmark", "manifest.json"), "utf8")
+    readFileSync(
+      join(fixtureDir, ".patchmark", "documents", documentId, "manifest.json"),
+      "utf8"
+    )
   );
 }
 
-function assertUnrelatedFilesUnchanged({
-  fixtureDir,
-  originalComments,
-  originalDocument,
-  originalPatches
-}) {
-  assert.equal(readFileSync(join(fixtureDir, "document.md"), "utf8"), originalDocument);
+function assertStoredIdentity(fixtureDir, documentId) {
+  const bookmark = readManifest(fixtureDir, documentId).reading_bookmark;
+  assert.equal(bookmark.document.project_id, "prj_bookmark_browser");
+  assert.equal(bookmark.document.document_id, documentId);
+  assert.equal(bookmark.anchor.kind, "selected_text");
+  assert.equal(bookmark.anchor.selected_text, targetText);
+}
+
+function captureUnrelatedFiles(fixtureDir) {
+  return {
+    project: readFileSync(join(fixtureDir, ".patchmark", "project.json"), "utf8"),
+    documents: Object.fromEntries(
+      ["doc_first", "doc_second"].map((documentId) => [
+        documentId,
+        {
+          comments: readFileSync(
+            join(
+              fixtureDir,
+              ".patchmark",
+              "documents",
+              documentId,
+              "comments.json"
+            ),
+            "utf8"
+          ),
+          markdown: readFileSync(
+            join(fixtureDir, documentId === "doc_first" ? "first.md" : "second.md"),
+            "utf8"
+          ),
+          patches: readFileSync(
+            join(
+              fixtureDir,
+              ".patchmark",
+              "documents",
+              documentId,
+              "patches.json"
+            ),
+            "utf8"
+          )
+        }
+      ])
+    )
+  };
+}
+
+function assertUnrelatedFilesUnchanged(fixtureDir, originals) {
   assert.equal(
-    readFileSync(join(fixtureDir, ".patchmark", "comments.json"), "utf8"),
-    originalComments
+    readFileSync(join(fixtureDir, ".patchmark", "project.json"), "utf8"),
+    originals.project
   );
-  assert.equal(
-    readFileSync(join(fixtureDir, ".patchmark", "patches.json"), "utf8"),
-    originalPatches
-  );
+  for (const [documentId, original] of Object.entries(originals.documents)) {
+    assert.equal(
+      readFileSync(
+        join(fixtureDir, documentId === "doc_first" ? "first.md" : "second.md"),
+        "utf8"
+      ),
+      original.markdown
+    );
+    assert.equal(
+      readFileSync(
+        join(
+          fixtureDir,
+          ".patchmark",
+          "documents",
+          documentId,
+          "comments.json"
+        ),
+        "utf8"
+      ),
+      original.comments
+    );
+    assert.equal(
+      readFileSync(
+        join(
+          fixtureDir,
+          ".patchmark",
+          "documents",
+          documentId,
+          "patches.json"
+        ),
+        "utf8"
+      ),
+      original.patches
+    );
+  }
 }
