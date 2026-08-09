@@ -14,6 +14,14 @@
   --comment-anchor-resolved-selected-background: rgba(185, 216, 202, 0.45);
   --comment-anchor-resolved-selected-border: rgba(47, 111, 85, 0.55);
   --comment-anchor-reanchor-preview-background: rgba(111, 90, 190, 0.3);
+  --control-hover-overlay: rgba(47, 111, 85, 0.07);
+  --control-pressed-overlay: rgba(22, 35, 29, 0.14);
+  --control-pressed-border: rgba(22, 35, 29, 0.42);
+  --control-selected-border: rgba(255, 255, 255, 0.58);
+  --control-focus-ring: #246b4f;
+  --control-focus-halo: rgba(255, 255, 255, 0.92);
+  --control-disabled-opacity: 0.52;
+  --control-loading-opacity: 0.68;
   --layer-modal: 100;
   --shadow: 0 18px 50px rgba(22, 35, 29, 0.08);
 }
@@ -333,7 +341,6 @@ button {
   background: #fff8dc;
 }
 
-.project-document-bookmark:hover:not(:disabled),
 .project-document-bookmark:focus-visible {
   border-color: #8b5d0c;
   outline: 2px solid rgba(155, 106, 20, 0.25);
@@ -649,10 +656,6 @@ button {
   font-weight: 700;
 }
 
-.document-actions button:hover {
-  border-color: var(--accent);
-}
-
 .document-actions button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
@@ -679,10 +682,6 @@ button {
   font-weight: 700;
 }
 
-.reading-bookmark-controls button:hover:not(:disabled) {
-  border-color: var(--accent);
-}
-
 .reading-bookmark-controls button:disabled {
   cursor: not-allowed;
   opacity: 0.65;
@@ -707,10 +706,6 @@ button {
   color: var(--text);
   padding: 9px 12px;
   font-weight: 700;
-}
-
-.project-actions button:hover {
-  border-color: var(--accent);
 }
 
 .project-actions button:disabled {
@@ -1042,7 +1037,6 @@ button {
   line-height: 1;
 }
 
-.reading-bookmark-indicator:hover,
 .reading-bookmark-indicator:focus-visible {
   border-color: #8b5d0c;
   outline: 2px solid rgba(155, 106, 20, 0.25);
@@ -1069,7 +1063,6 @@ button {
   font-weight: 700;
 }
 
-.reading-bookmark-action-menu button:hover:not(:disabled),
 .reading-bookmark-action-menu button:focus-visible {
   background: var(--accent-soft);
   color: var(--accent-strong);
@@ -1170,9 +1163,7 @@ button {
   border-bottom: 0;
 }
 
-.selection-action-group-item > button:hover,
 .selection-action-group-item > button:focus-visible,
-.selection-actions-header .selection-actions-close:hover,
 .selection-actions-header .selection-actions-close:focus-visible {
   background: var(--accent-soft);
   color: var(--accent-strong);
@@ -1236,7 +1227,6 @@ button {
   font-weight: 800;
 }
 
-.comment-selection-action:hover,
 .comment-selection-action:focus-visible {
   background: var(--text);
   outline: 3px solid rgba(45, 122, 79, 0.28);
@@ -1557,14 +1547,6 @@ button {
   color: var(--text);
   padding: 7px 10px;
   font-weight: 700;
-}
-
-.version-entry-actions button:hover,
-.version-history-view-all:hover,
-.snapshot-dialog button:hover,
-.comment-export-dialog button:hover,
-.comment-import-dialog button:hover {
-  border-color: var(--accent);
 }
 
 .version-history-view-all {
@@ -2888,11 +2870,6 @@ button {
   font-weight: 700;
 }
 
-.comments-panel button:hover,
-.comment-form button:hover {
-  border-color: var(--accent);
-}
-
 .comments-panel button:disabled,
 .comment-form button:disabled {
   cursor: not-allowed;
@@ -3192,8 +3169,7 @@ button {
   padding: 8px;
 }
 
-.comment-card-compact:focus-visible,
-.comment-card-compact:hover {
+.comment-card-compact:focus-visible {
   border-color: #b9d8ca;
   background: #f4faf7;
   outline: none;
@@ -3326,10 +3302,6 @@ button {
   background: #fff0ed;
   color: #702b25;
   font-weight: 800;
-}
-
-.destructive-action:not(:disabled):hover {
-  background: #ffe1dc;
 }
 
 .comment-permanent-deletion-dialog {
@@ -3705,10 +3677,6 @@ button {
   font-weight: 700;
 }
 
-.patch-review-actions button:hover {
-  border-color: var(--accent);
-}
-
 .patch-review-actions span {
   color: var(--muted);
   font-size: 0.84rem;
@@ -3800,11 +3768,6 @@ button {
   color: var(--text);
   padding: 7px 10px;
   font-weight: 800;
-}
-
-.patch-group-summary-card button:hover,
-.patch-group-patch-card button:hover {
-  border-color: var(--accent);
 }
 
 .patch-review-heading-row,
@@ -4021,10 +3984,6 @@ button {
   color: var(--text);
   padding: 7px 10px;
   font-weight: 800;
-}
-
-.patch-group-review-actions button:hover {
-  border-color: #8d2f18;
 }
 
 .patch-group-review-actions button:disabled {
@@ -4323,10 +4282,6 @@ button {
   font-weight: 800;
   text-decoration: underline;
   text-underline-offset: 2px;
-}
-
-.markdown-snippet-preview a:hover {
-  color: var(--accent-strong);
 }
 
 .markdown-snippet-preview code,
@@ -4781,11 +4736,8 @@ button {
   font-weight: 750;
 }
 
-.rewrite-resume-banner button:hover,
 .rewrite-resume-banner button:focus-visible,
-.rewrite-workspace button:hover:not(:disabled),
 .rewrite-workspace button:focus-visible,
-.rewrite-dialog button:hover:not(:disabled),
 .rewrite-dialog button:focus-visible {
   border-color: var(--accent-strong);
   background: var(--accent-soft);
@@ -5168,7 +5120,6 @@ button {
   padding: 4px;
 }
 
-.rewrite-editor-surface .mdxeditor-toolbar button:hover:not(:disabled),
 .rewrite-editor-surface .mdxeditor-toolbar button:focus-visible {
   border-color: transparent;
   background: var(--accent-soft);
@@ -6146,6 +6097,207 @@ button {
   .rewrite-workspace *,
   .rewrite-dialog * {
     scroll-behavior: auto !important;
+    transition: none !important;
+  }
+}
+
+@media (hover: hover) and (pointer: fine) {
+  body .app-shell
+    :where(
+      button,
+      a[href],
+      summary,
+      [role="button"],
+      [role="tab"],
+      [role="switch"],
+      .comment-card-compact
+    ):not(:disabled):not([aria-disabled="true"]):hover {
+    background-image: linear-gradient(
+      var(--control-hover-overlay),
+      var(--control-hover-overlay)
+    );
+  }
+
+  .project-document-bookmark:hover:not(:disabled) {
+    border-color: #8b5d0c;
+    outline: 2px solid rgba(155, 106, 20, 0.25);
+    outline-offset: 1px;
+  }
+
+  .document-actions button:hover:not(:disabled),
+  .reading-bookmark-controls button:hover:not(:disabled),
+  .project-actions button:hover:not(:disabled),
+  .version-entry-actions button:hover:not(:disabled),
+  .version-history-view-all:hover,
+  .snapshot-dialog button:hover:not(:disabled),
+  .comment-export-dialog button:hover:not(:disabled),
+  .comment-import-dialog button:hover:not(:disabled),
+  .comments-panel button:hover:not(:disabled),
+  .comment-form button:hover:not(:disabled),
+  .patch-review-actions button:hover:not(:disabled),
+  .patch-group-summary-card button:hover:not(:disabled),
+  .patch-group-patch-card button:hover:not(:disabled) {
+    border-color: var(--accent);
+  }
+
+  .reading-bookmark-indicator:hover {
+    border-color: #8b5d0c;
+    outline: 2px solid rgba(155, 106, 20, 0.25);
+    outline-offset: 2px;
+  }
+
+  .reading-bookmark-action-menu button:hover:not(:disabled),
+  .selection-action-group-item > button:hover:not(:disabled),
+  .selection-actions-header .selection-actions-close:hover:not(:disabled) {
+    background-color: var(--accent-soft);
+    color: var(--accent-strong);
+  }
+
+  .comment-selection-action:hover {
+    background-color: var(--text);
+    outline: 3px solid rgba(45, 122, 79, 0.28);
+    outline-offset: 2px;
+  }
+
+  .comment-card-compact:hover {
+    border-color: #b9d8ca;
+    background-color: #f4faf7;
+  }
+
+  .destructive-action:not(:disabled):hover {
+    background-color: #ffe1dc;
+  }
+
+  .patch-group-review-actions button:hover:not(:disabled) {
+    border-color: #8d2f18;
+  }
+
+  .markdown-snippet-preview a:hover {
+    color: var(--accent-strong);
+  }
+
+  .rewrite-resume-banner button:hover:not(:disabled),
+  .rewrite-workspace button:hover:not(:disabled),
+  .rewrite-dialog button:hover:not(:disabled) {
+    border-color: var(--accent-strong);
+    background-color: var(--accent-soft);
+    outline: 3px solid rgba(47, 111, 85, 0.2);
+    outline-offset: 1px;
+  }
+
+  .rewrite-editor-surface .mdxeditor-toolbar button:hover:not(:disabled) {
+    border-color: transparent;
+    background-color: var(--accent-soft);
+  }
+}
+
+body .app-shell
+  :where(
+    button,
+    a[href],
+    summary,
+    [role="button"],
+    [role="tab"],
+    [role="switch"],
+    .comment-card-compact
+  ) {
+  touch-action: manipulation;
+}
+
+body .app-shell
+  :where(
+    button,
+    a[href],
+    summary,
+    [role="button"],
+    [role="tab"],
+    [role="switch"],
+    .comment-card-compact
+  ):not(:disabled):not([aria-disabled="true"]):active {
+  border-color: var(--control-pressed-border);
+  background-image: linear-gradient(
+    var(--control-pressed-overlay),
+    var(--control-pressed-overlay)
+  );
+}
+
+body .app-shell
+  :where(button, [role="tab"], [role="switch"]):is(
+    [aria-pressed="true"],
+    [aria-selected="true"]
+  ) {
+  box-shadow: inset 0 0 0 1px var(--control-selected-border);
+}
+
+body .app-shell
+  :where(
+    button,
+    a[href],
+    input,
+    select,
+    textarea,
+    summary,
+    [role="button"],
+    [role="tab"],
+    [role="switch"],
+    .comment-card-compact
+  ):focus-visible {
+  outline: 2px solid var(--control-focus-ring);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 1px var(--control-focus-halo);
+}
+
+body .app-shell
+  :where(
+    button,
+    input,
+    select,
+    [role="button"],
+    [role="tab"],
+    [role="switch"]
+  ):is(:disabled, [aria-disabled="true"]) {
+  cursor: not-allowed;
+  opacity: var(--control-disabled-opacity);
+  background-image: none;
+}
+
+body .app-shell :where(button, [role="button"])[aria-busy="true"] {
+  cursor: progress;
+  opacity: var(--control-loading-opacity);
+  background-image: none;
+}
+
+@media (pointer: coarse) {
+  body .app-shell
+    :where(
+      button,
+      summary,
+      [role="button"],
+      [role="tab"],
+      [role="switch"],
+      .comment-card-compact
+    ) {
+    min-block-size: 40px;
+  }
+
+  body .app-shell
+    :where(button, [role="button"], [role="tab"], [role="switch"])[aria-label] {
+    min-inline-size: 40px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body .app-shell
+    :where(
+      button,
+      a[href],
+      summary,
+      [role="button"],
+      [role="tab"],
+      [role="switch"],
+      .comment-card-compact
+    ) {
+    animation: none !important;
     transition: none !important;
   }
 }

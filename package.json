@@ -7,6 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint .",
+    "test:control-interactions": "node scripts/control-interaction-foundation.test.mjs",
+    "test:control-interactions-browser": "node scripts/control-interaction-foundation-browser.test.mjs",
     "test:anchor-recovery": "node scripts/patch-anchor-recovery.test.mjs",
     "test:chatgpt-prompt-rules": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/chatgpt-prompt-rules.test.mjs",
     "test:comment-card-ux": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-card-ux.test.mjs",

@@ -49,7 +49,12 @@ export function ProjectResumeBanner({
         {error ? <p role="alert">{error}</p> : null}
       </div>
       <div className="project-resume-actions">
-        <button type="button" disabled={busy} onClick={onResume}>
+        <button
+          type="button"
+          aria-busy={busy}
+          disabled={busy}
+          onClick={onResume}
+        >
           {busy ? "Opening…" : actionLabel}
         </button>
         <button type="button" disabled={busy} onClick={onDeleteDeviceData}>

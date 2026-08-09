@@ -181,6 +181,7 @@ export function PdfExportPreview({
           <button
             ref={printButtonRef}
             type="button"
+            aria-busy={printState === "preparing"}
             disabled={printState === "preparing" || Boolean(renderError)}
             onClick={() => {
               void handlePrintPdf();

@@ -1346,7 +1346,12 @@ export function RewriteWorkspace({
             </p>
             <div className="rewrite-dialog-actions">
               <button disabled={isApplying} type="button" onClick={() => setImpact(null)}>Cancel</button>
-              <button disabled={isApplying} type="button" onClick={() => void handleApply()}>
+              <button
+                aria-busy={isApplying}
+                disabled={isApplying}
+                type="button"
+                onClick={() => void handleApply()}
+              >
                 {isApplying ? "Applying rewrite…" : "Apply rewrite"}
               </button>
             </div>
