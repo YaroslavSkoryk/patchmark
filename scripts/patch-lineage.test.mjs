@@ -256,7 +256,7 @@ assert.match(documentEditorSource, /display_title: displayTitle/);
 assert.match(documentEditorSource, /Refines/);
 assert.match(documentEditorSource, /Follow-up to/);
 assert.match(documentEditorSource, /Earlier patch ID/);
-assert.match(documentEditorSource, /<summary>Details<\/summary>/);
+assert.match(documentEditorSource, /<summary>Patch details and provenance<\/summary>/);
 assert.match(documentEditorSource, /Title the new change itself/);
 assert.match(documentEditorSource, /Update previous patch/);
 assert.match(commentsPanelSource, /Latest change applied/);

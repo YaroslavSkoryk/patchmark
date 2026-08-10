@@ -150,7 +150,7 @@ const commentsPanelSource = readFileSync(
 );
 
 assert.match(documentEditorSource, /Continue discussion/);
-assert.match(documentEditorSource, /The linked comment remains open/);
+assert.match(documentEditorSource, /The linked comment stays open/);
 assert.match(documentEditorSource, /handleContinuePatchDiscussion/);
 assert.match(documentEditorSource, /setSelectedPatchId\(null\)/);
 assert.match(documentEditorSource, /setCommentReplyRequest/);

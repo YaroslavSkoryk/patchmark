@@ -677,6 +677,15 @@ type DerivedPatchGroup = PatchmarkPatchGroup & {
   is_legacy_single_patch_group: boolean;
   status: PatchmarkPatchGroupStatus;
 };
+type PatchReviewQueueBatch = {
+  created_at: string;
+  groups: DerivedPatchGroup[];
+  id: string;
+  patches: PatchmarkPatch[];
+  review_batch: PatchmarkReviewBatch | null;
+  source_import_id: string | null;
+  status_summary: PatchmarkPatchGroup["status_summary"];
+};
 type PatchDisplayState =
   | "applied"
   | "applied_evolved"
@@ -684,9 +693,6 @@ type PatchDisplayState =
   | "pending"
   | "rejected"
   | "stale";
-type PatchGroupListDialogState = {
-  commentId: string | null;
-};
 type DocumentScopedActiveCommentState = {
   documentId: string;
   state: ActiveCommentState;
@@ -1039,19 +1045,17 @@ export function DocumentEditor() {
     useState<MarkCommentFocusGuardDialogState | null>(null);
   const [chatGptImportDialog, setChatGptImportDialog] =
     useState<ChatGptImportDialogState | null>(null);
+  const [isPatchReviewWorkspaceOpen, setIsPatchReviewWorkspaceOpen] =
+    useState(false);
+  const [selectedPatchReviewBatchId, setSelectedPatchReviewBatchId] = useState<
+    string | null
+  >(null);
   const [selectedPatchId, setSelectedPatchId] = useState<string | null>(null);
   const [selectedPatchGroupId, setSelectedPatchGroupId] = useState<string | null>(
     null
   );
-  const [patchGroupListDialog, setPatchGroupListDialog] =
-    useState<PatchGroupListDialogState | null>(null);
-  const [patchReviewCommentScopeId, setPatchReviewCommentScopeId] =
-    useState<string | null>(null);
   const [patchReviewGroupScopeId, setPatchReviewGroupScopeId] =
     useState<string | null>(null);
-  const [recentlyAppliedPatchId, setRecentlyAppliedPatchId] = useState<
-    string | null
-  >(null);
   const pendingEditPerformanceOperationIdRef = useRef<string | null>(null);
 
   incrementDocumentSwitchPerformanceCounter(
@@ -1157,8 +1161,7 @@ export function DocumentEditor() {
     [activePatches]
   );
   const shouldResolvePatchGroupAnchors = Boolean(
-    patchGroupListDialog ||
-      patchReviewCommentScopeId ||
+    isPatchReviewWorkspaceOpen ||
       patchReviewGroupScopeId ||
       selectedPatchGroupId ||
       selectedPatchId
@@ -1199,6 +1202,26 @@ export function DocumentEditor() {
     () => getPatchGroupSummariesByCommentId(patchGroups, commentsById),
     [commentsById, patchGroups]
   );
+  const patchReviewQueueBatches = useMemo(
+    () =>
+      derivePatchReviewQueueBatches({
+        patchGroups: patchGroups.filter(
+          (group) =>
+            !group.comment_id || !trashedCommentIds.has(group.comment_id)
+        ),
+        reviewBatches
+      }),
+    [patchGroups, reviewBatches, trashedCommentIds]
+  );
+  const selectedPatchReviewBatch = useMemo(
+    () =>
+      selectedPatchReviewBatchId
+        ? patchReviewQueueBatches.find(
+            (batch) => batch.id === selectedPatchReviewBatchId
+          ) ?? null
+        : null,
+    [patchReviewQueueBatches, selectedPatchReviewBatchId]
+  );
   const selectedPatch = useMemo(
     () =>
       selectedPatchId
@@ -1206,31 +1229,6 @@ export function DocumentEditor() {
         : null,
     [patches, selectedPatchId]
   );
-  const selectedPatchGroup = useMemo(
-    () =>
-      selectedPatchGroupId
-        ? patchGroups.find((group) => group.id === selectedPatchGroupId) ?? null
-        : null,
-    [patchGroups, selectedPatchGroupId]
-  );
-  const selectedPatchGroupComment = useMemo(
-    () =>
-      selectedPatchGroup?.comment_id
-        ? commentsById.get(selectedPatchGroup.comment_id) ?? null
-        : null,
-    [commentsById, selectedPatchGroup]
-  );
-  const patchGroupListGroups = useMemo(() => {
-    if (!patchGroupListDialog) {
-      return [];
-    }
-
-    return patchGroupListDialog.commentId
-      ? patchGroups.filter(
-          (group) => group.comment_id === patchGroupListDialog.commentId
-        )
-      : pendingPatchGroups;
-  }, [patchGroupListDialog, patchGroups, pendingPatchGroups]);
   const selectedPatchDerivedGroup = useMemo(
     () =>
       selectedPatch
@@ -1242,6 +1240,10 @@ export function DocumentEditor() {
   );
   const reviewablePatches = useMemo(
     () => {
+      if (isPatchReviewWorkspaceOpen && selectedPatchReviewBatch) {
+        return selectedPatchReviewBatch.patches;
+      }
+
       if (patchReviewGroupScopeId) {
         return (
           patchGroups.find((group) => group.id === patchReviewGroupScopeId)
@@ -1249,15 +1251,15 @@ export function DocumentEditor() {
         );
       }
 
-      if (patchReviewCommentScopeId) {
-        return pendingPatches.filter(
-          (patch) => patch.comment_id === patchReviewCommentScopeId
-        );
-      }
-
       return pendingPatches;
     },
-    [patchGroups, patchReviewCommentScopeId, patchReviewGroupScopeId, pendingPatches]
+    [
+      isPatchReviewWorkspaceOpen,
+      patchGroups,
+      patchReviewGroupScopeId,
+      pendingPatches,
+      selectedPatchReviewBatch
+    ]
   );
   const selectedPatchComment = useMemo(
     () =>
@@ -1943,7 +1945,6 @@ export function DocumentEditor() {
   useEffect(() => {
     if (selectedPatchId && !patches.some((patch) => patch.id === selectedPatchId)) {
       setSelectedPatchId(null);
-      setPatchReviewCommentScopeId(null);
       setPatchReviewGroupScopeId(null);
     }
   }, [patches, selectedPatchId]);
@@ -2942,12 +2943,11 @@ export function DocumentEditor() {
     setPatches([]);
     setReviewBatches([]);
     setReviewQueueOverrides(null);
+    setIsPatchReviewWorkspaceOpen(false);
+    setSelectedPatchReviewBatchId(null);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
-    setPatchGroupListDialog(null);
-    setPatchReviewCommentScopeId(null);
     setPatchReviewGroupScopeId(null);
-    setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setReviewBatchCancelDialog(null);
@@ -5948,12 +5948,6 @@ export function DocumentEditor() {
       );
       setDocumentLevelExportGuardDialog(null);
       setMarkCommentFocusGuardDialog(null);
-      setPatchReviewCommentScopeId((current) =>
-        current && selectedIds.has(current) ? null : current
-      );
-      setPatchGroupListDialog((current) =>
-        current?.commentId && selectedIds.has(current.commentId) ? null : current
-      );
       if (selectedPatch?.comment_id && selectedIds.has(selectedPatch.comment_id)) {
         setSelectedPatchId(null);
         setSelectedPatchGroupId(null);
@@ -6182,12 +6176,6 @@ export function DocumentEditor() {
       );
       setDocumentLevelExportGuardDialog(null);
       setMarkCommentFocusGuardDialog(null);
-      setPatchReviewCommentScopeId((current) =>
-        current && deletedIds.has(current) ? null : current
-      );
-      setPatchGroupListDialog((current) =>
-        current?.commentId && deletedIds.has(current.commentId) ? null : current
-      );
       if (selectedPatch?.comment_id && deletedIds.has(selectedPatch.comment_id)) {
         setSelectedPatchId(null);
         setSelectedPatchGroupId(null);
@@ -6334,29 +6322,81 @@ export function DocumentEditor() {
     });
   }
 
-  function handleReviewFirstPendingPatch() {
-    if (pendingPatchGroups.length === 0) {
-      setSaveFeedback({
-        kind: "info",
-        message: "No pending patch proposals to review."
-      });
-      return;
-    }
+  function handleOpenPatchReviewWorkspace({
+    groupId,
+    patchId,
+    selectPreferredPatch = true
+  }: {
+    groupId?: string;
+    patchId?: string;
+    selectPreferredPatch?: boolean;
+  } = {}) {
+    const retainedBatch =
+      !groupId && !patchId && selectedPatchReviewBatch
+        ? selectedPatchReviewBatch
+        : null;
+    const queueBatch =
+      patchReviewQueueBatches.find((batch) =>
+        patchId
+          ? batch.patches.some((patch) => patch.id === patchId)
+          : groupId
+            ? batch.groups.some((group) => group.id === groupId)
+            : false
+      ) ??
+      retainedBatch ??
+      patchReviewQueueBatches.find(
+        (batch) => batch.status_summary.pending > 0
+      ) ??
+      patchReviewQueueBatches[0] ??
+      null;
+    const retainedPatch =
+      !groupId &&
+      !patchId &&
+      selectedPatchId &&
+      queueBatch?.patches.find((patch) => patch.id === selectedPatchId);
+    const preferredPatch = patchId
+      ? queueBatch?.patches.find((patch) => patch.id === patchId) ?? null
+      : retainedPatch
+        ? retainedPatch
+      : selectPreferredPatch && queueBatch
+        ? getPreferredPatchReviewSelection(queueBatch)
+        : null;
+    const preferredGroup = preferredPatch
+      ? queueBatch?.groups.find((group) =>
+          group.patches.some((patch) => patch.id === preferredPatch.id)
+        ) ?? null
+      : groupId
+        ? queueBatch?.groups.find((group) => group.id === groupId) ?? null
+        : null;
 
-    if (pendingPatchGroups.length === 1) {
-      handleOpenPatchGroup(pendingPatchGroups[0].id);
-      return;
-    }
-
-    setPatchGroupListDialog({ commentId: null });
+    setMobileNavigationOpen(false);
+    setCommentsOpen(false);
+    setCommentAddRequest(null);
+    setCommentReplyRequest(null);
+    setMarkdownSelectionRequest(null);
+    setActiveCommentState({ kind: "none" });
+    setIsGuidedReviewOpen(false);
+    setSelectedPatchReviewBatchId(queueBatch?.id ?? null);
+    setSelectedPatchGroupId(preferredGroup?.id ?? null);
+    setPatchReviewGroupScopeId(preferredGroup?.id ?? null);
+    setSelectedPatchId(preferredPatch?.id ?? null);
+    setIsPatchReviewWorkspaceOpen(true);
   }
 
-  function handleOpenPatchGroup(groupId: string) {
-    setPatchGroupListDialog(null);
-    setSelectedPatchGroupId(groupId);
-    setSelectedPatchId(null);
-    setPatchReviewCommentScopeId(null);
+  function handleClosePatchReviewWorkspace() {
+    setIsPatchReviewWorkspaceOpen(false);
     setPatchReviewGroupScopeId(null);
+    setSelectedPatchGroupId(null);
+    setSelectedPatchId(null);
+    window.requestAnimationFrame(() => {
+      document
+        .querySelector<HTMLButtonElement>('[aria-label="Review menu"]')
+        ?.focus();
+    });
+  }
+
+  function handleReviewFirstPendingPatch() {
+    handleOpenPatchReviewWorkspace();
   }
 
   function handleReviewCommentPatches(commentId: string) {
@@ -6372,26 +6412,29 @@ export function DocumentEditor() {
       return;
     }
 
-    if (linkedGroups.length === 1 && linkedGroups[0].patches.length === 1) {
-      handleReviewPatchFromGroup(linkedGroups[0], linkedGroups[0].patches[0]);
-      return;
-    }
-
-    if (linkedGroups.length === 1) {
-      handleOpenPatchGroup(linkedGroups[0].id);
-      return;
-    }
-
-    setPatchGroupListDialog({ commentId });
+    const firstGroup = linkedGroups[0];
+    handleOpenPatchReviewWorkspace({
+      groupId: firstGroup.id,
+      patchId:
+        linkedGroups.length === 1 && firstGroup.patches.length === 1
+          ? firstGroup.patches[0].id
+          : undefined,
+      selectPreferredPatch: false
+    });
   }
 
   function handleReviewPatchFromGroup(
     group: DerivedPatchGroup,
     patch: PatchmarkPatch
   ) {
+    const queueBatch = patchReviewQueueBatches.find((batch) =>
+      batch.groups.some((candidate) => candidate.id === group.id)
+    );
+
+    setIsPatchReviewWorkspaceOpen(true);
+    setSelectedPatchReviewBatchId(queueBatch?.id ?? null);
     setSelectedPatchGroupId(group.id);
     setPatchReviewGroupScopeId(group.id);
-    setPatchReviewCommentScopeId(null);
     setSelectedPatchId(patch.id);
   }
 
@@ -6417,9 +6460,13 @@ export function DocumentEditor() {
       patchGroups.find((candidate) => candidate.id === getDerivedPatchGroupId(patch)) ??
       null;
 
+    const queueBatch = patchReviewQueueBatches.find((batch) =>
+      batch.patches.some((candidate) => candidate.id === patch.id)
+    );
+
+    setSelectedPatchReviewBatchId(queueBatch?.id ?? null);
     setSelectedPatchGroupId(group?.id ?? null);
     setPatchReviewGroupScopeId(group?.id ?? null);
-    setPatchReviewCommentScopeId(null);
     setSelectedPatchId(patch.id);
   }
 
@@ -6509,18 +6556,14 @@ export function DocumentEditor() {
       return;
     }
 
-    setSelectedPatchId(null);
-    setSelectedPatchGroupId(null);
-    setPatchReviewCommentScopeId(null);
-    setPatchReviewGroupScopeId(null);
-    setRecentlyAppliedPatchId(null);
+    setIsPatchReviewWorkspaceOpen(false);
     window.requestAnimationFrame(() => {
       void handleFindComment(linkedComment);
       window.requestAnimationFrame(() => {
-        setCommentReplyRequest((currentRequest) => ({
+        setCommentReplyRequest({
           commentId: linkedComment.id,
-          nonce: (currentRequest?.nonce ?? 0) + 1
-        }));
+          nonce: Date.now()
+        });
       });
     });
   }
@@ -6717,7 +6760,6 @@ export function DocumentEditor() {
       setDocumentVersion((currentVersion) => currentVersion + 1);
       setComments(mutationResult.comments);
       setPatches(nextPatches);
-      setRecentlyAppliedPatchId(currentPatch.id);
       setSaveStatus("idle");
       setSaveFeedback({
         kind:
@@ -9059,12 +9101,11 @@ export function DocumentEditor() {
     });
     lastScrolledActiveCommentKeyRef.current = null;
     setIsProjectDataLoading(false);
+    setIsPatchReviewWorkspaceOpen(false);
+    setSelectedPatchReviewBatchId(null);
     setSelectedPatchId(null);
     setSelectedPatchGroupId(null);
-    setPatchGroupListDialog(null);
-    setPatchReviewCommentScopeId(null);
     setPatchReviewGroupScopeId(null);
-    setRecentlyAppliedPatchId(null);
     setCommentsError(null);
     setChatGptPromptDialog(null);
     setReviewBatchCancelDialog(null);
@@ -9421,37 +9462,54 @@ export function DocumentEditor() {
         </ApplicationMenu>
         <ApplicationMenu label="Review">
           {(closeMenu) => (
-            <ApplicationMenuGroup label="ChatGPT review">
-              <ApplicationMenuItem
-                closeMenu={closeMenu}
-                disabled={isSaving || isCommentBusy || isReanchorMode}
-                onSelect={handleGenerateChatGptPrompt}
-              >
-                Generate ChatGPT Prompt
-              </ApplicationMenuItem>
-              <ApplicationMenuItem
-                closeMenu={closeMenu}
-                disabled={isSaving || isCommentBusy || isReanchorMode}
-                onSelect={handleOpenChatGptImportDialog}
-              >
-                Import ChatGPT Response
-              </ApplicationMenuItem>
-              <ApplicationMenuItem
-                closeMenu={closeMenu}
-                disabled={
-                  !projectHandle ||
-                  isSaving ||
-                  isCommentBusy ||
-                  isProjectDataLoading ||
-                  isProjectRecoveryReadOnly ||
-                  isReanchorMode ||
-                  projectHandle.documentAvailability === "missing"
+            <>
+              <ApplicationMenuGroup
+                label={
+                  pendingPatches.length > 0
+                    ? `Patch decisions · ${pendingPatches.length} pending`
+                    : "Patch decisions"
                 }
-                onSelect={handleOpenGuidedReview}
               >
-                Guided Review
-              </ApplicationMenuItem>
-            </ApplicationMenuGroup>
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={!projectHandle || isReanchorMode}
+                  onSelect={handleReviewFirstPendingPatch}
+                >
+                  Review patch proposals
+                </ApplicationMenuItem>
+              </ApplicationMenuGroup>
+              <ApplicationMenuGroup label="ChatGPT review">
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={isSaving || isCommentBusy || isReanchorMode}
+                  onSelect={handleGenerateChatGptPrompt}
+                >
+                  Generate ChatGPT Prompt
+                </ApplicationMenuItem>
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={isSaving || isCommentBusy || isReanchorMode}
+                  onSelect={handleOpenChatGptImportDialog}
+                >
+                  Import ChatGPT Response
+                </ApplicationMenuItem>
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={
+                    !projectHandle ||
+                    isSaving ||
+                    isCommentBusy ||
+                    isProjectDataLoading ||
+                    isProjectRecoveryReadOnly ||
+                    isReanchorMode ||
+                    projectHandle.documentAvailability === "missing"
+                  }
+                  onSelect={handleOpenGuidedReview}
+                >
+                  Guided Review
+                </ApplicationMenuItem>
+              </ApplicationMenuGroup>
+            </>
           )}
         </ApplicationMenu>
         <button
@@ -10800,85 +10858,80 @@ export function DocumentEditor() {
           </form>
         </div>
       ) : null}
-      {patchGroupListDialog ? (
-        <PatchGroupListDialog
+      {isPatchReviewWorkspaceOpen ? (
+        <PatchReviewWorkspaceDialog
+          batches={patchReviewQueueBatches}
           commentsById={commentsById}
-          groups={patchGroupListGroups}
-          onClose={() => setPatchGroupListDialog(null)}
-          onOpenGroup={handleOpenPatchGroup}
-          scopeLabel={
-            patchGroupListDialog.commentId
-              ? `linked to ${patchGroupListDialog.commentId}`
-              : "with pending proposals"
-          }
-        />
-      ) : null}
-      {selectedPatchGroup ? (
-        <PatchGroupReviewDialog
-          allPatches={patches}
-          comment={selectedPatchGroupComment}
-          group={selectedPatchGroup}
+          feedback={saveStatus === "failed" ? saveFeedback : null}
           isPatchActionBusy={isSaving}
-          onClose={() => {
-            setSelectedPatchGroupId(null);
-            setPatchReviewGroupScopeId(null);
+          onClose={handleClosePatchReviewWorkspace}
+          onRejectPendingPatches={(group) => handleRejectPatchGroup(group)}
+          onSelectBatch={(batch) => {
+            const preferredPatch = getPreferredPatchReviewSelection(batch);
+            const preferredGroup = preferredPatch
+              ? batch.groups.find((group) =>
+                  group.patches.some((patch) => patch.id === preferredPatch.id)
+                ) ?? null
+              : null;
+            setSelectedPatchReviewBatchId(batch.id);
+            setSelectedPatchGroupId(preferredGroup?.id ?? null);
+            setPatchReviewGroupScopeId(preferredGroup?.id ?? null);
+            setSelectedPatchId(preferredPatch?.id ?? null);
           }}
-          onRejectPendingPatches={() => handleRejectPatchGroup(selectedPatchGroup)}
-          onReviewPatch={(patch) =>
-            handleReviewPatchFromGroup(selectedPatchGroup, patch)
-          }
-        />
-      ) : null}
-      {selectedPatch && selectedPatchAnchorStatus ? (
-        <PatchReviewDialog
-          anchorStatus={selectedPatchAnchorStatus}
-          comment={selectedPatchComment}
-          followUpRelationship={selectedPatchFollowUpRelationship}
-          hasMultipleReviewablePatches={reviewablePatches.length > 1}
-          isPatchActionBusy={isSaving}
-          markdown={markdown}
-          dependencyStatus={
-            selectedPatchDependencyStatus ??
-            getPatchDependencyReviewStatus({
-              patch: selectedPatch,
-              patches
-            })
-          }
-          onAcceptPatch={() => handleAcceptPatch(selectedPatch)}
-          onBackToGroup={
-            selectedPatchDerivedGroup
-              ? () => {
-                  setSelectedPatchGroupId(selectedPatchDerivedGroup.id);
-                  setSelectedPatchId(null);
-                  setPatchReviewGroupScopeId(null);
-                }
-              : undefined
-          }
-          onClose={() => {
-            setSelectedPatchId(null);
-            setPatchReviewCommentScopeId(null);
-            setPatchReviewGroupScopeId(null);
-            setRecentlyAppliedPatchId(null);
-          }}
-          onFindPatchAnchorText={() => handleFindPatchAnchorText(selectedPatch)}
-          onContinueDiscussion={() =>
-            handleContinuePatchDiscussion(selectedPatch)
-          }
-          onNextPatch={() => handleNavigatePatchReview(1)}
-          onPreviousPatch={() => handleNavigatePatchReview(-1)}
-          onReviewDependency={handleReviewPatchDependency}
-          onRejectPatch={() => handleRejectPatch(selectedPatch)}
-          onUpdatePatchAnchor={() => handleUpdatePatchAnchor(selectedPatch)}
-          patch={selectedPatch}
-          patchGroup={selectedPatchDerivedGroup}
-          patchIndex={Math.max(
-            0,
-            reviewablePatches.findIndex((patch) => patch.id === selectedPatch.id)
+          onSelectPatch={handleReviewPatchFromGroup}
+          selectedBatchId={selectedPatchReviewBatch?.id ?? null}
+          selectedPatchId={selectedPatch?.id ?? null}
+        >
+          {selectedPatch && selectedPatchAnchorStatus ? (
+            <PatchReviewDialog
+              anchorStatus={selectedPatchAnchorStatus}
+              comment={selectedPatchComment}
+              embedded
+              followUpRelationship={selectedPatchFollowUpRelationship}
+              hasMultipleReviewablePatches={reviewablePatches.length > 1}
+              isPatchActionBusy={isSaving}
+              markdown={markdown}
+              dependencyStatus={
+                selectedPatchDependencyStatus ??
+                getPatchDependencyReviewStatus({
+                  patch: selectedPatch,
+                  patches
+                })
+              }
+              onAcceptPatch={() => handleAcceptPatch(selectedPatch)}
+              onBackToGroup={
+                selectedPatchDerivedGroup
+                  ? () => {
+                      setSelectedPatchGroupId(selectedPatchDerivedGroup.id);
+                      setSelectedPatchId(null);
+                    }
+                  : undefined
+              }
+              onClose={handleClosePatchReviewWorkspace}
+              onFindPatchAnchorText={() => handleFindPatchAnchorText(selectedPatch)}
+              onContinueDiscussion={() =>
+                handleContinuePatchDiscussion(selectedPatch)
+              }
+              onNextPatch={() => handleNavigatePatchReview(1)}
+              onPreviousPatch={() => handleNavigatePatchReview(-1)}
+              onReviewDependency={handleReviewPatchDependency}
+              onRejectPatch={() => handleRejectPatch(selectedPatch)}
+              onUpdatePatchAnchor={() => handleUpdatePatchAnchor(selectedPatch)}
+              patch={selectedPatch}
+              patchGroup={selectedPatchDerivedGroup}
+              patchIndex={Math.max(
+                0,
+                reviewablePatches.findIndex(
+                  (patch) => patch.id === selectedPatch.id
+                )
+              )}
+              project={projectHandle}
+              reviewablePatchCount={reviewablePatches.length}
+            />
+          ) : (
+            <PatchReviewEmptyInspector batch={selectedPatchReviewBatch} />
           )}
-          project={projectHandle}
-          showApplyCompletion={recentlyAppliedPatchId === selectedPatch.id}
-          reviewablePatchCount={reviewablePatches.length}
-        />
+        </PatchReviewWorkspaceDialog>
       ) : null}
       {rewriteSession ? (
         <RewriteWorkspace
@@ -10907,346 +10960,351 @@ export function DocumentEditor() {
   );
 }
 
-function PatchGroupListDialog({
+function PatchReviewWorkspaceDialog({
+  batches,
+  children,
   commentsById,
-  groups,
-  onClose,
-  onOpenGroup,
-  scopeLabel
-}: {
-  commentsById: Map<string, PatchmarkComment>;
-  groups: DerivedPatchGroup[];
-  onClose: () => void;
-  onOpenGroup: (groupId: string) => void;
-  scopeLabel: string;
-}) {
-  return (
-    <div className="snapshot-dialog-backdrop">
-      <section className="comment-export-dialog patch-group-list-dialog">
-        <header className="snapshot-dialog-header">
-          <div>
-            <span>Patch groups</span>
-            <h2>Pending Patch Groups</h2>
-            <p>
-              Review bundles {scopeLabel}. Each patch still requires individual
-              review.
-            </p>
-          </div>
-          <button type="button" onClick={onClose}>
-            Close
-          </button>
-        </header>
-        <div className="patch-group-list-body">
-          {groups.length === 0 ? (
-            <p className="patch-review-source-note">
-              No patch groups match this view.
-            </p>
-          ) : (
-            groups.map((group) => (
-              <PatchGroupSummaryCard
-                comment={
-                  group.comment_id ? commentsById.get(group.comment_id) ?? null : null
-                }
-                group={group}
-                key={group.id}
-                onOpenGroup={onOpenGroup}
-              />
-            ))
-          )}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function PatchGroupReviewDialog({
-  allPatches,
-  comment,
-  group,
+  feedback,
   isPatchActionBusy,
   onClose,
   onRejectPendingPatches,
-  onReviewPatch
+  onSelectBatch,
+  onSelectPatch,
+  selectedBatchId,
+  selectedPatchId
 }: {
-  allPatches: PatchmarkPatch[];
-  comment: PatchmarkComment | null;
-  group: DerivedPatchGroup;
+  batches: PatchReviewQueueBatch[];
+  children: ReactNode;
+  commentsById: Map<string, PatchmarkComment>;
+  feedback: SaveFeedback | null;
   isPatchActionBusy: boolean;
   onClose: () => void;
-  onRejectPendingPatches: () => void;
-  onReviewPatch: (patch: PatchmarkPatch) => void;
+  onRejectPendingPatches: (group: DerivedPatchGroup) => void;
+  onSelectBatch: (batch: PatchReviewQueueBatch) => void;
+  onSelectPatch: (group: DerivedPatchGroup, patch: PatchmarkPatch) => void;
+  selectedBatchId: string | null;
+  selectedPatchId: string | null;
 }) {
-  const latestChatGptReply = comment
-    ? getLatestChatGptThreadEntry(comment)
+  const dialogRef = useRef<HTMLElement>(null);
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  const selectedBatch = selectedBatchId
+    ? batches.find((batch) => batch.id === selectedBatchId) ?? null
     : null;
-  const pendingPatchCount = group.status_summary.pending;
-  const needsReviewCount = getPatchGroupNeedsReviewCount(group);
-  const nextPendingPatch =
-    group.patches.find((patch) => patch.status === "pending") ?? null;
-  const rejectGroupButtonLabel =
-    pendingPatchCount > 0 && pendingPatchCount < group.status_summary.total
-      ? "Reject remaining pending patches"
-      : "Reject Patch Group";
+  const allPatches = batches.flatMap((batch) => batch.patches);
+  const pendingTotal = batches.reduce(
+    (total, batch) => total + batch.status_summary.pending,
+    0
+  );
+
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    const focusFrame = window.requestAnimationFrame(() => {
+      headingRef.current?.focus();
+    });
+
+    document.body.style.overflow = "hidden";
+
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        onCloseRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], summary, input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+        ) ?? []
+      ).filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (!first || !last) {
+        return;
+      }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.cancelAnimationFrame(focusFrame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
 
   return (
-    <div className="snapshot-dialog-backdrop patch-review-backdrop">
-      <section className="patch-review-dialog" aria-label="Review Patch Group">
-        <header className="snapshot-dialog-header">
+    <div
+      className="snapshot-dialog-backdrop patch-review-backdrop"
+      onPointerDown={(event) => {
+        if (event.target === event.currentTarget) {
+          onClose();
+        }
+      }}
+    >
+      <section
+        ref={dialogRef}
+        aria-busy={isPatchActionBusy || undefined}
+        aria-label="Review Patch Group"
+        aria-modal="true"
+        className="patch-review-workspace"
+        data-testid="patch-review-workspace"
+        role="dialog"
+      >
+        <header className="patch-review-workspace-header">
           <div>
-            <span>Patch group</span>
-            <h2>Review Patch Group</h2>
+            <span>Review</span>
+            <h2 ref={headingRef} tabIndex={-1}>
+              Patch proposals
+            </h2>
             <p>
-              This is a review bundle. Patchmark will not apply or resolve
-              anything automatically.
+              {pendingTotal > 0
+                ? `${pendingTotal} patch${pendingTotal === 1 ? "" : "es"} awaiting a decision.`
+                : "No patch decisions remain."}
             </p>
           </div>
-          <button type="button" onClick={onClose}>
+          <button aria-label="Close Review" type="button" onClick={onClose}>
             Close
           </button>
         </header>
 
-        <div className="patch-review-body">
-          <section className="patch-review-card">
-            <h3>Group metadata</h3>
-            <dl className="patch-metadata">
-              <div>
-                <dt>Patch group ID</dt>
-                <dd>{group.display_id}</dd>
-              </div>
-              <div>
-                <dt>Linked comment ID</dt>
-                <dd>{group.comment_id ?? "None"}</dd>
-              </div>
-              <div>
-                <dt>Source import ID</dt>
-                <dd>{group.source_import_id ?? "Not recorded"}</dd>
-              </div>
-              <div>
-                <dt>Created at</dt>
-                <dd>{formatPatchDate(group.created_at)}</dd>
-              </div>
-              <div>
-                <dt>Status</dt>
-                <dd>{getPatchGroupStatusLabel(group.status)}</dd>
-              </div>
-            </dl>
-            {group.source_chat_url ? (
-              <a
-                className="patch-source-chat-link"
-                href={group.source_chat_url}
-                target="_blank"
-                rel="noreferrer"
-              >
-                Open ChatGPT chat
-              </a>
-            ) : null}
-          </section>
+        {feedback ? (
+          <div
+            aria-live={feedback.kind === "error" ? "assertive" : "polite"}
+            className={`document-save-banner document-save-banner-${feedback.kind} patch-review-feedback`}
+            role={feedback.kind === "error" ? "alert" : "status"}
+          >
+            {feedback.message}
+          </div>
+        ) : null}
 
-          <section className="patch-review-card">
-            <h3>Status summary</h3>
-            <div className="patch-group-progress" aria-label="Patch group progress">
-              {getPatchGroupProgressItems(group.status_summary).map((item) => (
-                <span
-                  className={`patch-group-progress-item patch-group-progress-${item.key}`}
-                  key={item.key}
-                >
-                  <strong>{item.count}</strong> {item.label}
-                </span>
-              ))}
-            </div>
-            <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
-            <p>{formatPatchGroupApplicabilitySummary(group)}</p>
-            {needsReviewCount > 0 ? (
-              <p className="patch-group-needs-review">
-                Needs review: {needsReviewCount} pending patch
-                {needsReviewCount === 1 ? "" : "es"} cannot be applied
-                automatically yet.
-              </p>
-            ) : null}
-            <div className="patch-group-review-actions">
-              <button
-                type="button"
-                className="patch-group-next-button"
-                disabled={!nextPendingPatch}
-                onClick={() => {
-                  if (nextPendingPatch) {
-                    onReviewPatch(nextPendingPatch);
-                  }
-                }}
-              >
-                Next pending patch
-              </button>
-              <button
-                type="button"
-                className="patch-group-reject-button"
-                disabled={isPatchActionBusy || pendingPatchCount === 0}
-                onClick={onRejectPendingPatches}
-              >
-                {rejectGroupButtonLabel}
-              </button>
-              <span>
-                {pendingPatchCount > 0
-                  ? `Rejects ${pendingPatchCount} pending patch${
-                      pendingPatchCount === 1 ? "" : "es"
-                    } only. The document will not be changed.`
-                  : "No pending patches remain in this group."}
-              </span>
-            </div>
-          </section>
-
-          {comment ? (
-            <section className="patch-review-card">
-              <h3>Linked comment context</h3>
-              <p>{comment.comment}</p>
-              {latestChatGptReply ? (
-                <blockquote className="patch-linked-reply">
-                  Latest ChatGPT reply: {latestChatGptReply.content}
-                </blockquote>
-              ) : null}
+        <div className="patch-review-workspace-layout">
+          <aside className="patch-review-queue" aria-label="Review queue">
+            <section className="patch-review-batch-switcher" aria-labelledby="patch-review-batches-heading">
+              <header>
+                <h3 id="patch-review-batches-heading">Review Batches</h3>
+                <span>{batches.length}</span>
+              </header>
+              {batches.length > 0 ? (
+                <ul>
+                  {batches.map((batch, index) => (
+                    <li key={batch.id}>
+                      <button
+                        type="button"
+                        aria-current={batch.id === selectedBatchId ? "true" : undefined}
+                        onClick={() => onSelectBatch(batch)}
+                      >
+                        <strong>{getPatchReviewQueueBatchLabel(batch, index)}</strong>
+                        <span>{getPatchReviewQueueBatchStatusLabel(batch)}</span>
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p>No Review Batches or imported patch proposals are available.</p>
+              )}
             </section>
-          ) : null}
 
-          <section className="patch-review-card">
-            <h3>Patches in this group</h3>
-            <div className="patch-group-patch-list">
-              {group.patches.map((patch, index) => (
-                <PatchGroupPatchCard
-                  allPatches={allPatches}
-                  comment={comment}
-                  group={group}
-                  index={index}
-                  key={patch.id}
-                  onReviewPatch={onReviewPatch}
-                  patch={patch}
-                />
-              ))}
-            </div>
-          </section>
+            {selectedBatch ? (
+              <section className="patch-review-queue-patches" aria-labelledby="patch-review-patches-heading">
+                <header>
+                  <div>
+                    <h3 id="patch-review-patches-heading">Patches</h3>
+                    <span>{formatPatchGroupStatusSummary(selectedBatch.status_summary)}</span>
+                  </div>
+                  <details className="patch-review-batch-details">
+                    <summary>Batch details</summary>
+                    <dl>
+                      <div>
+                        <dt>Review Batch ID</dt>
+                        <dd>{selectedBatch.review_batch?.batch_id ?? "Untracked import"}</dd>
+                      </div>
+                      <div>
+                        <dt>Batch lifecycle</dt>
+                        <dd>{formatReviewBatchLifecycle(selectedBatch.review_batch)}</dd>
+                      </div>
+                      <div>
+                        <dt>Source import</dt>
+                        <dd>{selectedBatch.source_import_id ?? "No response imported"}</dd>
+                      </div>
+                      <div>
+                        <dt>Created</dt>
+                        <dd>{formatPatchDate(selectedBatch.created_at)}</dd>
+                      </div>
+                    </dl>
+                  </details>
+                </header>
+
+                {selectedBatch.groups.length > 0 ? (
+                  <div className="patch-review-queue-groups">
+                    {selectedBatch.groups.map((group) => {
+                      const comment = group.comment_id
+                        ? commentsById.get(group.comment_id) ?? null
+                        : null;
+                      return (
+                        <section className="patch-review-queue-group" key={group.id}>
+                          <header>
+                            <div>
+                              <strong>{getPatchGroupDisplayTitle(group.patches, comment)}</strong>
+                              <span>{formatPatchGroupStatusSummary(group.status_summary)}</span>
+                            </div>
+                            {group.status_summary.pending > 0 ? (
+                              <details>
+                                <summary>Group actions</summary>
+                                <button
+                                  type="button"
+                                  className="patch-group-reject-button"
+                                  disabled={isPatchActionBusy}
+                                  onClick={() => onRejectPendingPatches(group)}
+                                >
+                                  {group.status_summary.pending < group.status_summary.total
+                                    ? "Reject remaining pending patches"
+                                    : "Reject Patch Group"}
+                                </button>
+                              </details>
+                            ) : null}
+                          </header>
+                          <ol className="patch-review-patch-list">
+                            {group.patches.map((patch, index) => (
+                              <PatchReviewQueueRow
+                                allPatches={allPatches}
+                                anchorStatus={
+                                  group.anchor_status_by_patch_id[patch.id] ??
+                                  getPatchReviewAnchorStatus("", patch)
+                                }
+                                comment={comment}
+                                index={index}
+                                isSelected={patch.id === selectedPatchId}
+                                key={patch.id}
+                                onSelect={() => onSelectPatch(group, patch)}
+                                patch={patch}
+                                total={group.patches.length}
+                              />
+                            ))}
+                          </ol>
+                        </section>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="patch-review-queue-empty">
+                    This batch has no imported patch proposals.
+                  </p>
+                )}
+              </section>
+            ) : null}
+          </aside>
+
+          <main className="patch-review-inspector-shell" aria-label="Selected patch inspector">
+            <p className="sr-only" aria-live="polite">
+              {selectedPatchId
+                ? `Selected patch ${selectedPatchId}.`
+                : "No patch selected."}
+            </p>
+            {children}
+          </main>
         </div>
       </section>
     </div>
   );
 }
 
-function PatchGroupSummaryCard({
-  comment,
-  group,
-  onOpenGroup
-}: {
-  comment: PatchmarkComment | null;
-  group: DerivedPatchGroup;
-  onOpenGroup: (groupId: string) => void;
-}) {
-  const groupTitle = getPatchGroupDisplayTitle(group.patches, comment);
-
-  return (
-    <article className="patch-group-summary-card">
-      <div>
-        <span className={`patch-group-status patch-group-status-${group.status}`}>
-          {getPatchGroupStatusLabel(group.status)}
-        </span>
-        <h3>{groupTitle}</h3>
-        <span>{formatPatchDate(group.created_at)}</span>
-        <div className="patch-group-progress patch-group-progress-compact">
-          {getPatchGroupProgressItems(group.status_summary).map((item) => (
-            <span
-              className={`patch-group-progress-item patch-group-progress-${item.key}`}
-              key={item.key}
-            >
-              <strong>{item.count}</strong> {item.label}
-            </span>
-          ))}
-        </div>
-        <p>{formatPatchGroupStatusSummary(group.status_summary)}</p>
-        <p>{formatPatchGroupApplicabilitySummary(group)}</p>
-        <details className="patch-group-technical-details">
-          <summary>Details</summary>
-          <span>Patch group ID: {group.display_id}</span>
-          {group.comment_id ? (
-            <span>Linked comment ID: {group.comment_id}</span>
-          ) : null}
-        </details>
-      </div>
-      <button type="button" onClick={() => onOpenGroup(group.id)}>
-        Review group
-      </button>
-    </article>
-  );
-}
-
-function PatchGroupPatchCard({
+function PatchReviewQueueRow({
   allPatches,
+  anchorStatus,
   comment,
-  group,
   index,
-  onReviewPatch,
-  patch
+  isSelected,
+  onSelect,
+  patch,
+  total
 }: {
   allPatches: PatchmarkPatch[];
+  anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
-  group: DerivedPatchGroup;
   index: number;
-  onReviewPatch: (patch: PatchmarkPatch) => void;
+  isSelected: boolean;
+  onSelect: () => void;
   patch: PatchmarkPatch;
+  total: number;
 }) {
-  const anchorStatus =
-    group.anchor_status_by_patch_id[patch.id] ??
-    getPatchReviewAnchorStatus("", patch);
   const displayState = getPatchDisplayState(patch, anchorStatus);
-  const lifecycleDetail = getPatchLifecycleDetail(patch);
-  const snapshotDetail = getPatchSnapshotDetail(patch);
-  const patchTitle = getPatchDisplayTitle(patch, {
-    comment,
-    includeGroupPosition: true
-  });
-  const followUpRelationship = getPatchFollowUpRelationship({
-    comment,
-    patch,
-    patches: allPatches
-  });
   const dependencyStatus = getPatchDependencyReviewStatus({
     applicability:
       anchorStatus.kind === "pending" ? anchorStatus.applicability : undefined,
     patch,
     patches: allPatches
   });
+  const discussionCount = comment?.thread.length ?? 0;
 
   return (
-    <article
-      className={`patch-group-patch-card patch-group-patch-card-${displayState}`}
+    <li
+      className={`patch-group-patch-card patch-review-queue-row patch-group-patch-card-${displayState}`}
     >
-      <div>
-        <div className="patch-group-patch-heading">
-          <strong>{patchTitle}</strong>
+      <button
+        type="button"
+        aria-current={isSelected ? "true" : undefined}
+        onClick={onSelect}
+      >
+        <span className="patch-review-queue-row-heading">
+          <strong>{getPatchDisplayTitle(patch, { comment })}</strong>
           <span className={`patch-status-badge patch-status-badge-${displayState}`}>
             {getPatchStatusBadgeLabel(displayState, patch)}
           </span>
-        </div>
-        <span>
-          Patch {index + 1} of {group.patches.length}
         </span>
-        {lifecycleDetail ? <span>{lifecycleDetail}</span> : null}
-        {followUpRelationship ? (
-          <span className="patch-follow-up-inline">
-            Refines: {followUpRelationship.display_title}
-          </span>
-        ) : null}
+        <span>
+          Patch {index + 1} of {total}
+          {patch.target_heading ? ` · ${patch.target_heading}` : ""}
+        </span>
         {dependencyStatus.totalCount > 0 ? (
           <span>{formatPatchDependencySummary(dependencyStatus)}</span>
         ) : null}
-        <details className="patch-group-technical-details">
-          <summary>Details</summary>
-          <span>Patch ID: {patch.id}</span>
-          {snapshotDetail ? <span>{snapshotDetail}</span> : null}
-          <span>Target: {patch.target_heading ?? "Not specified"}</span>
-          <span>{getPatchReviewAnchorShortLabel(anchorStatus)}</span>
-        </details>
-      </div>
-      <p>{patch.reason}</p>
-      <button type="button" onClick={() => onReviewPatch(patch)}>
-        {getPatchReviewButtonLabel(displayState, patch)}
+        {discussionCount > 0 ? (
+          <span>
+            Discussion · {discussionCount} repl{discussionCount === 1 ? "y" : "ies"}
+          </span>
+        ) : null}
       </button>
-    </article>
+    </li>
+  );
+}
+
+function PatchReviewEmptyInspector({
+  batch
+}: {
+  batch: PatchReviewQueueBatch | null;
+}) {
+  const hasPendingPatches = Boolean(batch?.status_summary.pending);
+
+  return (
+    <section className="patch-review-empty-inspector" aria-label="Patch review status">
+      <span>{hasPendingPatches ? "Select a patch" : "Review complete"}</span>
+      <h2>
+        {hasPendingPatches
+          ? "Choose one proposed change to inspect"
+          : batch
+            ? "No decisions remain in this batch"
+            : "No patch proposals to review"}
+      </h2>
+      <p>
+        {hasPendingPatches
+          ? "Inactive rows show identity, status, dependencies, and discussion only. Selecting a row does not change the document."
+          : "Historical Review Batches remain available in the queue without competing with pending work."}
+      </p>
+    </section>
   );
 }
 
@@ -11254,6 +11312,7 @@ function PatchReviewDialog({
   anchorStatus,
   comment,
   dependencyStatus,
+  embedded = false,
   followUpRelationship,
   hasMultipleReviewablePatches,
   isPatchActionBusy,
@@ -11272,12 +11331,12 @@ function PatchReviewDialog({
   patchGroup,
   patchIndex,
   project,
-  reviewablePatchCount,
-  showApplyCompletion
+  reviewablePatchCount
 }: {
   anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
   dependencyStatus: PatchDependencyReviewStatus;
+  embedded?: boolean;
   followUpRelationship: PatchFollowUpRelationship | null;
   hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
@@ -11297,7 +11356,6 @@ function PatchReviewDialog({
   patchIndex: number;
   project: PatchmarkProjectHandle | null;
   reviewablePatchCount: number;
-  showApplyCompletion: boolean;
 }) {
   const latestChatGptReply = comment
     ? getLatestChatGptThreadEntry(comment)
@@ -11306,6 +11364,12 @@ function PatchReviewDialog({
   const reasonSources = patch.reason_sources ?? patch.sources ?? [];
   const riskSources = patch.risk_sources ?? [];
   const [reviewMode, setReviewMode] = useState<PatchReviewMode>("visual");
+  const headingRef = useRef<HTMLHeadingElement>(null);
+  const statusRef = useRef<HTMLSpanElement>(null);
+  const previousPatchStateRef = useRef({
+    id: patch.id,
+    status: patch.status
+  });
   const [preApplySnapshotMarkdown, setPreApplySnapshotMarkdown] = useState<
     string | null
   >(null);
@@ -11348,9 +11412,11 @@ function PatchReviewDialog({
     anchorStatus.kind === "pending" &&
     anchorStatus.applicability === "table_row_rebase_available" &&
     !isPatchActionBusy;
-  const canContinueDiscussion =
-    patch.status === "accepted" && comment?.status === "open";
+  const canContinueDiscussion = Boolean(
+    patch.comment_id && comment?.status === "open"
+  );
   const patchDisplayState = getPatchDisplayState(patch, anchorStatus);
+  const patchDecisionExplanationId = `patch-decision-explanation-${patch.id}`;
   const patchTitleInfo = getPatchDisplayTitleInfo(patch, {
     comment,
     includeGroupPosition: hasMultipleReviewablePatches
@@ -11358,7 +11424,31 @@ function PatchReviewDialog({
 
   useEffect(() => {
     setReviewMode("visual");
-  }, [patch.id]);
+    if (embedded) {
+      const focusFrame = window.requestAnimationFrame(() => {
+        headingRef.current?.focus();
+      });
+      return () => window.cancelAnimationFrame(focusFrame);
+    }
+  }, [embedded, patch.id]);
+
+  useEffect(() => {
+    const previousPatchState = previousPatchStateRef.current;
+    previousPatchStateRef.current = {
+      id: patch.id,
+      status: patch.status
+    };
+
+    if (
+      previousPatchState.id === patch.id &&
+      previousPatchState.status !== patch.status
+    ) {
+      const focusFrame = window.requestAnimationFrame(() => {
+        statusRef.current?.focus();
+      });
+      return () => window.cancelAnimationFrame(focusFrame);
+    }
+  }, [patch.id, patch.status]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -11399,16 +11489,23 @@ function PatchReviewDialog({
     };
   }, [patch, project]);
 
-  return (
-    <div className="snapshot-dialog-backdrop patch-review-backdrop">
-      <section className="patch-review-dialog" aria-label="Review Patch Proposal">
+  const dialog = (
+      <section
+        aria-busy={isPatchActionBusy || undefined}
+        className={`patch-review-dialog${embedded ? " patch-review-dialog-embedded" : ""}`}
+        aria-label="Review Patch Proposal"
+      >
         <header className="snapshot-dialog-header">
           <div>
             <span>Patch proposal</span>
             <div className="patch-review-heading-row">
-              <h2>{patchTitleInfo.title}</h2>
+              <h2 ref={headingRef} tabIndex={-1}>{patchTitleInfo.title}</h2>
               <span
+                ref={statusRef}
+                aria-live="polite"
                 className={`patch-status-badge patch-status-badge-${patchDisplayState}`}
+                role="status"
+                tabIndex={-1}
               >
                 {getPatchStatusBadgeLabel(patchDisplayState, patch)}
               </span>
@@ -11429,6 +11526,15 @@ function PatchReviewDialog({
           <button type="button" onClick={onFindPatchAnchorText}>
             {patch.status === "accepted" ? "Find applied text" : "Find original text"}
           </button>
+          {canContinueDiscussion ? (
+            <button
+              type="button"
+              disabled={isPatchActionBusy}
+              onClick={onContinueDiscussion}
+            >
+              {patch.status === "accepted" ? "Continue discussion" : "Discussion"}
+            </button>
+          ) : null}
           {patch.status === "pending" ? (
             <div className="patch-decision-actions">
               {anchorStatus.kind === "pending" &&
@@ -11444,6 +11550,7 @@ function PatchReviewDialog({
               ) : null}
               <button
                 type="button"
+                aria-describedby={patchDecisionExplanationId}
                 className="patch-accept-button"
                 disabled={!canAcceptPatch}
                 onClick={onAcceptPatch}
@@ -11458,9 +11565,11 @@ function PatchReviewDialog({
                 Reject Patch
               </button>
               {dependencyBlockerMessage || acceptDisabledMessage ? (
-                <span>{dependencyBlockerMessage ?? acceptDisabledMessage}</span>
+                <span id={patchDecisionExplanationId}>
+                  {dependencyBlockerMessage ?? acceptDisabledMessage}
+                </span>
               ) : (
-                <span>
+                <span id={patchDecisionExplanationId}>
                   Accepting creates a safety snapshot. The linked comment stays open.
                 </span>
               )}
@@ -11470,13 +11579,13 @@ function PatchReviewDialog({
           )}
           {hasMultipleReviewablePatches ? (
             <>
-              <button type="button" onClick={onPreviousPatch}>
+              <button className="patch-review-sequence-button" type="button" onClick={onPreviousPatch}>
                 Previous patch
               </button>
-              <button type="button" onClick={onNextPatch}>
+              <button className="patch-review-sequence-button" type="button" onClick={onNextPatch}>
                 Next patch
               </button>
-              <span>
+              <span className="patch-review-sequence-status">
                 Patch {patchIndex + 1} of {reviewablePatchCount}
               </span>
             </>
@@ -11532,29 +11641,6 @@ function PatchReviewDialog({
           </div>
         ) : null}
 
-        {canContinueDiscussion ? (
-          <div className="patch-apply-completion" role="status">
-            <div>
-              <strong>
-                {showApplyCompletion
-                  ? "Patch applied"
-                  : "Continue linked discussion"}
-              </strong>
-              <span>
-                The linked comment remains open. Continue the discussion if you
-                want another refinement.
-              </span>
-            </div>
-            <button
-              type="button"
-              disabled={isPatchActionBusy}
-              onClick={onContinueDiscussion}
-            >
-              Continue discussion
-            </button>
-          </div>
-        ) : null}
-
         {sourceReferenceWarnings.length > 0 ? (
           <div className="patch-review-warnings" role="note">
             {sourceReferenceWarnings.map((warning) => (
@@ -11564,8 +11650,8 @@ function PatchReviewDialog({
         ) : null}
 
         <div className="patch-review-body">
-          <section className="patch-review-card">
-            <h3>Metadata</h3>
+          <details className="patch-review-card patch-review-metadata-details">
+            <summary>Patch details and provenance</summary>
             <dl className="patch-metadata">
               <div>
                 <dt>Display title</dt>
@@ -11711,18 +11797,21 @@ function PatchReviewDialog({
                 Open ChatGPT chat
               </a>
             ) : null}
-          </section>
+          </details>
 
           {comment ? (
-            <section className="patch-review-card">
-              <h3>Linked comment context</h3>
+            <details className="patch-review-card patch-review-metadata-details">
+              <summary>
+                Linked discussion context · {comment.thread.length} repl
+                {comment.thread.length === 1 ? "y" : "ies"}
+              </summary>
               <p>{comment.comment}</p>
               {latestChatGptReply ? (
                 <blockquote className="patch-linked-reply">
                   Latest ChatGPT reply: {latestChatGptReply.content}
                 </blockquote>
               ) : null}
-            </section>
+            </details>
           ) : null}
 
           <section className="patch-review-card patch-review-mode-card">
@@ -11920,14 +12009,14 @@ function PatchReviewDialog({
             </>
           )}
 
-          <section className="patch-review-card">
+          <section className="patch-review-card patch-review-rationale-card">
             <h3>Reason</h3>
             <p>{patch.reason}</p>
             <PatchSourceList label="Reason sources" sources={reasonSources} />
           </section>
 
           {patch.risk ? (
-            <section className="patch-review-card">
+            <section className="patch-review-card patch-review-risk-card">
               <h3>Risk / tradeoff</h3>
               <p>{patch.risk}</p>
               <PatchSourceList label="Risk sources" sources={riskSources} />
@@ -11935,6 +12024,13 @@ function PatchReviewDialog({
           ) : null}
         </div>
       </section>
+  );
+
+  return embedded ? (
+    dialog
+  ) : (
+    <div className="snapshot-dialog-backdrop patch-review-backdrop">
+      {dialog}
     </div>
   );
 }
@@ -13877,6 +13973,164 @@ function derivePatchGroups(
         );
       }
     );
+}
+
+function derivePatchReviewQueueBatches({
+  patchGroups,
+  reviewBatches
+}: {
+  patchGroups: DerivedPatchGroup[];
+  reviewBatches: PatchmarkReviewBatch[];
+}): PatchReviewQueueBatch[] {
+  const consumedGroupIds = new Set<string>();
+  const trackedBatches = reviewBatches.map((reviewBatch) => {
+    const groups = reviewBatch.import_id
+      ? patchGroups.filter(
+          (group) => group.source_import_id === reviewBatch.import_id
+        )
+      : [];
+    groups.forEach((group) => consumedGroupIds.add(group.id));
+    const patches = groups.flatMap((group) => group.patches);
+
+    return {
+      created_at: reviewBatch.created_at,
+      groups,
+      id: reviewBatch.batch_id,
+      patches,
+      review_batch: reviewBatch,
+      source_import_id: reviewBatch.import_id,
+      status_summary: createPatchGroupStatusSummary(patches)
+    };
+  });
+  const untrackedGroups = patchGroups.filter(
+    (group) => !consumedGroupIds.has(group.id)
+  );
+  const untrackedByImport = new Map<string, DerivedPatchGroup[]>();
+
+  for (const group of untrackedGroups) {
+    const key = group.source_import_id ?? `group:${group.id}`;
+    const groups = untrackedByImport.get(key) ?? [];
+    groups.push(group);
+    untrackedByImport.set(key, groups);
+  }
+
+  const untrackedBatches = Array.from(untrackedByImport.entries()).map(
+    ([key, groups]) => {
+      const patches = groups.flatMap((group) => group.patches);
+      return {
+        created_at: groups[0]?.created_at ?? "",
+        groups,
+        id: `import:${key}`,
+        patches,
+        review_batch: null,
+        source_import_id: key.startsWith("group:") ? null : key,
+        status_summary: createPatchGroupStatusSummary(patches)
+      };
+    }
+  );
+
+  return [...trackedBatches, ...untrackedBatches].sort((first, second) => {
+    const attentionOrder = Number(second.status_summary.pending > 0) -
+      Number(first.status_summary.pending > 0);
+    if (attentionOrder !== 0) {
+      return attentionOrder;
+    }
+
+    return getPatchReviewTimestamp(second.created_at) -
+      getPatchReviewTimestamp(first.created_at);
+  });
+}
+
+function getPreferredPatchReviewSelection(
+  batch: PatchReviewQueueBatch
+): PatchmarkPatch | null {
+  const pendingPatches = batch.patches.filter(
+    (patch) => patch.status === "pending"
+  );
+  const readyPatch = pendingPatches.find((patch) => {
+    const group = batch.groups.find((candidate) =>
+      candidate.patches.some((groupPatch) => groupPatch.id === patch.id)
+    );
+    const anchorStatus = group?.anchor_status_by_patch_id[patch.id];
+    const dependencyStatus = getPatchDependencyReviewStatus({
+      applicability:
+        anchorStatus?.kind === "pending"
+          ? anchorStatus.applicability
+          : undefined,
+      patch,
+      patches: batch.patches
+    });
+
+    return (
+      anchorStatus?.kind === "pending" &&
+      anchorStatus.applicability === "exact_match" &&
+      !getPatchDependencyBlockerMessage(dependencyStatus)
+    );
+  });
+
+  return readyPatch ?? pendingPatches[0] ?? batch.patches[0] ?? null;
+}
+
+function getPatchReviewQueueBatchLabel(
+  batch: PatchReviewQueueBatch,
+  index: number
+): string {
+  const source = batch.review_batch
+    ? batch.review_batch.source === "guided_review"
+      ? "Guided Review"
+      : "Manual Review"
+    : "Imported review";
+  const date = formatPatchDate(batch.created_at);
+
+  return `${source} ${index + 1} · ${date}`;
+}
+
+function getPatchReviewQueueBatchStatusLabel(
+  batch: PatchReviewQueueBatch
+): string {
+  const blockedCount = batch.groups.reduce(
+    (total, group) => total + getPatchGroupNeedsReviewCount(group),
+    0
+  );
+
+  if (batch.status_summary.pending > 0) {
+    return `${batch.status_summary.pending} pending${
+      blockedCount > 0 ? ` · ${blockedCount} needs attention` : ""
+    }`;
+  }
+  if (batch.patches.length > 0) {
+    return `Complete · ${batch.status_summary.accepted} applied · ${batch.status_summary.rejected} rejected${
+      batch.status_summary.stale > 0
+        ? ` · ${batch.status_summary.stale} stale`
+        : ""
+    }`;
+  }
+
+  return formatReviewBatchLifecycle(batch.review_batch);
+}
+
+function formatReviewBatchLifecycle(
+  batch: PatchmarkReviewBatch | null
+): string {
+  if (!batch) {
+    return "Imported response without tracked Review Batch";
+  }
+
+  const labels: Record<PatchmarkReviewBatch["status"], string> = {
+    acknowledged: "Response acknowledged",
+    cancelled: "Cancelled",
+    exported: "Awaiting response",
+    responded: "Response complete",
+    responded_partial: "Partial response",
+    response_received: "Response awaiting acknowledgment"
+  };
+
+  return labels[batch.status];
+}
+
+function getPatchReviewTimestamp(value: string): number {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : 0;
 }
 
 function createDeferredPatchGroupApplicabilitySummary(
@@ -18422,27 +18676,6 @@ function getPatchStatusBadgeLabel(
   return "PENDING";
 }
 
-function getPatchReviewButtonLabel(
-  displayState: PatchDisplayState,
-  patch?: PatchmarkPatch
-): string {
-  if (displayState === "applied" || displayState === "applied_evolved") {
-    return "View applied patch";
-  }
-
-  if (displayState === "rejected") {
-    return "View rejected patch";
-  }
-
-  if (displayState === "stale") {
-    return patch?.human_rewrite_impact
-      ? "Review after human rewrite"
-      : "View stale patch";
-  }
-
-  return "Review patch";
-}
-
 function formatPatchTitleSource(
   source: ReturnType<typeof getPatchDisplayTitleInfo>["source"]
 ): string {
@@ -18494,94 +18727,6 @@ function getPatchReviewIntro(
   return "Inspect this ChatGPT proposal. Accepting applies the exact suggested replacement after a safety snapshot.";
 }
 
-function getPatchLifecycleDetail(patch: PatchmarkPatch): string | null {
-  if (patch.status === "accepted") {
-    return patch.applied_at
-      ? `Applied ${formatPatchDate(patch.applied_at)}`
-      : patch.accepted_at
-        ? `Accepted ${formatPatchDate(patch.accepted_at)}`
-        : "Applied";
-  }
-
-  if (patch.status === "rejected") {
-    return patch.rejected_at
-      ? `Rejected ${formatPatchDate(patch.rejected_at)}`
-      : "Rejected";
-  }
-
-  if (patch.status === "stale") {
-    return patch.human_rewrite_impact
-      ? "Needs review after human rewrite"
-      : "Stale patch";
-  }
-
-  return null;
-}
-
-function getPatchSnapshotDetail(patch: PatchmarkPatch): string | null {
-  if (patch.status !== "accepted" || !patch.pre_apply_snapshot_id) {
-    return null;
-  }
-
-  return `Pre-apply snapshot: ${patch.pre_apply_snapshot_id}`;
-}
-
-function getPatchGroupProgressItems(
-  statusSummary: PatchmarkPatchGroup["status_summary"]
-): Array<{ count: number; key: PatchDisplayState | "total"; label: string }> {
-  return [
-    {
-      count: statusSummary.total,
-      key: "total",
-      label: "total"
-    },
-    {
-      count: statusSummary.accepted,
-      key: "applied",
-      label: "applied"
-    },
-    {
-      count: statusSummary.pending,
-      key: "pending",
-      label: "pending"
-    },
-    {
-      count: statusSummary.rejected,
-      key: "rejected",
-      label: "rejected"
-    },
-    {
-      count: statusSummary.stale,
-      key: "stale",
-      label: "stale"
-    }
-  ];
-}
-
-function getPatchGroupNeedsReviewCount(group: DerivedPatchGroup): number {
-  return (
-    group.applicability_summary.multiple_matches +
-    group.applicability_summary.not_found +
-    group.applicability_summary.table_row_rebase_available
-  );
-}
-
-function getPatchGroupStatusLabel(status: PatchmarkPatchGroupStatus): string {
-  if (status === "needs_review") {
-    return "Needs review";
-  }
-
-  if (status === "in_progress") {
-    return "In progress";
-  }
-
-  if (status === "completed") {
-    return "Completed";
-  }
-
-  return "Pending";
-}
-
 function formatPatchGroupStatusSummary(
   statusSummary: PatchmarkPatchGroup["status_summary"]
 ): string {
@@ -18592,15 +18737,12 @@ function formatPatchGroupStatusSummary(
   } applied · ${statusSummary.rejected} rejected · ${statusSummary.stale} stale`;
 }
 
-function formatPatchGroupApplicabilitySummary(
-  group: DerivedPatchGroup
-): string {
-  const cleanCount = group.applicability_summary.exact_match;
-  const needsReviewCount = getPatchGroupNeedsReviewCount(group);
-
-  return `${cleanCount} can apply cleanly · ${needsReviewCount} need${
-    needsReviewCount === 1 ? "s" : ""
-  } review`;
+function getPatchGroupNeedsReviewCount(group: DerivedPatchGroup): number {
+  return (
+    group.applicability_summary.multiple_matches +
+    group.applicability_summary.not_found +
+    group.applicability_summary.table_row_rebase_available
+  );
 }
 
 function getLatestChatGptThreadEntry(

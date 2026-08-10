@@ -111,10 +111,11 @@ try {
   await waitFor(
     client,
     `document.body.textContent?.includes("Strategy Exact Protocol V2") &&
-      document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+      document.querySelector(".application-comments-count")?.textContent?.trim() === "1"`,
     "exact protocol-v2 project"
   );
 
+  await clickButtonByText(client, "Review");
   await clickButtonByText(client, "Import ChatGPT Response");
   await waitFor(
     client,
@@ -307,7 +308,7 @@ try {
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
     client,
-    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+    `document.querySelector(".application-comments-count")?.textContent?.trim() === "1"`,
     "reopened exact response project"
   );
   await clickButtonByText(client, "Guided Review");
@@ -320,7 +321,7 @@ try {
   await clickButtonByText(client, "Review responses");
   await waitFor(
     client,
-    `document.querySelector('[data-comment-id="PM-COMMENT-0019"] article')?.getAttribute("aria-current") === "true"`,
+    `document.getElementById("patchmark-comment-card-PM-COMMENT-0019")?.getAttribute("aria-current") === "true"`,
     "document-scoped response comment navigation"
   );
   assert.equal(
@@ -405,7 +406,7 @@ try {
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
     client,
-    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+    `document.querySelector(".application-comments-count")?.textContent?.trim() === "1"`,
     "acknowledged project after restart"
   );
   await clickButtonByText(client, "Guided Review");

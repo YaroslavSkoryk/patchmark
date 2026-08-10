@@ -21,8 +21,7 @@ import {
   startFixtureFileServer,
   waitForDevToolsUrl,
   waitForEditorShell,
-  waitForProcessExit,
-  waitForProjectComments
+  waitForProcessExit
 } from "./comment-rail-editor-browser-regression.test.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
@@ -85,13 +84,28 @@ try {
   });
   await client.call("Page.navigate", { url: editorUrl });
   await waitForEditorShell(client);
+  await clickVisibleButton(client, "File");
   await clickVisibleButton(client, "Open Project Folder");
-  await waitForProjectComments(client);
+  await waitFor(
+    client,
+    `document.querySelector(".document-save-banner")?.textContent?.includes("Opened Patchmark project folder")`,
+    "project open completion"
+  );
+  await clickSelector(client, ".application-comments-trigger");
+  await waitFor(
+    client,
+    `document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "true"`,
+    "open Comments"
+  );
+  await waitFor(
+    client,
+    `document.querySelectorAll("#document-comments-panel .comment-card").length >= 5`,
+    "current project comments"
+  );
   console.log("browser-step: project loaded");
 
   await openPatchGroupByTitle(client, fixture.linkedPatch.display_title);
   console.log("browser-step: linked group opened");
-  await clickVisibleButton(client, "Next pending patch");
   await waitForText(client, "Accept Patch");
   console.log("browser-step: linked patch review opened");
   await evaluate(client, {
@@ -127,6 +141,7 @@ try {
   await waitForFixtureReply(client, fixture.comment.id, followUpText);
   console.log("browser-step: follow-up saved");
 
+  await clickVisibleButton(client, "Review");
   await clickVisibleButton(client, "Generate ChatGPT Prompt");
   const exportState = await waitForExportPayload(client, fixture.comment.id);
   console.log("browser-step: prompt generated");
@@ -176,6 +191,7 @@ try {
   );
 
   await clickScopedButton(client, ".comment-export-dialog", "Close");
+  await clickVisibleButton(client, "Review");
   await clickVisibleButton(client, "Import ChatGPT Response");
   const followUpImport = createFollowUpImport({
     commentId: fixture.comment.id,
@@ -205,7 +221,6 @@ try {
     followUpGroupText,
     /Refines:\s*Browser continuation test patch/
   );
-  await clickVisibleButton(client, "Next pending patch");
   const pendingReviewText = await evaluate(client, {
     expression: `document.querySelector("[aria-label='Review Patch Proposal']")?.textContent ?? ""`
   });
@@ -243,8 +258,6 @@ try {
     commentSummaryText,
     /Latest change applied:\s*Restore validation requirements/
   );
-  assert.match(commentSummaryText, /\d+ applied/);
-  assert.match(commentSummaryText, /View related patches/);
   await waitForText(client, "Before applying: Restore validation requirements");
 
   await evaluate(client, {
@@ -254,15 +267,11 @@ try {
     userGesture: true
   });
   await clickCommentPatchButton(client, fixture.comment.id);
-  await waitForSelector(client, ".patch-group-list-dialog");
-  const relatedPatchTitles = await evaluate(client, {
-    expression: `Array.from(document.querySelectorAll(".patch-group-summary-card h3")).map((heading) => heading.textContent?.trim())`
-  });
-  assert.ok(
-    relatedPatchTitles.indexOf("Browser continuation test patch") <
-      relatedPatchTitles.indexOf("Restore validation requirements")
-  );
-  await clickScopedButton(client, ".patch-group-list-dialog", "Close");
+  await waitForSelector(client, "[data-testid='patch-review-workspace']");
+  const relatedPatchTitles = await readReviewQueuePatchTitles(client);
+  assert.ok(relatedPatchTitles.includes("Browser continuation test patch"));
+  assert.ok(relatedPatchTitles.includes("Restore validation requirements"));
+  await clickSelector(client, ".patch-review-workspace-header > button");
 
   await applyEdgePatchAndAssertNoContinuation(
     client,
@@ -277,8 +286,24 @@ try {
 
   await client.call("Page.reload");
   await waitForEditorShell(client);
+  await clickVisibleButton(client, "File");
   await clickVisibleButton(client, "Open Project Folder");
-  await waitForProjectComments(client);
+  await waitFor(
+    client,
+    `document.querySelector(".document-save-banner")?.textContent?.includes("Opened Patchmark project folder")`,
+    "project reopen completion"
+  );
+  await clickSelector(client, ".application-comments-trigger");
+  await waitFor(
+    client,
+    `document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "true"`,
+    "reopen Comments"
+  );
+  await waitFor(
+    client,
+    `document.querySelectorAll("#document-comments-panel .comment-card").length >= 5`,
+    "current project comments after reload"
+  );
   console.log("browser-step: project reloaded");
 
   await evaluate(client, {
@@ -288,22 +313,13 @@ try {
     userGesture: true
   });
   await clickCommentPatchButton(client, fixture.comment.id);
-  await waitForSelector(client, ".patch-group-list-dialog");
-  const reloadedRelatedPatchTitles = await evaluate(client, {
-    expression: `Array.from(document.querySelectorAll(".patch-group-summary-card h3")).map((heading) => heading.textContent?.trim())`
-  });
+  await waitForSelector(client, "[data-testid='patch-review-workspace']");
+  const reloadedRelatedPatchTitles = await readReviewQueuePatchTitles(client);
   assert.ok(
     reloadedRelatedPatchTitles.includes("Restore validation requirements"),
     `Reloaded related titles: ${JSON.stringify(reloadedRelatedPatchTitles)}`
   );
-  await clickCardButton(
-    client,
-    ".patch-group-summary-card",
-    "Restore validation requirements",
-    "Review group"
-  );
-  await waitForSelector(client, "[aria-label='Review Patch Group']");
-  await clickVisibleButton(client, "View applied patch");
+  await selectReviewPatchByTitle(client, "Restore validation requirements");
   await waitForText(client, "Follow-up to: Browser continuation test patch");
   await clickScopedButton(client, ".patch-review-dialog", "Close");
 
@@ -312,7 +328,6 @@ try {
     fixture.comment.id,
     fixture.linkedPatch.display_title
   );
-  await clickVisibleButton(client, "View applied patch");
   await waitForText(client, "Continue discussion");
   console.log("browser-step: accepted patch reopened");
   await clickVisibleButtonNonBlocking(client, "Continue discussion");
@@ -326,7 +341,6 @@ try {
     fixture.comment.id,
     fixture.linkedPatch.display_title
   );
-  await clickVisibleButton(client, "View applied patch");
   const resolvedContinuationCount = await evaluate(client, {
     expression: `Array.from(document.querySelectorAll(".patch-review-dialog button"))
       .filter((button) => button.textContent?.trim() === "Continue discussion").length`
@@ -347,7 +361,7 @@ try {
           "follow-up import creates a separate titled pending patch",
           "pending and accepted review preserve descriptive lineage",
           "comment summary and version history use descriptive titles",
-          "related patches remain chronological and title-first",
+          "related patches remain batch-accessible and title-first",
           "legacy and different-comment patches have no false lineage",
           "reload preserves thread, titles, lineage, and statuses",
           "resolved comments hide continuation"
@@ -534,9 +548,8 @@ function createFollowUpImport({ commentId, originalText }) {
 
 async function openPatchGroupByTitle(client, title) {
   await clickSelector(client, ".patch-summary-card button");
-  await waitForSelector(client, ".patch-group-list-dialog");
-  await clickCardButton(client, ".patch-group-summary-card", title, "Review group");
-  await waitForSelector(client, "[aria-label='Review Patch Group']");
+  await waitForSelector(client, "[data-testid='patch-review-workspace']");
+  await selectReviewPatchByTitle(client, title);
 }
 
 async function openCommentPatchGroupByTitle(client, commentId, title) {
@@ -559,38 +572,15 @@ async function openCommentPatchGroupByTitle(client, commentId, title) {
     "comment related patches action"
   );
   await clickCommentPatchButton(client, commentId);
-  await waitForSelector(client, ".patch-group-list-dialog");
-  await clickCardButton(client, ".patch-group-summary-card", title, "Review group");
-  await waitForSelector(client, "[aria-label='Review Patch Group']");
+  await waitForSelector(client, "[data-testid='patch-review-workspace']");
+  await selectReviewPatchByTitle(client, title);
 }
 
 async function applyEdgePatchAndAssertNoContinuation(client, title) {
-  await waitFor(
-    client,
-    `Array.from(document.querySelectorAll(".patch-summary-card button"))
-      .some((button) => button.getClientRects().length > 0 && !button.disabled)`,
-    "visible pending patch summary"
-  );
-  await clickSelector(client, ".patch-summary-card button");
-  const edgeReviewState = await waitFor(
-    client,
-    `document.querySelector(".patch-group-list-dialog")
-      ? "list"
-      : document.querySelector("[aria-label='Review Patch Group']")
-        ? "group"
-        : null`,
-    "edge patch group review"
-  );
-  if (edgeReviewState === "list") {
-    await clickCardButton(
-      client,
-      ".patch-group-summary-card",
-      title,
-      "Review group"
-    );
-  }
-  await waitForSelector(client, "[aria-label='Review Patch Group']");
-  await clickVisibleButton(client, "Next pending patch");
+  await clickVisibleButton(client, "Review");
+  await clickVisibleButton(client, "Review patch proposals");
+  await waitForSelector(client, "[data-testid='patch-review-workspace']");
+  await selectReviewPatchByTitle(client, title);
   await evaluate(client, {
     expression: `window.confirm = () => true; true`,
     userGesture: true
@@ -603,6 +593,69 @@ async function applyEdgePatchAndAssertNoContinuation(client, title) {
   });
   assert.equal(continuationCount, 0);
   await clickScopedButton(client, ".patch-review-dialog", "Close");
+}
+
+async function selectReviewPatchByTitle(client, title) {
+  const batchCount = await evaluate(client, {
+    expression: `document.querySelectorAll(".patch-review-batch-switcher button").length`
+  });
+
+  for (let index = 0; index < batchCount; index += 1) {
+    await evaluate(client, {
+      expression: `(() => {
+        const button = document.querySelectorAll(".patch-review-batch-switcher button")[${index}];
+        if (!(button instanceof HTMLButtonElement)) return false;
+        button.click();
+        return true;
+      })()`,
+      userGesture: true
+    });
+    await delay(50);
+    const selected = await evaluate(client, {
+      expression: `(() => {
+        const button = Array.from(document.querySelectorAll(".patch-review-queue-row button"))
+          .find((candidate) => candidate.textContent?.includes(${JSON.stringify(title)}));
+        if (!(button instanceof HTMLButtonElement)) return false;
+        button.click();
+        return true;
+      })()`,
+      userGesture: true
+    });
+    if (selected) {
+      await waitFor(
+        client,
+        `document.querySelector("[aria-label='Review Patch Proposal'] h2")?.textContent?.includes(${JSON.stringify(title)})`,
+        `selected review patch ${title}`
+      );
+      return;
+    }
+  }
+
+  throw new Error(`Review patch not found: ${title}`);
+}
+
+async function readReviewQueuePatchTitles(client) {
+  const batchCount = await evaluate(client, {
+    expression: `document.querySelectorAll(".patch-review-batch-switcher button").length`
+  });
+  const titles = [];
+
+  for (let index = 0; index < batchCount; index += 1) {
+    await evaluate(client, {
+      expression: `document.querySelectorAll(".patch-review-batch-switcher button")[${index}]?.click(); true`,
+      userGesture: true
+    });
+    await delay(50);
+    titles.push(
+      ...(await evaluate(client, {
+        expression: `Array.from(document.querySelectorAll(".patch-review-queue-row strong"))
+          .map((heading) => heading.textContent?.trim())
+          .filter(Boolean)`
+      }))
+    );
+  }
+
+  return [...new Set(titles)];
 }
 
 async function fillFocusedReply(client, text) {
@@ -851,22 +904,6 @@ async function clickSelector(client, selector) {
         .filter((element) => element.getClientRects().length > 0 && !element.disabled);
       if (elements.length !== 1) throw new Error("Expected one visible selector ${selector}, found " + elements.length);
       elements[0].click();
-      return true;
-    })()`,
-    userGesture: true
-  });
-}
-
-async function clickCardButton(client, cardSelector, title, buttonText) {
-  await evaluate(client, {
-    expression: `(() => {
-      const cards = Array.from(document.querySelectorAll(${JSON.stringify(cardSelector)}))
-        .filter((card) => card.textContent?.includes(${JSON.stringify(title)}));
-      if (cards.length !== 1) throw new Error("Expected one card ${title}, found " + cards.length);
-      const button = Array.from(cards[0].querySelectorAll("button"))
-        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(buttonText)} && !candidate.disabled);
-      if (!button) throw new Error("Card button not found: ${buttonText}");
-      button.click();
       return true;
     })()`,
     userGesture: true

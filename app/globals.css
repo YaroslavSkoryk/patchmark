@@ -4259,6 +4259,285 @@ button {
   padding: 16px;
 }
 
+.patch-review-workspace {
+  display: flex;
+  width: min(1360px, 100%);
+  height: calc(100dvh - 32px);
+  min-height: 0;
+  margin: auto;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
+}
+
+.patch-review-workspace-header {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 20px;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border);
+  padding: 14px 18px;
+}
+
+.patch-review-workspace-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.patch-review-workspace-header span,
+.patch-review-workspace-header p {
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 700;
+}
+
+.patch-review-workspace-header h2,
+.patch-review-workspace-header p {
+  margin: 0;
+}
+
+.patch-review-workspace-header h2 {
+  font-size: 1.25rem;
+}
+
+.patch-review-workspace-header button {
+  flex: 0 0 auto;
+}
+
+.patch-review-feedback {
+  flex: 0 0 auto;
+}
+
+.patch-review-workspace-layout {
+  display: grid;
+  min-height: 0;
+  flex: 1 1 auto;
+  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+}
+
+.patch-review-queue {
+  min-width: 0;
+  overflow: auto;
+  border-right: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-muted) 58%, var(--surface));
+}
+
+.patch-review-batch-switcher,
+.patch-review-queue-patches {
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+}
+
+.patch-review-batch-switcher {
+  border-bottom: 1px solid var(--border);
+}
+
+.patch-review-batch-switcher > header,
+.patch-review-queue-patches > header,
+.patch-review-queue-group > header {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.patch-review-batch-switcher h3,
+.patch-review-queue-patches h3 {
+  margin: 0;
+  font-size: 0.84rem;
+  letter-spacing: 0.02em;
+  text-transform: uppercase;
+}
+
+.patch-review-batch-switcher > header > span,
+.patch-review-queue-patches > header span,
+.patch-review-queue-group > header span,
+.patch-review-batch-switcher > p,
+.patch-review-queue-empty {
+  color: var(--muted);
+  font-size: 0.76rem;
+  line-height: 1.4;
+}
+
+.patch-review-batch-switcher ul,
+.patch-review-patch-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.patch-review-batch-switcher button {
+  display: grid;
+  width: 100%;
+  gap: 2px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.patch-review-batch-switcher button span {
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 600;
+}
+
+.patch-review-batch-switcher button[aria-current="true"] {
+  background: var(--surface);
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.patch-review-batch-details {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.patch-review-batch-details summary,
+.patch-review-queue-group summary {
+  cursor: pointer;
+  font-weight: 800;
+}
+
+.patch-review-batch-details dl {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0 0;
+}
+
+.patch-review-batch-details dl div {
+  display: grid;
+  gap: 1px;
+}
+
+.patch-review-batch-details dd {
+  overflow-wrap: anywhere;
+  margin: 0;
+  color: var(--text);
+}
+
+.patch-review-queue-groups {
+  display: grid;
+  gap: 12px;
+}
+
+.patch-review-queue-group {
+  display: grid;
+  gap: 6px;
+}
+
+.patch-review-queue-group > header strong {
+  display: block;
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.patch-review-queue-group > header details {
+  flex: 0 0 auto;
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.patch-review-queue-group > header details[open] {
+  display: grid;
+  gap: 6px;
+  justify-items: end;
+}
+
+.patch-review-queue-group .patch-group-reject-button {
+  max-width: 180px;
+  border-color: #e4b5a5;
+  background: #fff0ea;
+  color: #8d2f18;
+  font-size: 0.74rem;
+}
+
+.patch-review-queue-row {
+  display: block;
+  overflow: hidden;
+  border-width: 0 0 0 3px;
+  padding: 0;
+}
+
+.patch-review-queue-row > button {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  gap: 3px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 8px 9px;
+  text-align: left;
+}
+
+.patch-review-queue-row > button[aria-current="true"] {
+  background: var(--accent-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 45%, transparent);
+}
+
+.patch-review-queue-row-heading {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.patch-review-queue-row-heading > strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.patch-review-queue-row > button > span:not(.patch-review-queue-row-heading) {
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.35;
+}
+
+.patch-review-inspector-shell {
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--surface);
+}
+
+.patch-review-empty-inspector {
+  display: grid;
+  width: min(560px, calc(100% - 40px));
+  gap: 8px;
+  align-content: center;
+  min-height: 100%;
+  margin: auto;
+}
+
+.patch-review-empty-inspector span {
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+  font-weight: 900;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.patch-review-empty-inspector h2,
+.patch-review-empty-inspector p {
+  margin: 0;
+}
+
+.patch-review-empty-inspector p {
+  color: var(--muted);
+  line-height: 1.55;
+}
+
 .patch-review-dialog {
   display: flex;
   width: 100%;
@@ -4270,6 +4549,16 @@ button {
   border: 1px solid var(--border);
   background: var(--surface);
   box-shadow: 0 30px 80px rgba(22, 35, 29, 0.24);
+}
+
+.patch-review-dialog-embedded {
+  height: 100%;
+  border: 0;
+  box-shadow: none;
+}
+
+.patch-review-dialog-embedded .snapshot-dialog-header {
+  padding-block: 12px;
 }
 
 .patch-review-actions {
@@ -4762,12 +5051,66 @@ button {
   padding: 18px;
 }
 
+.patch-review-dialog-embedded .patch-review-body > * {
+  order: 2;
+}
+
+.patch-review-dialog-embedded .patch-review-mode-card {
+  order: 0;
+}
+
+.patch-review-dialog-embedded .patch-review-preview-grid {
+  order: 1;
+}
+
+.patch-review-dialog-embedded .patch-review-rationale-card,
+.patch-review-dialog-embedded .patch-review-risk-card {
+  order: 3;
+}
+
+.patch-review-dialog-embedded .patch-review-metadata-details {
+  order: 4;
+}
+
 .patch-review-card {
   display: grid;
   gap: 10px;
   border: 1px solid var(--border);
   background: #fbfcfb;
   padding: 12px;
+}
+
+.patch-review-dialog-embedded .patch-review-card {
+  border: 0;
+  background: transparent;
+  padding: 8px 0;
+}
+
+.patch-review-dialog-embedded .patch-review-preview-grid > .patch-review-card {
+  border: 1px solid color-mix(in srgb, var(--border) 70%, transparent);
+  padding: 12px;
+}
+
+.patch-review-dialog-embedded .patch-review-preview-grid .markdown-snippet-preview {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.patch-review-metadata-details {
+  align-content: start;
+}
+
+.patch-review-metadata-details > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.patch-review-metadata-details[open] > summary {
+  margin-bottom: 10px;
+  color: var(--text);
 }
 
 .patch-review-card h3 {
@@ -5173,6 +5516,36 @@ button {
     width: min(360px, calc(100vw - 40px));
   }
 
+  .patch-review-workspace-layout {
+    grid-template-columns: 1fr;
+    grid-template-rows: minmax(150px, 26dvh) minmax(0, 1fr);
+  }
+
+  .patch-review-queue {
+    display: grid;
+    min-height: 0;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    grid-template-columns: minmax(190px, 0.8fr) minmax(280px, 1.2fr);
+  }
+
+  .patch-review-batch-switcher,
+  .patch-review-queue-patches {
+    min-height: 0;
+    overflow: auto;
+    padding: 10px;
+  }
+
+  .patch-review-batch-switcher {
+    border-right: 1px solid var(--border);
+    border-bottom: 0;
+  }
+
+  .patch-review-preview-grid {
+    grid-template-columns: 1fr;
+  }
+
   .document-workspace,
   .document-workspace[data-navigation-collapsed="true"],
   .document-workspace[data-comments-open="true"],
@@ -5405,6 +5778,187 @@ button {
     left: 20px;
     width: auto;
     max-height: calc(100vh - 78px);
+  }
+
+  .patch-review-backdrop {
+    padding: 6px;
+  }
+
+  .patch-review-workspace {
+    height: calc(100dvh - 12px);
+  }
+
+  .patch-review-workspace-header {
+    gap: 10px;
+    padding: 9px 10px;
+  }
+
+  .patch-review-workspace-header > div > span,
+  .patch-review-workspace-header p {
+    display: none;
+  }
+
+  .patch-review-workspace-header h2 {
+    font-size: 1.05rem;
+  }
+
+  .patch-review-workspace-header p {
+    font-size: 0.72rem;
+  }
+
+  .patch-review-workspace-layout {
+    grid-template-rows: 64px minmax(0, 1fr);
+  }
+
+  .patch-review-queue {
+    grid-template-columns: minmax(108px, 0.68fr) minmax(0, 1.32fr);
+  }
+
+  .patch-review-batch-switcher,
+  .patch-review-queue-patches {
+    gap: 6px;
+    padding: 7px;
+  }
+
+  .patch-review-batch-switcher > header,
+  .patch-review-queue-patches > header {
+    display: none;
+  }
+
+  .patch-review-batch-switcher h3,
+  .patch-review-queue-patches h3 {
+    font-size: 0.7rem;
+  }
+
+  .patch-review-batch-switcher button,
+  .patch-review-queue-row > button {
+    padding: 6px 7px;
+  }
+
+  .patch-review-batch-switcher button strong,
+  .patch-review-queue-row-heading > strong {
+    font-size: 0.75rem;
+  }
+
+  .patch-review-batch-switcher button span,
+  .patch-review-queue-row > button > span:not(.patch-review-queue-row-heading),
+  .patch-review-queue-group > header span {
+    font-size: 0.66rem;
+  }
+
+  .patch-review-queue-group > header {
+    display: none;
+  }
+
+  .patch-review-dialog-embedded .snapshot-dialog-header {
+    order: 0;
+    padding: 8px 10px;
+  }
+
+  .patch-review-dialog-embedded .snapshot-dialog-header p {
+    display: none;
+  }
+
+  .patch-review-dialog-embedded .patch-review-actions {
+    order: 5;
+    gap: 6px;
+    flex-wrap: wrap;
+    padding: 7px 10px;
+  }
+
+  .patch-review-dialog-embedded .patch-review-actions > button,
+  .patch-review-dialog-embedded .patch-decision-actions > button {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+
+  .patch-review-dialog-embedded .patch-decision-actions {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+    margin-left: 0;
+  }
+
+  .patch-review-dialog-embedded .patch-review-actions > span,
+  .patch-review-dialog-embedded .patch-decision-actions > span {
+    flex: 1 1 100%;
+    font-size: 0.72rem;
+  }
+
+  .patch-review-dialog-embedded .patch-applicability,
+  .patch-review-dialog-embedded .patch-follow-up-context,
+  .patch-review-dialog-embedded .patch-review-warnings {
+    padding: 8px 10px;
+  }
+
+  .patch-review-inspector-shell {
+    overflow: auto;
+  }
+
+  .patch-review-dialog-embedded {
+    height: auto;
+    min-height: 100%;
+    overflow: visible;
+  }
+
+  .patch-review-dialog-embedded .patch-review-body {
+    display: contents;
+  }
+
+  .patch-review-dialog-embedded .patch-review-body > * {
+    margin: 10px 10px 0;
+    order: 2;
+  }
+
+  .patch-review-dialog-embedded .patch-review-mode-card {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    justify-content: space-between;
+    order: 1;
+  }
+
+  .patch-review-dialog-embedded .patch-review-mode-card p {
+    display: none;
+  }
+
+  .patch-review-dialog-embedded .patch-review-mode-card h3 {
+    font-size: 0.82rem;
+  }
+
+  .patch-review-dialog-embedded .patch-review-mode-switcher button {
+    padding: 6px 8px;
+    font-size: 0.75rem;
+  }
+
+  .patch-review-dialog-embedded .patch-applicability {
+    order: 3;
+  }
+
+  .patch-review-dialog-embedded .patch-review-warnings,
+  .patch-review-dialog-embedded .patch-dependency-summary,
+  .patch-review-dialog-embedded .patch-follow-up-context {
+    order: 4;
+  }
+
+  .patch-review-dialog-embedded .patch-review-rationale-card,
+  .patch-review-dialog-embedded .patch-review-risk-card {
+    order: 6;
+  }
+
+  .patch-review-dialog-embedded .patch-review-metadata-details {
+    order: 7;
+  }
+
+  .patch-review-dialog-embedded .patch-review-actions > button,
+  .patch-review-dialog-embedded .patch-decision-actions > button {
+    min-height: 36px;
+    padding: 6px 8px;
+    font-size: 0.78rem;
+  }
+
+  .patch-review-dialog-embedded .patch-review-sequence-button,
+  .patch-review-dialog-embedded .patch-review-sequence-status {
+    display: none;
   }
 
   .application-comments-trigger > span:first-child {

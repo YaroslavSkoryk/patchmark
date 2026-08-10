@@ -15,6 +15,8 @@
     "test:project-document-navigation-browser": "node scripts/project-document-navigation-browser.test.mjs",
     "test:document-comment-foundation": "node scripts/document-comment-foundation.test.mjs",
     "test:document-comment-foundation-browser": "node scripts/document-comment-foundation-browser.test.mjs",
+    "test:patch-review-foundation": "node scripts/patch-review-foundation.test.mjs",
+    "test:patch-review-foundation-browser": "node scripts/patch-review-foundation-browser.test.mjs",
     "test:anchor-recovery": "node scripts/patch-anchor-recovery.test.mjs",
     "test:chatgpt-prompt-rules": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/chatgpt-prompt-rules.test.mjs",
     "test:comment-card-ux": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-card-ux.test.mjs",

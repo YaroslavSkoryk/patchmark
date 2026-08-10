@@ -86,25 +86,11 @@ try {
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
     client,
-    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
-    "dependency fixture comment"
+    `document.querySelector(".application-comments-count")?.textContent?.trim() === "1"`,
+    "dependency fixture"
   );
-  await evaluate(client, {
-    expression: `(() => {
-      const article = document.querySelector(".comment-floating-item article[aria-label]");
-      if (!article) throw new Error("Comment card not found.");
-      article.click();
-      return true;
-    })()`,
-    userGesture: true
-  });
-  await waitFor(
-    client,
-    `Array.from(document.querySelectorAll("button")).some((button) => button.textContent?.trim() === "Review related patches")`,
-    "related patches action"
-  );
-
-  await clickButtonByText(client, "Review related patches");
+  await clickButtonByText(client, "Review");
+  await clickButtonByText(client, "Review patch proposals");
   await waitFor(
     client,
     `Boolean(document.querySelector('[aria-label="Review Patch Group"]'))`,
@@ -181,7 +167,7 @@ try {
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
     client,
-    `document.querySelectorAll(".comment-floating-item article[aria-label]").length === 1`,
+    `document.querySelector(".application-comments-count")?.textContent?.trim() === "1"`,
     "reopened dependency project"
   );
   const restartedMarkdown = readFileSync(join(projectDir, "document.md"), "utf8");
@@ -219,7 +205,7 @@ try {
 async function openGroupPatch(client, title) {
   await evaluate(client, {
     expression: `(() => {
-      const card = Array.from(document.querySelectorAll(".patch-group-patch-card"))
+      const card = Array.from(document.querySelectorAll(".patch-review-queue-row"))
         .find((element) => element.textContent?.includes(${JSON.stringify(title)}));
       const button = card?.querySelector("button:not([disabled])");
       if (!button) throw new Error("Patch card not found: ${title}");
