@@ -778,6 +778,8 @@ const REVIEW_QUEUE_PREVIEW_BATCH_ID =
 
 export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
+  const documentNavigationRef = useRef<HTMLElement>(null);
+  const documentNavigationTriggerRef = useRef<HTMLButtonElement>(null);
   const editorDocumentRef = useRef<HTMLDivElement>(null);
   const commentsRailRef = useRef<HTMLElement>(null);
   const reanchorWorkspaceRef = useRef<HTMLElement>(null);
@@ -791,6 +793,9 @@ export function DocumentEditor() {
     useState<MarkdownFileHandle | null>(null);
   const [projectHandle, setProjectHandle] =
     useState<PatchmarkProjectHandle | null>(null);
+  const [isNarrowNavigation, setIsNarrowNavigation] = useState(false);
+  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
+  const [navigationCollapsed, setNavigationCollapsed] = useState(false);
   const activeDocumentId = projectHandle
     ? getProjectDocumentScopeId(projectHandle)
     : null;
@@ -9124,9 +9129,96 @@ export function DocumentEditor() {
     isProjectRecoveryReadOnly ||
     isReanchorMode;
 
+  const navigationOpen = isNarrowNavigation
+    ? mobileNavigationOpen
+    : !navigationCollapsed;
+
+  useEffect(() => {
+    const mediaQuery = window.matchMedia("(max-width: 900px)");
+    const updateNavigationMode = () => {
+      setIsNarrowNavigation(mediaQuery.matches);
+      if (!mediaQuery.matches) {
+        setMobileNavigationOpen(false);
+      }
+    };
+    updateNavigationMode();
+    mediaQuery.addEventListener("change", updateNavigationMode);
+    return () => mediaQuery.removeEventListener("change", updateNavigationMode);
+  }, []);
+
+  useEffect(() => {
+    if (!isNarrowNavigation || !mobileNavigationOpen) {
+      return;
+    }
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const animationFrame = window.requestAnimationFrame(() => {
+      documentNavigationRef.current
+        ?.querySelector<HTMLButtonElement>(".document-navigation-close")
+        ?.focus();
+    });
+
+    function handleNavigationKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setMobileNavigationOpen(false);
+        documentNavigationTriggerRef.current?.focus();
+        return;
+      }
+
+      if (event.key !== "Tab") {
+        return;
+      }
+
+      const focusable = Array.from(
+        documentNavigationRef.current?.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+        ) ?? []
+      ).filter((element) => !element.hasAttribute("hidden"));
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        return;
+      }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleNavigationKeyDown);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleNavigationKeyDown);
+    };
+  }, [isNarrowNavigation, mobileNavigationOpen]);
+
   return (
     <>
       <ApplicationBar>
+        <button
+          ref={documentNavigationTriggerRef}
+          className="application-navigation-trigger"
+          type="button"
+          data-navigation-collapsed={navigationOpen ? "false" : "true"}
+          aria-controls="document-navigation-drawer"
+          aria-expanded={navigationOpen}
+          aria-label="Open document navigation"
+          onClick={() => {
+            if (isNarrowNavigation) {
+              setMobileNavigationOpen(true);
+            } else {
+              setNavigationCollapsed(false);
+            }
+          }}
+        >
+          <span aria-hidden="true">☰</span>
+        </button>
         <ApplicationMenu label="File">
           {(closeMenu) => (
             <>
@@ -9240,9 +9332,55 @@ export function DocumentEditor() {
       <section
       ref={documentWorkspaceRef}
       className="document-workspace"
+      data-navigation-collapsed={navigationOpen ? "false" : "true"}
       aria-label="Patchmark editor"
     >
-      <aside className="document-sidebar" aria-label="Document navigation">
+      {isNarrowNavigation && mobileNavigationOpen ? (
+        <button
+          className="document-navigation-backdrop"
+          type="button"
+          tabIndex={-1}
+          aria-label="Close document navigation"
+          onClick={() => {
+            setMobileNavigationOpen(false);
+            documentNavigationTriggerRef.current?.focus();
+          }}
+        />
+      ) : null}
+      <aside
+        ref={documentNavigationRef}
+        id="document-navigation-drawer"
+        className="document-sidebar"
+        aria-label="Document navigation"
+        aria-modal={isNarrowNavigation && navigationOpen ? true : undefined}
+        hidden={!navigationOpen}
+        role={isNarrowNavigation && navigationOpen ? "dialog" : undefined}
+      >
+        <header className="document-navigation-drawer-header">
+          <strong>Navigation</strong>
+          <button
+            className="document-navigation-close"
+            type="button"
+            aria-label={
+              isNarrowNavigation
+                ? "Close document navigation"
+                : "Collapse document navigation"
+            }
+            onClick={() => {
+              if (isNarrowNavigation) {
+                setMobileNavigationOpen(false);
+                documentNavigationTriggerRef.current?.focus();
+              } else {
+                setNavigationCollapsed(true);
+                window.requestAnimationFrame(() =>
+                  documentNavigationTriggerRef.current?.focus()
+                );
+              }
+            }}
+          >
+            <span aria-hidden="true">{isNarrowNavigation ? "×" : "‹"}</span>
+          </button>
+        </header>
         {projectHandle ? (
           <ProjectDocumentNavigator
             activeDocumentId={
@@ -9308,9 +9446,12 @@ export function DocumentEditor() {
             onRoleChange={(documentId, role) =>
               void handleUpdateProjectDocument(documentId, { role })
             }
-            onSelect={(documentId) =>
-              void handleSelectProjectDocument(documentId)
-            }
+            onSelect={(documentId) => {
+              if (isNarrowNavigation) {
+                setMobileNavigationOpen(false);
+              }
+              void handleSelectProjectDocument(documentId);
+            }}
           />
         ) : null}
         <DocumentOutline headings={headings} />

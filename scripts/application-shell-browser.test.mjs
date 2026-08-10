@@ -279,10 +279,19 @@ try {
   assert.equal(
     await evaluate(client, {
       expression: `Array.from(document.querySelectorAll("summary, button"))
-        .some((control) => control.textContent?.trim() === "New document" && control.getClientRects().length > 0)`
+        .some((control) => control.textContent?.trim() === "Add document" && control.getClientRects().length > 0)`
     }),
     true
   );
+  await evaluate(client, {
+    expression: `(() => {
+      const summary = Array.from(document.querySelectorAll("summary"))
+        .find((control) => control.textContent?.trim() === "Add document" && control.getClientRects().length > 0);
+      summary?.click();
+      return Boolean(summary);
+    })()`,
+    userGesture: true
+  });
   assert.equal(
     await evaluate(client, {
       expression: `Array.from(document.querySelectorAll("button"))
@@ -391,7 +400,9 @@ async function waitForOpenMenu(pageClient, label) {
     `(() => {
       const trigger = Array.from(document.querySelectorAll(".application-menu-trigger"))
         .find((button) => button.textContent.trim() === ${JSON.stringify(label)});
-      const menu = trigger?.parentElement?.querySelector("[role='menu']");
+      const menu = trigger
+        ? document.getElementById(trigger.getAttribute("aria-controls"))
+        : null;
       if (!trigger || !menu || menu.hidden) return null;
       const rect = menu.getBoundingClientRect();
       return {
@@ -419,7 +430,9 @@ async function waitForMenuClosed(pageClient, label) {
     `(() => {
       const trigger = Array.from(document.querySelectorAll(".application-menu-trigger"))
         .find((button) => button.textContent.trim() === ${JSON.stringify(label)});
-      const menu = trigger?.parentElement?.querySelector("[role='menu']");
+      const menu = trigger
+        ? document.getElementById(trigger.getAttribute("aria-controls"))
+        : null;
       return trigger?.getAttribute("aria-expanded") === "false" && menu?.hidden;
     })()`
   );

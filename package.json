@@ -11,6 +11,8 @@
     "test:control-interactions-browser": "node scripts/control-interaction-foundation-browser.test.mjs",
     "test:application-shell": "node scripts/application-shell.test.mjs",
     "test:application-shell-browser": "node scripts/application-shell-browser.test.mjs",
+    "test:project-document-navigation": "node scripts/project-document-navigation.test.mjs",
+    "test:project-document-navigation-browser": "node scripts/project-document-navigation-browser.test.mjs",
     "test:anchor-recovery": "node scripts/patch-anchor-recovery.test.mjs",
     "test:chatgpt-prompt-rules": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/chatgpt-prompt-rules.test.mjs",
     "test:comment-card-ux": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-card-ux.test.mjs",

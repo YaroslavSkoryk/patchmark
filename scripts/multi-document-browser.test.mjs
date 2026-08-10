@@ -261,8 +261,14 @@ try {
   await clickButtonByText(client, "Restore");
   await waitFor(
     client,
-    `Array.from(document.querySelectorAll("select[aria-label='Group for RTE Investigation'] option:checked")).some((option) => option.value === "${crustGroupId}")`,
+    `Array.from(document.querySelectorAll(".project-document-select span")).some((element) => element.textContent === "RTE Investigation")`,
     "restored group membership"
+  );
+  assert.equal(
+    readProjectManifest(projectDir).documents.find(
+      ({ document_id }) => document_id === "doc_research"
+    )?.group_id,
+    crustGroupId
   );
 
   await removeGroup(client, "Crust Chant Business");
@@ -350,25 +356,27 @@ async function clickProjectDocument(pageClient, title) {
 }
 
 async function renameDocument(pageClient, currentTitle, nextTitle) {
+  await openNavigationMenu(pageClient, `Actions for ${currentTitle}`);
+  await clickOpenNavigationMenuItem(pageClient, "Rename");
   await waitFor(
     pageClient,
-    `(() => {
-      const article = Array.from(document.querySelectorAll(".project-document-item"))
-        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(currentTitle)});
-      return Array.from(article?.querySelectorAll("button") ?? [])
-        .some((candidate) => candidate.textContent?.trim() === "Rename" && !candidate.disabled);
-    })()`,
-    `enabled rename action for ${currentTitle}`
+    `Boolean(Array.from(document.querySelectorAll(".project-document-item"))
+      .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(currentTitle)})
+      ?.querySelector("input"))`,
+    `rename editor for ${currentTitle}`
   );
   await evaluate(pageClient, {
     expression: `(() => {
-      window.prompt = () => ${JSON.stringify(nextTitle)};
       const article = Array.from(document.querySelectorAll(".project-document-item"))
         .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(currentTitle)});
-      const button = Array.from(article?.querySelectorAll("button") ?? [])
-        .find((candidate) => candidate.textContent?.trim() === "Rename");
-      if (!button) throw new Error("Rename button not found.");
-      button.click();
+      const input = article?.querySelector("input");
+      const save = Array.from(article?.querySelectorAll("button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === "Save");
+      if (!input || !save) throw new Error("Rename editor not found.");
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, ${JSON.stringify(nextTitle)});
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      save.click();
       return true;
     })()`,
     userGesture: true
@@ -376,44 +384,20 @@ async function renameDocument(pageClient, currentTitle, nextTitle) {
 }
 
 async function archiveDocument(pageClient, title) {
-  await waitFor(
-    pageClient,
-    `(() => {
-      const article = Array.from(document.querySelectorAll(".project-document-item"))
-        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(title)});
-      return Array.from(article?.querySelectorAll("button") ?? [])
-        .some((candidate) => candidate.textContent?.trim() === "Archive" && !candidate.disabled);
-    })()`,
-    `enabled archive action for ${title}`
-  );
-  await evaluate(pageClient, {
-    expression: `(() => {
-      const article = Array.from(document.querySelectorAll(".project-document-item"))
-        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(title)});
-      const button = Array.from(article?.querySelectorAll("button") ?? [])
-        .find((candidate) => candidate.textContent?.trim() === "Archive");
-      if (!button) throw new Error("Archive button not found.");
-      button.click();
-      return true;
-    })()`,
-    userGesture: true
-  });
+  await openNavigationMenu(pageClient, `Actions for ${title}`);
+  await clickOpenNavigationMenuItem(pageClient, "Archive");
 }
 
 async function createGroup(pageClient, title) {
-  await waitFor(
-    pageClient,
-    `Boolean(document.querySelector(".project-create-group:not(:disabled)"))`,
-    "enabled create-group action"
-  );
   await evaluate(pageClient, {
     expression: `(() => {
       window.prompt = () => ${JSON.stringify(title)};
-      document.querySelector(".project-create-group")?.click();
       return true;
     })()`,
     userGesture: true
   });
+  await openNavigationMenu(pageClient, "Actions for Crust Chant");
+  await clickOpenNavigationMenuItem(pageClient, "New group");
 }
 
 async function waitForGroup(pageClient, title) {
@@ -425,12 +409,24 @@ async function waitForGroup(pageClient, title) {
 }
 
 async function moveDocumentToGroup(pageClient, title, groupId) {
+  await openNavigationMenu(pageClient, `Actions for ${title}`);
+  await clickOpenNavigationMenuItem(pageClient, "Move to group");
+  await waitFor(
+    pageClient,
+    `Boolean(document.querySelector(${JSON.stringify(`select[aria-label="Group for ${title}"]`)}))`,
+    `group editor for ${title}`
+  );
   await evaluate(pageClient, {
     expression: `(() => {
       const select = document.querySelector(${JSON.stringify(`select[aria-label="Group for ${title}"]`)});
       if (!select) throw new Error("Group selector not found for ${title}.");
       select.value = ${JSON.stringify(groupId)};
       select.dispatchEvent(new Event("change", { bubbles: true }));
+      const article = select.closest(".project-document-item");
+      const save = Array.from(article?.querySelectorAll("button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === "Save");
+      if (!save) throw new Error("Group save action not found for ${title}.");
+      save.click();
       return true;
     })()`,
     userGesture: true
@@ -485,25 +481,20 @@ async function clickNavigatorBookmark(pageClient, title) {
 }
 
 async function renameGroup(pageClient, currentTitle, nextTitle) {
-  await waitFor(
-    pageClient,
-    `(() => {
-      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
-        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(currentTitle)});
-      return Array.from(header?.querySelectorAll(":scope > div button") ?? [])
-        .some((candidate) => candidate.textContent?.trim() === "Rename" && !candidate.disabled);
-    })()`,
-    `enabled group rename action for ${currentTitle}`
-  );
+  await openNavigationMenu(pageClient, `Actions for ${currentTitle} group`);
+  await clickOpenNavigationMenuItem(pageClient, "Rename");
   await evaluate(pageClient, {
     expression: `(() => {
-      window.prompt = () => ${JSON.stringify(nextTitle)};
       const header = Array.from(document.querySelectorAll(".project-document-group-header"))
         .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(currentTitle)});
-      const button = Array.from(header?.querySelectorAll(":scope > div button") ?? [])
-        .find((candidate) => candidate.textContent?.trim() === "Rename");
-      if (!button) throw new Error("Group rename button not found.");
-      button.click();
+      const input = header?.querySelector("input");
+      const save = Array.from(header?.querySelectorAll("button") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === "Save");
+      if (!input || !save) throw new Error("Group rename editor not found.");
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setter?.call(input, ${JSON.stringify(nextTitle)});
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+      save.click();
       return true;
     })()`,
     userGesture: true
@@ -511,53 +502,60 @@ async function renameGroup(pageClient, currentTitle, nextTitle) {
 }
 
 async function moveDocumentWithinGroup(pageClient, title, direction) {
-  await waitFor(
+  await openNavigationMenu(pageClient, `Actions for ${title}`);
+  await clickOpenNavigationMenuItem(
     pageClient,
-    `Boolean(document.querySelector(${JSON.stringify(`button[aria-label="Move ${title} ${direction}"]:not(:disabled)`) }))`,
-    `enabled ${direction} move action for ${title}`
+    direction === "up" ? "Move up" : "Move down"
   );
-  await evaluate(pageClient, {
-    expression: `(() => {
-      const article = Array.from(document.querySelectorAll(".project-document-item"))
-        .find((candidate) => candidate.querySelector(".project-document-select span")?.textContent === ${JSON.stringify(title)});
-      const button = article?.querySelector(${JSON.stringify(`button[aria-label="Move ${title} ${direction}"]`)});
-      if (!button) throw new Error("Document move button not found.");
-      button.click();
-      return true;
-    })()`,
-    userGesture: true
-  });
 }
 
 async function moveGroup(pageClient, title, direction) {
-  await waitFor(
+  await openNavigationMenu(pageClient, `Actions for ${title} group`);
+  await clickOpenNavigationMenuItem(
     pageClient,
-    `Boolean(document.querySelector(${JSON.stringify(`button[aria-label="Move ${title} group ${direction}"]:not(:disabled)`) }))`,
-    `enabled ${direction} group move action for ${title}`
+    direction === "up" ? "Move up" : "Move down"
   );
-  await evaluate(pageClient, {
-    expression: `(() => {
-      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
-        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(title)});
-      const button = header?.querySelector(${JSON.stringify(`button[aria-label="Move ${title} group ${direction}"]`)});
-      if (!button) throw new Error("Group move button not found.");
-      button.click();
-      return true;
-    })()`,
-    userGesture: true
-  });
 }
 
 async function removeGroup(pageClient, title) {
   await evaluate(pageClient, {
     expression: `(() => {
       window.confirm = () => true;
-      const header = Array.from(document.querySelectorAll(".project-document-group-header"))
-        .find((candidate) => candidate.querySelector("strong")?.textContent === ${JSON.stringify(title)});
-      const button = Array.from(header?.querySelectorAll(":scope > div button") ?? [])
-        .find((candidate) => candidate.textContent?.trim() === "Remove");
-      if (!button) throw new Error("Group remove button not found.");
-      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await openNavigationMenu(pageClient, `Actions for ${title} group`);
+  await clickOpenNavigationMenuItem(pageClient, "Remove");
+}
+
+async function openNavigationMenu(pageClient, label) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const trigger = Array.from(document.querySelectorAll(".project-navigation-menu-trigger"))
+        .find((candidate) => candidate.getAttribute("aria-label") === ${JSON.stringify(label)});
+      if (!trigger) throw new Error("Navigation menu trigger not found: " + ${JSON.stringify(label)});
+      trigger.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await waitFor(
+    pageClient,
+    `Array.from(document.querySelectorAll(".project-navigation-menu-panel:not([hidden])"))
+      .some((panel) => document.getElementById(panel.getAttribute("aria-labelledby"))?.getAttribute("aria-label") === ${JSON.stringify(label)})`,
+    `open navigation menu ${label}`
+  );
+}
+
+async function clickOpenNavigationMenuItem(pageClient, label) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const panel = document.querySelector(".project-navigation-menu-panel:not([hidden])");
+      const item = Array.from(panel?.querySelectorAll("[role='menuitem']") ?? [])
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && !candidate.disabled);
+      if (!item) throw new Error("Enabled navigation menu item not found: " + ${JSON.stringify(label)});
+      item.click();
       return true;
     })()`,
     userGesture: true

@@ -5,6 +5,11 @@ const applicationBar = readFileSync(
   new URL("../components/application-bar.tsx", import.meta.url),
   "utf8"
 );
+const actionMenu = readFileSync(
+  new URL("../components/action-menu.tsx", import.meta.url),
+  "utf8"
+);
+const menuFoundation = `${applicationBar}\n${actionMenu}`;
 const documentEditor = readFileSync(
   new URL("../components/document-editor.tsx", import.meta.url),
   "utf8"
@@ -37,7 +42,7 @@ for (const semantic of [
   'document.addEventListener("pointerdown", handleOutsidePointer)',
   'triggerRef.current?.focus()'
 ]) {
-  assert.ok(applicationBar.includes(semantic), `Missing menu behavior: ${semantic}`);
+  assert.ok(menuFoundation.includes(semantic), `Missing menu behavior: ${semantic}`);
 }
 
 for (const [label, handler] of [
@@ -95,7 +100,8 @@ assert.match(
   markdownFileLoader,
   /accept="\.md,\.markdown,text\/markdown,text\/x-markdown,text\/plain"/
 );
-assert.match(projectNavigator, />New document<\/summary>/);
+assert.match(projectNavigator, />Add document<\/summary>/);
+assert.match(projectNavigator, />Create new document<\/summary>/);
 assert.match(projectNavigator, /Add existing document/);
 
 assert.match(
