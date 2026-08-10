@@ -1,30 +1,21 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { downloadMarkdown } from "@/lib/files/download-markdown";
 
 type CopyState = "idle" | "copied" | "failed";
 
 type DocumentActionsProps = {
-  fileName: string;
   isSaving: boolean;
   markdown: string;
   onCreateSnapshot?: () => void;
-  onDownload: () => void;
-  onExportPdf: () => void;
-  onSaveAs: () => void;
   onSaveChanges: () => void;
   showCreateSnapshot?: boolean;
 };
 
 export function DocumentActions({
-  fileName,
   isSaving,
   markdown,
   onCreateSnapshot,
-  onDownload,
-  onExportPdf,
-  onSaveAs,
   onSaveChanges,
   showCreateSnapshot = false
 }: DocumentActionsProps) {
@@ -48,11 +39,6 @@ export function DocumentActions({
     }
   }
 
-  function handleDownloadMarkdown() {
-    downloadMarkdown(fileName, markdown);
-    onDownload();
-  }
-
   return (
     <div className="document-actions" aria-label="Document actions">
       <button
@@ -63,20 +49,11 @@ export function DocumentActions({
       >
         Save Changes
       </button>
-      <button type="button" disabled={isSaving} onClick={onSaveAs}>
-        Save As
-      </button>
       {showCreateSnapshot && onCreateSnapshot ? (
         <button type="button" disabled={isSaving} onClick={onCreateSnapshot}>
           Create Snapshot
         </button>
       ) : null}
-      <button type="button" onClick={handleDownloadMarkdown}>
-        Download .md
-      </button>
-      <button type="button" onClick={onExportPdf}>
-        Export PDF
-      </button>
       <button type="button" onClick={handleCopyMarkdown}>
         Copy Markdown
       </button>

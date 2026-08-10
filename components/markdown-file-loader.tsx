@@ -9,10 +9,14 @@ import {
 } from "@/lib/files/file-system-access";
 
 type MarkdownFileLoaderProps = {
+  menuItem?: boolean;
   onFileLoaded: (loadedFile: LoadedMarkdownFile) => void;
 };
 
-export function MarkdownFileLoader({ onFileLoaded }: MarkdownFileLoaderProps) {
+export function MarkdownFileLoader({
+  menuItem = false,
+  onFileLoaded
+}: MarkdownFileLoaderProps) {
   const inputRef = useRef<HTMLInputElement>(null);
   const [loadError, setLoadError] = useState("");
 
@@ -62,8 +66,10 @@ export function MarkdownFileLoader({ onFileLoaded }: MarkdownFileLoaderProps) {
   return (
     <div className="file-loader-control">
       <button
-        className="file-loader-label"
+        className={menuItem ? "application-menu-item" : "file-loader-label"}
         type="button"
+        role={menuItem ? "menuitem" : undefined}
+        tabIndex={menuItem ? -1 : undefined}
         onClick={handleLoadMarkdown}
       >
         Load Markdown

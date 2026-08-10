@@ -1,4 +1,4 @@
-:root {
+html:root {
   color-scheme: light;
   --background: #f7f6f2;
   --surface: #ffffff;
@@ -87,6 +87,10 @@ button {
 
 .app-shell {
   min-height: 100vh;
+  padding: 0 32px 32px;
+}
+
+.app-shell:has([data-control-fixture-ready="true"]) {
   padding: 32px;
 }
 
@@ -112,13 +116,125 @@ button {
   font-size: 1.05rem;
 }
 
+.application-bar {
+  position: relative;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  height: 56px;
+  max-width: 1680px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--border);
+}
+
+.application-identity {
+  margin: 0;
+  font-size: 1.1875rem;
+  line-height: 1;
+  letter-spacing: -0.01em;
+}
+
+.application-bar-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.application-menu {
+  position: relative;
+}
+
+.application-menu-trigger {
+  display: inline-flex;
+  gap: 7px;
+  align-items: center;
+  justify-content: center;
+  min-height: 36px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  padding: 7px 10px;
+  font-weight: 700;
+}
+
+.application-menu-trigger::after {
+  content: "▾";
+}
+
+.application-menu-trigger[aria-expanded="true"] {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.application-menu-panel {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 80;
+  width: min(360px, calc(100vw - 64px));
+  max-height: calc(100vh - 72px);
+  overflow: auto;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  padding: 6px;
+  box-shadow: 0 16px 40px rgba(22, 35, 29, 0.16);
+}
+
+.application-menu-group {
+  display: grid;
+  gap: 2px;
+  padding: 6px;
+}
+
+.application-menu-group + .application-menu-group {
+  border-top: 1px solid var(--border);
+}
+
+.application-menu-group-label {
+  padding: 4px 8px;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.application-menu-item {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 8px;
+  text-align: left;
+}
+
+.application-menu-item:disabled {
+  background: transparent;
+}
+
+.application-menu-panel .file-loader-control {
+  display: block;
+}
+
+.application-menu-panel .file-loader-error {
+  display: block;
+  padding: 0 8px;
+}
+
+.application-menu-panel .file-loader-error:empty {
+  display: none;
+}
+
 .document-workspace {
   display: grid;
   grid-template-columns: 280px minmax(0, 1fr) 320px;
   gap: 20px;
   align-items: start;
   max-width: 1680px;
-  margin: 0 auto;
+  margin: 16px auto 0;
 }
 
 .editor-panel,
@@ -4545,12 +4661,20 @@ button {
 
 @media (max-width: 900px) {
   .app-shell {
+    padding: 0 20px 20px;
+  }
+
+  .app-shell:has([data-control-fixture-ready="true"]) {
     padding: 20px;
   }
 
   .app-header {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .application-menu-panel {
+    width: min(360px, calc(100vw - 40px));
   }
 
   .document-workspace {
@@ -4691,6 +4815,35 @@ button {
   .guided-review-wizard-actions {
     align-items: stretch;
     flex-direction: column;
+  }
+}
+
+@media (max-width: 520px) {
+  .application-bar {
+    height: 56px;
+  }
+
+  .application-identity {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .application-bar-actions {
+    flex: 0 0 auto;
+  }
+
+  .application-menu-trigger {
+    padding-inline: 8px;
+  }
+
+  .application-menu-panel {
+    position: fixed;
+    top: 62px;
+    right: 20px;
+    left: 20px;
+    width: auto;
+    max-height: calc(100vh - 78px);
   }
 }
 

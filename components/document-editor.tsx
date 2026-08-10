@@ -104,6 +104,12 @@ import {
 import { getDeletedCommentTombstone } from "@/lib/comments/comment-deletion-tombstones";
 import { DocumentActions } from "@/components/document-actions";
 import {
+  ApplicationBar,
+  ApplicationMenu,
+  ApplicationMenuGroup,
+  ApplicationMenuItem
+} from "@/components/application-bar";
+import {
   SelectionActionsChooser,
   createSelectionActionOptions,
   type SelectionActionId,
@@ -9112,8 +9118,126 @@ export function DocumentEditor() {
     }
   }
 
+  const documentActionsBusy =
+    isSaving ||
+    isProjectDataLoading ||
+    isProjectRecoveryReadOnly ||
+    isReanchorMode;
+
   return (
-    <section
+    <>
+      <ApplicationBar>
+        <ApplicationMenu label="File">
+          {(closeMenu) => (
+            <>
+              <ApplicationMenuGroup label="Open">
+                <MarkdownFileLoader
+                  menuItem
+                  onFileLoaded={(loadedFile) => {
+                    closeMenu();
+                    void handleFileLoaded(loadedFile);
+                  }}
+                />
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={isSaving || isReanchorMode}
+                  onSelect={handleOpenProjectFolder}
+                >
+                  Open Project Folder
+                </ApplicationMenuItem>
+              </ApplicationMenuGroup>
+              <ApplicationMenuGroup label="Create">
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={isSaving || isReanchorMode}
+                  onSelect={handleOpenLegacyProjectAssembly}
+                >
+                  Create Project From Existing Patchmark Projects
+                </ApplicationMenuItem>
+                <ApplicationMenuItem
+                  closeMenu={closeMenu}
+                  disabled={
+                    !fileName || isProjectMode || isSaving || isReanchorMode
+                  }
+                  onSelect={handleCreateProjectFromCurrentDocument}
+                >
+                  Create Project From Current Document
+                </ApplicationMenuItem>
+              </ApplicationMenuGroup>
+              {fileName ? (
+                <ApplicationMenuGroup label="Export">
+                  <ApplicationMenuItem
+                    busy={isSaving}
+                    closeMenu={closeMenu}
+                    disabled={documentActionsBusy}
+                    onSelect={handleSaveAs}
+                  >
+                    Save As
+                  </ApplicationMenuItem>
+                  <ApplicationMenuItem
+                    closeMenu={closeMenu}
+                    onSelect={() => {
+                      downloadMarkdown(fileName, markdown);
+                      handleDownload();
+                    }}
+                  >
+                    Download .md
+                  </ApplicationMenuItem>
+                  <ApplicationMenuItem
+                    closeMenu={closeMenu}
+                    onSelect={() =>
+                      setPdfExportTarget({
+                        documentId:
+                          projectHandle?.document?.document_id ?? null,
+                        fileName,
+                        markdown
+                      })
+                    }
+                  >
+                    Export PDF
+                  </ApplicationMenuItem>
+                </ApplicationMenuGroup>
+              ) : null}
+            </>
+          )}
+        </ApplicationMenu>
+        <ApplicationMenu label="Review">
+          {(closeMenu) => (
+            <ApplicationMenuGroup label="ChatGPT review">
+              <ApplicationMenuItem
+                closeMenu={closeMenu}
+                disabled={isSaving || isCommentBusy || isReanchorMode}
+                onSelect={handleGenerateChatGptPrompt}
+              >
+                Generate ChatGPT Prompt
+              </ApplicationMenuItem>
+              <ApplicationMenuItem
+                closeMenu={closeMenu}
+                disabled={isSaving || isCommentBusy || isReanchorMode}
+                onSelect={handleOpenChatGptImportDialog}
+              >
+                Import ChatGPT Response
+              </ApplicationMenuItem>
+              <ApplicationMenuItem
+                closeMenu={closeMenu}
+                disabled={
+                  !projectHandle ||
+                  isSaving ||
+                  isCommentBusy ||
+                  isProjectDataLoading ||
+                  isProjectRecoveryReadOnly ||
+                  isReanchorMode ||
+                  projectHandle.documentAvailability === "missing"
+                }
+                onSelect={handleOpenGuidedReview}
+              >
+                Guided Review
+              </ApplicationMenuItem>
+            </ApplicationMenuGroup>
+          )}
+        </ApplicationMenu>
+      </ApplicationBar>
+      <section
       ref={documentWorkspaceRef}
       className="document-workspace"
       aria-label="Patchmark editor"
@@ -9202,87 +9326,31 @@ export function DocumentEditor() {
       </aside>
 
       <div className="editor-panel">
-        <div className="document-toolbar">
-          <div className="document-toolbar-primary">
-            <div className="loader-row">
-              <MarkdownFileLoader onFileLoaded={handleFileLoaded} />
-              <span className="file-loader-help">Accepts .md and .markdown</span>
-            </div>
-
-            <div className="project-actions" aria-label="Project folder actions">
-              <button
-                type="button"
-                disabled={isSaving || isReanchorMode}
-                onClick={handleOpenProjectFolder}
+        {fileName ? (
+          <div className="document-toolbar">
+            <div className="document-toolbar-primary">
+              <div
+                className="workspace-status sr-only"
+                aria-label="Workspace status"
               >
-                Open Project Folder
-              </button>
-              <button
-                type="button"
-                disabled={isSaving || isReanchorMode}
-                onClick={handleOpenLegacyProjectAssembly}
-              >
-                Create Project From Existing Patchmark Projects
-              </button>
-              <button
-                type="button"
-                disabled={!fileName || isProjectMode || isSaving || isReanchorMode}
-                onClick={handleCreateProjectFromCurrentDocument}
-              >
-                Create Project From Current Document
-              </button>
-            <button
-              type="button"
-              disabled={isSaving || isCommentBusy || isReanchorMode}
-              onClick={handleGenerateChatGptPrompt}
-            >
-              Generate ChatGPT Prompt
-            </button>
-            <button
-              type="button"
-              disabled={isSaving || isCommentBusy || isReanchorMode}
-              onClick={handleOpenChatGptImportDialog}
-            >
-              Import ChatGPT Response
-            </button>
-            <button
-              type="button"
-              disabled={
-                !projectHandle ||
-                isSaving ||
-                isCommentBusy ||
-                isProjectDataLoading ||
-                isProjectRecoveryReadOnly ||
-                isReanchorMode ||
-                projectHandle.documentAvailability === "missing"
-              }
-              onClick={handleOpenGuidedReview}
-            >
-              Guided Review
-            </button>
-          </div>
-
-            <div className="workspace-status" aria-label="Workspace status">
-              <span>
-                Mode:{" "}
-                {isProjectMode ? "Patchmark Project" : "Single Markdown File"}
-              </span>
-              {projectHandle ? (
-                <>
-                  <span>Project: {getProjectTitle(projectHandle)}</span>
-                  {activeDocumentGroup ? (
-                    <span>Group: {activeDocumentGroup.title}</span>
-                  ) : null}
-                  <span>
-                    Document:{" "}
-                    {projectHandle.document?.display_title ??
-                      projectHandle.manifest.document_file}
-                  </span>
-                </>
-              ) : null}
-            </div>
-
-            {fileName ? (
+                <span>
+                  Mode:{" "}
+                  {isProjectMode ? "Patchmark Project" : "Single Markdown File"}
+                </span>
+                {projectHandle ? (
+                  <>
+                    <span>Project: {getProjectTitle(projectHandle)}</span>
+                    {activeDocumentGroup ? (
+                      <span>Group: {activeDocumentGroup.title}</span>
+                    ) : null}
+                    <span>
+                      Document:{" "}
+                      {projectHandle.document?.display_title ??
+                        projectHandle.manifest.document_file}
+                    </span>
+                  </>
+                ) : null}
+              </div>
               <div className="document-meta">
                 <span>{isProjectMode ? "Project / document" : "Loaded file"}</span>
                 <strong title={fileName}>
@@ -9298,31 +9366,13 @@ export function DocumentEditor() {
                 </strong>
                 <DocumentStatus status={documentStatus} />
               </div>
-            ) : null}
-          </div>
+            </div>
 
-          {fileName ? (
             <div className="document-toolbar-controls">
               <DocumentActions
-                fileName={fileName}
-                isSaving={
-                  isSaving ||
-                  isProjectDataLoading ||
-                  isProjectRecoveryReadOnly ||
-                  isReanchorMode
-                }
+                isSaving={documentActionsBusy}
                 markdown={markdown}
                 onCreateSnapshot={handleCreateSnapshot}
-                onDownload={handleDownload}
-                onExportPdf={() =>
-                  setPdfExportTarget({
-                    documentId:
-                      projectHandle?.document?.document_id ?? null,
-                    fileName,
-                    markdown
-                  })
-                }
-                onSaveAs={handleSaveAs}
                 onSaveChanges={handleSaveChanges}
                 showCreateSnapshot={isProjectMode}
               />
@@ -9371,8 +9421,8 @@ export function DocumentEditor() {
                 </button>
               </div>
             </div>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
         {projectRecovery ? (
           <div
@@ -10546,7 +10596,8 @@ export function DocumentEditor() {
           }}
         />
       ) : null}
-    </section>
+      </section>
+    </>
   );
 }
 

@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 
-const actionsSource = readFileSync("components/document-actions.tsx", "utf8");
 const editorSource = readFileSync("components/document-editor.tsx", "utf8");
 const previewSource = readFileSync("components/pdf-export-preview.tsx", "utf8");
 const readonlyRendererSource = readFileSync(
@@ -10,10 +9,12 @@ const readonlyRendererSource = readFileSync(
 );
 const cssSource = readFileSync("app/globals.css", "utf8");
 
-assert.match(actionsSource, /onExportPdf: \(\) => void/);
-assert.match(actionsSource, /Export PDF/);
 assert.match(editorSource, /import \{ PdfExportPreview \}/);
 assert.match(editorSource, /const \[pdfExportTarget, setPdfExportTarget\]/);
+assert.match(
+  editorSource,
+  /onSelect=\{\(\) =>[\s\S]{0,80}setPdfExportTarget\(\{[\s\S]{0,300}Export PDF/
+);
 assert.match(editorSource, /documentId:\s*projectHandle\?\.document\?\.document_id/);
 assert.match(editorSource, /fileName=\{pdfExportTarget\.fileName\}/);
 assert.match(editorSource, /markdown=\{pdfExportTarget\.markdown\}/);

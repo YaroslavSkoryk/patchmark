@@ -174,7 +174,7 @@ try {
   assert.equal(stateAfterClose.markdownLength, stateBeforeExport.markdownLength);
   assert.deepEqual(stateAfterClose.markerPresence, stateBeforeExport.markerPresence);
   assert.equal(stateAfterClose.scrollY, stateBeforeExport.scrollY);
-  assert.equal(stateAfterClose.focusedButtonText, "Export PDF");
+  assert.equal(stateAfterClose.focusedButtonText, "File");
 
   assert.equal(readFileSync(documentPath, "utf8"), originalDocument);
 
@@ -241,6 +241,19 @@ async function readEditorState(client, markers = []) {
 }
 
 async function focusButtonByText(client, text) {
+  await evaluate(client, {
+    expression: `(() => {
+      const button = Array.from(document.querySelectorAll("button"))
+        .find((element) => element.textContent?.trim() === ${JSON.stringify(text)} && !element.disabled);
+      const menu = button?.closest("[role='menu']");
+      if (!menu?.hidden) return false;
+      const trigger = document.getElementById(menu.getAttribute("aria-labelledby"));
+      trigger?.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await delay(50);
   const result = await evaluate(client, {
     expression: `(() => {
       const button = Array.from(document.querySelectorAll("button"))
