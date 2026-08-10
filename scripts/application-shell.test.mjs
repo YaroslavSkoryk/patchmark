@@ -109,7 +109,7 @@ assert.match(
   /\.application-bar\s*\{[\s\S]*?height: 56px;[\s\S]*?border-bottom: 1px solid var\(--border\)/
 );
 assert.match(css, /\.application-identity\s*\{[\s\S]*?font-size: 1\.1875rem/);
-assert.match(css, /\.document-workspace\s*\{[\s\S]*?margin: 16px auto 0/);
+assert.match(css, /\.document-workspace\s*\{[\s\S]*?margin: 12px auto 0/);
 assert.match(css, /\.application-menu-panel\s*\{[\s\S]*?z-index: 80/);
 assert.match(
   css,

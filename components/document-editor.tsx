@@ -124,7 +124,7 @@ import {
   type MarkdownMutationHint,
   type MarkdownSelection
 } from "@/components/markdown-source-editor";
-import { DocumentOutline } from "@/components/document-outline";
+import { DocumentTools } from "@/components/document-tools";
 import { DocumentStatus, type DocumentStatusKind } from "@/components/document-status";
 import {
   DocumentRecoveryBanner,
@@ -137,7 +137,6 @@ import {
   SnapshotDialog,
   type SnapshotDialogState
 } from "@/components/snapshot-dialog";
-import { VersionHistoryPanel } from "@/components/version-history-panel";
 import { VisualMarkdownEditor } from "@/components/visual-markdown-editor";
 import {
   RewriteRecoveryConflictBanner,
@@ -780,6 +779,8 @@ export function DocumentEditor() {
   const documentWorkspaceRef = useRef<HTMLElement>(null);
   const documentNavigationRef = useRef<HTMLElement>(null);
   const documentNavigationTriggerRef = useRef<HTMLButtonElement>(null);
+  const commentsTriggerRef = useRef<HTMLButtonElement>(null);
+  const restoreCommentsTriggerFocusRef = useRef(false);
   const editorDocumentRef = useRef<HTMLDivElement>(null);
   const commentsRailRef = useRef<HTMLElement>(null);
   const reanchorWorkspaceRef = useRef<HTMLElement>(null);
@@ -796,6 +797,7 @@ export function DocumentEditor() {
   const [isNarrowNavigation, setIsNarrowNavigation] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
+  const [commentsOpen, setCommentsOpen] = useState(false);
   const activeDocumentId = projectHandle
     ? getProjectDocumentScopeId(projectHandle)
     : null;
@@ -866,6 +868,10 @@ export function DocumentEditor() {
   const [patches, setPatches] = useState<PatchmarkPatch[]>([]);
   const [reviewBatches, setReviewBatches] = useState<PatchmarkReviewBatch[]>([]);
   const activeComments = useMemo(() => getActiveComments(comments), [comments]);
+  const openCommentCount = useMemo(
+    () => activeComments.filter((comment) => comment.status === "open").length,
+    [activeComments]
+  );
   const trashedComments = useMemo(
     () => getTrashedComments(comments),
     [comments]
@@ -943,6 +949,10 @@ export function DocumentEditor() {
       if (!activeDocumentId) {
         setDocumentActiveCommentState(null);
         return;
+      }
+      if (typeof nextState !== "function" && nextState.kind !== "none") {
+        setMobileNavigationOpen(false);
+        setCommentsOpen(true);
       }
       setDocumentActiveCommentState((current) => {
         const currentState =
@@ -9133,6 +9143,31 @@ export function DocumentEditor() {
     ? mobileNavigationOpen
     : !navigationCollapsed;
 
+  const openComments = useCallback(() => {
+    if (isNarrowNavigation) {
+      setMobileNavigationOpen(false);
+    }
+    setCommentsOpen(true);
+  }, [isNarrowNavigation]);
+
+  const closeComments = useCallback((restoreFocus = true) => {
+    restoreCommentsTriggerFocusRef.current = restoreFocus;
+    setMarkdownSelectionRequest(null);
+    setCommentsOpen(false);
+  }, []);
+
+  useEffect(() => {
+    if (commentsOpen || !restoreCommentsTriggerFocusRef.current) {
+      return;
+    }
+
+    restoreCommentsTriggerFocusRef.current = false;
+    const animationFrame = window.requestAnimationFrame(() => {
+      commentsTriggerRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [commentsOpen]);
+
   useEffect(() => {
     const mediaQuery = window.matchMedia("(max-width: 900px)");
     const updateNavigationMode = () => {
@@ -9145,6 +9180,95 @@ export function DocumentEditor() {
     mediaQuery.addEventListener("change", updateNavigationMode);
     return () => mediaQuery.removeEventListener("change", updateNavigationMode);
   }, []);
+
+  useEffect(() => {
+    if (commentAddRequest || commentReplyRequest) {
+      openComments();
+    }
+  }, [commentAddRequest, commentReplyRequest, openComments]);
+
+  useEffect(() => {
+    if (!isNarrowNavigation || !commentsOpen) {
+      return;
+    }
+
+    const rail = commentsRailRef.current;
+    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
+    const workspace = documentWorkspaceRef.current;
+    const backgroundElements = Array.from(
+      workspace?.children ?? []
+    ).filter((element): element is HTMLElement =>
+      element instanceof HTMLElement &&
+      element !== rail &&
+      !element.classList.contains("comments-drawer-backdrop")
+    );
+    const previousOverflow = document.body.style.overflow;
+    const previousApplicationBarInert = applicationBar?.inert ?? false;
+    const previousInertStates = backgroundElements.map((element) => ({
+      element,
+      inert: element.inert
+    }));
+
+    document.body.style.overflow = "hidden";
+    if (applicationBar) {
+      applicationBar.inert = true;
+    }
+    backgroundElements.forEach((element) => {
+      element.inert = true;
+    });
+    const animationFrame = window.requestAnimationFrame(() => {
+      if (
+        !document.querySelector(
+          '[data-testid="comment-composer"], [data-comment-reply-input]'
+        )
+      ) {
+        rail?.querySelector<HTMLButtonElement>(".comments-panel-close")?.focus();
+      }
+    });
+
+    function handleCommentsKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        closeComments();
+        return;
+      }
+
+      if (event.key !== "Tab" || !rail) {
+        return;
+      }
+
+      const focusable = Array.from(
+        rail.querySelectorAll<HTMLElement>(
+          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])'
+        )
+      ).filter((element) => element.getClientRects().length > 0);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (!first || !last) {
+        return;
+      }
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", handleCommentsKeyDown);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      document.body.style.overflow = previousOverflow;
+      if (applicationBar) {
+        applicationBar.inert = previousApplicationBarInert;
+      }
+      previousInertStates.forEach(({ element, inert }) => {
+        element.inert = inert;
+      });
+      document.removeEventListener("keydown", handleCommentsKeyDown);
+    };
+  }, [closeComments, commentsOpen, isNarrowNavigation]);
 
   useEffect(() => {
     if (!isNarrowNavigation || !mobileNavigationOpen) {
@@ -9209,7 +9333,9 @@ export function DocumentEditor() {
           aria-controls="document-navigation-drawer"
           aria-expanded={navigationOpen}
           aria-label="Open document navigation"
+          disabled={isReanchorMode}
           onClick={() => {
+            setCommentsOpen(false);
             if (isNarrowNavigation) {
               setMobileNavigationOpen(true);
             } else {
@@ -9328,11 +9454,27 @@ export function DocumentEditor() {
             </ApplicationMenuGroup>
           )}
         </ApplicationMenu>
+        <button
+          ref={commentsTriggerRef}
+          className="application-comments-trigger"
+          type="button"
+          aria-controls="document-comments-panel"
+          aria-expanded={commentsOpen}
+          aria-label={`Open comments. ${activeComments.length} total, ${openCommentCount} open.`}
+          disabled={!fileName || isReanchorMode}
+          onClick={() => (commentsOpen ? closeComments() : openComments())}
+        >
+          <span>Comments</span>
+          <span className="application-comments-count" aria-hidden="true">
+            {activeComments.length}
+          </span>
+        </button>
       </ApplicationBar>
       <section
       ref={documentWorkspaceRef}
       className="document-workspace"
       data-navigation-collapsed={navigationOpen ? "false" : "true"}
+      data-comments-open={commentsOpen ? "true" : "false"}
       aria-label="Patchmark editor"
     >
       {isNarrowNavigation && mobileNavigationOpen ? (
@@ -9454,10 +9596,10 @@ export function DocumentEditor() {
             }}
           />
         ) : null}
-        <DocumentOutline headings={headings} />
-        <VersionHistoryPanel
+        <DocumentTools
           key={`version-history:${activeDocumentId ?? "none"}`}
           comments={comments}
+          headings={headings}
           isProjectMode={isProjectMode}
           patches={patches}
           versions={versionEntries}
@@ -9604,8 +9746,13 @@ export function DocumentEditor() {
 
         {saveFeedback ? (
           <div
-            className={`document-save-banner document-save-banner-${saveFeedback.kind}`}
+            className={
+              saveFeedback.kind === "error"
+                ? "document-save-banner document-save-banner-error"
+                : `document-save-banner document-save-banner-${saveFeedback.kind} document-context-status document-context-status-${saveFeedback.kind}`
+            }
             role={saveFeedback.kind === "error" ? "alert" : "status"}
+            aria-live={saveFeedback.kind === "error" ? "assertive" : "polite"}
           >
             {saveFeedback.message}
           </div>
@@ -9786,10 +9933,24 @@ export function DocumentEditor() {
         </div>
       </div>
 
+      {isNarrowNavigation && commentsOpen ? (
+        <button
+          className="comments-drawer-backdrop"
+          type="button"
+          tabIndex={-1}
+          aria-label="Close comments"
+          onClick={() => closeComments()}
+        />
+      ) : null}
+
       <aside
         ref={commentsRailRef}
+        id="document-comments-panel"
         className="comments-rail"
         aria-label="Document comments"
+        aria-modal={isNarrowNavigation && commentsOpen ? true : undefined}
+        hidden={!commentsOpen}
+        role={isNarrowNavigation && commentsOpen ? "dialog" : undefined}
       >
         {reanchorSession ? (
           <section
@@ -9994,7 +10155,11 @@ export function DocumentEditor() {
             requestedProjectDocumentId === null
           }
           isProjectMode={isProjectMode}
+          closePanelLabel={
+            isNarrowNavigation ? "Close comments" : "Collapse comments"
+          }
           onAddComment={handleAddComment}
+          onClosePanel={reanchorSession ? undefined : () => closeComments()}
           onCloseAddComment={handleCommentComposerClosed}
           onMoveCommentsToTrash={handleMoveCommentsToTrash}
           onPermanentlyDeleteComments={handlePermanentlyDeleteComments}

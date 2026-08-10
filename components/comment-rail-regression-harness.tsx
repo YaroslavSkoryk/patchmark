@@ -120,7 +120,10 @@ export function CommentRailRegressionHarness() {
         </button>
       </div>
 
-      <div className="document-workspace comment-rail-regression-workspace">
+      <div
+        className="document-workspace comment-rail-regression-workspace"
+        data-comments-open="true"
+      >
         <aside className="document-sidebar" aria-label="Fixture outline">
           <div className="sidebar-card">
             <h3>Fixture Anchors</h3>

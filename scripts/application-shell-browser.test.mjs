@@ -100,7 +100,7 @@ try {
 
   const desktopShell = await readShellState(client);
   assert.equal(desktopShell.bar.height, 56);
-  assert.equal(desktopShell.workspace.top, 72);
+  assert.equal(desktopShell.workspace.top, 68);
   assert.deepEqual(desktopShell.controls, ["File", "Review"]);
   assert.equal(desktopShell.headerWrapped, false);
   assert.equal(desktopShell.horizontalOverflow, false);

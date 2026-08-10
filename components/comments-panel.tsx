@@ -9,6 +9,11 @@ import {
   useState
 } from "react";
 import { createPortal } from "react-dom";
+import {
+  ActionMenu,
+  ActionMenuGroup,
+  ActionMenuItem
+} from "@/components/action-menu";
 import { type MarkdownHeading } from "@/lib/markdown/parse-headings";
 import {
   createFloatingCommentLayout,
@@ -106,6 +111,7 @@ type CommentsPanelProps = {
   isDocumentCommentAvailable: boolean;
   isProjectMode: boolean;
   onAddComment: (values: CommentFormValues) => Promise<void>;
+  onClosePanel?: () => void;
   onCloseAddComment: (reason: "cancel" | "submit") => void;
   onMoveCommentsToTrash: (request: {
     commentIds: string[];
@@ -150,6 +156,7 @@ type CommentsPanelProps = {
   onResolveComment: (commentId: string) => Promise<void>;
   onSetActiveCommentState: (state: ActiveCommentState) => void;
   onUnmarkCommentForExport: (commentId: string) => Promise<void>;
+  closePanelLabel?: string;
   patchGroupSummariesByCommentId: Record<string, CommentPatchGroupSummary>;
   pendingPatchGroupTotal: number;
   pendingPatchCountsByCommentId: Record<string, number>;
@@ -176,6 +183,7 @@ const COMMENT_FLOATING_DRAFT_ID = "PM-COMMENT-DRAFT-FORM";
 const COMMENT_FLOATING_STAGE_MIN_HEIGHT = 220;
 const COMMENT_LAYOUT_DEBUG_STORAGE_KEY = "patchmark:debug-comment-layout";
 const COMPACT_COMMENT_COMPOSER_QUERY = "(max-width: 900px)";
+const EMPTY_COMMENT_POSITIONS: Record<string, number> = {};
 
 type ActiveCommentFilter = "all" | "open" | "resolved";
 type TrashCommentFilter = "all" | "open" | "resolved";
@@ -224,6 +232,7 @@ export function CommentsPanel({
   isDocumentCommentAvailable,
   isProjectMode,
   onAddComment,
+  onClosePanel,
   onCloseAddComment,
   onMoveCommentsToTrash,
   onPermanentlyDeleteComments,
@@ -244,6 +253,7 @@ export function CommentsPanel({
   onResolveComment,
   onSetActiveCommentState,
   onUnmarkCommentForExport,
+  closePanelLabel = "Collapse comments",
   patchGroupSummariesByCommentId,
   pendingPatchGroupTotal,
   pendingPatchCountsByCommentId,
@@ -299,6 +309,9 @@ export function CommentsPanel({
   const isCompactCommentComposer = useCompactCommentComposer();
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
+  const openCommentCount = comments.filter(
+    (comment) => comment.status === "open"
+  ).length;
   const visibleComments = useMemo(() => {
     return getVisibleActiveComments({
       comments,
@@ -895,6 +908,24 @@ export function CommentsPanel({
 
   return (
     <section className="comments-panel" aria-label="Comments">
+      <header className="comments-panel-header">
+        <div>
+          <h2>Comments</h2>
+          <span aria-live="polite">
+            {comments.length} total · {openCommentCount} open
+          </span>
+        </div>
+        {onClosePanel ? (
+          <button
+            type="button"
+            className="comments-panel-close"
+            aria-label={closePanelLabel}
+            onClick={onClosePanel}
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        ) : null}
+      </header>
       {!isProjectMode ? (
         <p className="comments-empty">
           Comments are available in Project Folder Mode.
@@ -920,7 +951,6 @@ export function CommentsPanel({
             >
               Comment on whole document
             </button>
-            <span>Scope: Whole document</span>
             <button
               type="button"
               disabled={isBusy || comments.length === 0}
@@ -938,32 +968,42 @@ export function CommentsPanel({
               {isSelectionMode ? "Exit selection mode" : "Select comments"}
             </button>
           </div>
-          <div className="comment-filter-bar">
-            <label>
-              <span>Find comments</span>
-              <input
-                type="search"
-                value={searchQuery}
-                onChange={(event) => updateSearchQuery(event.target.value)}
-              />
-            </label>
-            <label>
-              <span>Active comments</span>
-              <select
-                value={activeFilter}
-                onChange={(event) =>
-                  updateActiveFilter(event.target.value as ActiveCommentFilter)
-                }
-              >
-                <option value="all">All active</option>
-                <option value="open">Open</option>
-                <option value="resolved">Resolved</option>
-              </select>
-            </label>
-            <span>
-              {visibleComments.length} of {comments.length} active
-            </span>
-          </div>
+          {comments.length > 0 ? (
+            <details className="comment-list-tools">
+              <summary>
+                Find and filter
+                {searchQuery || activeFilter !== "all" ? (
+                  <span> · Filtered</span>
+                ) : null}
+              </summary>
+              <div className="comment-filter-bar">
+                <label>
+                  <span>Find comments</span>
+                  <input
+                    type="search"
+                    value={searchQuery}
+                    onChange={(event) => updateSearchQuery(event.target.value)}
+                  />
+                </label>
+                <label>
+                  <span>Active comments</span>
+                  <select
+                    value={activeFilter}
+                    onChange={(event) =>
+                      updateActiveFilter(event.target.value as ActiveCommentFilter)
+                    }
+                  >
+                    <option value="all">All active</option>
+                    <option value="open">Open</option>
+                    <option value="resolved">Resolved</option>
+                  </select>
+                </label>
+                <span>
+                  {visibleComments.length} of {comments.length} active
+                </span>
+              </div>
+            </details>
+          ) : null}
           {isSelectionMode ? (
             <div
               className="comment-bulk-action-bar"
@@ -1039,10 +1079,13 @@ export function CommentsPanel({
 
           <FloatingCommentList
             addForm={isCompactCommentComposer ? null : addForm}
-            addPositionTop={addPositionTop}
+            addPositionTop={isCompactCommentComposer ? null : addPositionTop}
             activeCommentState={activeCommentState}
             anchorSummaries={anchorSummaries}
-            commentPositions={commentPositions}
+            commentPositions={
+              isCompactCommentComposer ? EMPTY_COMMENT_POSITIONS : commentPositions
+            }
+            compactList={isCompactCommentComposer}
             comments={visibleComments}
             editingCommentId={editingCommentId}
             editComment={editComment}
@@ -1383,6 +1426,7 @@ type FloatingCommentListProps = Omit<
   addForm: React.ReactNode;
   addPositionTop: number | null;
   commentPositions: Record<string, number>;
+  compactList: boolean;
 };
 
 function FloatingCommentList({
@@ -1392,6 +1436,7 @@ function FloatingCommentList({
   anchorSummaries,
   commentPositions,
   comments,
+  compactList,
   editingCommentId,
   editComment,
   editingReply,
@@ -1708,9 +1753,10 @@ function FloatingCommentList({
                     onReviewCommentPatches={onReviewCommentPatches}
                     onStartReanchor={onStartReanchor}
                     onResolveComment={onResolveComment}
-                    onActivateComment={(commentId) =>
-                      onSetActiveCommentState({ kind: "comment", commentId })
-                    }
+                    onActivateComment={(commentId) => {
+                      onSetActiveCommentState({ kind: "comment", commentId });
+                      void onFindComment(item.comment).catch(() => undefined);
+                    }}
                     onClearActiveComment={() =>
                       onSetActiveCommentState({ kind: "none" })
                     }
@@ -1760,7 +1806,7 @@ function FloatingCommentList({
           getSelectionKey={getSelectionKey}
           isBusy={isBusy}
           isSelectionMode={isSelectionMode}
-          label="Unpositioned comments"
+          label={compactList ? "Comment threads" : "Unpositioned comments"}
           onDeleteComment={onDeleteComment}
           onEditComment={onEditComment}
           onEditReply={onEditReply}
@@ -2058,9 +2104,10 @@ function CommentGroup({
                   onReviewCommentPatches={onReviewCommentPatches}
                   onStartReanchor={onStartReanchor}
                   onResolveComment={onResolveComment}
-                  onActivateComment={(commentId) =>
-                    onSetActiveCommentState({ kind: "comment", commentId })
-                  }
+                  onActivateComment={(commentId) => {
+                    onSetActiveCommentState({ kind: "comment", commentId });
+                    void onFindComment(comment).catch(() => undefined);
+                  }}
                   onClearActiveComment={() =>
                     onSetActiveCommentState({ kind: "none" })
                   }
@@ -2341,27 +2388,25 @@ function CommentCard({
       ) : null}
       {isCompact ? (
         <>
-          <div className="comment-card-meta">
-            <span className="comment-type">[{comment.type}]</span>
-            <span>{comment.status}</span>
+          <div className="comment-compact-heading">
+            <p className="comment-collapsed-preview">
+              {truncateText(comment.comment, 110)}
+            </p>
+            <span>
+              {threadEntries.length > 0
+                ? `${threadEntries.length} repl${
+                    threadEntries.length === 1 ? "y" : "ies"
+                  }`
+                : "No replies"}
+            </span>
           </div>
-          <div
-            aria-label={collapsedTarget.title}
-            className={`comment-target comment-target-${collapsedTarget.variant}`}
+          <span
+            className="comment-compact-context"
             title={collapsedTarget.title}
           >
-            <strong className="comment-target-primary">
-              {collapsedTarget.primary}
-            </strong>
-            {collapsedTarget.secondary ? (
-              <span className="comment-target-secondary">
-                {collapsedTarget.secondary}
-              </span>
-            ) : null}
-          </div>
-          <p className="comment-collapsed-preview">
-            {truncateText(comment.comment, 130)}
-          </p>
+            {comment.type.replaceAll("_", " ")} · {comment.status}
+            {collapsedTarget.secondary ? ` · ${collapsedTarget.secondary}` : ""}
+          </span>
           <CompactCommentBadges
             anchorSummary={anchorSummary}
             comment={comment}
@@ -2406,9 +2451,19 @@ function CommentCard({
         </form>
       ) : (
         <>
-          <div className="comment-card-meta">
-            <span className="comment-type">[{comment.type}]</span>
-            <span>{comment.status}</span>
+          <div className="comment-card-heading">
+            <div className="comment-card-meta">
+              <span className="comment-type">[{comment.type}]</span>
+              <span>{comment.status}</span>
+            </div>
+            <button
+              type="button"
+              className="comment-card-close"
+              disabled={isBusy}
+              onClick={onClearActiveComment}
+            >
+              Close details
+            </button>
           </div>
           <strong className="comment-target">{anchorSummary.label}</strong>
           {focusStateLabel !== "Idle" ? (
@@ -2655,43 +2710,14 @@ function CommentCard({
                 Re-anchor
               </button>
             ) : null}
-            <button
-              type="button"
-              disabled={isBusy}
-              onClick={() => {
-                void onFindComment(comment).catch(() => undefined);
-              }}
-            >
-              Find
-            </button>
             {comment.status === "open" ? (
               <button
+                className="comment-action-primary"
                 type="button"
                 disabled={isBusy}
                 onClick={() => onStartReplying(comment)}
               >
                 Reply
-              </button>
-            ) : null}
-            {comment.status === "open" && isQueuedForExport ? (
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => {
-                  void onUnmarkCommentForExport(comment.id).catch(() => undefined);
-                }}
-              >
-                Unmark
-              </button>
-            ) : comment.status === "open" ? (
-              <button
-                type="button"
-                disabled={isBusy}
-                onClick={() => {
-                  void onMarkCommentForExport(comment.id).catch(() => undefined);
-                }}
-              >
-                Mark for ChatGPT
               </button>
             ) : null}
             {comment.status === "open" && onResolveComment ? (
@@ -2706,58 +2732,96 @@ function CommentCard({
               </button>
             ) : null}
             {comment.status === "resolved" && onReopenComment ? (
-              <>
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={onClearActiveComment}
-                >
-                  Close details
-                </button>
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => {
-                    void onReopenComment(comment.id).catch(() => undefined);
-                  }}
-                >
-                  Reopen
-                </button>
-              </>
-            ) : null}
-            {comment.status === "open" ? (
-              <button type="button" disabled={isBusy} onClick={onClearActiveComment}>
-                Close details
+              <button
+                className="comment-action-primary"
+                type="button"
+                disabled={isBusy}
+                onClick={() => {
+                  void onReopenComment(comment.id).catch(() => undefined);
+                }}
+              >
+                Reopen
               </button>
             ) : null}
-            {comment.status === "open" &&
-            comment.anchor.kind === "selected_text" &&
-            anchorSummary.status === "active" ? (
-              <details className="comment-secondary-actions">
-                <summary>More</summary>
-                <button
-                  type="button"
-                  disabled={isBusy}
-                  onClick={() => onStartReanchor(comment.id)}
-                >
-                  Change anchor
-                </button>
-              </details>
-            ) : null}
-            <button
-              type="button"
-              disabled={isBusy}
-              onClick={() => onStartEditing(comment)}
+            <ActionMenu
+              label={`More actions for comment ${comment.id}`}
+              rootClassName="comment-action-menu"
+              triggerClassName="comment-action-menu-trigger"
+              triggerChildren={<span aria-hidden="true">•••</span>}
+              panelClassName="comment-action-menu-panel"
             >
-              Edit
-            </button>
-            <button
-              type="button"
-              disabled={isBusy}
-              onClick={() => onDeleteComment(comment.id)}
-            >
-              Move to Trash
-            </button>
+              {(closeMenu) => (
+                <>
+                  <ActionMenuGroup
+                    className="comment-action-menu-group"
+                    label="Comment"
+                    labelClassName="comment-action-menu-label"
+                  >
+                    <ActionMenuItem
+                      className="comment-action-menu-item"
+                      closeMenu={closeMenu}
+                      disabled={isBusy}
+                      onSelect={() => onFindComment(comment)}
+                    >
+                      Find in document
+                    </ActionMenuItem>
+                    {comment.status === "open" && isQueuedForExport ? (
+                      <ActionMenuItem
+                        className="comment-action-menu-item"
+                        closeMenu={closeMenu}
+                        disabled={isBusy}
+                        onSelect={() => onUnmarkCommentForExport(comment.id)}
+                      >
+                        Unmark for ChatGPT
+                      </ActionMenuItem>
+                    ) : comment.status === "open" ? (
+                      <ActionMenuItem
+                        className="comment-action-menu-item"
+                        closeMenu={closeMenu}
+                        disabled={isBusy}
+                        onSelect={() => onMarkCommentForExport(comment.id)}
+                      >
+                        Mark for ChatGPT
+                      </ActionMenuItem>
+                    ) : null}
+                    {comment.status === "open" &&
+                    comment.anchor.kind === "selected_text" &&
+                    anchorSummary.status === "active" ? (
+                      <ActionMenuItem
+                        className="comment-action-menu-item"
+                        closeMenu={closeMenu}
+                        disabled={isBusy}
+                        onSelect={() => onStartReanchor(comment.id)}
+                      >
+                        Change anchor
+                      </ActionMenuItem>
+                    ) : null}
+                    <ActionMenuItem
+                      className="comment-action-menu-item"
+                      closeMenu={closeMenu}
+                      disabled={isBusy}
+                      onSelect={() => onStartEditing(comment)}
+                    >
+                      Edit comment
+                    </ActionMenuItem>
+                  </ActionMenuGroup>
+                  <ActionMenuGroup
+                    className="comment-action-menu-group"
+                    label="Remove"
+                    labelClassName="comment-action-menu-label"
+                  >
+                    <ActionMenuItem
+                      className="comment-action-menu-item comment-action-menu-item-destructive"
+                      closeMenu={closeMenu}
+                      disabled={isBusy}
+                      onSelect={() => onDeleteComment(comment.id)}
+                    >
+                      Move to Trash
+                    </ActionMenuItem>
+                  </ActionMenuGroup>
+                </>
+              )}
+            </ActionMenu>
           </div>
         </>
       )}

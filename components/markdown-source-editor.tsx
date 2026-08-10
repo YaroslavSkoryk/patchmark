@@ -45,8 +45,10 @@ export function MarkdownSourceEditor({
   selectionRequest
 }: MarkdownSourceEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const onSelectionChangeRef = useRef(onSelectionChange);
   const isComposingRef = useRef(false);
   const pendingMutationHintRef = useRef<MarkdownMutationHint | null>(null);
+  onSelectionChangeRef.current = onSelectionChange;
 
   useEffect(() => {
     if (!selectionRequest || !textareaRef.current) {
@@ -59,8 +61,8 @@ export function MarkdownSourceEditor({
     textarea.focus();
     textarea.setSelectionRange(start, end);
     textarea.scrollTop = getApproximateScrollTop(markdown, start);
-    onSelectionChange?.({ start, end }, textarea);
-  }, [markdown, onSelectionChange, selectionRequest]);
+    onSelectionChangeRef.current?.({ start, end }, textarea);
+  }, [markdown, selectionRequest]);
 
   function emitSelection(selectionTarget: HTMLTextAreaElement) {
     onSelectionChange?.(

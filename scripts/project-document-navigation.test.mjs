@@ -48,7 +48,8 @@ assert.match(documentEditor, /setMobileNavigationOpen\(false\);[\s\S]{0,120}hand
 assert.match(documentEditor, /<ApplicationMenu label="File">/);
 assert.match(documentEditor, /<ApplicationMenu label="Review">/);
 
-assert.match(css, /grid-template-columns: 272px minmax\(0, 1fr\) 320px/);
+assert.match(css, /grid-template-columns: 272px minmax\(0, 1fr\)/);
+assert.match(css, /\.document-workspace\[data-comments-open="true"\][\s\S]*?336px/);
 assert.match(css, /\.document-workspace\[data-navigation-collapsed="true"\]/);
 assert.match(css, /\.project-document-item\s*\{[\s\S]*?border: 0;[\s\S]*?border-left: 3px solid transparent/);
 assert.match(css, /\.project-document-item\[data-active="true"\][\s\S]*?border-left-color: var\(--accent\)/);

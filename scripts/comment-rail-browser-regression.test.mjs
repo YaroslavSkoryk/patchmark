@@ -335,7 +335,7 @@ async function waitForFixture(client) {
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const fixtureState = await evaluate(client, {
       expression: `({
-        count: document.querySelectorAll(".comment-floating-item article").length,
+        count: document.querySelectorAll(".comment-card").length,
         ready: document.querySelector("[data-regression-ready]")?.getAttribute("data-regression-ready")
       })`
     });

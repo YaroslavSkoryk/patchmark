@@ -128,6 +128,7 @@ try {
   await waitForEditorShell(client);
   await clickButtonByText(client, "Open Project Folder");
   await waitForPhase8Comments(client);
+  await clickButtonByText(client, "Visual Mode");
   await waitForVisualEditor(client);
 
   const initialFingerprint = fingerprintProject(fixtureDir);
@@ -570,7 +571,19 @@ try {
     assert.equal(comment.status, "open");
   }
 
+  const pageReloaded = new Promise((resolve) => {
+    const removeListener = client.on("Page.loadEventFired", () => {
+      removeListener();
+      resolve();
+    });
+  });
   await client.call("Page.reload", { ignoreCache: true });
+  await Promise.race([
+    pageReloaded,
+    delay(15_000).then(() => {
+      throw new Error("Timed out waiting for the re-anchor fixture reload.");
+    })
+  ]);
   await waitForEditorShell(client);
   await clickButtonByText(client, "Open Project Folder");
   await waitForPhase8Comments(client);
@@ -842,6 +855,32 @@ async function activateComment(pageClient, commentId) {
 }
 
 async function clickCommentButton(pageClient, commentId, text) {
+  const menuText = new Map([
+    ["Change anchor", "Change anchor"],
+    ["Find", "Find in document"],
+    ["Mark for ChatGPT", "Mark for ChatGPT"]
+  ]).get(text);
+
+  if (menuText) {
+    await activateComment(pageClient, commentId);
+    await evaluate(pageClient, {
+      expression: `(() => {
+        const card = document.querySelector(${JSON.stringify(`#patchmark-comment-card-${commentId}`)});
+        const trigger = card?.querySelector(".comment-action-menu-trigger");
+        if (!(trigger instanceof HTMLButtonElement)) throw new Error("Missing comment action menu");
+        trigger.click();
+      })()`,
+      userGesture: true
+    });
+    await waitForEnabledButton(
+      pageClient,
+      ".comment-action-menu-panel",
+      menuText
+    );
+    await clickWithin(pageClient, ".comment-action-menu-panel", menuText);
+    return;
+  }
+
   await clickWithin(pageClient, `#patchmark-comment-card-${commentId}`, text);
 }
 
@@ -1114,19 +1153,7 @@ async function injectNextWriteFailure(pageClient) {
 }
 
 async function openHealthyChangeAnchor(pageClient, commentId) {
-  await activateComment(pageClient, commentId);
-  await evaluate(pageClient, {
-    expression: `(() => {
-      const details = document.querySelector(${JSON.stringify(`#patchmark-comment-card-${commentId} .comment-secondary-actions`)});
-      if (!details) throw new Error("Missing Change anchor menu");
-      details.open = true;
-      const button = Array.from(details.querySelectorAll("button"))
-        .find((candidate) => candidate.textContent?.trim() === "Change anchor");
-      button.click();
-      return true;
-    })()`,
-    userGesture: true
-  });
+  await clickCommentButton(pageClient, commentId, "Change anchor");
   await waitForSelector(pageClient, ".reanchor-mode-panel");
 }
 
@@ -1266,14 +1293,28 @@ async function waitForPersistedAnchor(commentsPath, commentId, selectedText) {
 }
 
 async function waitForVisualEditor(pageClient) {
+  let latestState = null;
   for (let attempt = 0; attempt < 240; attempt += 1) {
-    const ready = await evaluate(pageClient, {
-      expression: `(document.querySelector(".patchmark-prose")?.textContent?.length ?? 0) > 100`
+    latestState = await evaluate(pageClient, {
+      expression: `({
+        bodyText: document.body.textContent?.slice(0, 500) ?? "",
+        mode: document.querySelector("[aria-label='Editor mode'] button[aria-pressed='true']")?.textContent?.trim() ?? null,
+        proseLength: document.querySelector(".patchmark-prose")?.textContent?.length ?? 0
+      })`
     });
-    if (ready) return;
+    if (latestState.proseLength > 100) return;
+    if (latestState.mode === "Markdown Mode" && attempt % 20 === 0) {
+      await evaluate(pageClient, {
+        expression: `(() => {
+          const button = Array.from(document.querySelectorAll("button")).find((candidate) => candidate.textContent?.trim() === "Visual Mode" && !candidate.disabled);
+          button?.click();
+        })()`,
+        userGesture: true
+      });
+    }
     await delay(50);
   }
-  throw new Error("Visual editor did not become ready.");
+  throw new Error(`Visual editor did not become ready: ${JSON.stringify(latestState)}`);
 }
 
 async function waitForPhase8Comments(pageClient) {
