@@ -53,6 +53,8 @@ const tableCellReplacement =
 const failureReplacement =
   "Persistence failure target remains available for a safe retry.";
 
+rmSync(fixtureDir, { force: true, recursive: true });
+rmSync(screenshotDir, { force: true, recursive: true });
 mkdirSync(artifactRoot, { recursive: true });
 mkdirSync(screenshotDir, { recursive: true });
 preparePhase8Fixture(fixtureDir);
@@ -150,6 +152,7 @@ try {
   await clickCommentButton(client, commentIds.ambiguous, "Re-anchor");
   await waitForSelector(client, ".reanchor-workspace");
   const workspaceEntry = await measureWorkspace(client);
+  await assertFocusedTestId(client, "reanchor-workspace");
   const controlsLatencyMs = Date.now() - controlsStartedAt;
   assert.ok(
     Math.abs(workspaceEntry.scrollY - baselineEntry.scrollY) <= 1,
@@ -218,6 +221,10 @@ try {
   );
   assert.equal(workspaceEntry.position, "fixed");
   assertWorkspaceInViewport(workspaceEntry);
+  assert.equal(workspaceEntry.commentsPanelVisible, false);
+  assert.equal(workspaceEntry.candidateCount, 2);
+  assert.equal(workspaceEntry.selectedCandidateCount, 0);
+  assert.equal(workspaceEntry.expandedPreviewCount, 0);
   assert.equal(
     workspaceEntry.readCount,
     baselineEntry.readCount,
@@ -226,13 +233,39 @@ try {
   assert.ok(controlsLatencyMs < 1000, "Re-anchor controls should appear promptly.");
   await waitForSelector(client, ".reanchor-candidate-list");
   await capture(client, "02-suggested-candidate-list.png");
-  await clickCandidateButton(client, 0, "Preview candidate");
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 900,
+    mobile: false,
+    width: 820
+  });
+  const narrowWorkspace = await waitForWorkspaceViewport(client);
+  assertWorkspaceInViewport(narrowWorkspace);
+  assert.equal(narrowWorkspace.pageHorizontalOverflow <= 1, true);
+  await capture(client, "11-narrow-candidate-list.png");
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1100,
+    mobile: false,
+    width: 1700
+  });
+  await waitForWorkspaceViewport(client);
+  const candidateEntryScrollY = await evaluate(client, { expression: "window.scrollY" });
+  const fingerprintBeforeCandidateSelection = fingerprintProject(fixtureDir);
+  await selectCandidate(client, 0);
+  await waitForSelectedCandidatePreview(client, 0);
   await waitForPreviewHighlight(client);
+  assert.deepEqual(
+    fingerprintProject(fixtureDir),
+    fingerprintBeforeCandidateSelection,
+    "Candidate selection must remain inspection-only."
+  );
   await capture(client, "03-candidate-preview.png");
   await clickWithin(client, ".reanchor-mode-panel", "Return to previous position");
-  await waitForScrollNear(client, baselineEntry.scrollY);
+  await waitForScrollNear(client, candidateEntryScrollY);
   await clickWithin(client, ".reanchor-mode-panel", "Cancel");
   await waitForSelectorToDisappear(client, ".reanchor-mode-panel");
+  await assertFocusedComment(client, commentIds.ambiguous);
   assert.equal(sha256(readFileSync(commentsPath)), commentsBeforeCancelHash);
   assert.deepEqual(
     fingerprintProject(fixtureDir),
@@ -242,19 +275,25 @@ try {
 
   await activateComment(client, commentIds.ambiguous);
   await clickCommentButton(client, commentIds.ambiguous, "Re-anchor");
-  await clickCandidateButton(client, 1, "Preview candidate");
-  await clickCandidateButton(client, 1, "Review this location");
+  await selectCandidate(client, 1);
+  await waitForSelectedCandidatePreview(client, 1);
+  await clickWithin(client, ".reanchor-candidate-preview", "Review this location");
   await waitForSelector(client, ".reanchor-confirmation-dialog");
+  await assertConfirmationModalState(client);
   await capture(client, "04-final-confirmation.png");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
   await waitForSelectorToDisappear(client, ".reanchor-confirmation-dialog");
   await waitForPersistedAnchor(commentsPath, commentIds.ambiguous, "LINE add");
+  await assertFocusedComment(client, commentIds.ambiguous);
   await assertActiveCommentProjection(client, commentIds.ambiguous, "LINE add");
   await capture(client, "05-successfully-reanchored.png");
 
   const writesBeforeNoOp = await getFixtureWriteCount(client);
   await openHealthyChangeAnchor(client, commentIds.ambiguous);
-  await clickCandidateButton(client, 0, "Review this location");
+  await openDetails(client, ".reanchor-recovery-details");
+  await capture(client, "12-concise-recovery-history.png");
+  await selectCandidate(client, 0);
+  await clickWithin(client, ".reanchor-candidate-preview", "Review this location");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
   await waitForText(client, "This comment is already anchored to that text.");
   assert.equal(await getFixtureWriteCount(client), writesBeforeNoOp);
@@ -262,6 +301,8 @@ try {
   await activateComment(client, commentIds.missing);
   await capture(client, "01-missing-anchor-reanchor.png");
   await clickCommentButton(client, commentIds.missing, "Re-anchor");
+  await waitForSelector(client, ".reanchor-empty-candidates");
+  await capture(client, "13-no-candidate-manual-path.png");
   await clickButtonByText(client, "Visual Mode");
   await waitForVisualEditor(client);
   const beforeManualCancelFingerprint = fingerprintProject(fixtureDir);
@@ -313,6 +354,7 @@ try {
   );
   await selectVisualText(client, secondParagraphReplacement);
   await waitForWorkspaceSelection(client, secondParagraphReplacement);
+  await capture(client, "14-visual-manual-selection.png");
   await clickWithin(client, ".reanchor-mode-panel", "Use selection as new anchor");
   await clickWithin(
     client,
@@ -322,6 +364,7 @@ try {
   await waitForSelectorToDisappear(client, ".reanchor-confirmation-dialog");
   await clickWithin(client, ".reanchor-mode-panel", "Cancel");
   await waitForSelectorToDisappear(client, ".reanchor-mode-panel");
+  await assertFocusedComment(client, commentIds.missing);
   assert.deepEqual(
     fingerprintProject(fixtureDir),
     beforeManualCancelFingerprint,
@@ -401,6 +444,7 @@ try {
     "### Early Cranberries & Walnut signal",
     "## Similar Rows"
   );
+  await capture(client, "15-markdown-manual-selection.png");
   await clickWithin(client, ".reanchor-mode-panel", "Use selection as new anchor");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
   await waitForPersistedAnchor(commentsPath, commentIds.multi, multiBlock);
@@ -430,34 +474,38 @@ try {
   await waitForVisualEditor(client);
   await activateComment(client, commentIds.table);
   await clickCommentButton(client, commentIds.table, "Re-anchor");
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 844,
+    mobile: true,
+    width: 393
+  });
+  await client.call("Emulation.setTouchEmulationEnabled", {
+    enabled: true,
+    maxTouchPoints: 5
+  });
+  const mobileWorkspace = await waitForWorkspaceViewport(client);
+  assertWorkspaceInViewport(mobileWorkspace);
+  assert.ok(
+    mobileWorkspace.width <= 393,
+    "Mobile workspace must avoid horizontal overflow."
+  );
+  assert.equal(mobileWorkspace.pageHorizontalOverflow <= 1, true);
+  assert.equal(mobileWorkspace.hoverFine, false);
+  assert.equal(mobileWorkspace.bodyOverflow, "");
   await selectVisualText(client, tableCellReplacement);
   const tableSelectionState = await waitForWorkspaceSelection(
     client,
     tableCellReplacement
   );
   assert.equal(tableSelectionState.contextKind, "table_cell");
-  await client.call("Emulation.setDeviceMetricsOverride", {
-    deviceScaleFactor: 1,
-    height: 900,
-    mobile: false,
-    width: 720
-  });
-  const mobileWorkspace = await waitForWorkspaceViewport(client);
-  assertWorkspaceInViewport(mobileWorkspace);
-  assert.ok(
-    mobileWorkspace.width <= 696,
-    "Narrow workspace must avoid horizontal overflow."
-  );
-  assert.equal(mobileWorkspace.selectionText.includes(tableCellReplacement), true);
+  assert.equal(tableSelectionState.selectionText, tableCellReplacement);
   await capture(client, "09-mobile-workspace.png");
-  await client.call("Emulation.setDeviceMetricsOverride", {
-    deviceScaleFactor: 1,
-    height: 1100,
-    mobile: false,
-    width: 1700
-  });
-  await waitForWorkspaceViewport(client);
   await clickWithin(client, ".reanchor-mode-panel", "Use selection as new anchor");
+  await waitForSelector(client, ".reanchor-confirmation-dialog");
+  await assertConfirmationModalState(client);
+  await scrollIntoView(client, ".reanchor-confirmation-actions");
+  await capture(client, "16-mobile-confirmation.png");
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
   const persistedTableComment = await waitForPersistedAnchor(
     commentsPath,
@@ -468,6 +516,13 @@ try {
     persistedTableComment.anchor.anchor_context.kind,
     "table_cell"
   );
+  await client.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1100,
+    mobile: false,
+    width: 1700
+  });
   await capture(client, "10-table-reanchored.png");
 
   await activateComment(client, commentIds.failure);
@@ -490,6 +545,7 @@ try {
   await waitForSelector(client, ".reanchor-confirmation-dialog");
   await pressFocusedKey(client, "Escape");
   await waitForSelectorToDisappear(client, ".reanchor-confirmation-dialog");
+  await assertFocusedTestId(client, "reanchor-workspace");
   await focusButtonWithin(
     client,
     ".reanchor-mode-panel",
@@ -506,6 +562,7 @@ try {
   );
   await pressFocusedKey(client, "Enter");
   await waitForText(client, "The previous anchor remains authoritative.");
+  await capture(client, "17-persistence-failure-retry.png");
   assert.equal(
     await evaluate(client, {
       expression: `Boolean(document.querySelector(".reanchor-confirmation-dialog"))`
@@ -899,19 +956,119 @@ async function clickWithin(pageClient, selector, text) {
   });
 }
 
-async function clickCandidateButton(pageClient, index, text) {
+async function selectCandidate(pageClient, index) {
   await evaluate(pageClient, {
     expression: `(() => {
-      const cards = Array.from(document.querySelectorAll(".reanchor-candidate-card"));
-      const card = cards[${index}];
-      const button = Array.from(card?.querySelectorAll("button") ?? [])
-        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(text)} && !candidate.disabled);
-      if (!button) throw new Error("Missing candidate button ${text}");
+      const button = document.querySelectorAll(".reanchor-candidate-option")[${index}];
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Missing candidate option ${index}");
+      }
+      button.focus({ preventScroll: true });
       button.click();
       return true;
     })()`,
     userGesture: true
   });
+}
+
+async function waitForSelectedCandidatePreview(pageClient, index) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const state = await evaluate(pageClient, {
+      expression: `(() => {
+        const options = Array.from(document.querySelectorAll(".reanchor-candidate-option"));
+        return {
+          previewCount: document.querySelectorAll(".reanchor-candidate-preview").length,
+          selectedCount: options.filter((option) => option.getAttribute("aria-pressed") === "true").length,
+          selectedIndex: options.findIndex((option) => option.getAttribute("aria-pressed") === "true")
+        };
+      })()`
+    });
+    if (
+      state.previewCount === 1 &&
+      state.selectedCount === 1 &&
+      state.selectedIndex === index
+    ) {
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for candidate ${index} preview.`);
+}
+
+async function assertConfirmationModalState(pageClient) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const state = await evaluate(pageClient, {
+      expression: `(() => {
+        const dialog = document.querySelector(".reanchor-confirmation-dialog");
+        return {
+          activeHeading: document.activeElement === dialog?.querySelector("h2"),
+          ariaBusy: dialog?.getAttribute("aria-busy") ?? null,
+          ariaModal: dialog?.getAttribute("aria-modal") ?? null,
+          bodyOverflow: document.body.style.overflow,
+          commentsPanelCount: document.querySelectorAll(".comments-panel").length,
+          role: dialog?.getAttribute("role") ?? null,
+          workspaceCount: document.querySelectorAll(".reanchor-workspace").length
+        };
+      })()`
+    });
+    if (state.activeHeading) {
+      assert.equal(state.role, "dialog");
+      assert.equal(state.ariaModal, "true");
+      assert.equal(state.bodyOverflow, "hidden");
+      assert.equal(state.workspaceCount, 0);
+      assert.equal(state.commentsPanelCount, 0);
+      return;
+    }
+    await delay(25);
+  }
+  throw new Error("Timed out waiting for the focused re-anchor confirmation dialog.");
+}
+
+async function assertFocusedTestId(pageClient, testId) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const focused = await evaluate(pageClient, {
+      expression: `document.activeElement?.getAttribute("data-testid") === ${JSON.stringify(testId)}`
+    });
+    if (focused) return;
+    await delay(25);
+  }
+  throw new Error(`Timed out waiting for focus on ${testId}.`);
+}
+
+async function assertFocusedComment(pageClient, commentId) {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    const focused = await evaluate(pageClient, {
+      expression: `document.activeElement?.id === ${JSON.stringify(`patchmark-comment-card-${commentId}`)}`
+    });
+    if (focused) return;
+    await delay(25);
+  }
+  throw new Error(`Timed out restoring focus to ${commentId}.`);
+}
+
+async function openDetails(pageClient, selector) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const details = document.querySelector(${JSON.stringify(selector)});
+      if (!(details instanceof HTMLDetailsElement)) throw new Error("Missing details disclosure");
+      details.open = true;
+      details.dispatchEvent(new Event("toggle"));
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function scrollIntoView(pageClient, selector) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const element = document.querySelector(${JSON.stringify(selector)});
+      if (!element) throw new Error("Missing element to scroll into view");
+      element.scrollIntoView({ block: "end" });
+      return true;
+    })()`
+  });
+  await delay(50);
 }
 
 async function measureWorkspace(pageClient) {
@@ -931,6 +1088,10 @@ async function waitForWorkspaceViewport(pageClient) {
         const editor = document.querySelector("[aria-label='editable markdown']");
         return {
           bottom: rect.bottom,
+          activeElementTestId: document.activeElement?.getAttribute("data-testid") ?? null,
+          bodyOverflow: document.body.style.overflow,
+          candidateCount: workspace.querySelectorAll(".reanchor-candidate-option").length,
+          commentsPanelVisible: Boolean(document.querySelector(".comments-panel")),
           editorAriaReadOnly: editor?.getAttribute("aria-readonly"),
           editorContentEditable: editor?.getAttribute("contenteditable"),
           editorHeight: editor?.getBoundingClientRect().height ?? 0,
@@ -939,6 +1100,9 @@ async function waitForWorkspaceViewport(pageClient) {
             editor,
           height: rect.height,
           left: rect.left,
+          expandedPreviewCount: workspace.querySelectorAll(".reanchor-candidate-preview").length,
+          hoverFine: matchMedia("(hover: hover) and (pointer: fine)").matches,
+          pageHorizontalOverflow: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
           position: style.position,
           readCount: window.__patchmarkFixtureReadLog?.length ?? 0,
           right: rect.right,
@@ -946,6 +1110,7 @@ async function waitForWorkspaceViewport(pageClient) {
           selectionLatencyMs: workspace.getAttribute("data-selection-latency-ms"),
           selectionText:
             workspace.querySelector(".reanchor-selection-status")?.textContent ?? "",
+          selectedCandidateCount: workspace.querySelectorAll('.reanchor-candidate-option[aria-pressed="true"]').length,
           top: rect.top,
           tableButtonCount: editor?.querySelectorAll("button").length ?? 0,
           visibility: style.visibility,
@@ -1431,7 +1596,14 @@ function screenshotFiles() {
     "07-multi-block-reanchor.png",
     "08-removed-from-unpositioned.png",
     "09-mobile-workspace.png",
-    "10-table-reanchored.png"
+    "10-table-reanchored.png",
+    "11-narrow-candidate-list.png",
+    "12-concise-recovery-history.png",
+    "13-no-candidate-manual-path.png",
+    "14-visual-manual-selection.png",
+    "15-markdown-manual-selection.png",
+    "16-mobile-confirmation.png",
+    "17-persistence-failure-retry.png"
   ].map((fileName) => join(screenshotDir, fileName));
 }
 

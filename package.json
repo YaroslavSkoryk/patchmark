@@ -57,6 +57,8 @@
     "test:comment-history-compaction": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-history-compaction.test.mjs",
     "test:comment-history-compaction-cli": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/compact-comment-history-cli.test.mjs",
     "test:comment-reanchor": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-reanchor.test.mjs",
+    "test:human-reanchor-foundation": "node scripts/human-reanchor-foundation.test.mjs",
+    "test:human-reanchor-foundation-browser": "node scripts/comment-reanchor-browser.test.mjs",
     "test:comment-trash": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-trash.test.mjs",
     "test:comment-trash-browser": "node scripts/comment-trash-browser.test.mjs",
     "test:comment-permanent-deletion": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-permanent-deletion.test.mjs",
