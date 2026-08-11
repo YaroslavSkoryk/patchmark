@@ -123,13 +123,25 @@ try {
   assert.equal(compact.compactCardCount, 5);
   assert.equal(compact.activeCardCount, 0);
   assert.equal(compact.compactActionCount, 0);
+  assert.equal(compact.commentLayout, "spatial");
+  assert.equal(compact.floatingItemCount, 5);
+  assert.equal(compact.absoluteCommentItemCount, 5);
+  assert.equal(compact.inlineCommentTopCount, 5);
   assert.ok(compact.maxCompactCardHeight < 120);
   await screenshot("02-desktop-compact-comment-rail.png");
 
-  await clickSelector("#patchmark-comment-card-PM-COMMENT-0001");
+  await clickSelector(
+    "#patchmark-comment-card-PM-COMMENT-0001 .comment-collapsed-preview"
+  );
   await waitFor(
     `document.querySelector('#patchmark-comment-card-PM-COMMENT-0001')?.getAttribute('aria-current') === 'true'`,
     "ordinary comment active"
+  );
+  assert.equal(
+    await evaluate(client, {
+      expression: `document.querySelector('.mode-switcher button[aria-pressed="true"]')?.textContent?.trim()`
+    }),
+    "Visual Mode"
   );
   const active = await readLayout();
   measurements.desktopActive = active;
@@ -228,15 +240,69 @@ try {
   await screenshot("09-desktop-document-tools-history.png");
 
   await clickSelector(".application-comments-trigger");
-  await clickButtonByText(client, "Markdown Mode");
   await clickSelector("#patchmark-comment-card-PM-COMMENT-0002");
   await waitFor(
+    `document.querySelector('#patchmark-comment-card-PM-COMMENT-0002')?.getAttribute('aria-current') === 'true'`,
+    "compact comment discussion"
+  );
+  assert.equal(
+    await evaluate(client, {
+      expression: `document.querySelector('.mode-switcher button[aria-pressed="true"]')?.textContent?.trim()`
+    }),
+    "Visual Mode"
+  );
+  await clickSelector(
+    "#patchmark-comment-card-PM-COMMENT-0002 .comment-action-menu-trigger"
+  );
+  await clickButtonByText(client, "Find in document");
+  await waitFor(
     `document.querySelector('.document-context-status')?.textContent?.includes('Showing comment anchor in Markdown Mode')`,
-    "compact markdown status"
+    "explicit Find in document status"
   );
   assert.equal(
     await countVisible(".document-save-banner:not(.document-context-status)"),
     0
+  );
+  const shortMarkdownLayout = await evaluate(client, {
+    expression: `(() => {
+      const shell = document.querySelector('.app-shell');
+      const workspace = document.querySelector('.document-workspace')?.getBoundingClientRect();
+      const textarea = document.querySelector('.markdown-source-editor');
+      const rect = textarea?.getBoundingClientRect();
+      const paddingBottom = Number.parseFloat(shell ? getComputedStyle(shell).paddingBottom : '0');
+      const usableBottom = innerHeight - paddingBottom;
+      return {
+        clientHeight: textarea?.clientHeight ?? 0,
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        scrollHeight: textarea?.scrollHeight ?? 0,
+        textareaBottom: Math.round(rect?.bottom ?? 0),
+        textareaHeight: Math.round(rect?.height ?? 0),
+        unusedBottom: Math.round(usableBottom - (rect?.bottom ?? 0)),
+        usableBottom: Math.round(usableBottom),
+        workspaceTop: Math.round(workspace?.top ?? 0)
+      };
+    })()`
+  });
+  measurements.shortMarkdownLayout = shortMarkdownLayout;
+  assert.ok(Math.abs(shortMarkdownLayout.unusedBottom) <= 2);
+  assert.ok(shortMarkdownLayout.textareaHeight > 400);
+  assert.ok(shortMarkdownLayout.scrollHeight <= shortMarkdownLayout.clientHeight + 2);
+  assert.equal(shortMarkdownLayout.horizontalOverflow, false);
+  const markdownComments = await readLayout();
+  measurements.desktopMarkdownComments = markdownComments;
+  assert.equal(markdownComments.mode, "Markdown Mode");
+  assert.equal(markdownComments.commentLayout, "compact");
+  assert.equal(markdownComments.floatingItemCount, 0);
+  assert.equal(markdownComments.absoluteCommentItemCount, 0);
+  assert.equal(markdownComments.inlineCommentTopCount, 0);
+  assert.equal(markdownComments.semanticCommentItemCount, 5);
+  assert.equal(markdownComments.uniqueCommentItemCount, 5);
+  assert.ok(markdownComments.maxCommentItemGap <= 12);
+  assert.equal(markdownComments.activeCommentId, "PM-COMMENT-0002");
+  assert.equal(markdownComments.markdownSelectionStart, markdownComments.activeAnchorStart);
+  assert.equal(markdownComments.markdownSelectionEnd, markdownComments.activeAnchorEnd);
+  assert.ok(
+    markdownComments.pageExcessBelowEditor <= markdownComments.appShellPaddingBottom + 2
   );
   await screenshot("10-desktop-markdown-context-status.png");
 
@@ -244,6 +310,10 @@ try {
   await waitFor(
     `document.querySelectorAll('.comment-card[aria-current="true"]').length === 0`,
     "active comment collapsed before mobile resize"
+  );
+  await waitFor(
+    `document.activeElement?.id === 'patchmark-comment-card-PM-COMMENT-0002'`,
+    "collapsed comment focus restoration"
   );
   await clickSelector(".comments-panel-close");
   await clickButtonByText(client, "Visual Mode");
@@ -460,6 +530,16 @@ async function readLayout() {
       const compactCards = cards.filter((card) => card.classList.contains('comment-card-compact'));
       const activeCard = cards.find((card) => card.getAttribute('aria-current') === 'true');
       const activeItem = activeCard?.closest('[data-comment-id]');
+      const commentItems = Array.from(comments?.querySelectorAll('[data-comment-id]') ?? []).filter((item) => item.getClientRects().length > 0);
+      const commentIds = commentItems.map((item) => item.getAttribute('data-comment-id') ?? '');
+      const commentGaps = commentItems.slice(1).map((item, index) => {
+        const previous = commentItems[index].getBoundingClientRect();
+        return Math.round(item.getBoundingClientRect().top - previous.bottom);
+      });
+      const markdownEditor = document.querySelector('.markdown-source-editor');
+      const markdownRect = markdownEditor?.getBoundingClientRect();
+      const shell = document.querySelector('.app-shell');
+      const appShellPaddingBottom = Number.parseFloat(shell ? getComputedStyle(shell).paddingBottom : '0');
       const highlightNames = ['patchmark-comment-open-selected-anchor', 'patchmark-comment-resolved-selected-anchor'];
       let highlightRangeCount = 0;
       for (const name of highlightNames) {
@@ -467,13 +547,17 @@ async function readLayout() {
         if (highlight) for (const range of highlight) highlightRangeCount += Array.from(range.getClientRects()).filter((item) => item.width > 0 && item.height > 0).length;
       }
       return {
+        absoluteCommentItemCount: commentItems.filter((item) => getComputedStyle(item).position === 'absolute').length,
         activeCardCount: cards.filter((card) => card.getAttribute('aria-current') === 'true').length,
+        activeCommentId: activeCard?.id?.replace('patchmark-comment-card-', '') ?? null,
         activeAnchorEnd: Number(activeItem?.getAttribute('data-comment-anchor-end') ?? 0),
         activeAnchorStart: Number(activeItem?.getAttribute('data-comment-anchor-start') ?? 0),
         activeCardHeight: Math.round(activeCard?.getBoundingClientRect().height ?? 0),
         activeElementLabel: document.activeElement?.getAttribute('aria-label'),
+        appShellPaddingBottom,
         applicationBarHeight: Math.round(rect('.application-bar')?.height ?? 0),
         bodyOverflow: getComputedStyle(document.body).overflow,
+        commentLayout: document.querySelector('.comments-panel')?.getAttribute('data-comment-layout') ?? '',
         commentsHeight: Math.round(commentsRect?.height ?? 0),
         commentsHidden: comments?.hidden ?? true,
         commentsModal: comments?.getAttribute('aria-modal') === 'true',
@@ -488,9 +572,17 @@ async function readLayout() {
         framedRegionCount: Array.from(document.querySelectorAll('.editor-panel, .outline-panel, .version-history-panel, .comment-card, .comments-primary-actions, .comment-filter-bar')).filter((element) => getComputedStyle(element).borderTopWidth !== '0px' && element.getClientRects().length > 0).length,
         highlightRangeCount,
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        inlineCommentTopCount: commentItems.filter((item) => item.style.top !== '').length,
+        markdownSelectionEnd: markdownEditor?.selectionEnd ?? -1,
+        markdownSelectionStart: markdownEditor?.selectionStart ?? -1,
         maxCompactCardHeight: Math.max(0, ...compactCards.map((card) => Math.round(card.getBoundingClientRect().height))),
+        maxCommentItemGap: Math.max(0, ...commentGaps),
+        mode: document.querySelector('.mode-switcher button[aria-pressed="true"]')?.textContent?.trim() ?? '',
         navigationWidth: Math.round(rect('.document-sidebar')?.width ?? 0),
+        pageExcessBelowEditor: Math.round(document.documentElement.scrollHeight - (markdownRect?.bottom ?? documentRect?.bottom ?? 0)),
         readingWidth: Math.round(rect('.patchmark-prose')?.width ?? 0),
+        semanticCommentItemCount: comments?.querySelectorAll('ol.comment-list > li[data-comment-id]').length ?? 0,
+        uniqueCommentItemCount: new Set(commentIds).size,
         visibleControlCount: Array.from(document.querySelectorAll('button, input, select, textarea, summary')).filter((control) => control.getClientRects().length > 0).length
       };
     })()`

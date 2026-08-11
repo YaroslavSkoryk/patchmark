@@ -35,7 +35,17 @@ assert.match(commentsPanel, /\{comments\.length\} total · \{openCommentCount\} 
 assert.match(commentsPanel, /<details className="comment-list-tools">/);
 assert.match(
   commentsPanel,
-  /isCompactCommentComposer \? EMPTY_COMMENT_POSITIONS : commentPositions/
+  /useSpatialCommentLayout[\s\S]*?\? commentPositions[\s\S]*?: EMPTY_COMMENT_POSITIONS/
+);
+assert.match(
+  commentsPanel,
+  /data-comment-layout=\{useSpatialCommentLayout \? "spatial" : "compact"\}/
+);
+assert.match(documentEditor, /data-editor-mode=\{mode\}/);
+assert.match(documentEditor, /spatialLayout=\{mode === "visual"\}/);
+assert.match(
+  documentEditor,
+  /function measureCommentPositions[\s\S]*?if \(mode !== "visual" \|\|/
 );
 assert.match(commentsPanel, /className="comment-compact-heading"/);
 assert.match(commentsPanel, /className="comment-card-active"|"comment-card-active"/);
@@ -48,8 +58,15 @@ assert.match(commentsPanel, /comment-action-menu-item-destructive/);
 assert.match(commentsPanel, />\s*Move to Trash\s*<\/ActionMenuItem>/);
 assert.match(commentsPanel, /Review patch\{pendingPatchCount/);
 assert.match(commentsPanel, /Re-anchor/);
-assert.match(commentsPanel, /onFindComment\(item\.comment\)/);
-assert.match(commentsPanel, /onFindComment\(comment\)/);
+assert.doesNotMatch(
+  commentsPanel,
+  /onActivateComment=\{\(commentId\) => \{[\s\S]{0,180}?onFindComment/
+);
+assert.match(
+  commentsPanel,
+  /onSelect=\{\(\) => onFindComment\(comment\)\}[\s\S]{0,80}?Find in document/
+);
+assert.match(commentsPanel, /restoreFocusToCollapsedCommentCard/);
 
 assert.match(documentEditor, /document-context-status document-context-status-/);
 assert.match(documentEditor, /saveFeedback\.kind === "error"[\s\S]*?document-save-banner-error/);
@@ -57,6 +74,10 @@ assert.match(css, /\.document-workspace\[data-comments-open="true"\][\s\S]*?336p
 assert.match(css, /\.patchmark-prose\s*\{[\s\S]*?max-width: 920px/);
 assert.match(css, /\.comment-card-compact\s*\{[\s\S]*?border-bottom:/);
 assert.match(css, /\.comment-card-active\s*\{[\s\S]*?border: 1px solid/);
+assert.match(
+  css,
+  /@media \(min-width: 901px\)[\s\S]*?\.comments-rail\[data-editor-mode="markdown"\][\s\S]*?max-height: calc\([\s\S]*?overflow-y: auto;/
+);
 assert.match(css, /\.comment-action-menu-panel\s*\{[\s\S]*?position: fixed/);
 assert.match(css, /@media \(max-width: 900px\)[\s\S]*?\.comments-rail\s*\{[\s\S]*?position: fixed/);
 assert.match(css, /@media \(max-width: 520px\)[\s\S]*?\.comments-rail\s*\{[\s\S]*?max-height: 76dvh/);

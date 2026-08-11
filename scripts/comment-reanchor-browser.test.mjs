@@ -474,6 +474,16 @@ try {
   await waitForVisualEditor(client);
   await activateComment(client, commentIds.table);
   await clickCommentButton(client, commentIds.table, "Re-anchor");
+  await evaluate(client, {
+    expression: `(() => {
+      const root = document.documentElement.style;
+      root.setProperty("--safe-area-top", "12px");
+      root.setProperty("--safe-area-right", "10px");
+      root.setProperty("--safe-area-bottom", "34px");
+      root.setProperty("--safe-area-left", "10px");
+      return true;
+    })()`
+  });
   await client.call("Emulation.setDeviceMetricsOverride", {
     deviceScaleFactor: 1,
     height: 844,
@@ -493,6 +503,11 @@ try {
   assert.equal(mobileWorkspace.pageHorizontalOverflow <= 1, true);
   assert.equal(mobileWorkspace.hoverFine, false);
   assert.equal(mobileWorkspace.bodyOverflow, "");
+  assert.ok(mobileWorkspace.left >= 10);
+  assert.ok(mobileWorkspace.right <= 383);
+  assert.ok(mobileWorkspace.bottom <= 810);
+  assert.equal(mobileWorkspace.paddingBottom, "46px");
+  assert.match(mobileWorkspace.focusBoxShadow, /inset/);
   await selectVisualText(client, tableCellReplacement);
   const tableSelectionState = await waitForWorkspaceSelection(
     client,
@@ -516,6 +531,16 @@ try {
     persistedTableComment.anchor.anchor_context.kind,
     "table_cell"
   );
+  await evaluate(client, {
+    expression: `(() => {
+      const root = document.documentElement.style;
+      root.removeProperty("--safe-area-top");
+      root.removeProperty("--safe-area-right");
+      root.removeProperty("--safe-area-bottom");
+      root.removeProperty("--safe-area-left");
+      return true;
+    })()`
+  });
   await client.call("Emulation.setTouchEmulationEnabled", { enabled: false });
   await client.call("Emulation.setDeviceMetricsOverride", {
     deviceScaleFactor: 1,
@@ -1102,6 +1127,8 @@ async function waitForWorkspaceViewport(pageClient) {
           left: rect.left,
           expandedPreviewCount: workspace.querySelectorAll(".reanchor-candidate-preview").length,
           hoverFine: matchMedia("(hover: hover) and (pointer: fine)").matches,
+          focusBoxShadow: style.boxShadow,
+          paddingBottom: style.paddingBottom,
           pageHorizontalOverflow: Math.max(0, document.documentElement.scrollWidth - window.innerWidth),
           position: style.position,
           readCount: window.__patchmarkFixtureReadLog?.length ?? 0,
@@ -1428,18 +1455,37 @@ async function assertActiveCommentProjection(pageClient, commentId, expectedText
       const item = document.querySelector(${JSON.stringify(`[data-comment-id="${commentId}"]`)});
       const card = document.querySelector(${JSON.stringify(`#patchmark-comment-card-${commentId}`)});
       return {
+        absolute: item ? getComputedStyle(item).position === "absolute" : false,
         cardText: card?.textContent ?? "",
         floating: item?.classList.contains("comment-floating-item") ?? false,
+        inlineTop: item instanceof HTMLElement ? item.style.top : "",
+        layout: document.querySelector(".comments-panel")?.getAttribute("data-comment-layout") ?? null,
         status: item?.getAttribute("data-comment-anchor-status") ?? null
       };
     })()`
   });
-  assert.equal(rail.floating, true);
+  assert.equal(rail.layout, "compact");
+  assert.equal(rail.floating, false);
+  assert.equal(rail.absolute, false);
+  assert.equal(rail.inlineTop, "");
   assert.equal(rail.status, "active");
   assert.equal(rail.cardText.includes(expectedText.slice(0, 100)), true);
   await clickButtonByText(pageClient, "Visual Mode");
   await waitForVisualEditor(pageClient);
   await waitForOpenHighlight(pageClient);
+  const visualRail = await evaluate(pageClient, {
+    expression: `(() => {
+      const item = document.querySelector(${JSON.stringify(`[data-comment-id="${commentId}"]`)});
+      return {
+        floating: item?.classList.contains("comment-floating-item") ?? false,
+        layout: document.querySelector(".comments-panel")?.getAttribute("data-comment-layout") ?? null,
+        status: item?.getAttribute("data-comment-anchor-status") ?? null
+      };
+    })()`
+  });
+  assert.equal(visualRail.layout, "spatial");
+  assert.equal(visualRail.floating, true);
+  assert.equal(visualRail.status, "active");
 }
 
 async function waitForPersistedAnchor(commentsPath, commentId, selectedText) {

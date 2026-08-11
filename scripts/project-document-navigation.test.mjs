@@ -54,7 +54,7 @@ assert.match(css, /\.document-workspace\[data-navigation-collapsed="true"\]/);
 assert.match(css, /\.project-document-item\s*\{[\s\S]*?border: 0;[\s\S]*?border-left: 3px solid transparent/);
 assert.match(css, /\.project-document-item\[data-active="true"\][\s\S]*?border-left-color: var\(--accent\)/);
 assert.match(css, /\.project-navigation-menu-panel\s*\{[\s\S]*?position: fixed;[\s\S]*?z-index: 100/);
-assert.match(css, /@media \(max-width: 900px\)[\s\S]*?\.document-sidebar\s*\{[\s\S]*?position: fixed;[\s\S]*?top: 56px/);
+assert.match(css, /@media \(max-width: 900px\)[\s\S]*?\.document-sidebar\s*\{[\s\S]*?position: fixed;[\s\S]*?top: calc\(56px \+ var\(--safe-area-top\)\)/);
 assert.match(css, /\.application-bar\s*\{[\s\S]*?height: 56px/);
 
 console.log("Project/document navigation foundation tests passed.");

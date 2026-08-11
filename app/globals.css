@@ -24,6 +24,12 @@ html:root {
   --control-loading-opacity: 0.68;
   --layer-modal: 100;
   --shadow: 0 18px 50px rgba(22, 35, 29, 0.08);
+  --application-bar-block-size: 56px;
+  --document-workspace-block-start: 12px;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
 }
 
 * {
@@ -86,12 +92,19 @@ button {
 }
 
 .app-shell {
-  min-height: 100vh;
-  padding: 0 32px 32px;
+  --app-shell-block-end-space: 32px;
+  min-height: 100dvh;
+  padding: var(--safe-area-top)
+    max(32px, var(--safe-area-right))
+    calc(var(--app-shell-block-end-space) + var(--safe-area-bottom))
+    max(32px, var(--safe-area-left));
 }
 
 .app-shell:has([data-control-fixture-ready="true"]) {
-  padding: 32px;
+  padding: max(32px, var(--safe-area-top))
+    max(32px, var(--safe-area-right))
+    max(32px, var(--safe-area-bottom))
+    max(32px, var(--safe-area-left));
 }
 
 .app-header {
@@ -123,7 +136,7 @@ button {
   align-items: center;
   justify-content: space-between;
   width: 100%;
-  height: 56px;
+  height: var(--application-bar-block-size);
   max-width: 1680px;
   margin: 0 auto;
   border-bottom: 1px solid var(--border);
@@ -172,7 +185,7 @@ button {
   position: fixed;
   z-index: 80;
   width: min(360px, calc(100vw - 64px));
-  max-height: calc(100vh - 72px);
+  max-height: calc(100dvh - 72px - var(--safe-area-bottom));
   overflow: auto;
   border: 1px solid var(--border);
   background: var(--surface);
@@ -261,7 +274,7 @@ button {
   gap: 24px;
   align-items: start;
   max-width: 1680px;
-  margin: 12px auto 0;
+  margin: var(--document-workspace-block-start) auto 0;
 }
 
 .document-workspace[data-navigation-collapsed="true"] {
@@ -288,7 +301,7 @@ button {
   align-self: start;
   position: sticky;
   top: 20px;
-  max-height: calc(100vh - 40px);
+  max-height: calc(100dvh - 40px);
   overflow: auto;
 }
 
@@ -776,6 +789,19 @@ button {
 
 .comments-rail[hidden] {
   display: none;
+}
+
+@media (min-width: 901px) {
+  .comments-rail[data-editor-mode="markdown"] {
+    align-self: start;
+    max-height: calc(
+      100dvh - var(--safe-area-top) - var(--application-bar-block-size) -
+        var(--document-workspace-block-start) - var(--app-shell-block-end-space) -
+        var(--safe-area-bottom)
+    );
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
 }
 
 .comments-drawer-backdrop {
@@ -1381,6 +1407,19 @@ button {
   flex: 1;
 }
 
+.editor-body:has(> .markdown-source-editor) {
+  display: flex;
+  flex-direction: column;
+}
+
+.editor-panel:has(.markdown-source-editor) {
+  min-height: calc(
+    100dvh - var(--safe-area-top) - var(--application-bar-block-size) -
+      var(--document-workspace-block-start) - var(--app-shell-block-end-space) -
+      var(--safe-area-bottom)
+  );
+}
+
 .reading-bookmark-marker {
   position: absolute;
   right: 10px;
@@ -1441,7 +1480,10 @@ button {
   position: fixed;
   z-index: 90;
   width: min(360px, calc(100vw - 16px));
-  max-height: min(440px, calc(100vh - 16px));
+  max-height: min(
+    440px,
+    calc(100dvh - 16px - var(--safe-area-top) - var(--safe-area-bottom))
+  );
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -1611,8 +1653,9 @@ button {
 
 .markdown-source-editor {
   display: block;
+  flex: 1 1 auto;
   width: 100%;
-  min-height: 100%;
+  min-height: 0;
   resize: none;
   border: 0;
   outline: none;
@@ -2068,7 +2111,10 @@ button {
   display: grid;
   place-items: center;
   background: rgba(16, 24, 21, 0.42);
-  padding: 24px;
+  padding: max(24px, var(--safe-area-top))
+    max(24px, var(--safe-area-right))
+    max(24px, var(--safe-area-bottom))
+    max(24px, var(--safe-area-left));
 }
 
 .version-history-modal-root {
@@ -2079,7 +2125,7 @@ button {
 .snapshot-dialog {
   display: flex;
   width: min(1040px, 100%);
-  max-height: min(86vh, 860px);
+  max-height: min(86dvh, 860px);
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2787,7 +2833,7 @@ button {
   display: grid;
   gap: 14px;
   min-width: 0;
-  max-height: var(--reanchor-workspace-max-height, calc(100vh - 40px));
+  max-height: var(--reanchor-workspace-max-height, calc(100dvh - 40px));
   overflow: auto;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -2801,6 +2847,7 @@ button {
   position: fixed;
   z-index: 70;
   overscroll-behavior: contain;
+  padding-bottom: calc(16px + var(--safe-area-bottom));
 }
 
 .reanchor-workspace:focus-visible {
@@ -3231,6 +3278,10 @@ button {
   .reanchor-mode-panel {
     border-radius: 14px 14px 0 0;
     padding: 12px;
+  }
+
+  .reanchor-workspace {
+    padding-bottom: calc(12px + var(--safe-area-bottom));
   }
 
   .reanchor-confirmation-body {
@@ -3768,7 +3819,10 @@ button {
   align-items: flex-end;
   justify-content: center;
   inset: 0;
-  padding: 12px;
+  padding: max(12px, var(--safe-area-top))
+    max(12px, var(--safe-area-right))
+    max(12px, var(--safe-area-bottom))
+    max(12px, var(--safe-area-left));
   background: rgba(22, 35, 29, 0.32);
 }
 
@@ -4091,7 +4145,10 @@ button {
   place-items: center;
   overflow: auto;
   background: rgba(16, 24, 21, 0.58);
-  padding: 20px;
+  padding: max(20px, var(--safe-area-top))
+    max(20px, var(--safe-area-right))
+    max(20px, var(--safe-area-bottom))
+    max(20px, var(--safe-area-left));
 }
 
 .dialog-card {
@@ -4509,13 +4566,19 @@ button {
 
 .patch-review-backdrop {
   place-items: stretch;
-  padding: 16px;
+  padding: max(16px, var(--safe-area-top))
+    max(16px, var(--safe-area-right))
+    max(16px, var(--safe-area-bottom))
+    max(16px, var(--safe-area-left));
 }
 
 .patch-review-workspace {
   display: flex;
   width: min(1360px, 100%);
-  height: calc(100dvh - 32px);
+  height: calc(
+    100dvh - max(16px, var(--safe-area-top)) -
+      max(16px, var(--safe-area-bottom))
+  );
   min-height: 0;
   margin: auto;
   flex-direction: column;
@@ -5753,11 +5816,18 @@ button {
 
 @media (max-width: 900px) {
   .app-shell {
-    padding: 0 20px 20px;
+    --app-shell-block-end-space: 20px;
+    padding: var(--safe-area-top)
+      max(20px, var(--safe-area-right))
+      calc(var(--app-shell-block-end-space) + var(--safe-area-bottom))
+      max(20px, var(--safe-area-left));
   }
 
   .app-shell:has([data-control-fixture-ready="true"]) {
-    padding: 20px;
+    padding: max(20px, var(--safe-area-top))
+      max(20px, var(--safe-area-right))
+      max(20px, var(--safe-area-bottom))
+      max(20px, var(--safe-area-left));
   }
 
   .app-header {
@@ -5824,7 +5894,7 @@ button {
 
   .document-sidebar {
     position: fixed;
-    top: 56px;
+    top: calc(56px + var(--safe-area-top));
     bottom: 0;
     left: 0;
     z-index: 90;
@@ -5834,13 +5904,13 @@ button {
     max-height: none;
     overflow: auto;
     background: var(--background);
-    padding: 12px 12px 24px;
+    padding: 12px 12px calc(24px + var(--safe-area-bottom));
     box-shadow: 18px 0 50px rgba(22, 35, 29, 0.2);
   }
 
   .comments-drawer-backdrop {
     position: fixed;
-    inset: 56px 0 0;
+    inset: calc(56px + var(--safe-area-top)) 0 0;
     z-index: 91;
     display: block;
     width: 100%;
@@ -5852,7 +5922,7 @@ button {
 
   .comments-rail {
     position: fixed;
-    top: 56px;
+    top: calc(56px + var(--safe-area-top));
     right: 0;
     bottom: 0;
     z-index: 95;
@@ -5861,7 +5931,7 @@ button {
     overflow: auto;
     background: var(--surface);
     box-shadow: -18px 0 50px rgba(22, 35, 29, 0.2);
-    padding: 12px 14px 24px;
+    padding: 12px 14px calc(24px + var(--safe-area-bottom));
   }
 
   .comments-panel {
@@ -5939,7 +6009,10 @@ button {
 
   .dialog-backdrop {
     align-items: stretch;
-    padding: 10px;
+    padding: max(10px, var(--safe-area-top))
+      max(10px, var(--safe-area-right))
+      max(10px, var(--safe-area-bottom))
+      max(10px, var(--safe-area-left));
   }
 
   .dialog-card {
@@ -5948,11 +6021,17 @@ button {
 
   .snapshot-dialog-backdrop {
     align-items: stretch;
-    padding: 12px;
+    padding: max(12px, var(--safe-area-top))
+      max(12px, var(--safe-area-right))
+      max(12px, var(--safe-area-bottom))
+      max(12px, var(--safe-area-left));
   }
 
   .snapshot-dialog {
-    max-height: calc(100vh - 24px);
+    max-height: calc(
+      100dvh - max(12px, var(--safe-area-top)) -
+        max(12px, var(--safe-area-bottom))
+    );
   }
 
   .version-history-dialog {
@@ -5961,11 +6040,17 @@ button {
   }
 
   .patch-review-backdrop {
-    padding: 8px;
+    padding: max(8px, var(--safe-area-top))
+      max(8px, var(--safe-area-right))
+      max(8px, var(--safe-area-bottom))
+      max(8px, var(--safe-area-left));
   }
 
   .patch-review-dialog {
-    height: calc(100dvh - 16px);
+    height: calc(
+      100dvh - max(8px, var(--safe-area-top)) -
+        max(8px, var(--safe-area-bottom))
+    );
   }
 
   .snapshot-dialog-header,
@@ -6030,15 +6115,21 @@ button {
     right: 20px;
     left: 20px;
     width: auto;
-    max-height: calc(100vh - 78px);
+    max-height: calc(100dvh - 78px - var(--safe-area-bottom));
   }
 
   .patch-review-backdrop {
-    padding: 6px;
+    padding: max(6px, var(--safe-area-top))
+      max(6px, var(--safe-area-right))
+      max(6px, var(--safe-area-bottom))
+      max(6px, var(--safe-area-left));
   }
 
   .patch-review-workspace {
-    height: calc(100dvh - 12px);
+    height: calc(
+      100dvh - max(6px, var(--safe-area-top)) -
+        max(6px, var(--safe-area-bottom))
+    );
   }
 
   .patch-review-workspace-header {
@@ -6225,14 +6316,20 @@ button {
 
   .comments-rail {
     top: auto;
-    right: 8px;
-    bottom: 8px;
-    left: 8px;
+    right: max(8px, var(--safe-area-right));
+    bottom: max(8px, var(--safe-area-bottom));
+    left: max(8px, var(--safe-area-left));
     width: auto;
     max-height: 76dvh;
     border-radius: 14px;
     box-shadow: 0 -18px 50px rgba(22, 35, 29, 0.22);
     padding: 12px 12px 20px;
+  }
+
+  .reanchor-workspace:focus-visible {
+    box-shadow:
+      inset 0 0 0 3px var(--control-focus-ring),
+      0 -18px 50px rgba(22, 35, 29, 0.22);
   }
 
   .document-toolbar {

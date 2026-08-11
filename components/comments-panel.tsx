@@ -165,6 +165,7 @@ type CommentsPanelProps = {
   replyRequest: CommentReplyRequest | null;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
+  spatialLayout?: boolean;
   trashedComments: PatchmarkComment[];
 };
 
@@ -262,6 +263,7 @@ export function CommentsPanel({
   replyRequest,
   selectedAnchorContextKind,
   selectedTextPreview,
+  spatialLayout = true,
   trashedComments
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
@@ -307,6 +309,8 @@ export function CommentsPanel({
   const trashDialogReturnFocusRef = useRef<HTMLElement | null>(null);
   const permanentDeletionReturnFocusRef = useRef<HTMLElement | null>(null);
   const isCompactCommentComposer = useCompactCommentComposer();
+  const useSpatialCommentLayout =
+    spatialLayout && !isCompactCommentComposer;
   const canUseSelectedText = Boolean(selectedTextPreview);
   const canUseSection = headings.length > 0;
   const openCommentCount = comments.filter(
@@ -907,7 +911,11 @@ export function CommentsPanel({
   ) : null;
 
   return (
-    <section className="comments-panel" aria-label="Comments">
+    <section
+      className="comments-panel"
+      aria-label="Comments"
+      data-comment-layout={useSpatialCommentLayout ? "spatial" : "compact"}
+    >
       <header className="comments-panel-header">
         <div>
           <h2>Comments</h2>
@@ -1079,13 +1087,15 @@ export function CommentsPanel({
 
           <FloatingCommentList
             addForm={isCompactCommentComposer ? null : addForm}
-            addPositionTop={isCompactCommentComposer ? null : addPositionTop}
+            addPositionTop={useSpatialCommentLayout ? addPositionTop : null}
             activeCommentState={activeCommentState}
             anchorSummaries={anchorSummaries}
             commentPositions={
-              isCompactCommentComposer ? EMPTY_COMMENT_POSITIONS : commentPositions
+              useSpatialCommentLayout
+                ? commentPositions
+                : EMPTY_COMMENT_POSITIONS
             }
-            compactList={isCompactCommentComposer}
+            compactList={!useSpatialCommentLayout}
             comments={visibleComments}
             editingCommentId={editingCommentId}
             editComment={editComment}
@@ -1755,11 +1765,11 @@ function FloatingCommentList({
                     onResolveComment={onResolveComment}
                     onActivateComment={(commentId) => {
                       onSetActiveCommentState({ kind: "comment", commentId });
-                      void onFindComment(item.comment).catch(() => undefined);
                     }}
-                    onClearActiveComment={() =>
-                      onSetActiveCommentState({ kind: "none" })
-                    }
+                    onClearActiveComment={() => {
+                      onSetActiveCommentState({ kind: "none" });
+                      restoreFocusToCollapsedCommentCard(item.comment.id);
+                    }}
                     onSetEditComment={onSetEditComment}
                     onSetEditReplyContent={onSetEditReplyContent}
                     onSetEditType={onSetEditType}
@@ -2077,8 +2087,28 @@ function CommentGroup({
       ) : (
         <ol className="comment-list">
           {comments.map((comment) => {
+            const anchorRange = getCommentAnchorDebugRange(comment);
+
             return (
-              <li key={comment.id}>
+              <li
+                data-comment-anchor-end={anchorRange?.end ?? undefined}
+                data-comment-anchor-start={anchorRange?.start ?? undefined}
+                data-comment-anchor-status={
+                  anchorSummaries[comment.id]?.status
+                }
+                data-comment-anchor-kind={comment.anchor.kind}
+                data-comment-id={comment.id}
+                data-comment-patch-impact-count={
+                  comment.patch_impacts?.length ?? 0
+                }
+                data-comment-pending-patch-count={
+                  pendingPatchCountsByCommentId[comment.id] ?? 0
+                }
+                data-comment-status={comment.status}
+                data-comment-thread-count={comment.thread.length}
+                data-comment-type={comment.type}
+                key={comment.id}
+              >
                 <CommentCard
                   anchorSummaries={anchorSummaries}
                   comment={comment}
@@ -2106,11 +2136,11 @@ function CommentGroup({
                   onResolveComment={onResolveComment}
                   onActivateComment={(commentId) => {
                     onSetActiveCommentState({ kind: "comment", commentId });
-                    void onFindComment(comment).catch(() => undefined);
                   }}
-                  onClearActiveComment={() =>
-                    onSetActiveCommentState({ kind: "none" })
-                  }
+                  onClearActiveComment={() => {
+                    onSetActiveCommentState({ kind: "none" });
+                    restoreFocusToCollapsedCommentCard(comment.id);
+                  }}
                   onSetEditComment={onSetEditComment}
                   onSetEditReplyContent={onSetEditReplyContent}
                   onSetEditType={onSetEditType}
@@ -3233,6 +3263,16 @@ function isInteractiveCommentTarget(target: EventTarget): boolean {
       )
     )
   );
+}
+
+function restoreFocusToCollapsedCommentCard(commentId: string) {
+  window.requestAnimationFrame(() => {
+    const card = document.getElementById(`patchmark-comment-card-${commentId}`);
+
+    if (card?.classList.contains("comment-card-compact")) {
+      card.focus({ preventScroll: true });
+    }
+  });
 }
 
 type CommentAnchorPreviewProps = {

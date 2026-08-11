@@ -2471,9 +2471,9 @@ export function DocumentEditor() {
         setReanchorWorkspaceStyle((current) => {
           const next: ReanchorWorkspaceStyle = {
             "--reanchor-workspace-max-height": "min(72dvh, 620px)",
-            bottom: 0,
-            left: 0,
-            right: 0,
+            bottom: "var(--safe-area-bottom)",
+            left: "var(--safe-area-left)",
+            right: "var(--safe-area-right)",
             top: "auto",
             width: "auto"
           };
@@ -2488,9 +2488,9 @@ export function DocumentEditor() {
         setReanchorWorkspaceStyle((current) => {
           const next: ReanchorWorkspaceStyle = {
             "--reanchor-workspace-max-height": "min(64dvh, 680px)",
-            bottom: 12,
-            left: 12,
-            right: 12,
+            bottom: "calc(12px + var(--safe-area-bottom))",
+            left: "calc(12px + var(--safe-area-left))",
+            right: "calc(12px + var(--safe-area-right))",
             top: "auto",
             width: "auto"
           };
@@ -2508,7 +2508,7 @@ export function DocumentEditor() {
         Math.max(12, railRect.right - workspaceWidth)
       );
       const next: ReanchorWorkspaceStyle = {
-        "--reanchor-workspace-max-height": "calc(100vh - 40px)",
+        "--reanchor-workspace-max-height": "calc(100dvh - 40px)",
         bottom: "auto",
         left: Math.round(left),
         right: "auto",
@@ -7299,11 +7299,29 @@ export function DocumentEditor() {
   }
 
   function restoreFocusToCommentCard(commentId: string) {
-    window.requestAnimationFrame(() => {
-      document
-        .getElementById(`patchmark-comment-card-${commentId}`)
-        ?.focus({ preventScroll: true });
-    });
+    function focusCommentCard(attempt: number) {
+      window.requestAnimationFrame(() => {
+        const commentCard = document.getElementById(
+          `patchmark-comment-card-${commentId}`
+        );
+
+        if (commentCard && commentCard.getClientRects().length > 0) {
+          commentCard.focus({ preventScroll: true });
+          if (document.activeElement === commentCard) {
+            return;
+          }
+        }
+
+        if (attempt < 10) {
+          focusCommentCard(attempt + 1);
+          return;
+        }
+
+        commentsTriggerRef.current?.focus({ preventScroll: true });
+      });
+    }
+
+    focusCommentCard(0);
   }
 
   function createProposalForRange(
@@ -9447,10 +9465,31 @@ export function DocumentEditor() {
       return;
     }
 
+    const navigation = documentNavigationRef.current;
+    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
+    const workspace = documentWorkspaceRef.current;
+    const backgroundElements = Array.from(
+      workspace?.children ?? []
+    ).filter((element): element is HTMLElement =>
+      element instanceof HTMLElement &&
+      element !== navigation &&
+      !element.classList.contains("document-navigation-backdrop")
+    );
     const previousOverflow = document.body.style.overflow;
+    const previousApplicationBarInert = applicationBar?.inert ?? false;
+    const previousInertStates = backgroundElements.map((element) => ({
+      element,
+      inert: element.inert
+    }));
     document.body.style.overflow = "hidden";
+    if (applicationBar) {
+      applicationBar.inert = true;
+    }
+    backgroundElements.forEach((element) => {
+      element.inert = true;
+    });
     const animationFrame = window.requestAnimationFrame(() => {
-      documentNavigationRef.current
+      navigation
         ?.querySelector<HTMLButtonElement>(".document-navigation-close")
         ?.focus();
     });
@@ -9459,7 +9498,9 @@ export function DocumentEditor() {
       if (event.key === "Escape") {
         event.preventDefault();
         setMobileNavigationOpen(false);
-        documentNavigationTriggerRef.current?.focus();
+        window.requestAnimationFrame(() =>
+          documentNavigationTriggerRef.current?.focus()
+        );
         return;
       }
 
@@ -9468,10 +9509,10 @@ export function DocumentEditor() {
       }
 
       const focusable = Array.from(
-        documentNavigationRef.current?.querySelectorAll<HTMLElement>(
+        navigation?.querySelectorAll<HTMLElement>(
           'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
         ) ?? []
-      ).filter((element) => !element.hasAttribute("hidden"));
+      ).filter((element) => element.getClientRects().length > 0);
       const first = focusable[0];
       const last = focusable[focusable.length - 1];
       if (!first || !last) {
@@ -9490,6 +9531,12 @@ export function DocumentEditor() {
     return () => {
       window.cancelAnimationFrame(animationFrame);
       document.body.style.overflow = previousOverflow;
+      if (applicationBar) {
+        applicationBar.inert = previousApplicationBarInert;
+      }
+      previousInertStates.forEach(({ element, inert }) => {
+        element.inert = inert;
+      });
       document.removeEventListener("keydown", handleNavigationKeyDown);
     };
   }, [isNarrowNavigation, mobileNavigationOpen]);
@@ -9671,10 +9718,12 @@ export function DocumentEditor() {
           className="document-navigation-backdrop"
           type="button"
           tabIndex={-1}
-          aria-label="Close document navigation"
+          aria-hidden="true"
           onClick={() => {
             setMobileNavigationOpen(false);
-            documentNavigationTriggerRef.current?.focus();
+            window.requestAnimationFrame(() =>
+              documentNavigationTriggerRef.current?.focus()
+            );
           }}
         />
       ) : null}
@@ -9700,7 +9749,9 @@ export function DocumentEditor() {
             onClick={() => {
               if (isNarrowNavigation) {
                 setMobileNavigationOpen(false);
-                documentNavigationTriggerRef.current?.focus();
+                window.requestAnimationFrame(() =>
+                  documentNavigationTriggerRef.current?.focus()
+                );
               } else {
                 setNavigationCollapsed(true);
                 window.requestAnimationFrame(() =>
@@ -10127,7 +10178,7 @@ export function DocumentEditor() {
           className="comments-drawer-backdrop"
           type="button"
           tabIndex={-1}
-          aria-label="Close comments"
+          aria-hidden="true"
           onClick={() => closeComments()}
         />
       ) : null}
@@ -10136,6 +10187,7 @@ export function DocumentEditor() {
         ref={commentsRailRef}
         id="document-comments-panel"
         className="comments-rail"
+        data-editor-mode={mode}
         aria-label="Document comments"
         aria-modal={isNarrowNavigation && commentsOpen
           ? reanchorSession
@@ -10484,6 +10536,7 @@ export function DocumentEditor() {
           replyRequest={commentReplyRequest}
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
+          spatialLayout={mode === "visual"}
           trashedComments={trashedComments}
         />
         ) : null}
@@ -11252,12 +11305,29 @@ function PatchReviewWorkspaceDialog({
   );
 
   useEffect(() => {
+    const dialog = dialogRef.current;
+    const modalRoot = dialog?.closest<HTMLElement>(".patch-review-backdrop");
+    const workspace = modalRoot?.parentElement;
+    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
     const previousOverflow = document.body.style.overflow;
+    const previousApplicationBarInert = applicationBar?.inert ?? false;
+    const backgroundElements = Array.from(workspace?.children ?? [])
+      .filter(
+        (element): element is HTMLElement =>
+          element instanceof HTMLElement && element !== modalRoot
+      )
+      .map((element) => ({ element, inert: element.inert }));
     const focusFrame = window.requestAnimationFrame(() => {
       headingRef.current?.focus();
     });
 
     document.body.style.overflow = "hidden";
+    if (applicationBar) {
+      applicationBar.inert = true;
+    }
+    backgroundElements.forEach(({ element }) => {
+      element.inert = true;
+    });
 
     function handleKeyDown(event: KeyboardEvent) {
       if (event.key === "Escape") {
@@ -11295,6 +11365,12 @@ function PatchReviewWorkspaceDialog({
     return () => {
       window.cancelAnimationFrame(focusFrame);
       document.body.style.overflow = previousOverflow;
+      if (applicationBar) {
+        applicationBar.inert = previousApplicationBarInert;
+      }
+      backgroundElements.forEach(({ element, inert }) => {
+        element.inert = inert;
+      });
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
@@ -20231,7 +20307,7 @@ function measureCommentPositions({
   patches = [],
   workspace
 }: CommentPositionMeasurementInput): Record<string, number> {
-  if (!container || !workspace || comments.length === 0) {
+  if (mode !== "visual" || !container || !workspace || comments.length === 0) {
     return {};
   }
 

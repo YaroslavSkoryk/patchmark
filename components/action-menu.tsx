@@ -121,26 +121,48 @@ export function ActionMenu({
         return;
       }
 
-      const viewportPadding = window.innerWidth <= 520 ? 20 : 12;
+      const rootStyle = window.getComputedStyle(document.documentElement);
+      const defaultViewportPadding = window.innerWidth <= 520 ? 20 : 12;
+      const viewportPadding = {
+        bottom: Math.max(
+          defaultViewportPadding,
+          parseCssPixelValue(rootStyle.getPropertyValue("--safe-area-bottom"))
+        ),
+        left: Math.max(
+          defaultViewportPadding,
+          parseCssPixelValue(rootStyle.getPropertyValue("--safe-area-left"))
+        ),
+        right: Math.max(
+          defaultViewportPadding,
+          parseCssPixelValue(rootStyle.getPropertyValue("--safe-area-right"))
+        ),
+        top: Math.max(
+          defaultViewportPadding,
+          parseCssPixelValue(rootStyle.getPropertyValue("--safe-area-top"))
+        )
+      };
       const triggerRect = trigger.getBoundingClientRect();
       const fullWidth = window.innerWidth <= 520 &&
         panelClassName?.includes("application-menu-panel");
       const width = fullWidth
-        ? window.innerWidth - viewportPadding * 2
+        ? window.innerWidth - viewportPadding.left - viewportPadding.right
         : menu.offsetWidth;
       const left = fullWidth
-        ? viewportPadding
+        ? viewportPadding.left
         : Math.max(
-            viewportPadding,
+            viewportPadding.left,
             Math.min(
               triggerRect.right - width,
-              window.innerWidth - width - viewportPadding
+              window.innerWidth - width - viewportPadding.right
             )
           );
       const top =
         triggerRect.bottom + menu.offsetHeight + 6 >
-        window.innerHeight - viewportPadding
-          ? Math.max(viewportPadding, triggerRect.top - menu.offsetHeight - 6)
+        window.innerHeight - viewportPadding.bottom
+          ? Math.max(
+              viewportPadding.top,
+              triggerRect.top - menu.offsetHeight - 6
+            )
           : triggerRect.bottom + 6;
       setPosition({ left, top, ...(fullWidth ? { width } : {}) });
     }
@@ -336,4 +358,9 @@ function getEnabledItems(menu: HTMLDivElement | null): HTMLElement[] {
       !(item instanceof HTMLButtonElement && item.disabled) &&
       item.getAttribute("aria-disabled") !== "true"
   );
+}
+
+function parseCssPixelValue(value: string): number {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
