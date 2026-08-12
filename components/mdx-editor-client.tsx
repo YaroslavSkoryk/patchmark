@@ -113,6 +113,12 @@ export function MdxEditorClient({
   useEffect(() => {
     isMountedRef.current = true;
 
+    if (queuedRenderErrorRef.current !== null) {
+      const queuedRenderError = queuedRenderErrorRef.current;
+      queuedRenderErrorRef.current = null;
+      setRenderError(queuedRenderError);
+    }
+
     return () => {
       isMountedRef.current = false;
 

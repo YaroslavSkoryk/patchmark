@@ -37,6 +37,10 @@ const rewriteWorkspaceReviewScreenshotPath =
   process.env.PATCHMARK_REWRITE_REVIEW_SCREENSHOT;
 const rewriteWorkspaceTableScreenshotPath =
   process.env.PATCHMARK_REWRITE_TABLE_SCREENSHOT;
+const unsupportedVisualFallbackOnly =
+  process.env.PATCHMARK_UNSUPPORTED_VISUAL_FALLBACK_ONLY === "1";
+const unsupportedVisualFallbackScreenshotPath =
+  process.env.PATCHMARK_UNSUPPORTED_VISUAL_FALLBACK_SCREENSHOT;
 const semanticReviewAuditOnly =
   process.env.PATCHMARK_SEMANTIC_REVIEW_AUDIT_ONLY === "1";
 const preambleTarget =
@@ -99,12 +103,29 @@ async function run() {
     ],
     { stdio: ["ignore", "ignore", "pipe"] }
   );
+  const consoleErrors = [];
+  const consoleWarnings = [];
+  const exceptions = [];
   let client;
 
   try {
     const browserWsUrl = await waitForDevToolsUrl(chrome);
     const pageWsUrl = await createPage(browserWsUrl, "about:blank");
     client = await CdpClient.connect(pageWsUrl);
+    client.on("Runtime.consoleAPICalled", (event) => {
+      const message = event.args
+        ?.map((argument) => argument.value ?? argument.description)
+        .join(" ");
+      if (event.type === "error") consoleErrors.push(message);
+      if (event.type === "warning") consoleWarnings.push(message);
+    });
+    client.on("Runtime.exceptionThrown", (event) => {
+      exceptions.push(
+        event.exceptionDetails?.exception?.description ??
+          event.exceptionDetails?.text ??
+          "Unknown exception"
+      );
+    });
     await client.call("Page.enable");
     await client.call("Runtime.enable");
     await client.call("Page.addScriptToEvaluateOnNewDocument", {
@@ -141,6 +162,18 @@ async function run() {
       })()`
     });
     await installRewritePersistenceObserver(client);
+
+    if (unsupportedVisualFallbackOnly) {
+      const evidence = await runIsolatedUnsupportedVisualFallbackScenario(
+        client,
+        fixtureDir,
+        initialDocumentContentFingerprint,
+        { consoleErrors, consoleWarnings, exceptions }
+      );
+      console.log(JSON.stringify(evidence, null, 2));
+      console.log("Isolated Markdown-safe unsupported Visual fallback passed.");
+      return;
+    }
 
     await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
@@ -1518,7 +1551,10 @@ async function run() {
       }),
       /Saved to project/
     );
+    await installUnsupportedFallbackTransitionAudit(client);
+    const unsupportedVisualActivationStartedAt = Date.now();
     await clickRewriteWorkspaceButton(client, "Visual");
+    const unsupportedVisualActivatedAt = Date.now();
     const unsupportedVisualState = await waitFor(
       client,
       "Markdown-safe unsupported Visual fallback",
@@ -1527,16 +1563,52 @@ async function run() {
         const fallback = document.querySelector(".rewrite-draft-pane .visual-editor-fallback textarea");
         return error && fallback ? {
           error,
+          fallbackAriaLabel: fallback.getAttribute("aria-label"),
           fallbackReadOnly: fallback.readOnly,
           rawMarkdown: fallback.value,
-          referenceStillVisual: document.querySelector("[aria-label='Current document text Visual reference']")?.querySelectorAll("table").length > 0
+          referenceStillVisual: document.querySelector("[aria-label='Current document text Visual reference']")?.querySelectorAll("table").length > 0,
+          visualEditorPresent: Boolean(document.querySelector(".rewrite-draft-pane [aria-label='My rewrite Visual editor']"))
         } : null;
       })()`
     );
     assert.match(unsupportedVisualState.error, /could not render/i);
+    assert.equal(
+      unsupportedVisualState.fallbackAriaLabel,
+      "My rewrite Visual editor fallback Markdown editor"
+    );
     assert.equal(unsupportedVisualState.fallbackReadOnly, false);
     assert.equal(unsupportedVisualState.rawMarkdown, unsupportedRewriteMarkdown);
     assert.equal(unsupportedVisualState.referenceStillVisual, true);
+    assert.equal(unsupportedVisualState.visualEditorPresent, false);
+    await waitFor(
+      client,
+      "unsupported fallback focus",
+      `document.activeElement === document.querySelector(".rewrite-draft-pane .visual-editor-fallback textarea")`
+    );
+    const unsupportedTransitions =
+      await readUnsupportedFallbackTransitionAudit(client);
+    assert.equal(unsupportedTransitions.alertTransitions, 1);
+    assert.equal(unsupportedTransitions.fallbackTransitions, 1);
+    console.log(
+      JSON.stringify({
+        consoleErrors,
+        consoleWarnings,
+        errorText: unsupportedVisualState.error,
+        event: "ordered_unsupported_visual_fallback_passed",
+        exceptions,
+        fallbackAriaLabel: unsupportedVisualState.fallbackAriaLabel,
+        fallbackFocused: true,
+        fallbackVisible: true,
+        sourceSha256: createHash("sha256")
+          .update(unsupportedRewriteMarkdown)
+          .digest("hex"),
+        transitions: unsupportedTransitions,
+        visualActivatedAt: unsupportedVisualActivatedAt,
+        visualActivationStartedAt: unsupportedVisualActivationStartedAt,
+        visualActivationToFallbackMs:
+          Date.now() - unsupportedVisualActivationStartedAt
+      })
+    );
     await clickRewriteWorkspaceButton(client, "Markdown");
     assert.equal(
       await waitFor(
@@ -3309,6 +3381,238 @@ async function installRewritePersistenceObserver(client) {
       }
       return true;
     })()`
+  });
+}
+
+async function runIsolatedUnsupportedVisualFallbackScenario(
+  client,
+  fixtureDir,
+  initialDocumentContentFingerprint,
+  browserDiagnostics
+) {
+  const events = [];
+  const unsupportedMarkdown = `${paragraphTarget}\n\n<UnsupportedRewriteWidget />`;
+
+  events.push({ event: "scenario_started", timestamp: Date.now() });
+  await selectVisualText(client, paragraphTarget, {
+    dispatchMouseUp: true,
+    scrollBlock: "center"
+  });
+  await waitForSelectionAction(client, paragraphTarget);
+  await openSelectionChooser(client);
+  await chooseSelectionAction(client, "rewrite_selected_text");
+  await waitFor(
+    client,
+    "isolated supported Visual rewrite editor",
+    `(() => {
+      const editor = document.querySelector("[aria-label='My rewrite Visual editor']");
+      return editor?.textContent?.includes(${JSON.stringify(paragraphTarget)}) &&
+        !document.querySelector(".rewrite-draft-pane .visual-editor-fallback");
+    })()`
+  );
+  events.push({ event: "supported_visual_ready", timestamp: Date.now() });
+
+  await clickRewriteWorkspaceButton(client, "Markdown");
+  assert.equal(
+    await waitFor(
+      client,
+      "isolated Markdown rewrite editor",
+      `document.querySelector("#rewrite-human-draft")?.value ?? null`
+    ),
+    paragraphTarget
+  );
+  await setRewriteMarkdownDraft(client, unsupportedMarkdown);
+  await waitFor(
+    client,
+    "isolated unsupported Markdown save",
+    `document.querySelector(".rewrite-save-state")?.textContent?.includes("Saved to project")`
+  );
+  events.push({ event: "unsupported_source_saved", timestamp: Date.now() });
+
+  const persistenceEventsBeforeVisual = await evaluate(client, {
+    expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+  });
+  await installUnsupportedFallbackTransitionAudit(client);
+  const visualActivationStartedAt = Date.now();
+  await clickRewriteWorkspaceButton(client, "Visual");
+  events.push({ event: "visual_activated", timestamp: Date.now() });
+  const fallbackState = await waitFor(
+    client,
+    "Markdown-safe unsupported Visual fallback",
+    `(() => {
+      const error = document.querySelector(".rewrite-draft-pane .visual-editor-error");
+      const fallback = document.querySelector(".rewrite-draft-pane .visual-editor-fallback textarea");
+      return error && fallback ? {
+        alertRole: error.getAttribute("role"),
+        error: error.textContent,
+        fallbackAriaLabel: fallback.getAttribute("aria-label"),
+        fallbackReadOnly: fallback.readOnly,
+        fallbackVisible: fallback.getClientRects().length > 0,
+        rawMarkdown: fallback.value,
+        referenceStillVisual: Boolean(document.querySelector("[aria-label='Current document text Visual reference']")),
+        visualEditorPresent: Boolean(document.querySelector(".rewrite-draft-pane [aria-label='My rewrite Visual editor']"))
+      } : null;
+    })()`
+  );
+  events.push({ event: "fallback_visible", timestamp: Date.now() });
+  assert.equal(fallbackState.alertRole, "alert");
+  assert.match(fallbackState.error, /could not render/i);
+  assert.equal(
+    fallbackState.fallbackAriaLabel,
+    "My rewrite Visual editor fallback Markdown editor"
+  );
+  assert.equal(fallbackState.fallbackReadOnly, false);
+  assert.equal(fallbackState.fallbackVisible, true);
+  assert.equal(fallbackState.rawMarkdown, unsupportedMarkdown);
+  assert.equal(fallbackState.referenceStillVisual, true);
+  assert.equal(fallbackState.visualEditorPresent, false);
+  await waitFor(
+    client,
+    "isolated fallback focus",
+    `document.activeElement === document.querySelector(".rewrite-draft-pane .visual-editor-fallback textarea")`
+  );
+  events.push({ event: "fallback_focused", timestamp: Date.now() });
+  const transitions = await readUnsupportedFallbackTransitionAudit(client);
+  assert.equal(transitions.alertTransitions, 1);
+  assert.equal(transitions.fallbackTransitions, 1);
+  assert.equal(
+    await evaluate(client, {
+      expression: `window.__patchmarkRewritePersistenceEvents?.length ?? 0`
+    }),
+    persistenceEventsBeforeVisual,
+    "Switching to the safe fallback must not add a persistence event."
+  );
+
+  if (unsupportedVisualFallbackScreenshotPath) {
+    await saveScreenshot(client, unsupportedVisualFallbackScreenshotPath);
+  }
+
+  await clickRewriteWorkspaceButton(client, "Markdown");
+  assert.equal(
+    await waitFor(
+      client,
+      "isolated unsupported Markdown preserved",
+      `document.querySelector("#rewrite-human-draft")?.value ?? null`
+    ),
+    unsupportedMarkdown
+  );
+  await clickRewriteWorkspaceButton(client, "Close");
+  await clickRewriteDialogButton(client, "Discard draft");
+  await waitFor(
+    client,
+    "isolated rewrite workspace unmount",
+    `!document.querySelector("[data-testid='rewrite-workspace']")`
+  );
+  events.push({ event: "workspace_unmounted", timestamp: Date.now() });
+  assert.deepEqual(
+    fingerprintDocumentContent(fixtureDir),
+    initialDocumentContentFingerprint,
+    "The isolated fallback scenario must not mutate document content."
+  );
+
+  await selectVisualText(client, paragraphTarget, {
+    dispatchMouseUp: true,
+    scrollBlock: "center"
+  });
+  await waitForSelectionAction(client, paragraphTarget);
+  await openSelectionChooser(client);
+  await chooseSelectionAction(client, "rewrite_selected_text");
+  await waitFor(
+    client,
+    "fresh supported rewrite editor",
+    `(() => {
+      const editor = document.querySelector("[aria-label='My rewrite Visual editor']");
+      return editor?.textContent?.includes(${JSON.stringify(paragraphTarget)}) &&
+        !document.querySelector(".rewrite-draft-pane .visual-editor-error, .rewrite-draft-pane .visual-editor-fallback");
+    })()`
+  );
+  await delay(250);
+  assert.equal(
+    await evaluate(client, {
+      expression: `Boolean(document.querySelector(".rewrite-draft-pane .visual-editor-error, .rewrite-draft-pane .visual-editor-fallback"))`
+    }),
+    false,
+    "A fresh Rewrite Workspace must not replay the consumed error."
+  );
+  events.push({ event: "fresh_workspace_ready", timestamp: Date.now() });
+  await clickRewriteWorkspaceButton(client, "Close");
+  await clickRewriteDialogButton(client, "Discard draft");
+  await waitFor(
+    client,
+    "fresh rewrite workspace unmount",
+    `!document.querySelector("[data-testid='rewrite-workspace']")`
+  );
+
+  const unmountWarnings = [
+    ...browserDiagnostics.consoleErrors,
+    ...browserDiagnostics.consoleWarnings
+  ].filter((message) =>
+    /state update.*unmounted|update on an unmounted|can't perform.*unmounted/i.test(
+      message ?? ""
+    )
+  );
+  assert.deepEqual(unmountWarnings, []);
+  assert.deepEqual(browserDiagnostics.exceptions, []);
+
+  return {
+    ...browserDiagnostics,
+    developmentOrProduction:
+      process.env.PATCHMARK_EVIDENCE_MODE ?? "unspecified",
+    durationMs: Date.now() - events[0].timestamp,
+    errorText: fallbackState.error,
+    events,
+    fallbackAriaLabel: fallbackState.fallbackAriaLabel,
+    fallbackFocused: true,
+    fallbackVisible: fallbackState.fallbackVisible,
+    freshProfile: true,
+    isolated: true,
+    sourceSha256: createHash("sha256")
+      .update(unsupportedMarkdown)
+      .digest("hex"),
+    sourceValue: unsupportedMarkdown,
+    transitions,
+    visualActivationToFallbackMs:
+      events.find((event) => event.event === "fallback_visible").timestamp -
+      visualActivationStartedAt
+  };
+}
+
+async function installUnsupportedFallbackTransitionAudit(client) {
+  await evaluate(client, {
+    expression: `(() => {
+      window.__patchmarkUnsupportedFallbackObserver?.disconnect();
+      const readState = () => ({
+        alert: Boolean(document.querySelector(".rewrite-draft-pane .visual-editor-error")),
+        fallback: Boolean(document.querySelector(".rewrite-draft-pane .visual-editor-fallback"))
+      });
+      const initial = readState();
+      window.__patchmarkUnsupportedFallbackAudit = {
+        alertPresent: initial.alert,
+        alertTransitions: 0,
+        fallbackPresent: initial.fallback,
+        fallbackTransitions: 0
+      };
+      window.__patchmarkUnsupportedFallbackObserver = new MutationObserver(() => {
+        const next = readState();
+        const audit = window.__patchmarkUnsupportedFallbackAudit;
+        if (!audit.alertPresent && next.alert) audit.alertTransitions += 1;
+        if (!audit.fallbackPresent && next.fallback) audit.fallbackTransitions += 1;
+        audit.alertPresent = next.alert;
+        audit.fallbackPresent = next.fallback;
+      });
+      window.__patchmarkUnsupportedFallbackObserver.observe(
+        document.querySelector(".rewrite-draft-pane"),
+        { childList: true, subtree: true }
+      );
+      return true;
+    })()`
+  });
+}
+
+async function readUnsupportedFallbackTransitionAudit(client) {
+  await delay(100);
+  return await evaluate(client, {
+    expression: `window.__patchmarkUnsupportedFallbackAudit`
   });
 }
 

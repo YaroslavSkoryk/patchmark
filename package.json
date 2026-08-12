@@ -23,6 +23,7 @@
     "test:comment-selection-affordance": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-selection-affordance.test.mjs",
     "test:visual-selection-anchor": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/visual-selection-anchor.test.mjs",
     "test:comment-selection-composer-browser": "node scripts/comment-selection-composer-browser.test.mjs",
+    "test:mdx-render-error-lifecycle-browser": "node scripts/mdx-render-error-lifecycle-browser.test.mjs",
     "test:selection-actions-browser": "node scripts/comment-selection-composer-browser.test.mjs",
     "test:comment-anchor-transformation": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-transformation.test.mjs",
     "test:comment-anchor-consistency": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-anchor-consistency.test.mjs",
