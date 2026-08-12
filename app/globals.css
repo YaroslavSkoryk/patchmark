@@ -134,19 +134,11 @@ button {
   z-index: 20;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   width: 100%;
   height: var(--application-bar-block-size);
   max-width: 1680px;
   margin: 0 auto;
   border-bottom: 1px solid var(--border);
-}
-
-.application-identity {
-  margin: 0;
-  font-size: 1.1875rem;
-  line-height: 1;
-  letter-spacing: -0.01em;
 }
 
 .application-bar-actions {
@@ -6093,12 +6085,6 @@ button {
 @media (max-width: 520px) {
   .application-bar {
     height: 56px;
-  }
-
-  .application-identity {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
   }
 
   .application-bar-actions {

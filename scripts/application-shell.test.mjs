@@ -81,6 +81,10 @@ assert.match(documentEditor, /<ApplicationMenu label="File">/);
 assert.match(documentEditor, /<ApplicationMenu label="Review">/);
 assert.doesNotMatch(documentEditor, /className="project-actions"/);
 assert.match(documentEditor, /<MarkdownFileLoader[\s\S]{0,100}menuItem/);
+assert.match(applicationBar, /aria-label="Patchmark application"/);
+assert.match(applicationBar, /role="banner"/);
+assert.doesNotMatch(applicationBar, /application-identity/);
+assert.doesNotMatch(applicationBar, />Patchmark<\/h1>/);
 
 for (const label of ["Save Changes", "Create Snapshot", "Copy Markdown"]) {
   assert.ok(documentActions.includes(label), `${label} must remain document-local`);
@@ -108,7 +112,12 @@ assert.match(
   css,
   /\.application-bar\s*\{[\s\S]*?height: 56px;[\s\S]*?border-bottom: 1px solid var\(--border\)/
 );
-assert.match(css, /\.application-identity\s*\{[\s\S]*?font-size: 1\.1875rem/);
+assert.doesNotMatch(
+  css,
+  /\.application-bar\s*\{[^}]*justify-content:\s*space-between/
+);
+assert.doesNotMatch(css, /\.application-identity\s*\{/);
+assert.doesNotMatch(css, /\.application-bar-actions\s*\{[^}]*margin-left:\s*auto/);
 assert.match(css, /\.document-workspace\s*\{[\s\S]*?margin: 12px auto 0/);
 assert.match(css, /\.application-menu-panel\s*\{[\s\S]*?z-index: 80/);
 assert.match(

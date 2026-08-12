@@ -29,8 +29,11 @@ type ApplicationMenuItemProps = {
 
 export function ApplicationBar({ children }: ApplicationBarProps) {
   return (
-    <header className="application-bar">
-      <h1 className="application-identity">Patchmark</h1>
+    <header
+      className="application-bar"
+      aria-label="Patchmark application"
+      role="banner"
+    >
       <nav className="application-bar-actions" aria-label="Application actions">
         {children}
       </nav>

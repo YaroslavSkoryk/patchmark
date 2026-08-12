@@ -25,6 +25,8 @@ import {
 } from "./comment-rail-editor-browser-regression.test.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3117/";
+const layoutBaselineAudit =
+  process.env.PATCHMARK_APPLICATION_BAR_BASELINE_AUDIT === "1";
 const artifactRoot =
   process.env.PATCHMARK_PHASE2_ARTIFACT_ROOT ??
   mkdtempSync(join(tmpdir(), "patchmark-application-shell-artifacts-"));
@@ -72,6 +74,7 @@ try {
   client = await CdpClient.connect(pageWsUrl);
   await client.call("Page.enable");
   await client.call("Runtime.enable");
+  await client.call("Accessibility.enable");
   await client.call("Page.addScriptToEvaluateOnNewDocument", {
     source: createProjectPickerShim({
       baseUrl: fixtureServer.baseUrl,
@@ -97,6 +100,23 @@ try {
   await setViewport(client, { height: 1000, mobile: false, width: 1440 });
   await client.call("Page.navigate", { url: editorUrl });
   await waitForEditorShell(client);
+
+  const applicationBarLayouts = await captureApplicationBarLayouts(client);
+  await setViewport(client, { height: 1000, mobile: false, width: 1440 });
+  const applicationBarAccessibility = await readApplicationBarAccessibility(client);
+  assert.equal(applicationBarAccessibility.bannerCount, 1);
+  assert.equal(
+    applicationBarAccessibility.navigations.includes("Application actions"),
+    true
+  );
+  assert.equal(applicationBarAccessibility.buttons.includes("File menu"), true);
+  assert.equal(applicationBarAccessibility.buttons.includes("Review menu"), true);
+  assert.equal(
+    applicationBarAccessibility.buttons.some((name) =>
+      name.startsWith("Open comments.")
+    ),
+    true
+  );
 
   const desktopShell = await readShellState(client);
   assert.equal(desktopShell.bar.height, 56);
@@ -338,6 +358,8 @@ try {
   assert.equal(await triggerBackground(client, "File"), mobileDefaultBackground);
 
   const result = {
+    applicationBarAccessibility,
+    applicationBarLayouts,
     artifacts: artifactRoot,
     desktop: desktopShell,
     mobile: mobileShell,
@@ -376,21 +398,131 @@ async function readShellState(pageClient) {
         };
       };
       const bar = document.querySelector(".application-bar");
+      const actions = document.querySelector(".application-bar-actions");
       const identity = document.querySelector(".application-identity");
       const controls = Array.from(document.querySelectorAll(".application-menu-trigger"));
       const controlRects = controls.map(rect);
+      const orderedControls = Array.from(
+        document.querySelectorAll(
+          ".application-bar-actions > .application-menu > .application-menu-trigger, .application-bar-actions > .application-comments-trigger"
+        )
+      ).filter((control) => control.getClientRects().length > 0);
+      const comments = document.querySelector(".application-comments-trigger");
+      const badge = comments?.querySelector(".application-comments-count");
+      const file = controls.find((control) => control.textContent.trim() === "File");
+      const navigation = document.querySelector(".application-navigation-trigger");
+      const navigationVisible = Boolean(navigation?.getClientRects().length);
+      const barRect = rect(bar);
+      const actionsRect = rect(actions);
+      const fileRect = rect(file);
+      const navigationRect = navigationVisible ? rect(navigation) : null;
       return {
-        bar: rect(bar),
+        actionOrder: orderedControls.map((control) =>
+          control.classList.contains("application-comments-trigger")
+            ? "Comments"
+            : control.textContent.trim()
+        ),
+        actions: actionsRect,
+        actionsLeftGap: actionsRect.left - barRect.left,
+        actionsRightGap: barRect.right - actionsRect.right,
+        bar: barRect,
+        barAriaLabel: bar.getAttribute("aria-label"),
+        badgeParentIsComments: badge?.parentElement === comments,
+        badgeText: badge?.textContent?.trim() ?? null,
         controls: controls.map((control) => control.textContent.trim()),
+        emptyIdentityCount: Array.from(document.querySelectorAll(".application-identity"))
+          .filter((element) => !element.textContent?.trim()).length,
+        fileLeftGap: fileRect.left - barRect.left,
         headerWrapped: controlRects.some((control) =>
-          Math.abs(control.top - rect(identity).top) > 10
+          Math.abs(control.top - controlRects[0].top) > 2
         ),
         horizontalOverflow: document.documentElement.scrollWidth > window.innerWidth,
+        identityCount: document.querySelectorAll(".application-identity").length,
+        navigationFileGap: navigationRect ? fileRect.left - navigationRect.right : null,
+        navigationVisible,
+        pageTitle: document.title,
         triggerHeight: Math.min(...controlRects.map((control) => control.height)),
+        visibleWordmark: identity?.textContent?.trim() ?? null,
         workspace: rect(document.querySelector(".document-workspace"))
       };
     })()`
   });
+}
+
+async function captureApplicationBarLayouts(pageClient) {
+  const measurements = {};
+  for (const [label, viewport] of [
+    ["wide", { height: 96, mobile: false, width: 2048 }],
+    ["desktop", { height: 900, mobile: false, width: 1440 }],
+    ["narrow", { height: 900, mobile: false, width: 768 }],
+    ["mobile", { height: 844, mobile: true, width: 393 }],
+    ["compact", { height: 844, mobile: true, width: 320 }],
+    ["zoomEquivalent", { height: 500, mobile: false, width: 720 }]
+  ]) {
+    await setViewport(pageClient, viewport);
+    const state = await readShellState(pageClient);
+    assert.equal(state.bar.height, 56);
+    assert.deepEqual(state.actionOrder, ["File", "Review", "Comments"]);
+    assert.equal(state.badgeParentIsComments, true);
+    assert.equal(state.badgeText, "0");
+    assert.equal(state.headerWrapped, false);
+    assert.equal(state.horizontalOverflow, false);
+    assert.equal(state.pageTitle, "Patchmark");
+
+    if (layoutBaselineAudit) {
+      assert.equal(state.identityCount, 1);
+      assert.equal(state.visibleWordmark, "Patchmark");
+      assert.equal(state.actionsRightGap, 0);
+    } else {
+      assert.equal(state.identityCount, 0);
+      assert.equal(state.emptyIdentityCount, 0);
+      assert.equal(state.visibleWordmark, null);
+      assert.equal(state.barAriaLabel, "Patchmark application");
+      assert.ok(state.actionsLeftGap <= 1, `${label} action group is not left aligned.`);
+      if (state.navigationVisible) {
+        assert.ok(
+          state.navigationFileGap >= 0 && state.navigationFileGap <= 8,
+          `${label} File menu does not follow document navigation.`
+        );
+      } else {
+        assert.ok(state.fileLeftGap <= 1, `${label} File menu lost the bar inset.`);
+      }
+    }
+
+    await capture(pageClient, `00-${label}-application-bar.png`);
+    await clickVisibleButton(pageClient, "File");
+    const menu = await waitForOpenMenu(pageClient, "File");
+    assert.ok(menu.rect.left >= 0, `${label} File menu opened left of the viewport.`);
+    assert.ok(menu.rect.right <= viewport.width, `${label} File menu opened right of the viewport.`);
+    assert.ok(menu.rect.top >= 0, `${label} File menu opened above the viewport.`);
+    assert.ok(menu.rect.bottom <= viewport.height, `${label} File menu opened below the viewport.`);
+    await capture(pageClient, `00-${label}-file-menu-open.png`);
+    await clickVisibleButton(pageClient, "File");
+    await waitForMenuClosed(pageClient, "File");
+    measurements[label] = { ...state, fileMenu: menu.rect, viewport };
+  }
+  writeFileSync(
+    join(artifactRoot, "application-bar-measurements.json"),
+    `${JSON.stringify(measurements, null, 2)}\n`
+  );
+  return measurements;
+}
+
+async function readApplicationBarAccessibility(pageClient) {
+  const tree = await pageClient.call("Accessibility.getFullAXTree");
+  const nodesForRole = (role) =>
+    tree.nodes
+      .filter((node) => node.role?.value === role && !node.ignored);
+  const namesForRole = (role) =>
+    nodesForRole(role)
+      .map((node) => node.name?.value ?? "")
+      .filter(Boolean);
+  return {
+    bannerCount: nodesForRole("banner").length,
+    banners: namesForRole("banner"),
+    buttons: namesForRole("button"),
+    navigations: namesForRole("navigation")
+  };
 }
 
 async function waitForOpenMenu(pageClient, label) {
@@ -413,6 +545,7 @@ async function waitForOpenMenu(pageClient, label) {
         labels: Array.from(menu.querySelectorAll("[role='menuitem']"))
           .map((item) => item.textContent.trim()),
         rect: {
+          bottom: Math.round(rect.bottom),
           height: Math.round(rect.height),
           left: Math.round(rect.left),
           right: Math.round(rect.right),
@@ -490,7 +623,7 @@ async function clickOutsideMenu(pageClient) {
   const point = await evaluate(pageClient, {
     expression: `(() => {
       const rect = document.querySelector(".document-workspace").getBoundingClientRect();
-      return { x: rect.left + 10, y: rect.top + 10 };
+      return { x: rect.left + 10, y: rect.bottom - 10 };
     })()`
   });
   await pageClient.call("Input.dispatchMouseEvent", {
