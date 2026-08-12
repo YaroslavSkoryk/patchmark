@@ -41,7 +41,7 @@ assert.match(
 );
 assert.match(
   globals,
-  /\.patch-review-backdrop \{[\s\S]*?var\(--safe-area-bottom\)/
+  /\.workspace-dialog-backdrop \{[\s\S]*?var\(--safe-area-bottom\)/
 );
 assert.match(
   globals,

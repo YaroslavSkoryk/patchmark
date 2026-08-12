@@ -356,12 +356,12 @@ export function GuidedReviewWizard({
   }
 
   return (
-    <div className="snapshot-dialog-backdrop guided-review-wizard-backdrop">
+    <div className="snapshot-dialog-backdrop workspace-dialog-backdrop guided-review-wizard-backdrop">
       <section
         aria-describedby="guided-review-wizard-description"
         aria-label="Guided Review Wizard"
         aria-modal="true"
-        className="comment-export-dialog guided-review-wizard-dialog"
+        className="comment-export-dialog guided-review-wizard-dialog workspace-dialog-surface"
         onKeyDown={handleDialogKeyDown}
         ref={dialogRef}
         role="dialog"

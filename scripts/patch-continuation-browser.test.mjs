@@ -247,7 +247,7 @@ try {
     "accepted"
   );
   console.log("browser-step: follow-up lineage applied");
-  await clickScopedButton(client, ".patch-review-dialog", "Close");
+  await clickSelector(client, ".patch-review-workspace-header > button");
 
   const commentSummaryText = await evaluate(client, {
     expression: `document.getElementById(${JSON.stringify(
@@ -321,7 +321,7 @@ try {
   );
   await selectReviewPatchByTitle(client, "Restore validation requirements");
   await waitForText(client, "Follow-up to: Browser continuation test patch");
-  await clickScopedButton(client, ".patch-review-dialog", "Close");
+  await clickSelector(client, ".patch-review-workspace-header > button");
 
   await openCommentPatchGroupByTitle(
     client,
@@ -592,7 +592,7 @@ async function applyEdgePatchAndAssertNoContinuation(client, title) {
       .filter((button) => button.textContent?.trim() === "Continue discussion").length`
   });
   assert.equal(continuationCount, 0);
-  await clickScopedButton(client, ".patch-review-dialog", "Close");
+  await clickSelector(client, ".patch-review-workspace-header > button");
 }
 
 async function selectReviewPatchByTitle(client, title) {

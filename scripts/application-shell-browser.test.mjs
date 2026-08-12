@@ -35,6 +35,7 @@ const artifactRoot =
 const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-shell-fixture-"));
 const newProjectDir = join(fixtureRoot, "new-project");
 const existingProjectDir = join(fixtureRoot, "existing-project");
+const workspaceDialogMeasurements = {};
 
 mkdirSync(artifactRoot, { recursive: true });
 mkdirSync(newProjectDir, { recursive: true });
@@ -243,7 +244,22 @@ try {
     "PDF export preview",
     `Boolean(document.querySelector("[aria-label='Clean shareholder PDF document preview']"))`
   );
+  workspaceDialogMeasurements.pdfDesktop = await readWorkspaceSurface(
+    client,
+    ".pdf-export-dialog",
+    ".pdf-export-dialog-body"
+  );
+  assertWorkspaceSurface(workspaceDialogMeasurements.pdfDesktop, 16);
   await capture(client, "05-relocated-pdf-export-activated.png");
+  await setViewport(client, { height: 844, mobile: true, width: 393 });
+  workspaceDialogMeasurements.pdfMobile = await readWorkspaceSurface(
+    client,
+    ".pdf-export-dialog",
+    ".pdf-export-dialog-body"
+  );
+  assertWorkspaceSurface(workspaceDialogMeasurements.pdfMobile, 6);
+  await capture(client, "05A-pdf-export-mobile-workspace.png");
+  await setViewport(client, { height: 1000, mobile: false, width: 1440 });
   await clickVisibleButton(client, "Close");
   await waitFor(
     client,
@@ -280,6 +296,22 @@ try {
     "legacy project assembly dialog",
     `Boolean(document.querySelector("[aria-label='Create project from existing Patchmark projects']"))`
   );
+  workspaceDialogMeasurements.legacyAssemblyDesktop = await readWorkspaceSurface(
+    client,
+    ".legacy-assembly-dialog",
+    ".legacy-assembly-body"
+  );
+  assertWorkspaceSurface(workspaceDialogMeasurements.legacyAssemblyDesktop, 16);
+  await capture(client, "05B-legacy-assembly-desktop-workspace.png");
+  await setViewport(client, { height: 844, mobile: true, width: 393 });
+  workspaceDialogMeasurements.legacyAssemblyMobile = await readWorkspaceSurface(
+    client,
+    ".legacy-assembly-dialog",
+    ".legacy-assembly-body"
+  );
+  assertWorkspaceSurface(workspaceDialogMeasurements.legacyAssemblyMobile, 6);
+  await capture(client, "05C-legacy-assembly-mobile-workspace.png");
+  await setViewport(client, { height: 1000, mobile: false, width: 1440 });
   await clickVisibleButton(client, "Cancel");
 
   await openMenuItem(client, "Review", "Generate ChatGPT Prompt");
@@ -295,6 +327,14 @@ try {
     "ChatGPT response import dialog",
     `Boolean(document.querySelector("[aria-label='Import ChatGPT response']"))`
   );
+  const compactImportState = await readCompactSurface(
+    client,
+    "[aria-label='Import ChatGPT response']"
+  );
+  assert.equal(compactImportState.hasWorkspaceClass, false);
+  assert.ok(compactImportState.width < 1000);
+  assert.ok(compactImportState.width < compactImportState.viewportWidth - 200);
+  await capture(client, "05D-compact-import-dialog-unchanged.png");
   await clickVisibleButton(client, "Cancel");
 
   await openMenuItem(client, "Review", "Guided Review");
@@ -303,6 +343,22 @@ try {
     "Guided Review wizard",
     `Boolean(document.querySelector("[aria-label='Guided Review Wizard']"))`
   );
+  workspaceDialogMeasurements.guidedReviewDesktop = await readWorkspaceSurface(
+    client,
+    ".guided-review-wizard-dialog",
+    ".guided-review-wizard-body"
+  );
+  assertWorkspaceSurface(workspaceDialogMeasurements.guidedReviewDesktop, 16);
+  await capture(client, "05E-guided-review-desktop-workspace.png");
+  await setViewport(client, { height: 844, mobile: true, width: 393 });
+  workspaceDialogMeasurements.guidedReviewMobile = await readWorkspaceSurface(
+    client,
+    ".guided-review-wizard-dialog",
+    ".guided-review-wizard-body"
+  );
+  assertWorkspaceSurface(workspaceDialogMeasurements.guidedReviewMobile, 6);
+  await capture(client, "05F-guided-review-mobile-workspace.png");
+  await setViewport(client, { height: 1000, mobile: false, width: 1440 });
   await clickVisibleButton(client, "Close Guided Review");
 
   assert.equal(
@@ -373,8 +429,13 @@ try {
     artifacts: artifactRoot,
     desktop: desktopShell,
     mobile: mobileShell,
-    narrow: narrowShell
+    narrow: narrowShell,
+    workspaceDialogMeasurements
   };
+  writeFileSync(
+    join(artifactRoot, "workspace-dialog-measurements.json"),
+    `${JSON.stringify(workspaceDialogMeasurements, null, 2)}\n`
+  );
   console.log(JSON.stringify(result, null, 2));
   console.log("Application shell browser tests passed.");
 } finally {
@@ -384,6 +445,67 @@ try {
   await fixtureServer.close().catch(() => fixtureServer.forceClose());
   rmSync(userDataDir, { force: true, recursive: true });
   rmSync(fixtureRoot, { force: true, recursive: true });
+}
+
+async function readWorkspaceSurface(pageClient, selector, scrollOwnerSelector) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const surface = document.querySelector(${JSON.stringify(selector)});
+      const scrollOwner = document.querySelector(${JSON.stringify(scrollOwnerSelector)});
+      const rect = surface?.getBoundingClientRect();
+      const style = surface ? getComputedStyle(surface) : null;
+      const scrollStyle = scrollOwner ? getComputedStyle(scrollOwner) : null;
+      return {
+        bodyOverflow: getComputedStyle(document.body).overflow,
+        bottomGap: Math.round(innerHeight - (rect?.bottom ?? innerHeight)),
+        clientHeight: surface?.clientHeight ?? 0,
+        clientWidth: surface?.clientWidth ?? 0,
+        focusedInside: Boolean(surface?.contains(document.activeElement)),
+        height: Math.round(rect?.height ?? 0),
+        horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        leftGap: Math.round(rect?.left ?? 0),
+        maxHeight: style?.maxHeight ?? '',
+        maxWidth: style?.maxWidth ?? '',
+        rightGap: Math.round(innerWidth - (rect?.right ?? innerWidth)),
+        scrollHeight: surface?.scrollHeight ?? 0,
+        scrollOwnerOverflow: scrollStyle ? scrollStyle.overflowX + '/' + scrollStyle.overflowY : '',
+        scrollWidth: surface?.scrollWidth ?? 0,
+        topGap: Math.round(rect?.top ?? 0),
+        viewportHeight: innerHeight,
+        viewportWidth: innerWidth,
+        width: Math.round(rect?.width ?? 0)
+      };
+    })()`
+  });
+}
+
+function assertWorkspaceSurface(surface, inset) {
+  assert.deepEqual(
+    [surface.leftGap, surface.rightGap, surface.topGap, surface.bottomGap],
+    [inset, inset, inset, inset]
+  );
+  assert.equal(surface.bodyOverflow, "hidden");
+  assert.equal(surface.horizontalOverflow, false);
+  assert.equal(surface.maxWidth, "none");
+  assert.equal(surface.maxHeight, "none");
+  assert.equal(surface.clientWidth, surface.width - 2);
+  assert.equal(surface.clientHeight, surface.height - 2);
+  assert.equal(surface.scrollWidth, surface.clientWidth);
+  assert.equal(surface.scrollHeight, surface.clientHeight);
+  assert.equal(surface.scrollOwnerOverflow.includes("auto"), true);
+}
+
+async function readCompactSurface(pageClient, selector) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const surface = document.querySelector(${JSON.stringify(selector)});
+      return {
+        hasWorkspaceClass: surface?.classList.contains('workspace-dialog-surface') ?? false,
+        viewportWidth: innerWidth,
+        width: Math.round(surface?.getBoundingClientRect().width ?? 0)
+      };
+    })()`
+  });
 }
 
 async function openMenuItem(pageClient, menuLabel, itemLabel) {

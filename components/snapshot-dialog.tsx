@@ -57,9 +57,12 @@ export function SnapshotDialog({ dialog, onClose }: SnapshotDialogProps) {
   }
 
   return (
-    <div className="snapshot-dialog-backdrop" role="presentation">
+    <div
+      className="snapshot-dialog-backdrop workspace-dialog-backdrop"
+      role="presentation"
+    >
       <section
-        className="snapshot-dialog"
+        className="snapshot-dialog workspace-dialog-surface"
         role="dialog"
         aria-label={
           dialog.kind === "compare" ? "Compare snapshot" : "View snapshot"

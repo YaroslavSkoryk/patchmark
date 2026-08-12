@@ -2034,8 +2034,6 @@ button {
 
 .version-history-dialog {
   display: flex;
-  width: min(1000px, calc(100vw - 48px));
-  max-height: calc(100dvh - 48px);
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2116,8 +2114,6 @@ button {
 
 .snapshot-dialog {
   display: flex;
-  width: min(1040px, 100%);
-  max-height: min(86dvh, 860px);
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2131,8 +2127,6 @@ button {
 
 .legacy-assembly-dialog {
   display: flex;
-  width: min(980px, 100%);
-  max-height: min(92vh, 920px);
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -2420,10 +2414,6 @@ button {
   min-height: 0;
   overflow: auto;
   padding: 18px;
-}
-
-.guided-review-wizard-dialog {
-  width: min(980px, 100%);
 }
 
 .guided-review-wizard-body {
@@ -4556,23 +4546,8 @@ button {
   font-size: 0.74rem;
 }
 
-.patch-review-backdrop {
-  place-items: stretch;
-  padding: max(16px, var(--safe-area-top))
-    max(16px, var(--safe-area-right))
-    max(16px, var(--safe-area-bottom))
-    max(16px, var(--safe-area-left));
-}
-
 .patch-review-workspace {
   display: flex;
-  width: min(1360px, 100%);
-  height: calc(
-    100dvh - max(16px, var(--safe-area-top)) -
-      max(16px, var(--safe-area-bottom))
-  );
-  min-height: 0;
-  margin: auto;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -4623,7 +4598,7 @@ button {
   display: grid;
   min-height: 0;
   flex: 1 1 auto;
-  grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+  grid-template-columns: clamp(280px, 24vw, 420px) minmax(0, 1fr);
 }
 
 .patch-review-queue {
@@ -5672,14 +5647,10 @@ button {
 
 .pdf-export-portal-root {
   place-items: stretch;
-  padding: 20px;
 }
 
 .pdf-export-dialog {
   display: flex;
-  width: min(1180px, 100%);
-  max-height: calc(100dvh - 40px);
-  min-height: 0;
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--border);
@@ -6019,25 +5990,6 @@ button {
       max(12px, var(--safe-area-left));
   }
 
-  .snapshot-dialog {
-    max-height: calc(
-      100dvh - max(12px, var(--safe-area-top)) -
-        max(12px, var(--safe-area-bottom))
-    );
-  }
-
-  .version-history-dialog {
-    width: 100%;
-    max-height: calc(100dvh - 24px);
-  }
-
-  .patch-review-backdrop {
-    padding: max(8px, var(--safe-area-top))
-      max(8px, var(--safe-area-right))
-      max(8px, var(--safe-area-bottom))
-      max(8px, var(--safe-area-left));
-  }
-
   .patch-review-dialog {
     height: calc(
       100dvh - max(8px, var(--safe-area-top)) -
@@ -6102,20 +6054,6 @@ button {
     left: 20px;
     width: auto;
     max-height: calc(100dvh - 78px - var(--safe-area-bottom));
-  }
-
-  .patch-review-backdrop {
-    padding: max(6px, var(--safe-area-top))
-      max(6px, var(--safe-area-right))
-      max(6px, var(--safe-area-bottom))
-      max(6px, var(--safe-area-left));
-  }
-
-  .patch-review-workspace {
-    height: calc(
-      100dvh - max(6px, var(--safe-area-top)) -
-        max(6px, var(--safe-area-bottom))
-    );
   }
 
   .patch-review-workspace-header {
@@ -7994,6 +7932,51 @@ body .app-shell :where(button, [role="button"])[aria-busy="true"] {
     ) {
     animation: none !important;
     transition: none !important;
+  }
+}
+
+.workspace-dialog-backdrop {
+  --workspace-dialog-edge-inset: 16px;
+
+  place-items: stretch;
+  overflow: hidden;
+  padding: max(var(--workspace-dialog-edge-inset), var(--safe-area-top))
+    max(var(--workspace-dialog-edge-inset), var(--safe-area-right))
+    max(var(--workspace-dialog-edge-inset), var(--safe-area-bottom))
+    max(var(--workspace-dialog-edge-inset), var(--safe-area-left));
+}
+
+body:has(.workspace-dialog-backdrop) {
+  overflow: hidden !important;
+}
+
+.workspace-dialog-surface {
+  width: 100%;
+  height: calc(
+    100dvh -
+      max(var(--workspace-dialog-edge-inset), var(--safe-area-top)) -
+      max(var(--workspace-dialog-edge-inset), var(--safe-area-bottom))
+  );
+  max-width: none;
+  max-height: none;
+  min-width: 0;
+  min-height: 0;
+  margin: auto;
+}
+
+.rewrite-workspace-backdrop.workspace-dialog-backdrop {
+  --workspace-dialog-edge-inset: 0px;
+}
+
+@media (max-width: 900px) {
+  .workspace-dialog-backdrop {
+    --workspace-dialog-edge-inset: 8px;
+  }
+}
+
+@media (max-width: 520px) {
+  .workspace-dialog-backdrop {
+    --workspace-dialog-edge-inset: 6px;
   }
 }
 

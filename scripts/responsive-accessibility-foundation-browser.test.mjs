@@ -363,6 +363,7 @@ try {
     "version history dialog"
   );
   measurements.versionHistory = await readSurface(".version-history-dialog");
+  assertWorkspaceSurface(measurements.versionHistory, 16);
   assert.equal(measurements.versionHistory.focus.name, "Close");
   assert.equal(measurements.versionHistory.bodyOverflow, "hidden");
   assert.equal(
@@ -389,6 +390,48 @@ try {
     "version history focus restoration"
   );
   assert.equal(await bodyOverflow(), "visible");
+
+  await clickSelector(".version-history-view-all");
+  await waitFor(
+    `Boolean(document.querySelector('.version-history-dialog[role="dialog"]'))`,
+    "reopened version history dialog"
+  );
+  await clickVersionAction("View");
+  await waitFor(
+    `Boolean(document.querySelector('[aria-label="View snapshot"]'))`,
+    "desktop snapshot workspace"
+  );
+  measurements.snapshotDesktop = await readSurface("[aria-label='View snapshot']");
+  assertWorkspaceSurface(measurements.snapshotDesktop, 16);
+  await screenshot("10A-desktop-snapshot-workspace.png");
+  await clickSelector("[aria-label='View snapshot'] .snapshot-dialog-header button");
+  await waitFor(
+    `!document.querySelector('[aria-label="View snapshot"]')`,
+    "desktop snapshot close"
+  );
+
+  await setViewport({ height: 900, mobile: false, width: 768 });
+  await clickSelector(".version-history-view-all");
+  await waitFor(
+    `Boolean(document.querySelector('.version-history-dialog[role="dialog"]'))`,
+    "narrow version history workspace"
+  );
+  measurements.versionHistoryNarrow = await readSurface(".version-history-dialog");
+  assertWorkspaceSurface(measurements.versionHistoryNarrow, 8);
+  await screenshot("10B-narrow-version-history-workspace.png");
+  await clickVersionAction("View");
+  await waitFor(
+    `Boolean(document.querySelector('[aria-label="View snapshot"]'))`,
+    "narrow snapshot workspace"
+  );
+  measurements.snapshotNarrow = await readSurface("[aria-label='View snapshot']");
+  assertWorkspaceSurface(measurements.snapshotNarrow, 8);
+  await screenshot("10C-narrow-snapshot-workspace.png");
+  await clickSelector("[aria-label='View snapshot'] .snapshot-dialog-header button");
+  await waitFor(
+    `!document.querySelector('[aria-label="View snapshot"]')`,
+    "narrow snapshot close"
+  );
 
   await setViewport({ height: 844, mobile: true, width: 320 });
 
@@ -1177,7 +1220,12 @@ async function setMarkdownEditorState() {
         selectionEnd: textarea.selectionEnd,
         selectionStart: textarea.selectionStart,
         value: textarea.value,
-        viewport: { height: innerHeight, width: innerWidth }
+        viewport: {
+          clientHeight: document.documentElement.clientHeight,
+          clientWidth: document.documentElement.clientWidth,
+          height: innerHeight,
+          width: innerWidth
+        }
       };
     })()`
   });
@@ -1502,6 +1550,34 @@ async function openReviewWorkspace() {
   );
 }
 
+async function clickVersionAction(label) {
+  await evaluate(client, {
+    expression: `(() => {
+      const button = Array.from(document.querySelectorAll('.version-history-dialog button'))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)});
+      if (!(button instanceof HTMLButtonElement)) throw new Error('Version action missing: ${label}');
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+function assertWorkspaceSurface(surface, inset) {
+  assert.deepEqual(
+    [
+      Math.round(surface.rect.left),
+      Math.round(surface.viewport.clientWidth - surface.rect.right),
+      Math.round(surface.rect.top),
+      Math.round(surface.viewport.clientHeight - surface.rect.bottom)
+    ],
+    [inset, inset, inset, inset]
+  );
+  assert.equal(surface.pageHorizontalOverflow, false);
+  assert.equal(surface.maxWidth, "none");
+  assert.equal(surface.maxHeight, "none");
+}
+
 async function readLayout() {
   return evaluate(client, {
     expression: `(() => {
@@ -1516,7 +1592,12 @@ async function readLayout() {
         horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
         hoverFine: matchMedia('(hover: hover) and (pointer: fine)').matches,
         smallApplicationTargetCount: applicationTargets.filter((rect) => rect.width < 40 || rect.height < 40).length,
-        viewport: { height: innerHeight, width: innerWidth }
+        viewport: {
+          clientHeight: document.documentElement.clientHeight,
+          clientWidth: document.documentElement.clientWidth,
+          height: innerHeight,
+          width: innerWidth
+        }
       };
     })()`
   });
@@ -1537,6 +1618,8 @@ async function readSurface(selector) {
           name: document.activeElement?.getAttribute('aria-label') || document.activeElement?.textContent?.trim().slice(0, 100) || document.activeElement?.tagName
         },
         pageHorizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth + 1,
+        maxHeight: style?.maxHeight ?? null,
+        maxWidth: style?.maxWidth ?? null,
         paddingBottom: style?.paddingBottom ?? null,
         rect: rect ? {
           bottom: Math.round(rect.bottom),
@@ -1545,7 +1628,13 @@ async function readSurface(selector) {
           right: Math.round(rect.right),
           top: Math.round(rect.top),
           width: Math.round(rect.width)
-        } : null
+        } : null,
+        viewport: {
+          clientHeight: document.documentElement.clientHeight,
+          clientWidth: document.documentElement.clientWidth,
+          height: innerHeight,
+          width: innerWidth
+        }
       };
     })()`
   });

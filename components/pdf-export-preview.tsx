@@ -150,12 +150,12 @@ export function PdfExportPreview({
   }
 
   return createPortal(
-    <div className="pdf-export-portal-root snapshot-dialog-backdrop">
+    <div className="pdf-export-portal-root snapshot-dialog-backdrop workspace-dialog-backdrop">
       <section
         ref={dialogRef}
         aria-labelledby={titleId}
         aria-modal="true"
-        className="pdf-export-dialog"
+        className="pdf-export-dialog workspace-dialog-surface"
         role="dialog"
         tabIndex={-1}
       >

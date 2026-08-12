@@ -11093,7 +11093,6 @@ export function DocumentEditor() {
             <PatchReviewDialog
               anchorStatus={selectedPatchAnchorStatus}
               comment={selectedPatchComment}
-              embedded
               followUpRelationship={selectedPatchFollowUpRelationship}
               hasMultipleReviewablePatches={reviewablePatches.length > 1}
               isPatchActionBusy={isSaving}
@@ -11114,7 +11113,6 @@ export function DocumentEditor() {
                     }
                   : undefined
               }
-              onClose={handleClosePatchReviewWorkspace}
               onFindPatchAnchorText={() => handleFindPatchAnchorText(selectedPatch)}
               onContinueDiscussion={() =>
                 handleContinuePatchDiscussion(selectedPatch)
@@ -11245,7 +11243,7 @@ function PatchReviewWorkspaceDialog({
 
   return (
     <div
-      className="snapshot-dialog-backdrop patch-review-backdrop"
+      className="snapshot-dialog-backdrop workspace-dialog-backdrop patch-review-backdrop"
       onPointerDown={(event) => {
         if (event.target === event.currentTarget) {
           onClose();
@@ -11257,7 +11255,7 @@ function PatchReviewWorkspaceDialog({
         aria-busy={isPatchActionBusy || undefined}
         aria-label="Review Patch Group"
         aria-modal="true"
-        className="patch-review-workspace"
+        className="patch-review-workspace workspace-dialog-surface"
         data-testid="patch-review-workspace"
         role="dialog"
       >
@@ -11509,14 +11507,12 @@ function PatchReviewDialog({
   anchorStatus,
   comment,
   dependencyStatus,
-  embedded = false,
   followUpRelationship,
   hasMultipleReviewablePatches,
   isPatchActionBusy,
   markdown,
   onAcceptPatch,
   onBackToGroup,
-  onClose,
   onContinueDiscussion,
   onFindPatchAnchorText,
   onNextPatch,
@@ -11533,14 +11529,12 @@ function PatchReviewDialog({
   anchorStatus: PatchReviewAnchorStatus;
   comment: PatchmarkComment | null;
   dependencyStatus: PatchDependencyReviewStatus;
-  embedded?: boolean;
   followUpRelationship: PatchFollowUpRelationship | null;
   hasMultipleReviewablePatches: boolean;
   isPatchActionBusy: boolean;
   markdown: string;
   onAcceptPatch: () => void;
   onBackToGroup?: () => void;
-  onClose: () => void;
   onContinueDiscussion: () => void;
   onFindPatchAnchorText: () => void;
   onNextPatch: () => void;
@@ -11621,13 +11615,11 @@ function PatchReviewDialog({
 
   useEffect(() => {
     setReviewMode("visual");
-    if (embedded) {
-      const focusFrame = window.requestAnimationFrame(() => {
-        headingRef.current?.focus();
-      });
-      return () => window.cancelAnimationFrame(focusFrame);
-    }
-  }, [embedded, patch.id]);
+    const focusFrame = window.requestAnimationFrame(() => {
+      headingRef.current?.focus();
+    });
+    return () => window.cancelAnimationFrame(focusFrame);
+  }, [patch.id]);
 
   useEffect(() => {
     const previousPatchState = previousPatchStateRef.current;
@@ -11689,7 +11681,7 @@ function PatchReviewDialog({
   const dialog = (
       <section
         aria-busy={isPatchActionBusy || undefined}
-        className={`patch-review-dialog${embedded ? " patch-review-dialog-embedded" : ""}`}
+        className="patch-review-dialog patch-review-dialog-embedded"
         aria-label="Review Patch Proposal"
       >
         <header className="snapshot-dialog-header">
@@ -11709,9 +11701,6 @@ function PatchReviewDialog({
             </div>
             <p>{getPatchReviewIntro(patchDisplayState, patch)}</p>
           </div>
-          <button type="button" onClick={onClose}>
-            Close
-          </button>
         </header>
 
         <div className="patch-review-actions">
@@ -12223,13 +12212,7 @@ function PatchReviewDialog({
       </section>
   );
 
-  return embedded ? (
-    dialog
-  ) : (
-    <div className="snapshot-dialog-backdrop patch-review-backdrop">
-      {dialog}
-    </div>
-  );
+  return dialog;
 }
 
 type PatchVisualPreview = {

@@ -27,6 +27,8 @@ import { createPatchReviewFoundationFixture } from "./lib/patch-review-foundatio
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3117/";
 const evidenceDir = process.env.PATCHMARK_PHASE5_EVIDENCE_DIR;
+const isWorkspaceDialogBaseline =
+  process.env.PATCHMARK_WORKSPACE_DIALOG_BASELINE === "1";
 const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-phase5-review-fixture-"));
 const fixture = createPatchReviewFoundationFixture(fixtureRoot);
 const inventory = inventoryProject(fixtureRoot);
@@ -103,6 +105,111 @@ try {
   assert.equal(await writeCount(), initialWrites);
   await screenshot("02-desktop-compact-review-queue.png");
   await screenshot("03-desktop-focused-patch-inspector.png");
+
+  await setViewport({ height: 984, mobile: false, width: 2048 });
+  const wideState = await readReviewState();
+  measurements.wide = wideState;
+  assert.equal(wideState.bodyOverflow, "hidden");
+  assert.equal(wideState.horizontalOverflow, false);
+  assert.equal(await writeCount(), initialWrites);
+  if (!isWorkspaceDialogBaseline) {
+    assertWorkspaceBounds(wideState, 16);
+    assert.ok(wideState.queueWidth > initialState.queueWidth);
+    assert.ok(wideState.proposalWidth > initialState.proposalWidth);
+    assert.equal(wideState.genericCloseCount, 1);
+    assert.deepEqual(wideState.closeLabels, ["Close"]);
+    assert.deepEqual(wideState.closeAccessibleNames, ["Close Review"]);
+  }
+  await screenshot(
+    isWorkspaceDialogBaseline
+      ? "00-wide-review-before.png"
+      : "00-wide-review-after.png"
+  );
+
+  if (!isWorkspaceDialogBaseline) {
+    measurements.viewports = {};
+    const workspaceViewports = [
+      { height: 900, inset: 16, label: "1440x900", mobile: false, width: 1440 },
+      { height: 768, inset: 16, label: "1024x768", mobile: false, width: 1024 },
+      { height: 900, inset: 8, label: "768x900", mobile: false, width: 768 },
+      { height: 844, inset: 6, label: "393x844", mobile: true, width: 393 },
+      { height: 393, inset: 8, label: "844x393", mobile: true, width: 844 },
+      { height: 700, inset: 6, label: "320x700", mobile: true, width: 320 },
+      { height: 450, inset: 8, label: "200-percent-reflow", mobile: false, width: 720 }
+    ];
+
+    for (const viewport of workspaceViewports) {
+      await setViewport({
+        height: viewport.height,
+        mobile: viewport.mobile,
+        width: viewport.width
+      });
+      const state = await readReviewState();
+      measurements.viewports[viewport.label] = state;
+      assertWorkspaceBounds(state, viewport.inset);
+      assert.equal(state.bodyOverflow, "hidden");
+      assert.equal(state.horizontalOverflow, false);
+      assert.equal(state.genericCloseCount, 1);
+      assert.equal(state.workspaceOverflow, "hidden");
+      assert.equal(
+        [state.queueOverflow, state.batchOverflow, state.patchListOverflow]
+          .some((overflow) => overflow.includes("auto")),
+        true
+      );
+      assert.equal(state.bodyScrollX, 0);
+      assert.equal(state.bodyScrollY, 0);
+      assert.equal(await writeCount(), initialWrites);
+      await screenshot(`workspace-${viewport.label}.png`);
+    }
+
+    await setViewport({ height: 984, mobile: false, width: 2048 });
+    await evaluate(client, {
+      expression: `(() => {
+        window.__workspaceDialogCloseCount = 0;
+        window.__workspaceDialogWasOpen = Boolean(document.querySelector('[data-testid="patch-review-workspace"]'));
+        window.__workspaceDialogObserver?.disconnect();
+        window.__workspaceDialogObserver = new MutationObserver(() => {
+          const isOpen = Boolean(document.querySelector('[data-testid="patch-review-workspace"]'));
+          if (window.__workspaceDialogWasOpen && !isOpen) {
+            window.__workspaceDialogCloseCount += 1;
+          }
+          window.__workspaceDialogWasOpen = isOpen;
+        });
+        window.__workspaceDialogObserver.observe(document.body, { childList: true, subtree: true });
+        const close = document.querySelector('[data-testid="patch-review-workspace"] button[aria-label="Close Review"]');
+        if (!(close instanceof HTMLButtonElement)) throw new Error('Global Review close control missing');
+        close.focus();
+        return document.activeElement === close;
+      })()`
+    });
+    await screenshot("workspace-global-close-keyboard-focus.png");
+    await evaluate(client, {
+      expression: `document.querySelector('[data-testid="patch-review-workspace"] button[aria-label="Close Review"]')?.click(); true`,
+      userGesture: true
+    });
+    await waitFor(`!document.querySelector('[data-testid="patch-review-workspace"]')`, "global Review close");
+    assert.equal(
+      await evaluate(client, { expression: `window.__workspaceDialogCloseCount` }),
+      1
+    );
+    assert.equal(
+      await evaluate(client, { expression: `document.activeElement?.getAttribute('aria-label')` }),
+      "Review menu"
+    );
+    assert.equal(
+      await evaluate(client, { expression: `getComputedStyle(document.body).overflow` }),
+      "visible"
+    );
+    await openReviewWorkspace();
+    const reopenedWideState = await readReviewState();
+    measurements.reopenedWide = reopenedWideState;
+    assert.deepEqual(
+      [reopenedWideState.reviewWidth, reopenedWideState.reviewHeight, reopenedWideState.queueWidth],
+      [wideState.reviewWidth, wideState.reviewHeight, wideState.queueWidth]
+    );
+    assert.equal(await writeCount(), initialWrites);
+  }
+  await setViewport({ height: 1000, mobile: false, width: 1440 });
 
   await clickPatchRow("Blocked dependent patch");
   const blockedState = await readSelectedPatchState();
@@ -282,6 +389,11 @@ try {
   assert.match(staleState.applicabilityText, /not found/i);
   await screenshot("14-desktop-stale-repair-required-state.png");
 
+  if (!isWorkspaceDialogBaseline) {
+    await evaluate(client, {
+      expression: `window.__workspaceDialogCloseCount = 0; window.__workspaceDialogWasOpen = true; true`
+    });
+  }
   await pressKey("Escape");
   await waitFor(`!document.querySelector('[data-testid="patch-review-workspace"]')`, "Review close");
   await waitFor(
@@ -298,6 +410,12 @@ try {
     await evaluate(client, { expression: `getComputedStyle(document.body).overflow` }),
     "visible"
   );
+  if (!isWorkspaceDialogBaseline) {
+    assert.equal(
+      await evaluate(client, { expression: `window.__workspaceDialogCloseCount` }),
+      1
+    );
+  }
   await screenshot("15-desktop-keyboard-focus-restored.png");
 
   if (evidenceDir) {
@@ -349,8 +467,16 @@ async function readReviewState() {
       const inspector = document.querySelector('[aria-label="Review Patch Proposal"]');
       const proposal = document.querySelector('.patch-review-preview-grid');
       const queue = document.querySelector('.patch-review-queue');
+      const inspectorShell = document.querySelector('.patch-review-inspector-shell');
+      const patchBody = document.querySelector('.patch-review-body');
+      const layout = document.querySelector('.patch-review-workspace-layout');
+      const batchSwitcher = document.querySelector('.patch-review-batch-switcher');
+      const patchList = document.querySelector('.patch-review-queue-patches');
       const visible = (element) => Boolean(element?.getClientRects().length);
       const workspaceRect = workspace?.getBoundingClientRect();
+      const workspaceStyle = workspace ? getComputedStyle(workspace) : null;
+      const closeButtons = Array.from(workspace?.querySelectorAll('button') ?? [])
+        .filter((button) => button.textContent?.trim() === 'Close' && visible(button));
       const framedRegions = Array.from(
         workspace?.querySelectorAll('.patch-review-card, .patch-group-patch-card') ?? []
       ).filter(visible).filter(
@@ -373,7 +499,35 @@ async function readReviewState() {
         proposalText: proposal?.textContent ?? '',
         proposalWidth: Math.round(proposal?.getBoundingClientRect().width ?? 0),
         proposalTop: Math.round(proposal?.getBoundingClientRect().top ?? 0),
+        inspectorHeight: Math.round(inspectorShell?.getBoundingClientRect().height ?? 0),
+        inspectorWidth: Math.round(inspectorShell?.getBoundingClientRect().width ?? 0),
+        layoutHeight: Math.round(layout?.getBoundingClientRect().height ?? 0),
+        layoutWidth: Math.round(layout?.getBoundingClientRect().width ?? 0),
         queueHeight: Math.round(queue?.getBoundingClientRect().height ?? 0),
+        queueWidth: Math.round(queue?.getBoundingClientRect().width ?? 0),
+        clientHeight: workspace?.clientHeight ?? 0,
+        clientWidth: workspace?.clientWidth ?? 0,
+        scrollHeight: workspace?.scrollHeight ?? 0,
+        scrollWidth: workspace?.scrollWidth ?? 0,
+        leftGap: Math.round(workspaceRect?.left ?? 0),
+        rightGap: Math.round(innerWidth - (workspaceRect?.right ?? innerWidth)),
+        topGap: Math.round(workspaceRect?.top ?? 0),
+        bottomGap: Math.round(innerHeight - (workspaceRect?.bottom ?? innerHeight)),
+        computedHeight: workspaceStyle?.height ?? '',
+        computedMaxHeight: workspaceStyle?.maxHeight ?? '',
+        computedMaxWidth: workspaceStyle?.maxWidth ?? '',
+        computedWidth: workspaceStyle?.width ?? '',
+        bodyScrollX: window.scrollX,
+        bodyScrollY: window.scrollY,
+        batchOverflow: batchSwitcher ? getComputedStyle(batchSwitcher).overflowX + '/' + getComputedStyle(batchSwitcher).overflowY : '',
+        inspectorOverflow: inspectorShell ? getComputedStyle(inspectorShell).overflowX + '/' + getComputedStyle(inspectorShell).overflowY : '',
+        patchBodyOverflow: patchBody ? getComputedStyle(patchBody).overflowX + '/' + getComputedStyle(patchBody).overflowY : '',
+        patchListOverflow: patchList ? getComputedStyle(patchList).overflowX + '/' + getComputedStyle(patchList).overflowY : '',
+        queueOverflow: queue ? getComputedStyle(queue).overflowX + '/' + getComputedStyle(queue).overflowY : '',
+        workspaceOverflow: workspaceStyle?.overflow ?? '',
+        closeAccessibleNames: closeButtons.map((button) => button.getAttribute('aria-label') || button.textContent?.trim() || ''),
+        closeLabels: closeButtons.map((button) => button.textContent?.trim() ?? ''),
+        genericCloseCount: closeButtons.length,
         reviewHeight: Math.round(workspaceRect?.height ?? 0),
         reviewModal: workspace?.getAttribute('aria-modal') === 'true',
         reviewTop: Math.round(workspaceRect?.top ?? 0),
@@ -386,6 +540,18 @@ async function readReviewState() {
       };
     })()`
   });
+}
+
+function assertWorkspaceBounds(state, maximumInset) {
+  const gaps = [state.leftGap, state.rightGap, state.topGap, state.bottomGap];
+  assert.ok(Math.max(...gaps) <= maximumInset);
+  assert.ok(Math.max(...gaps) - Math.min(...gaps) <= 1);
+  assert.equal(state.clientWidth, state.reviewWidth - 2);
+  assert.equal(state.clientHeight, state.reviewHeight - 2);
+  assert.equal(state.scrollWidth, state.clientWidth);
+  assert.equal(state.scrollHeight, state.clientHeight);
+  assert.equal(state.computedMaxWidth, "none");
+  assert.equal(state.computedMaxHeight, "none");
 }
 
 async function readSelectedPatchState() {

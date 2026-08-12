@@ -210,9 +210,9 @@ export function LegacyProjectAssemblyDialog({
   }
 
   return (
-    <div className="snapshot-dialog-backdrop legacy-assembly-backdrop">
+    <div className="snapshot-dialog-backdrop workspace-dialog-backdrop legacy-assembly-backdrop">
       <section
-        className="legacy-assembly-dialog"
+        className="legacy-assembly-dialog workspace-dialog-surface"
         aria-label="Create project from existing Patchmark projects"
         aria-modal="true"
         role="dialog"

@@ -202,14 +202,14 @@ function VersionHistoryArchiveDialog({
 
   return createPortal(
     <div
-      className="snapshot-dialog-backdrop version-history-modal-root"
+      className="snapshot-dialog-backdrop workspace-dialog-backdrop version-history-modal-root"
       role="presentation"
     >
       <section
         ref={dialogRef}
         aria-labelledby="version-history-dialog-title"
         aria-modal="true"
-        className="version-history-dialog"
+        className="version-history-dialog workspace-dialog-surface"
         role="dialog"
       >
         <header className="snapshot-dialog-header version-history-dialog-header">

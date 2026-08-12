@@ -748,13 +748,16 @@ export function RewriteWorkspace({
   }
 
   return createPortal(
-    <div className="rewrite-workspace-backdrop" data-testid="rewrite-workspace">
+    <div
+      className="rewrite-workspace-backdrop workspace-dialog-backdrop"
+      data-testid="rewrite-workspace"
+    >
       <section
         ref={workspaceRef}
         aria-describedby="rewrite-workspace-description"
         aria-label="Human Rewrite Review Workspace"
         aria-modal="true"
-        className="rewrite-workspace"
+        className="rewrite-workspace workspace-dialog-surface"
         role="dialog"
       >
         <header className="rewrite-workspace-header">
