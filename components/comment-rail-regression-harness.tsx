@@ -198,6 +198,7 @@ export function CommentRailRegressionHarness() {
             replyRequest={null}
             selectedAnchorContextKind="paragraph"
             selectedTextPreview={regressionAnchors[2].text}
+            spatialLayout
             trashedComments={[]}
           />
         </aside>

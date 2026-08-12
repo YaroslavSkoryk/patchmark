@@ -991,7 +991,7 @@ button {
   align-self: flex-end;
   width: fit-content;
   max-width: min(520px, calc(100% - 24px));
-  margin: 8px 12px 0;
+  margin: 4px 12px;
   border: 1px solid var(--border);
   border-radius: 999px;
   background: var(--surface-muted);
@@ -7566,15 +7566,12 @@ button {
   .rewrite-workspace-header-actions {
     grid-column: 2;
     grid-row: 1;
+    width: auto;
+    justify-content: flex-end;
   }
 
   .rewrite-workspace-header p {
     display: none;
-  }
-
-  .rewrite-workspace-header-actions {
-    width: auto;
-    justify-content: flex-end;
   }
 
   .rewrite-mode-control-row {

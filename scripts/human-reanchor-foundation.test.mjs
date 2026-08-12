@@ -75,7 +75,10 @@ assert.match(editor, /aria-modal="true"/);
 assert.match(editor, /role="dialog"/);
 assert.match(editor, /document\.body\.style\.overflow = "hidden"/);
 assert.match(editor, /element\.inert = true/);
-assert.match(editor, /event\.key !== "Tab" \|\| !dialog/);
+assert.match(
+  editor,
+  /trapTabWithin\(\s*event,\s*dialog,[\s\S]*?button:not\(:disabled\)/
+);
 assert.match(editor, /reanchorConfirmationHeadingRef\.current\?\.focus\(\)/);
 
 assert.match(editor, /This changes only where the comment points/);

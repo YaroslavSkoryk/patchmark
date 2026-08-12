@@ -17,6 +17,10 @@ assert.match(documentEditor, /restoreCommentsTriggerFocusRef\.current/);
 assert.match(documentEditor, /commentsTriggerRef\.current\?\.focus\(\)/);
 assert.match(documentEditor, /event\.key === "Escape"[\s\S]*?closeComments\(\)/);
 assert.match(documentEditor, /applicationBar\.inert = true/);
+assert.match(
+  documentEditor,
+  /const rail = commentsRailRef\.current;[\s\S]*?lockBodyScrollAndInertElements\(backgroundElements\)/
+);
 assert.match(documentEditor, /setMobileNavigationOpen\(false\)[\s\S]*?setCommentsOpen\(true\)/);
 assert.doesNotMatch(documentEditor, /localStorage[\s\S]{0,120}commentsOpen/);
 

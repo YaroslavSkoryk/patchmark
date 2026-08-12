@@ -54,11 +54,19 @@ assert.match(
 
 assert.match(
   documentEditor,
-  /const navigation = documentNavigationRef\.current;[\s\S]*?applicationBar\.inert = true;[\s\S]*?element\.inert = true;/
+  /const navigation = documentNavigationRef\.current;[\s\S]*?lockBodyScrollAndInertElements\(backgroundElements\)/
 );
 assert.match(
   documentEditor,
-  /const modalRoot = dialog\?\.closest<HTMLElement>\("\.patch-review-backdrop"\);[\s\S]*?applicationBar\.inert = true;[\s\S]*?element\.inert = true;/
+  /const modalRoot = dialog\?\.closest<HTMLElement>\("\.patch-review-backdrop"\);[\s\S]*?lockBodyScrollAndInertElements\(backgroundElements\)/
+);
+assert.match(
+  documentEditor,
+  /function lockBodyScrollAndInertElements[\s\S]*?document\.body\.style\.overflow = "hidden";[\s\S]*?applicationBar\.inert = true;[\s\S]*?element\.inert = true;/
+);
+assert.match(
+  documentEditor,
+  /function trapTabWithin[\s\S]*?event\.key !== "Tab"[\s\S]*?last\.focus\(\)[\s\S]*?first\.focus\(\)/
 );
 assert.equal(
   (documentEditor.match(/className="document-navigation-backdrop"[\s\S]{0,140}aria-hidden="true"/g) ?? []).length,

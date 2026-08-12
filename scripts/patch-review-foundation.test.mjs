@@ -84,6 +84,10 @@ for (const accessibilityBehavior of [
 ]) {
   assert.ok(editor.includes(accessibilityBehavior), `Missing behavior: ${accessibilityBehavior}`);
 }
+assert.match(
+  editor,
+  /const modalRoot = dialog\?\.closest<HTMLElement>\("\.patch-review-backdrop"\);[\s\S]*?lockBodyScrollAndInertElements\(backgroundElements\)/
+);
 
 assert.match(css, /\.patch-review-workspace-layout\s*\{[\s\S]*?grid-template-columns: minmax\(260px, 320px\) minmax\(0, 1fr\)/);
 assert.match(css, /\.patch-review-queue-row > button\[aria-current="true"\]/);

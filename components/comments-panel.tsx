@@ -165,7 +165,7 @@ type CommentsPanelProps = {
   replyRequest: CommentReplyRequest | null;
   selectedAnchorContextKind: PatchmarkSelectedTextAnchorContextKind | null;
   selectedTextPreview: string | null;
-  spatialLayout?: boolean;
+  spatialLayout: boolean;
   trashedComments: PatchmarkComment[];
 };
 
@@ -263,7 +263,7 @@ export function CommentsPanel({
   replyRequest,
   selectedAnchorContextKind,
   selectedTextPreview,
-  spatialLayout = true,
+  spatialLayout,
   trashedComments
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);

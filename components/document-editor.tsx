@@ -2394,63 +2394,30 @@ export function DocumentEditor() {
     const dialog = reanchorConfirmationDialogRef.current;
     const dialogLayer = dialog?.parentElement;
     const workspace = documentWorkspaceRef.current;
-    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
-    const previousOverflow = document.body.style.overflow;
-    const previousApplicationBarInert = applicationBar?.inert ?? false;
     const backgroundElements = Array.from(workspace?.children ?? [])
       .filter(
         (element): element is HTMLElement =>
           element instanceof HTMLElement && element !== dialogLayer
-      )
-      .map((element) => ({ element, inert: element.inert }));
-
-    document.body.style.overflow = "hidden";
-    if (applicationBar) {
-      applicationBar.inert = true;
-    }
-    backgroundElements.forEach(({ element }) => {
-      element.inert = true;
-    });
+      );
+    const restoreBackgroundInteraction =
+      lockBodyScrollAndInertElements(backgroundElements);
 
     const focusFrame = window.requestAnimationFrame(() => {
       reanchorConfirmationHeadingRef.current?.focus();
     });
 
     function handleConfirmationKeyDown(event: KeyboardEvent) {
-      if (event.key !== "Tab" || !dialog) {
-        return;
-      }
-
-      const focusable = Array.from(
-        dialog.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], summary, input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-        )
-      ).filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-
-      if (!first || !last) {
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTabWithin(
+        event,
+        dialog,
+        'button:not(:disabled), [href], summary, input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      );
     }
 
     document.addEventListener("keydown", handleConfirmationKeyDown);
     return () => {
       window.cancelAnimationFrame(focusFrame);
-      document.body.style.overflow = previousOverflow;
-      if (applicationBar) {
-        applicationBar.inert = previousApplicationBarInert;
-      }
-      backgroundElements.forEach(({ element, inert }) => {
-        element.inert = inert;
-      });
+      restoreBackgroundInteraction();
       document.removeEventListener("keydown", handleConfirmationKeyDown);
     };
   }, [reanchorConfirmation]);
@@ -8868,6 +8835,10 @@ export function DocumentEditor() {
     selectedDraft: SelectedCommentAnchorDraft | null;
     targetHeadingLine: number | null;
   }): number | null {
+    if (mode !== "visual") {
+      return null;
+    }
+
     const container = editorDocumentRef.current;
     const workspace = documentWorkspaceRef.current;
 
@@ -8911,7 +8882,6 @@ export function DocumentEditor() {
         editorTop,
         headings,
         markdown,
-        mode,
         workspaceRect
       });
     } catch {
@@ -9383,7 +9353,6 @@ export function DocumentEditor() {
     }
 
     const rail = commentsRailRef.current;
-    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
     const workspace = documentWorkspaceRef.current;
     const backgroundElements = Array.from(
       workspace?.children ?? []
@@ -9392,20 +9361,8 @@ export function DocumentEditor() {
       element !== rail &&
       !element.classList.contains("comments-drawer-backdrop")
     );
-    const previousOverflow = document.body.style.overflow;
-    const previousApplicationBarInert = applicationBar?.inert ?? false;
-    const previousInertStates = backgroundElements.map((element) => ({
-      element,
-      inert: element.inert
-    }));
-
-    document.body.style.overflow = "hidden";
-    if (applicationBar) {
-      applicationBar.inert = true;
-    }
-    backgroundElements.forEach((element) => {
-      element.inert = true;
-    });
+    const restoreBackgroundInteraction =
+      lockBodyScrollAndInertElements(backgroundElements);
     const animationFrame = window.requestAnimationFrame(() => {
       if (
         !document.querySelector(
@@ -9423,39 +9380,17 @@ export function DocumentEditor() {
         return;
       }
 
-      if (event.key !== "Tab" || !rail) {
-        return;
-      }
-
-      const focusable = Array.from(
-        rail.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])'
-        )
-      ).filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) {
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTabWithin(
+        event,
+        rail,
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])'
+      );
     }
 
     document.addEventListener("keydown", handleCommentsKeyDown);
     return () => {
       window.cancelAnimationFrame(animationFrame);
-      document.body.style.overflow = previousOverflow;
-      if (applicationBar) {
-        applicationBar.inert = previousApplicationBarInert;
-      }
-      previousInertStates.forEach(({ element, inert }) => {
-        element.inert = inert;
-      });
+      restoreBackgroundInteraction();
       document.removeEventListener("keydown", handleCommentsKeyDown);
     };
   }, [closeComments, commentsOpen, isNarrowNavigation, reanchorSession]);
@@ -9466,7 +9401,6 @@ export function DocumentEditor() {
     }
 
     const navigation = documentNavigationRef.current;
-    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
     const workspace = documentWorkspaceRef.current;
     const backgroundElements = Array.from(
       workspace?.children ?? []
@@ -9475,19 +9409,8 @@ export function DocumentEditor() {
       element !== navigation &&
       !element.classList.contains("document-navigation-backdrop")
     );
-    const previousOverflow = document.body.style.overflow;
-    const previousApplicationBarInert = applicationBar?.inert ?? false;
-    const previousInertStates = backgroundElements.map((element) => ({
-      element,
-      inert: element.inert
-    }));
-    document.body.style.overflow = "hidden";
-    if (applicationBar) {
-      applicationBar.inert = true;
-    }
-    backgroundElements.forEach((element) => {
-      element.inert = true;
-    });
+    const restoreBackgroundInteraction =
+      lockBodyScrollAndInertElements(backgroundElements);
     const animationFrame = window.requestAnimationFrame(() => {
       navigation
         ?.querySelector<HTMLButtonElement>(".document-navigation-close")
@@ -9504,39 +9427,17 @@ export function DocumentEditor() {
         return;
       }
 
-      if (event.key !== "Tab") {
-        return;
-      }
-
-      const focusable = Array.from(
-        navigation?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-        ) ?? []
-      ).filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (!first || !last) {
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTabWithin(
+        event,
+        navigation,
+        'button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      );
     }
 
     document.addEventListener("keydown", handleNavigationKeyDown);
     return () => {
       window.cancelAnimationFrame(animationFrame);
-      document.body.style.overflow = previousOverflow;
-      if (applicationBar) {
-        applicationBar.inert = previousApplicationBarInert;
-      }
-      previousInertStates.forEach(({ element, inert }) => {
-        element.inert = inert;
-      });
+      restoreBackgroundInteraction();
       document.removeEventListener("keydown", handleNavigationKeyDown);
     };
   }, [isNarrowNavigation, mobileNavigationOpen]);
@@ -11308,25 +11209,15 @@ function PatchReviewWorkspaceDialog({
     const dialog = dialogRef.current;
     const modalRoot = dialog?.closest<HTMLElement>(".patch-review-backdrop");
     const workspace = modalRoot?.parentElement;
-    const applicationBar = document.querySelector<HTMLElement>(".application-bar");
-    const previousOverflow = document.body.style.overflow;
-    const previousApplicationBarInert = applicationBar?.inert ?? false;
     const backgroundElements = Array.from(workspace?.children ?? [])
       .filter(
         (element): element is HTMLElement =>
           element instanceof HTMLElement && element !== modalRoot
-      )
-      .map((element) => ({ element, inert: element.inert }));
+      );
+    const restoreBackgroundInteraction =
+      lockBodyScrollAndInertElements(backgroundElements);
     const focusFrame = window.requestAnimationFrame(() => {
       headingRef.current?.focus();
-    });
-
-    document.body.style.overflow = "hidden";
-    if (applicationBar) {
-      applicationBar.inert = true;
-    }
-    backgroundElements.forEach(({ element }) => {
-      element.inert = true;
     });
 
     function handleKeyDown(event: KeyboardEvent) {
@@ -11337,40 +11228,17 @@ function PatchReviewWorkspaceDialog({
         return;
       }
 
-      if (event.key !== "Tab") {
-        return;
-      }
-
-      const focusable = Array.from(
-        dialogRef.current?.querySelectorAll<HTMLElement>(
-          'button:not(:disabled), [href], summary, input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
-        ) ?? []
-      ).filter((element) => element.getClientRects().length > 0);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-
-      if (!first || !last) {
-        return;
-      }
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
+      trapTabWithin(
+        event,
+        dialogRef.current,
+        'button:not(:disabled), [href], summary, input:not(:disabled), select:not(:disabled), textarea:not(:disabled), [tabindex]:not([tabindex="-1"])'
+      );
     }
 
     document.addEventListener("keydown", handleKeyDown);
     return () => {
       window.cancelAnimationFrame(focusFrame);
-      document.body.style.overflow = previousOverflow;
-      if (applicationBar) {
-        applicationBar.inert = previousApplicationBarInert;
-      }
-      backgroundElements.forEach(({ element, inert }) => {
-        element.inert = inert;
-      });
+      restoreBackgroundInteraction();
       document.removeEventListener("keydown", handleKeyDown);
     };
   }, []);
@@ -20298,6 +20166,61 @@ function isToolbarContextMenuTarget(target: EventTarget): boolean {
   return target instanceof Element && Boolean(target.closest(".mdxeditor-toolbar"));
 }
 
+function lockBodyScrollAndInertElements(elements: HTMLElement[]): () => void {
+  const applicationBar = document.querySelector<HTMLElement>(".application-bar");
+  const previousOverflow = document.body.style.overflow;
+  const previousApplicationBarInert = applicationBar?.inert ?? false;
+  const previousInertStates = elements.map((element) => ({
+    element,
+    inert: element.inert
+  }));
+
+  document.body.style.overflow = "hidden";
+  if (applicationBar) {
+    applicationBar.inert = true;
+  }
+  elements.forEach((element) => {
+    element.inert = true;
+  });
+
+  return () => {
+    document.body.style.overflow = previousOverflow;
+    if (applicationBar) {
+      applicationBar.inert = previousApplicationBarInert;
+    }
+    previousInertStates.forEach(({ element, inert }) => {
+      element.inert = inert;
+    });
+  };
+}
+
+function trapTabWithin(
+  event: KeyboardEvent,
+  container: HTMLElement | null,
+  focusableSelector: string
+): void {
+  if (event.key !== "Tab" || !container) {
+    return;
+  }
+
+  const focusable = Array.from(
+    container.querySelectorAll<HTMLElement>(focusableSelector)
+  ).filter((element) => element.getClientRects().length > 0);
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+
+  if (!first || !last) {
+    return;
+  }
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 function measureCommentPositions({
   comments,
   container,
@@ -20323,7 +20246,6 @@ function measureCommentPositions({
       editorTop,
       headings,
       markdown,
-      mode,
       patches,
       workspaceRect
     });
@@ -20342,7 +20264,6 @@ function computeCommentPreferredTop({
   editorTop,
   headings,
   markdown,
-  mode,
   patches = [],
   workspaceRect
 }: {
@@ -20351,7 +20272,6 @@ function computeCommentPreferredTop({
   editorTop: number;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
-  mode: EditorMode;
   patches?: PatchmarkPatch[];
   workspaceRect: DOMRect;
 }): number | null {
@@ -20368,21 +20288,19 @@ function computeCommentPreferredTop({
       return null;
     }
 
-    if (mode === "visual") {
-      const projectionTop = getVisualProjectionTop({
-        projection: findVisualCommentAnchorProjection({
-          comment,
-          container,
-          headings,
-          markdown,
-          patches
-        }),
-        workspaceRect
-      });
+    const projectionTop = getVisualProjectionTop({
+      projection: findVisualCommentAnchorProjection({
+        comment,
+        container,
+        headings,
+        markdown,
+        patches
+      }),
+      workspaceRect
+    });
 
-      if (projectionTop !== null) {
-        return projectionTop;
-      }
+    if (projectionTop !== null) {
+      return projectionTop;
     }
 
     return estimateTopForOffset(markdown, resolution.start, editorTop);
@@ -20391,40 +20309,35 @@ function computeCommentPreferredTop({
   const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
 
   if (resolution.status === "active" && resolution.start !== undefined) {
-    if (mode === "visual") {
-      const projectionTop = getVisualProjectionTop({
-        projection: findVisualCommentAnchorProjection({
-          comment,
-          container,
-          headings,
-          markdown,
-          patches
-        }),
-        workspaceRect
-      });
+    const projectionTop = getVisualProjectionTop({
+      projection: findVisualCommentAnchorProjection({
+        comment,
+        container,
+        headings,
+        markdown,
+        patches
+      }),
+      workspaceRect
+    });
 
-      if (projectionTop !== null) {
-        return projectionTop;
-      }
-
-      const fallbackHeading = anchor.containing_heading
-        ? findMatchingHeading(headings, {
-            level: anchor.containing_heading_level,
-            text: anchor.containing_heading
-          })
-        : null;
-      const fallbackVisualTop = fallbackHeading
-        ? findVisualHeadingTop({
-            container,
-            heading: fallbackHeading,
-            workspaceRect
-          })
-        : null;
-
-      return fallbackVisualTop;
+    if (projectionTop !== null) {
+      return projectionTop;
     }
 
-    return estimateTopForOffset(markdown, resolution.start, editorTop);
+    const fallbackHeading = anchor.containing_heading
+      ? findMatchingHeading(headings, {
+          level: anchor.containing_heading_level,
+          text: anchor.containing_heading
+        })
+      : null;
+
+    return fallbackHeading
+      ? findVisualHeadingTop({
+          container,
+          heading: fallbackHeading,
+          workspaceRect
+        })
+      : null;
   }
 
   if (resolution.status === "ambiguous") {
@@ -20436,42 +20349,38 @@ function computeCommentPreferredTop({
   }
 
   if (resolution.contextStart !== undefined) {
-    if (mode === "visual") {
-      const visualContextTop = findVisualAnchorContextTopForResolvedAnchor({
-        anchor,
-        container,
-        markdown,
-        resolution,
-        workspaceRect
-      });
+    const visualContextTop = findVisualAnchorContextTopForResolvedAnchor({
+      anchor,
+      container,
+      markdown,
+      resolution,
+      workspaceRect
+    });
 
-      if (visualContextTop !== null) {
-        return visualContextTop;
-      }
+    if (visualContextTop !== null) {
+      return visualContextTop;
     }
 
     return estimateTopForOffset(markdown, resolution.contextStart, editorTop);
   }
 
   if (resolution.fallbackStart !== undefined) {
-    if (mode === "visual") {
-      const fallbackHeading = anchor.containing_heading
-        ? findMatchingHeading(headings, {
-            level: anchor.containing_heading_level,
-            text: anchor.containing_heading
-          })
-        : null;
-      const fallbackVisualTop = fallbackHeading
-        ? findVisualHeadingTop({
-            container,
-            heading: fallbackHeading,
-            workspaceRect
-          })
-        : null;
+    const fallbackHeading = anchor.containing_heading
+      ? findMatchingHeading(headings, {
+          level: anchor.containing_heading_level,
+          text: anchor.containing_heading
+        })
+      : null;
+    const fallbackVisualTop = fallbackHeading
+      ? findVisualHeadingTop({
+          container,
+          heading: fallbackHeading,
+          workspaceRect
+        })
+      : null;
 
-      if (fallbackVisualTop !== null) {
-        return fallbackVisualTop;
-      }
+    if (fallbackVisualTop !== null) {
+      return fallbackVisualTop;
     }
 
     return estimateTopForOffset(markdown, resolution.fallbackStart, editorTop);

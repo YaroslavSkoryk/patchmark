@@ -44,6 +44,10 @@ assert.match(documentEditor, /aria-modal=\{isNarrowNavigation/);
 assert.match(documentEditor, /role=\{isNarrowNavigation/);
 assert.match(documentEditor, /document\.body\.style\.overflow = "hidden"/);
 assert.match(documentEditor, /event\.key !== "Tab"/);
+assert.match(
+  documentEditor,
+  /const navigation = documentNavigationRef\.current;[\s\S]*?lockBodyScrollAndInertElements\(backgroundElements\)/
+);
 assert.match(documentEditor, /setMobileNavigationOpen\(false\);[\s\S]{0,120}handleSelectProjectDocument/);
 assert.match(documentEditor, /<ApplicationMenu label="File">/);
 assert.match(documentEditor, /<ApplicationMenu label="Review">/);

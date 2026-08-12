@@ -27,6 +27,9 @@ import {
 } from "./comment-rail-editor-browser-regression.test.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3118/";
+const evidenceDir = process.env.PATCHMARK_PROJECT_RESUME_EVIDENCE_DIR;
+const statusLayoutBaselineAudit =
+  process.env.PATCHMARK_STATUS_LAYOUT_BASELINE_AUDIT === "1";
 const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-resume-browser-"));
 const projectDir = join(fixtureRoot, "Strategy");
 createProjectFixture(projectDir);
@@ -36,6 +39,9 @@ const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
 
 if (!chromePath) {
   throw new Error("Chrome was not found for project resume browser tests.");
+}
+if (evidenceDir) {
+  mkdirSync(evidenceDir, { recursive: true });
 }
 
 await assertEditorIsReachable(editorUrl);
@@ -66,6 +72,7 @@ try {
   client = await CdpClient.connect(pageWsUrl);
   await client.call("Page.enable");
   await client.call("Runtime.enable");
+  await setViewport(client, { height: 1000, width: 1440 });
   client.on("Page.javascriptDialogOpening", () => {
     void client.call("Page.handleJavaScriptDialog", { accept: true });
   });
@@ -135,6 +142,18 @@ try {
     `document.querySelector(".document-recovery-banner-recovered")?.textContent?.includes("Unsaved changes recovered")`,
     "safe document recovery"
   );
+  await waitFor(
+    client,
+    `document.querySelector(".document-context-status")?.textContent?.trim() === "Resumed Strategy from its authoritative local folder."`,
+    "resumed project context status"
+  );
+  const contextStatusLayout = await verifyContextStatusLayout(client);
+  if (evidenceDir) {
+    writeFileSync(
+      join(evidenceDir, "measurements.json"),
+      `${JSON.stringify(contextStatusLayout, null, 2)}\n`
+    );
+  }
   progress("safe_recovery_loaded");
   await waitFor(
     client,
@@ -285,7 +304,8 @@ try {
         conflictReview: true,
         recoveredConflictWorkingCopyNoWrite: true,
         explicitDiscardNoProjectWrites: true,
-        multipleRecoveriesIndependent: true
+        multipleRecoveriesIndependent: true,
+        contextStatusLayout
       },
       null,
       2
@@ -320,6 +340,115 @@ async function reloadAndResume(pageClient) {
     `document.querySelector(".workspace-status")?.textContent?.includes("Project: Strategy")`,
     "resumed Strategy project"
   );
+}
+
+async function verifyContextStatusLayout(pageClient) {
+  const measurements = {};
+  for (const [label, viewport] of [
+    ["desktop", { height: 1000, width: 1440 }],
+    ["narrow", { height: 900, width: 768 }],
+    ["mobile", { height: 844, width: 393 }],
+    ["compact", { height: 844, width: 320 }],
+    ["zoomEquivalent", { height: 500, width: 720 }]
+  ]) {
+    await setViewport(pageClient, viewport);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    const measurement = await evaluate(pageClient, {
+      expression: `(() => {
+        const status = document.querySelector('.document-context-status');
+        if (!(status instanceof HTMLElement)) throw new Error('Context status not found.');
+        const parent = status.parentElement;
+        const previous = status.previousElementSibling;
+        const next = status.nextElementSibling;
+        if (!(parent instanceof HTMLElement) || !(previous instanceof HTMLElement) || !(next instanceof HTMLElement)) {
+          throw new Error('Context status row boundaries not found.');
+        }
+        const statusRect = status.getBoundingClientRect();
+        const parentRect = parent.getBoundingClientRect();
+        const previousRect = previous.getBoundingClientRect();
+        const nextRect = next.getBoundingClientRect();
+        const style = getComputedStyle(status);
+        const textRange = document.createRange();
+        textRange.selectNodeContents(status);
+        const lineCount = new Set(
+          Array.from(textRange.getClientRects()).map((rect) => Math.round(rect.top * 100) / 100)
+        ).size;
+        return {
+          applicationBarHeight: Math.round(document.querySelector('.application-bar')?.getBoundingClientRect().height ?? 0),
+          bottomGap: Number((nextRect.top - statusRect.bottom).toFixed(2)),
+          borderRadius: style.borderRadius,
+          fontSize: style.fontSize,
+          horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
+          lineCount,
+          lineHeight: style.lineHeight,
+          marginBottom: Number.parseFloat(style.marginBottom),
+          marginTop: Number.parseFloat(style.marginTop),
+          paddingBottom: Number.parseFloat(style.paddingBottom),
+          paddingTop: Number.parseFloat(style.paddingTop),
+          parentHeight: Number(parentRect.height.toFixed(2)),
+          rightGap: Number((parentRect.right - statusRect.right).toFixed(2)),
+          rowSpan: Number((nextRect.top - previousRect.bottom).toFixed(2)),
+          statusHeight: Number(statusRect.height.toFixed(2)),
+          statusHorizontalOverflow: status.scrollWidth > status.clientWidth,
+          statusWidth: Number(statusRect.width.toFixed(2)),
+          text: status.textContent?.trim() ?? '',
+          topGap: Number((statusRect.top - previousRect.bottom).toFixed(2)),
+          viewport: { height: innerHeight, width: innerWidth }
+        };
+      })()`
+    });
+
+    assert.equal(measurement.applicationBarHeight, 56);
+    assert.equal(measurement.horizontalOverflow, false);
+    assert.equal(measurement.statusHorizontalOverflow, false);
+    assert.ok(measurement.rightGap >= 8, `${label} lost the context-status right inset.`);
+    assert.ok(
+      Math.abs(measurement.topGap + measurement.bottomGap - 8) <= 1,
+      `${label} changed the context-status row height.`
+    );
+    if (statusLayoutBaselineAudit) {
+      assert.ok(
+        measurement.topGap - measurement.bottomGap >= 7,
+        `${label} did not reproduce the context-status imbalance.`
+      );
+    } else {
+      assert.ok(measurement.topGap >= 3, `${label} lost the top context-status gap.`);
+      assert.ok(measurement.bottomGap >= 3, `${label} lost the bottom context-status gap.`);
+      assert.ok(
+        Math.abs(measurement.topGap - measurement.bottomGap) <= 1,
+        `${label} context-status gaps are not balanced.`
+      );
+    }
+    if (label === "compact") {
+      assert.ok(measurement.lineCount >= 2, "Compact context status did not wrap.");
+    }
+
+    measurements[label] = measurement;
+    await captureScreenshot(pageClient, `${label}-context-status.png`);
+  }
+  await setViewport(pageClient, { height: 1000, width: 1440 });
+  return measurements;
+}
+
+async function setViewport(pageClient, { height, width }) {
+  await pageClient.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height,
+    mobile: false,
+    screenHeight: height,
+    screenWidth: width,
+    width
+  });
+}
+
+async function captureScreenshot(pageClient, fileName) {
+  if (!evidenceDir) return;
+  const result = await pageClient.call("Page.captureScreenshot", {
+    captureBeyondViewport: false,
+    format: "png",
+    fromSurface: true
+  });
+  writeFileSync(join(evidenceDir, fileName), Buffer.from(result.data, "base64"));
 }
 
 async function reloadToLanding(pageClient) {
