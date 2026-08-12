@@ -122,6 +122,26 @@ assert.match(css, /\.document-workspace\s*\{[\s\S]*?margin: 12px auto 0/);
 assert.match(css, /\.application-menu-panel\s*\{[\s\S]*?z-index: 80/);
 assert.match(
   css,
+  /\.application-menu-panel \.application-menu-item:hover:not\(:disabled\)[\s\S]*?var\(--control-hover-overlay\)/
+);
+assert.match(
+  css,
+  /\.application-menu-panel \.application-menu-item:not\(:disabled\):active[\s\S]*?var\(--control-pressed-overlay\)[\s\S]*?var\(--control-pressed-border\)/
+);
+assert.match(
+  css,
+  /\.application-menu-panel \.application-menu-item:focus-visible[\s\S]*?var\(--control-hover-overlay\)[\s\S]*?var\(--control-focus-ring\)/
+);
+assert.match(
+  css,
+  /\.application-menu-panel \.application-menu-item:disabled[\s\S]*?var\(--control-disabled-opacity\)/
+);
+assert.match(
+  css,
+  /@media \(forced-colors: active\)[\s\S]*?\.application-menu-panel \.application-menu-item:focus-visible/
+);
+assert.match(
+  css,
   /@media \(max-width: 520px\)[\s\S]*?\.application-menu-panel[\s\S]*?right: 20px;[\s\S]*?left: 20px;/
 );
 

@@ -27,6 +27,8 @@ import {
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3117/";
 const layoutBaselineAudit =
   process.env.PATCHMARK_APPLICATION_BAR_BASELINE_AUDIT === "1";
+const interactionStateBaselineAudit =
+  process.env.PATCHMARK_APPLICATION_MENU_STATE_BASELINE_AUDIT === "1";
 const artifactRoot =
   process.env.PATCHMARK_PHASE2_ARTIFACT_ROOT ??
   mkdtempSync(join(tmpdir(), "patchmark-application-shell-artifacts-"));
@@ -196,6 +198,13 @@ try {
   );
   await waitForMenuClosed(client, "File");
 
+  const applicationMenuInteractionStates =
+    await captureApplicationMenuInteractionStates(client);
+  writeFileSync(
+    join(artifactRoot, "application-menu-interaction-states.json"),
+    `${JSON.stringify(applicationMenuInteractionStates, null, 2)}\n`
+  );
+
   await evaluate(client, {
     expression: `(() => {
       window.__patchmarkPhase2Downloads = [];
@@ -360,6 +369,7 @@ try {
   const result = {
     applicationBarAccessibility,
     applicationBarLayouts,
+    applicationMenuInteractionStates,
     artifacts: artifactRoot,
     desktop: desktopShell,
     mobile: mobileShell,
@@ -508,6 +518,490 @@ async function captureApplicationBarLayouts(pageClient) {
   return measurements;
 }
 
+async function captureApplicationMenuInteractionStates(pageClient) {
+  await setViewport(pageClient, { height: 900, mobile: false, width: 1440 });
+  await pageClient.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+  const initialWrites = await fixtureWriteCount(pageClient);
+
+  const fileTrigger = await exerciseTopLevelControl(pageClient, "File", "menu");
+  await clickVisibleButton(pageClient, "File");
+  await waitForOpenMenu(pageClient, "File");
+  await movePointer(pageClient, { x: 1390, y: 890 });
+  await capture(pageClient, "09-desktop-file-trigger-open.png");
+  await focusBody(pageClient);
+  const sectionPoint = await menuSectionPoint(pageClient, "Open");
+  await movePointer(pageClient, sectionPoint);
+
+  const resting = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  assertCompleteRow(resting, "Open Project Folder");
+  await capture(pageClient, "10-desktop-menu-resting.png");
+
+  const commandPoint = await visibleButtonPoint(
+    pageClient,
+    "Open Project Folder"
+  );
+  await movePointer(pageClient, commandPoint);
+  const hovered = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  if (interactionStateBaselineAudit) {
+    assert.equal(
+      hovered.backgroundImage,
+      resting.backgroundImage,
+      "Baseline should reproduce the missing portaled-menu hover feedback"
+    );
+  } else {
+    assert.notEqual(
+      hovered.backgroundImage,
+      resting.backgroundImage,
+      "An enabled menu command needs visible hover feedback"
+    );
+    assert.match(hovered.backgroundImage, /rgba\(47, 111, 85, 0\.07\)/);
+  }
+  await capture(pageClient, "11-desktop-command-hovered.png");
+
+  await movePointer(pageClient, sectionPoint);
+  const restoredAfterHover = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  assert.equal(restoredAfterHover.backgroundImage, resting.backgroundImage);
+
+  await clickVisibleButton(pageClient, "File");
+  await waitForMenuClosed(pageClient, "File");
+  await focusButton(pageClient, "File");
+  await pressKey(pageClient, "Enter", "Enter", 13);
+  await waitForOpenMenu(pageClient, "File");
+  await waitFor(
+    pageClient,
+    "first File menu item focus for state audit",
+    `document.activeElement?.textContent?.trim() === "Load Markdown"`
+  );
+  await pressKey(pageClient, "ArrowDown", "ArrowDown", 40);
+  const keyboard = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  assert.equal(keyboard.focused, true);
+  if (!interactionStateBaselineAudit) {
+    assert.notEqual(keyboard.backgroundImage, resting.backgroundImage);
+    assert.equal(keyboard.outlineStyle, "solid");
+    assert.equal(keyboard.outlineWidth, "2px");
+  }
+  await capture(pageClient, "12-desktop-command-keyboard-highlighted.png");
+  await pressKey(pageClient, "Escape", "Escape", 27);
+  await waitForMenuClosed(pageClient, "File");
+  assert.equal(await activeText(pageClient), "File");
+
+  await clickVisibleButton(pageClient, "File");
+  await waitForOpenMenu(pageClient, "File");
+  await focusBody(pageClient);
+  await movePointer(pageClient, sectionPoint);
+  const reopened = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  assert.equal(
+    reopened.backgroundImage,
+    resting.backgroundImage,
+    "Reopening a menu must not retain stale command highlighting"
+  );
+  await movePointer(pageClient, commandPoint);
+  await mouseDown(pageClient, commandPoint);
+  const pressed = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  if (interactionStateBaselineAudit) {
+    assert.equal(
+      pressed.backgroundImage,
+      hovered.backgroundImage,
+      "Baseline should reproduce the missing portaled-menu pressed feedback"
+    );
+  } else {
+    assert.match(pressed.backgroundImage, /rgba\(22, 35, 29, 0\.14\)/);
+    assert.notEqual(pressed.backgroundImage, hovered.backgroundImage);
+  }
+  await capture(pageClient, "13-desktop-command-held-down.png");
+  await mouseUp(pageClient, sectionPoint);
+  await movePointer(pageClient, sectionPoint);
+  assert.equal(
+    (await readMenuItemVisualState(pageClient, "Open Project Folder"))
+      .backgroundImage,
+    resting.backgroundImage
+  );
+
+  const sectionBefore = await readMenuSectionVisualState(pageClient, "Open");
+  await movePointer(pageClient, sectionPoint);
+  const sectionAfter = await readMenuSectionVisualState(pageClient, "Open");
+  assert.deepEqual(sectionAfter, sectionBefore);
+  await clickVisibleButton(pageClient, "File");
+  await waitForMenuClosed(pageClient, "File");
+
+  const reviewTrigger = await exerciseTopLevelControl(
+    pageClient,
+    "Review",
+    "menu"
+  );
+  await clickVisibleButton(pageClient, "Review");
+  await waitForOpenMenu(pageClient, "Review");
+  await focusBody(pageClient);
+  const disabledPoint = await visibleButtonPoint(
+    pageClient,
+    "Review patch proposals",
+    true
+  );
+  const disabledResting = await readMenuItemVisualState(
+    pageClient,
+    "Review patch proposals"
+  );
+  await movePointer(pageClient, disabledPoint);
+  await mouseDown(pageClient, disabledPoint);
+  const disabledPressed = await readMenuItemVisualState(
+    pageClient,
+    "Review patch proposals"
+  );
+  await mouseUp(pageClient, disabledPoint);
+  assert.equal(disabledResting.disabled, true);
+  assert.equal(disabledPressed.backgroundImage, disabledResting.backgroundImage);
+  if (!interactionStateBaselineAudit) {
+    assert.equal(disabledResting.cursor, "not-allowed");
+    assert.ok(Number(disabledResting.opacity) < 1);
+  }
+  assert.equal((await waitForOpenMenu(pageClient, "Review")).expanded, "true");
+  await clickVisibleButton(pageClient, "Review");
+  await waitForMenuClosed(pageClient, "Review");
+
+  const commentsTrigger = await exerciseTopLevelControl(
+    pageClient,
+    "Comments",
+    "surface"
+  );
+  for (const state of [
+    commentsTrigger.resting,
+    commentsTrigger.hovered,
+    commentsTrigger.pressed,
+    commentsTrigger.open,
+    commentsTrigger.closed
+  ]) {
+    assert.ok(state.badgeContrast >= 4.5, "Comments badge contrast regressed");
+  }
+
+  const focusStates = {};
+  await focusBody(pageClient);
+  for (const label of ["File", "Review", "Comments"]) {
+    await pressKey(pageClient, "Tab", "Tab", 9);
+    const state = await readTopLevelControlVisualState(pageClient, label);
+    assert.equal(state.focused, true);
+    assert.equal(state.outlineStyle, "solid");
+    assert.equal(state.outlineWidth, "2px");
+    focusStates[label] = state;
+  }
+
+  await pageClient.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "forced-colors", value: "active" }],
+    media: "screen"
+  });
+  assert.equal(
+    await evaluate(pageClient, {
+      expression: `matchMedia("(forced-colors: active)").matches`
+    }),
+    true
+  );
+  await focusButton(pageClient, "File");
+  await pressKey(pageClient, "Enter", "Enter", 13);
+  await waitForOpenMenu(pageClient, "File");
+  await waitFor(
+    pageClient,
+    "forced-colors first menu item focus",
+    `document.activeElement?.textContent?.trim() === "Load Markdown"`
+  );
+  const forcedColors = await readMenuItemVisualState(pageClient, "Load Markdown");
+  assert.equal(forcedColors.outlineStyle, "solid");
+  assert.equal(forcedColors.outlineWidth, "2px");
+  await capture(pageClient, "17-forced-colors-keyboard-highlight.png");
+  await pressKey(pageClient, "Escape", "Escape", 27);
+  await waitForMenuClosed(pageClient, "File");
+  await pageClient.call("Emulation.setEmulatedMedia", {
+    features: [{ name: "forced-colors", value: "none" }],
+    media: "screen"
+  });
+
+  await pageClient.call("Emulation.setTouchEmulationEnabled", {
+    enabled: true,
+    maxTouchPoints: 5
+  });
+  await setViewport(pageClient, { height: 844, mobile: true, width: 393 });
+  await touchButton(pageClient, "File");
+  await waitForOpenMenu(pageClient, "File");
+  await focusBody(pageClient);
+  const mobileResting = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  const mobilePoint = await visibleButtonPoint(
+    pageClient,
+    "Open Project Folder"
+  );
+  const mobileSectionPoint = await menuSectionPoint(pageClient, "Open");
+  await movePointer(pageClient, mobilePoint, "pen");
+  await mouseDown(pageClient, mobilePoint, "pen");
+  const mobilePressed = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  if (!interactionStateBaselineAudit) {
+    assert.match(mobilePressed.backgroundImage, /rgba\(22, 35, 29, 0\.14\)/);
+  }
+  await capture(pageClient, "14-mobile-command-held-down.png");
+  await mouseUp(pageClient, mobileSectionPoint, "pen");
+  await movePointer(pageClient, mobileSectionPoint, "pen");
+  await delay(120);
+  const mobileReleased = await readMenuItemVisualState(
+    pageClient,
+    "Open Project Folder"
+  );
+  assert.equal(
+    mobileReleased.backgroundImage,
+    mobileResting.backgroundImage,
+    "Touch-width release must not leave a sticky synthetic hover"
+  );
+  await capture(pageClient, "15-mobile-menu-after-release.png");
+
+  await setViewport(pageClient, { height: 844, mobile: true, width: 320 });
+  const wrapped = await readMenuItemVisualState(
+    pageClient,
+    "Create Project From Existing Patchmark Projects"
+  );
+  assertCompleteRow(wrapped, "wrapped compact command");
+  assert.ok(wrapped.rect.height > 40, "The long compact label should wrap");
+  assert.ok(wrapped.scrollWidth <= wrapped.clientWidth);
+  await capture(pageClient, "16-compact-wrapped-command.png");
+  await touchButton(pageClient, "File");
+  await waitForMenuClosed(pageClient, "File");
+
+  await pageClient.call("Emulation.setTouchEmulationEnabled", { enabled: false });
+  await setViewport(pageClient, { height: 900, mobile: false, width: 1440 });
+
+  assert.equal(
+    await fixtureWriteCount(pageClient),
+    initialWrites,
+    "Hover, focus, pressed, and open-state checks must not persist data"
+  );
+
+  return {
+    commentsTrigger,
+    disabled: {
+      pressed: disabledPressed,
+      resting: disabledResting
+    },
+    fileTrigger,
+    focusStates,
+    forcedColors,
+    initialWrites,
+    keyboard,
+    mobile: {
+      pressed: mobilePressed,
+      released: mobileReleased,
+      resting: mobileResting
+    },
+    pointer: {
+      hovered,
+      pressed,
+      reopened,
+      resting,
+      restoredAfterHover
+    },
+    reviewTrigger,
+    wrapped,
+    writesAfterStates: await fixtureWriteCount(pageClient)
+  };
+}
+
+async function exerciseTopLevelControl(pageClient, label, kind) {
+  const resting = await readTopLevelControlVisualState(pageClient, label);
+  const point = await visibleButtonPoint(pageClient, label);
+  await movePointer(pageClient, point);
+  const hovered = await readTopLevelControlVisualState(pageClient, label);
+  assert.notEqual(hovered.backgroundImage, resting.backgroundImage);
+  await mouseDown(pageClient, point);
+  const pressed = await readTopLevelControlVisualState(pageClient, label);
+  assert.match(pressed.backgroundImage, /rgba\(22, 35, 29, 0\.14\)/);
+  await mouseUp(pageClient, point);
+  if (kind === "menu") {
+    await waitForOpenMenu(pageClient, label);
+  } else {
+    await waitFor(
+      pageClient,
+      `${label} surface open`,
+      `document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "true"`
+    );
+  }
+  await movePointer(pageClient, { x: 1390, y: 890 });
+  const open = await readTopLevelControlVisualState(pageClient, label);
+  assert.equal(open.ariaExpanded, "true");
+  assert.notEqual(open.backgroundColor, resting.backgroundColor);
+  await clickVisibleButton(pageClient, label);
+  if (kind === "menu") {
+    await waitForMenuClosed(pageClient, label);
+  } else {
+    await waitFor(
+      pageClient,
+      `${label} surface closed`,
+      `document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "false"`
+    );
+  }
+  await movePointer(pageClient, { x: 1390, y: 890 });
+  await delay(80);
+  const closed = await readTopLevelControlVisualState(pageClient, label);
+  assert.equal(closed.backgroundImage, resting.backgroundImage);
+  assert.equal(closed.backgroundColor, resting.backgroundColor);
+  return { closed, hovered, open, pressed, resting };
+}
+
+function assertCompleteRow(state, label) {
+  assert.ok(
+    Math.abs(state.rect.width - state.groupContentWidth) <= 1,
+    `${label} does not fill the usable command-row width`
+  );
+  assert.ok(state.rect.left >= state.panelRect.left);
+  assert.ok(state.rect.right <= state.panelRect.right);
+}
+
+async function readMenuItemVisualState(pageClient, label) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const item = Array.from(document.querySelectorAll("[role='menuitem']"))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && candidate.getClientRects().length > 0);
+      if (!(item instanceof HTMLElement)) throw new Error("Visible menu item not found: ${escapeJs(label)}");
+      const group = item.closest(".application-menu-group");
+      const panel = item.closest(".application-menu-panel");
+      const style = getComputedStyle(item);
+      const groupStyle = getComputedStyle(group);
+      const rect = item.getBoundingClientRect();
+      const groupRect = group.getBoundingClientRect();
+      const panelRect = panel.getBoundingClientRect();
+      return {
+        backgroundColor: style.backgroundColor,
+        backgroundImage: style.backgroundImage,
+        boxShadow: style.boxShadow,
+        clientWidth: item.clientWidth,
+        cursor: style.cursor,
+        disabled: item instanceof HTMLButtonElement && item.disabled,
+        focused: document.activeElement === item,
+        groupContentWidth: groupRect.width - parseFloat(groupStyle.paddingLeft) - parseFloat(groupStyle.paddingRight),
+        opacity: style.opacity,
+        outlineColor: style.outlineColor,
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth,
+        panelRect: {
+          bottom: panelRect.bottom,
+          left: panelRect.left,
+          right: panelRect.right,
+          top: panelRect.top
+        },
+        rect: {
+          bottom: rect.bottom,
+          height: rect.height,
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          width: rect.width
+        },
+        scrollWidth: item.scrollWidth
+      };
+    })()`
+  });
+}
+
+async function readMenuSectionVisualState(pageClient, label) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const section = Array.from(document.querySelectorAll(".application-menu-group-label"))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && candidate.getClientRects().length > 0);
+      const style = getComputedStyle(section);
+      return {
+        backgroundColor: style.backgroundColor,
+        backgroundImage: style.backgroundImage,
+        cursor: style.cursor,
+        role: section.getAttribute("role")
+      };
+    })()`
+  });
+}
+
+async function readTopLevelControlVisualState(pageClient, label) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const control = ${label === "Comments"
+        ? 'document.querySelector(".application-comments-trigger")'
+        : `Array.from(document.querySelectorAll(".application-menu-trigger")).find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)})`};
+      if (!(control instanceof HTMLElement)) throw new Error("Top-level control not found: ${escapeJs(label)}");
+      const style = getComputedStyle(control);
+      const badge = control.querySelector(".application-comments-count");
+      const badgeStyle = badge ? getComputedStyle(badge) : null;
+      const parseRgb = (value) => (value.match(/[\\d.]+/g) ?? []).slice(0, 3).map(Number);
+      const luminance = (value) => {
+        const channels = parseRgb(value).map((channel) => {
+          const normalized = channel / 255;
+          return normalized <= 0.03928
+            ? normalized / 12.92
+            : ((normalized + 0.055) / 1.055) ** 2.4;
+        });
+        return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
+      };
+      const badgeContrast = badgeStyle
+        ? (Math.max(luminance(badgeStyle.color), luminance(badgeStyle.backgroundColor)) + 0.05) /
+          (Math.min(luminance(badgeStyle.color), luminance(badgeStyle.backgroundColor)) + 0.05)
+        : null;
+      return {
+        ariaExpanded: control.getAttribute("aria-expanded"),
+        backgroundColor: style.backgroundColor,
+        backgroundImage: style.backgroundImage,
+        badgeBackgroundColor: badgeStyle?.backgroundColor ?? null,
+        badgeColor: badgeStyle?.color ?? null,
+        badgeContrast,
+        borderColor: style.borderColor,
+        boxShadow: style.boxShadow,
+        focused: document.activeElement === control,
+        outlineStyle: style.outlineStyle,
+        outlineWidth: style.outlineWidth
+      };
+    })()`
+  });
+}
+
+async function fixtureWriteCount(pageClient) {
+  return evaluate(pageClient, {
+    expression: "window.__patchmarkFixtureWriteLog?.length ?? 0"
+  });
+}
+
+async function focusBody(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      document.body.tabIndex = -1;
+      document.body.focus();
+      return document.activeElement === document.body;
+    })()`
+  });
+}
+
+async function menuSectionPoint(pageClient, label) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const section = Array.from(document.querySelectorAll(".application-menu-group-label"))
+        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} && candidate.getClientRects().length > 0);
+      const rect = section.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`
+  });
+}
+
 async function readApplicationBarAccessibility(pageClient) {
   const tree = await pageClient.call("Accessibility.getFullAXTree");
   const nodesForRole = (role) =>
@@ -572,16 +1066,7 @@ async function waitForMenuClosed(pageClient, label) {
 }
 
 async function clickVisibleButton(pageClient, label) {
-  const point = await evaluate(pageClient, {
-    expression: `(() => {
-      const button = Array.from(document.querySelectorAll("button"))
-        .find((candidate) => candidate.textContent?.trim() === ${JSON.stringify(label)} &&
-          !candidate.disabled && candidate.getClientRects().length > 0);
-      if (!button) throw new Error("Visible button not found: ${escapeJs(label)}");
-      const rect = button.getBoundingClientRect();
-      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    })()`
-  });
+  const point = await visibleButtonPoint(pageClient, label);
   await pageClient.call("Input.dispatchMouseEvent", {
     button: "left",
     clickCount: 1,
@@ -592,6 +1077,53 @@ async function clickVisibleButton(pageClient, label) {
   await pageClient.call("Input.dispatchMouseEvent", {
     button: "left",
     clickCount: 1,
+    type: "mouseReleased",
+    x: point.x,
+    y: point.y
+  });
+}
+
+async function visibleButtonPoint(pageClient, label, includeDisabled = false) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const button = Array.from(document.querySelectorAll("button"))
+        .find((candidate) => (candidate.textContent?.trim() === ${JSON.stringify(label)} ||
+          (${JSON.stringify(label)} === "Comments" && candidate.classList.contains("application-comments-trigger"))) &&
+          ${includeDisabled ? "true" : "!candidate.disabled"} && candidate.getClientRects().length > 0);
+      if (!button) throw new Error("Visible button not found: ${escapeJs(label)}");
+      const rect = button.getBoundingClientRect();
+      return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+    })()`
+  });
+}
+
+async function movePointer(pageClient, point, pointerType = "mouse") {
+  await pageClient.call("Input.dispatchMouseEvent", {
+    pointerType,
+    type: "mouseMoved",
+    x: point.x,
+    y: point.y
+  });
+}
+
+async function mouseDown(pageClient, point, pointerType = "mouse") {
+  await pageClient.call("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 1,
+    clickCount: 1,
+    pointerType,
+    type: "mousePressed",
+    x: point.x,
+    y: point.y
+  });
+}
+
+async function mouseUp(pageClient, point, pointerType = "mouse") {
+  await pageClient.call("Input.dispatchMouseEvent", {
+    button: "left",
+    buttons: 0,
+    clickCount: 1,
+    pointerType,
     type: "mouseReleased",
     x: point.x,
     y: point.y

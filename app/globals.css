@@ -7807,6 +7807,13 @@ button {
     color: var(--accent-strong);
   }
 
+  .application-menu-panel .application-menu-item:hover:not(:disabled) {
+    background-image: linear-gradient(
+      var(--control-hover-overlay),
+      var(--control-hover-overlay)
+    );
+  }
+
   .comment-selection-action:hover {
     background-color: var(--text);
     outline: 3px solid rgba(45, 122, 79, 0.28);
@@ -7842,6 +7849,40 @@ button {
   .rewrite-editor-surface .mdxeditor-toolbar button:hover:not(:disabled) {
     border-color: transparent;
     background-color: var(--accent-soft);
+  }
+}
+
+.application-menu-panel .application-menu-item {
+  touch-action: manipulation;
+}
+
+.application-menu-panel .application-menu-item:not(:disabled):active {
+  background-image: linear-gradient(
+    var(--control-pressed-overlay),
+    var(--control-pressed-overlay)
+  );
+  box-shadow: inset 0 0 0 1px var(--control-pressed-border);
+}
+
+.application-menu-panel .application-menu-item:focus-visible {
+  background-image: linear-gradient(
+    var(--control-hover-overlay),
+    var(--control-hover-overlay)
+  );
+  outline: 2px solid var(--control-focus-ring);
+  outline-offset: 3px;
+  box-shadow: 0 0 0 1px var(--control-focus-halo);
+}
+
+.application-menu-panel .application-menu-item:disabled {
+  cursor: not-allowed;
+  opacity: var(--control-disabled-opacity);
+  background-image: none;
+}
+
+@media (forced-colors: active) {
+  .application-menu-panel .application-menu-item:focus-visible {
+    outline-color: Highlight;
   }
 }
 
