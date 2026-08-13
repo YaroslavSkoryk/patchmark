@@ -1878,15 +1878,62 @@ async function run() {
       "Right-clicking without a selection must not use or write a stale range."
     );
 
+    const commentsClose = await closeCommentsIfOpen(client);
+    assert.equal(
+      commentsClose.closeInitiated,
+      true,
+      "The ordered predecessor must leave Comments open for this setup boundary."
+    );
+    assert.deepEqual(
+      fingerprintProject(fixtureDir),
+      initialFingerprint,
+      "Closing Comments before the narrow selection must not write project files."
+    );
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
       height: 760,
       mobile: false,
       width: 430
     });
-    await selectVisualText(client, paragraphTarget, {
+    const narrowCommentsState = await waitFor(
+      client,
+      "closed Comments state at the narrow viewport",
+      commentsStateExpression(),
+      (state) =>
+        state?.viewport.width === 430 &&
+        state.viewport.height === 760 &&
+        state.triggerExpanded === "false" &&
+        state.panelHidden === true &&
+        state.backdropPresent === false &&
+        state.editorInert === false
+    );
+    assert.equal(narrowCommentsState.workspaceCommentsOpen, "false");
+    const selectedNarrowText = await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
       scrollBlock: "center"
+    });
+    assert.equal(selectedNarrowText, paragraphTarget);
+    const narrowSelectionState = await evaluate(client, {
+      expression: `(() => {
+        const editor = document.querySelector("[aria-label='editable markdown']");
+        const selection = window.getSelection();
+        return {
+          anchorInEditor: Boolean(editor && selection?.anchorNode && editor.contains(selection.anchorNode)),
+          collapsed: selection?.isCollapsed ?? true,
+          editorInert: Boolean(editor?.closest("[inert]")),
+          focusInEditor: Boolean(editor && selection?.focusNode && editor.contains(selection.focusNode)),
+          rangeCount: selection?.rangeCount ?? 0,
+          text: selection?.toString() ?? ""
+        };
+      })()`
+    });
+    assert.deepEqual(narrowSelectionState, {
+      anchorInEditor: true,
+      collapsed: false,
+      editorInert: false,
+      focusInEditor: true,
+      rangeCount: 1,
+      text: paragraphTarget
     });
     await waitForSelectionAction(client, paragraphTarget);
     await openSelectionChooser(client);
@@ -2330,6 +2377,74 @@ async function run() {
   }
 }
 
+async function closeCommentsIfOpen(client) {
+  const before = await evaluate(client, {
+    expression: commentsStateExpression()
+  });
+  assert.ok(before.triggerPresent, "Comments trigger must be present.");
+  assert.ok(before.panelPresent, "Comments panel must be present.");
+  assert.equal(
+    before.triggerExpanded === "true",
+    before.panelHidden === false,
+    "Comments trigger and panel visibility must agree before cleanup."
+  );
+
+  const closeInitiated = before.triggerExpanded === "true";
+  if (closeInitiated) {
+    await evaluate(client, {
+      expression: `(() => {
+        const trigger = document.querySelector("button[aria-controls='document-comments-panel']");
+        if (!trigger || trigger.disabled || trigger.getAttribute("aria-expanded") !== "true") {
+          throw new Error("Open Comments trigger is unavailable.");
+        }
+        trigger.click();
+        return true;
+      })()`,
+      userGesture: true
+    });
+  }
+
+  const after = await waitFor(
+    client,
+    "authoritative Comments-closed state",
+    commentsStateExpression(),
+    (state) =>
+      state?.triggerExpanded === "false" &&
+      state.panelHidden === true &&
+      state.panelRole === null &&
+      state.panelModal === null &&
+      state.workspaceCommentsOpen === "false" &&
+      state.backdropPresent === false &&
+      state.editorInert === false &&
+      state.bodyOverflow !== "hidden" &&
+      (!closeInitiated || state.activeElementIsTrigger)
+  );
+
+  return { after, before, closeInitiated };
+}
+
+function commentsStateExpression() {
+  return `(() => {
+    const trigger = document.querySelector("button[aria-controls='document-comments-panel']");
+    const panel = document.querySelector("#document-comments-panel");
+    const editor = document.querySelector("[aria-label='editable markdown']");
+    return {
+      activeElementIsTrigger: document.activeElement === trigger,
+      backdropPresent: Boolean(document.querySelector(".comments-drawer-backdrop")),
+      bodyOverflow: getComputedStyle(document.body).overflow,
+      editorInert: Boolean(editor?.closest("[inert]")),
+      panelHidden: panel?.hidden ?? null,
+      panelModal: panel?.getAttribute("aria-modal") ?? null,
+      panelPresent: Boolean(panel),
+      panelRole: panel?.getAttribute("role") ?? null,
+      triggerExpanded: trigger?.getAttribute("aria-expanded") ?? null,
+      triggerPresent: Boolean(trigger),
+      viewport: { height: window.innerHeight, width: window.innerWidth },
+      workspaceCommentsOpen: document.querySelector("[aria-label='Patchmark editor']")?.getAttribute("data-comments-open") ?? null
+    };
+  })()`;
+}
+
 function createRewriteSemanticReviewResponse(requestPayload) {
   return {
     protocol: "patchmark.human_rewrite_review_import",
@@ -2674,7 +2789,7 @@ async function selectVisualText(
   selectedText,
   { dispatchMouseUp, scrollBlock }
 ) {
-  await evaluate(client, {
+  return await evaluate(client, {
     expression: `(() => {
       const root = document.querySelector(".patchmark-prose");
       if (!root) throw new Error("Visual editor missing.");
