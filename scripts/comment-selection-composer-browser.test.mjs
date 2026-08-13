@@ -2095,6 +2095,7 @@ async function run() {
     assert.equal(existingAnchorAudit.linkCommentPresent, true);
     assert.equal(existingAnchorAudit.multiBlockCommentPresent, true);
 
+    await waitForVisualEditor(client);
     await selectVisualText(client, paragraphTarget, {
       dispatchMouseUp: true,
       scrollBlock: "center"
