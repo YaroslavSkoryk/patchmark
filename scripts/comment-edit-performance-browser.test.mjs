@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { spawn } from "node:child_process";
@@ -15,14 +16,23 @@ import {
   startFixtureFileServer,
   waitForDevToolsUrl,
   waitForEditorShell,
-  waitForProcessExit,
-  waitForProjectComments
+  waitForProcessExit
 } from "./comment-rail-editor-browser-regression.test.mjs";
+import {
+  COMMENT_EDIT_FIXTURE,
+  applyCommentEditProject
+} from "./lib/fixtures/apply-comment-edit-project.mjs";
+import {
+  PROJECT_FIXTURE_IDS,
+  createProjectFixtureCopy,
+  digestProjectTree,
+  getProjectFixtureRoot
+} from "./lib/project-fixture-foundation.mjs";
 
 const editorUrl = addPerformanceQuery(
   process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3117/"
 );
-const projectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
+let projectDir = null;
 const tracePath = process.env.PATCHMARK_PERFORMANCE_TRACE_PATH;
 const sampleCount = Number(process.env.PATCHMARK_PERFORMANCE_SAMPLES ?? 10);
 const scenarioNames = new Set(
@@ -32,17 +42,28 @@ const scenarioNames = new Set(
     .filter(Boolean)
 );
 
-if (!projectDir) {
-  throw new Error(
-    "Set PATCHMARK_REAL_PROJECT_DIR to a copied Patchmark project fixture."
-  );
-}
-
 if (!Number.isInteger(sampleCount) || sampleCount < 1) {
   throw new Error("PATCHMARK_PERFORMANCE_SAMPLES must be a positive integer.");
 }
 
-await run();
+const sourceRoot = getProjectFixtureRoot(PROJECT_FIXTURE_IDS.legacyCore);
+const sourceDigest = digestProjectTree(sourceRoot);
+const fixtureCopy = createProjectFixtureCopy(PROJECT_FIXTURE_IDS.legacyCore);
+const secondCopy = createProjectFixtureCopy(PROJECT_FIXTURE_IDS.legacyCore);
+assert.deepEqual(digestProjectTree(fixtureCopy.projectRoot), sourceDigest);
+assert.deepEqual(digestProjectTree(secondCopy.projectRoot), sourceDigest);
+projectDir = fixtureCopy.projectRoot;
+const fixtureContract = applyCommentEditProject(projectDir);
+const variantDigest = digestProjectTree(projectDir);
+
+try {
+  await run();
+} finally {
+  projectDir = null;
+  fixtureCopy.cleanup();
+  secondCopy.cleanup();
+  assert.deepEqual(digestProjectTree(sourceRoot), sourceDigest);
+}
 
 async function run() {
   const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
@@ -57,7 +78,7 @@ async function run() {
   const fixtureServer = await startFixtureFileServer(
     projectDir,
     fixtureInventory,
-    { persistWrites: false }
+    { persistWrites: true }
   );
   const userDataDir = mkdtempSync(join(tmpdir(), "patchmark-performance-chrome-"));
   const chrome = spawn(
@@ -104,7 +125,7 @@ async function run() {
     await pageClient.call("Page.navigate", { url: editorUrl });
     await waitForEditorShell(pageClient);
     await clickButtonByText(pageClient, "Open Project Folder");
-    await waitForProjectComments(pageClient);
+    await waitForCommentEditProject(pageClient);
     await clickButtonByText(pageClient, "Markdown Mode");
     await waitForMarkdownEditor(pageClient);
 
@@ -133,6 +154,12 @@ async function run() {
 
       results[scenario.name] = summarizeSamples(samples);
     }
+    if (scenarioNames.size === 0) {
+      assert.equal(Object.keys(results).length, 12);
+    }
+
+    const commentIdentityEdit = await runCommentIdentityEdit(pageClient);
+    assert.deepEqual(digestProjectTree(secondCopy.projectRoot), sourceDigest);
 
     console.log(
       JSON.stringify(
@@ -140,8 +167,12 @@ async function run() {
           editorUrl,
           fixture: {
             ...fixture,
-            projectDir
+            contract: { ...fixtureContract, markdown: undefined },
+            projectDir,
+            sourceDigest: sourceDigest.digest,
+            variantDigest: variantDigest.digest
           },
+          commentIdentityEdit,
           sampleCount,
           results
         },
@@ -158,7 +189,8 @@ async function run() {
       chrome.kill("SIGKILL");
       await waitForProcessExit(chrome, 1000);
     }
-    await fixtureServer.close();
+    chrome.stderr?.destroy();
+    await fixtureServer.forceClose();
     rmSync(userDataDir, {
       force: true,
       maxRetries: 3,
@@ -166,6 +198,347 @@ async function run() {
       retryDelay: 100
     });
   }
+}
+
+async function runCommentIdentityEdit(pageClient) {
+  await clickButtonByText(pageClient, "Visual Mode");
+  await waitForFixtureWritesToSettle(pageClient);
+  await ensureCommentsOpen(pageClient);
+
+  const commentsPath = join(projectDir, ".patchmark", "comments.json");
+  const beforeComments = readJson(commentsPath);
+  const beforeIdentity = readLegacyIdentity(projectDir);
+  const beforeTree = digestProjectTree(projectDir);
+  const targetBefore = findComment(
+    beforeComments,
+    COMMENT_EDIT_FIXTURE.targetCommentId
+  );
+  const unrelatedBefore = beforeComments.filter(
+    (comment) => comment.id !== COMMENT_EDIT_FIXTURE.targetCommentId
+  );
+
+  await activateComment(pageClient, COMMENT_EDIT_FIXTURE.targetCommentId);
+  await evaluate(
+    pageClient,
+    `(() => {
+      const card = document.querySelector(${JSON.stringify(
+        `[data-comment-id="${COMMENT_EDIT_FIXTURE.targetCommentId}"]`
+      )});
+      const trigger = card?.querySelector(".comment-action-menu-trigger");
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled) {
+        throw new Error("Comment action menu is unavailable");
+      }
+      trigger.click();
+      return true;
+    })()`
+  );
+  await waitForCondition(
+    pageClient,
+    `Array.from(document.querySelectorAll(".comment-action-menu-panel [role='menuitem']"))
+      .some((item) => item.textContent?.trim() === "Edit comment" && item.getClientRects().length > 0)`,
+    "Edit comment menu item"
+  );
+  await clickButtonByText(pageClient, "Edit comment");
+  await waitForCondition(
+    pageClient,
+    `Boolean(document.querySelector(${JSON.stringify(
+      `[data-comment-id="${COMMENT_EDIT_FIXTURE.targetCommentId}"] .comment-form textarea`
+    )}))`,
+    "comment edit form"
+  );
+  await evaluate(
+    pageClient,
+    `(() => {
+      const textarea = document.querySelector(${JSON.stringify(
+        `[data-comment-id="${COMMENT_EDIT_FIXTURE.targetCommentId}"] .comment-form textarea`
+      )});
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        throw new Error("Comment edit textarea is unavailable");
+      }
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+      setter?.call(textarea, ${JSON.stringify(COMMENT_EDIT_FIXTURE.replacementComment)});
+      textarea.dispatchEvent(new InputEvent("input", {
+        bubbles: true,
+        data: ${JSON.stringify(COMMENT_EDIT_FIXTURE.replacementComment)},
+        inputType: "insertText"
+      }));
+      return textarea.value;
+    })()`
+  );
+  await clickButtonByText(pageClient, "Save Edit");
+  await waitForFixtureWritesToSettle(pageClient);
+  await waitForDiskComment(
+    commentsPath,
+    COMMENT_EDIT_FIXTURE.targetCommentId,
+    COMMENT_EDIT_FIXTURE.replacementComment
+  );
+
+  const afterComments = readJson(commentsPath);
+  const afterIdentity = readLegacyIdentity(projectDir);
+  const afterTree = digestProjectTree(projectDir);
+  const targetAfter = findComment(
+    afterComments,
+    COMMENT_EDIT_FIXTURE.targetCommentId
+  );
+  const unrelatedAfter = afterComments.filter(
+    (comment) => comment.id !== COMMENT_EDIT_FIXTURE.targetCommentId
+  );
+  assert.equal(targetAfter.comment, COMMENT_EDIT_FIXTURE.replacementComment);
+  assert.deepEqual(afterIdentity, beforeIdentity);
+  assert.deepEqual(
+    unrelatedAfter.map((comment) => createStableCommentSemantics(comment)),
+    unrelatedBefore.map((comment) => createStableCommentSemantics(comment))
+  );
+  assert.deepEqual(
+    createStableCommentSemantics(targetAfter, { omitContent: true }),
+    createStableCommentSemantics(targetBefore, { omitContent: true })
+  );
+  assert.notEqual(targetAfter.updated_at, targetBefore.updated_at);
+  const changedFiles = diffTreeFiles(beforeTree, afterTree);
+  assert.ok(changedFiles.includes(".patchmark/comments.json"));
+  assert.equal(changedFiles.includes("document.md"), false);
+  assert.equal(changedFiles.includes(".patchmark/patches.json"), false);
+
+  await pageClient.call("Page.reload", { ignoreCache: true });
+  await waitForEditorShell(pageClient);
+  await clickButtonByText(pageClient, "Open Project Folder");
+  await waitForCommentEditProject(pageClient);
+  await ensureCommentsOpen(pageClient);
+  await activateComment(pageClient, COMMENT_EDIT_FIXTURE.targetCommentId);
+  await waitForCondition(
+    pageClient,
+    `document.querySelector(${JSON.stringify(
+      `[data-comment-id="${COMMENT_EDIT_FIXTURE.targetCommentId}"]`
+    )})?.textContent?.includes(${JSON.stringify(
+      COMMENT_EDIT_FIXTURE.replacementComment
+    )}) === true`,
+    "reopened edited comment"
+  );
+
+  return {
+    changedFiles,
+    canonicalizedUnrelatedComments: unrelatedAfter.filter(
+      (comment) => comment.anchor?.anchor_context
+    ).length,
+    identity: afterIdentity,
+    preservedCommentId: targetAfter.id,
+    preservedThreadIds: targetAfter.thread.map((entry) => entry.id),
+    reopenedExact: true,
+    replacementComment: targetAfter.comment,
+    semanticDigest: createCommentSemanticDigest(afterIdentity, afterComments),
+    sourceUnchanged: digestProjectTree(sourceRoot).digest === sourceDigest.digest,
+    unrelatedCommentCount: unrelatedAfter.length
+  };
+}
+
+async function ensureCommentsOpen(pageClient) {
+  const hidden = await evaluate(
+    pageClient,
+    `document.querySelector("#document-comments-panel")?.hidden ?? true`
+  );
+  if (!hidden) return;
+  await evaluate(
+    pageClient,
+    `(() => {
+      const button = document.querySelector(".application-comments-trigger");
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Comments trigger is unavailable");
+      }
+      button.click();
+      return true;
+    })()`
+  );
+  await waitForCondition(
+    pageClient,
+    `document.querySelector("#document-comments-panel")?.hidden === false &&
+      document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "true"`,
+    "Comments rail open"
+  );
+}
+
+async function waitForCommentEditProject(pageClient) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const state = await evaluate(
+      pageClient,
+      `(() => {
+        const trigger = document.querySelector(".application-comments-trigger");
+        const loaded = Array.from(document.querySelectorAll("[aria-label='Workspace status'] *"))
+          .some((element) => element.textContent?.includes("Project:"));
+        return {
+          expanded: trigger?.getAttribute("aria-expanded") === "true",
+          loaded,
+          triggerReady: trigger instanceof HTMLButtonElement && !trigger.disabled
+        };
+      })()`
+    );
+    if (state.loaded && state.triggerReady) {
+      if (!state.expanded) {
+        await evaluate(
+          pageClient,
+          `(() => {
+            const trigger = document.querySelector(".application-comments-trigger");
+            if (!(trigger instanceof HTMLButtonElement) || trigger.disabled) {
+              throw new Error("Comments trigger is unavailable");
+            }
+            trigger.click();
+            return true;
+          })()`
+        );
+      }
+      const commentsReady = await evaluate(
+        pageClient,
+        `(() => {
+          const ids = Array.from(document.querySelectorAll("[data-comment-id]"))
+            .map((element) => element.getAttribute("data-comment-id"));
+          return {
+            expanded: document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "true",
+            hidden: document.querySelector("#document-comments-panel")?.hidden ?? true,
+            targetPresent: ids.includes(${JSON.stringify(
+              COMMENT_EDIT_FIXTURE.targetCommentId
+            )}),
+            total: new Set(ids).size
+          };
+        })()`
+      );
+      if (
+        commentsReady.expanded &&
+        !commentsReady.hidden &&
+        commentsReady.targetPresent &&
+        commentsReady.total === fixtureContract.commentCount
+      ) {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error("Timed out waiting for deterministic comment-edit project.");
+}
+
+async function activateComment(pageClient, commentId) {
+  await evaluate(
+    pageClient,
+    `(() => {
+      const card = document.querySelector(${JSON.stringify(
+        `[data-comment-id="${commentId}"]`
+      )});
+      const target = card?.querySelector(".comment-collapsed-preview") ?? card;
+      if (!(target instanceof HTMLElement)) {
+        throw new Error("Comment card is unavailable");
+      }
+      target.click();
+      return true;
+    })()`
+  );
+  await waitForCondition(
+    pageClient,
+    `document.querySelector(${JSON.stringify(
+      `[data-comment-id="${commentId}"] article`
+    )})?.getAttribute("aria-current") === "true"`,
+    `active comment ${commentId}`
+  );
+}
+
+async function waitForFixtureWritesToSettle(pageClient) {
+  for (let attempt = 0; attempt < 400; attempt += 1) {
+    const state = await evaluate(
+      pageClient,
+      `({
+        active: window.__patchmarkFixtureWriteStats?.activeWrites ?? 0,
+        writes: window.__patchmarkFixtureWriteLog?.length ?? 0
+      })`
+    );
+    if (state.active === 0) {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      const confirmed = await evaluate(
+        pageClient,
+        `window.__patchmarkFixtureWriteStats?.activeWrites ?? 0`
+      );
+      if (confirmed === 0) return state.writes;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error("Timed out waiting for fixture writes to settle.");
+}
+
+async function waitForCondition(pageClient, expression, label) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (await evaluate(pageClient, expression)) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for ${label}.`);
+}
+
+async function waitForDiskComment(filePath, commentId, expectedContent) {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    const comment = readJson(filePath).find((entry) => entry.id === commentId);
+    if (comment?.comment === expectedContent) return;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  throw new Error(`Timed out waiting for persisted comment ${commentId}.`);
+}
+
+function readJson(filePath) {
+  return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+function readLegacyIdentity(root) {
+  const manifest = readJson(join(root, ".patchmark", "manifest.json"));
+  return {
+    documentId: manifest.document_id,
+    projectId: manifest.project_id,
+    schemaVersion: manifest.schema_version
+  };
+}
+
+function findComment(comments, commentId) {
+  const comment = comments.find((entry) => entry.id === commentId);
+  assert.ok(comment, `Missing comment ${commentId}.`);
+  return comment;
+}
+
+function createStableCommentSemantics(comment, { omitContent = false } = {}) {
+  return {
+    anchor: {
+      kind: comment.anchor?.kind,
+      markdownEndOffset: comment.anchor?.markdown_end_offset ?? null,
+      markdownStartOffset: comment.anchor?.markdown_start_offset ?? null,
+      selectedText: comment.anchor?.selected_text ?? null
+    },
+    comment: omitContent ? "<edited-content>" : comment.comment,
+    createdAt: comment.created_at,
+    exportState: comment.export_state,
+    id: comment.id,
+    resolvedAt: comment.resolved_at ?? null,
+    status: comment.status,
+    thread: comment.thread,
+    type: comment.type
+  };
+}
+
+function diffTreeFiles(before, after) {
+  const beforeFiles = new Map(
+    before.entries
+      .filter((entry) => entry.kind === "file")
+      .map((entry) => [entry.path, entry.sha256])
+  );
+  const afterFiles = new Map(
+    after.entries
+      .filter((entry) => entry.kind === "file")
+      .map((entry) => [entry.path, entry.sha256])
+  );
+  return [...new Set([...beforeFiles.keys(), ...afterFiles.keys()])]
+    .filter((path) => beforeFiles.get(path) !== afterFiles.get(path))
+    .sort();
+}
+
+function createCommentSemanticDigest(identity, comments) {
+  const normalized = comments.map((comment) =>
+    createStableCommentSemantics(comment)
+  );
+  return createHash("sha256")
+    .update("patchmark-phase2-comment-edit\0")
+    .update(JSON.stringify({ comments: normalized, identity }))
+    .digest("hex");
 }
 
 async function startPerformanceTrace(pageClient, outputPath) {
@@ -320,11 +693,11 @@ async function runScenarioIteration(pageClient, scenario, collect) {
     hint: scenario.source,
     value: nextMarkdown
   });
-  const operation = await waitForPerformanceOperation(pageClient);
+  const operation = await waitForEditPerformanceOperation(pageClient);
   const longTasks = await readAndClearLongTasks(pageClient);
   await setTextareaValue(pageClient, { hint: null, value: baseline });
   await waitForTextareaValue(pageClient, baseline);
-  await waitForPerformanceOperation(pageClient);
+  await waitForRecoveryPerformanceOperation(pageClient);
   await clearPerformanceRecords(pageClient);
 
   return collect
@@ -466,13 +839,43 @@ async function clearPerformanceRecords(pageClient) {
   );
 }
 
-async function waitForPerformanceOperation(pageClient) {
+async function waitForEditPerformanceOperation(pageClient) {
   const deadline = Date.now() + 10_000;
+  let latestOperation = null;
   while (Date.now() < deadline) {
     const operation = await evaluate(
       pageClient,
       `window.__PATCHMARK_EDIT_PERFORMANCE__?.getRecords().at(-1) ?? null`
     );
+    latestOperation = operation;
+    if (
+      operation?.marks?.all_async_effects_settled !== undefined &&
+      operation?.marks?.persistence_settled !== undefined &&
+      operation.marks.persistence_settled >=
+        operation.marks.all_async_effects_settled
+    ) {
+      return operation;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(
+    `Timed out waiting for dirty edit persistence to settle.\n${JSON.stringify(
+      latestOperation,
+      null,
+      2
+    )}`
+  );
+}
+
+async function waitForRecoveryPerformanceOperation(pageClient) {
+  const deadline = Date.now() + 10_000;
+  let latestOperation = null;
+  while (Date.now() < deadline) {
+    const operation = await evaluate(
+      pageClient,
+      `window.__PATCHMARK_EDIT_PERFORMANCE__?.getRecords().at(-1) ?? null`
+    );
+    latestOperation = operation;
     if (
       operation?.marks?.all_async_effects_settled !== undefined &&
       operation?.marks?.background_recovery_settled !== undefined &&
@@ -484,7 +887,13 @@ async function waitForPerformanceOperation(pageClient) {
     }
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
-  throw new Error("Timed out waiting for edit performance operation to settle.");
+  throw new Error(
+    `Timed out waiting for baseline reset recovery to settle.\n${JSON.stringify(
+      latestOperation,
+      null,
+      2
+    )}`
+  );
 }
 
 async function readAndClearLongTasks(pageClient) {

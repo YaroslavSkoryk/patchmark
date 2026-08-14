@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import crypto from "node:crypto";
 import { basename } from "node:path";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -15,28 +16,48 @@ import {
   startFixtureFileServer,
   waitForDevToolsUrl,
   waitForEditorShell,
-  waitForProcessExit,
-  waitForProjectComments
+  waitForProcessExit
 } from "./comment-rail-editor-browser-regression.test.mjs";
+import {
+  PERSISTENCE_FIXTURE,
+  applyPersistenceProject
+} from "./lib/fixtures/apply-persistence-project.mjs";
+import {
+  PROJECT_FIXTURE_IDS,
+  createProjectFixtureCopy,
+  digestProjectTree,
+  getProjectFixtureRoot
+} from "./lib/project-fixture-foundation.mjs";
 
 const editorUrl = addPerformanceQuery(
   process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3117/"
 );
-const projectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
+let projectDir = null;
 const rapidEditCount = Number(process.env.PATCHMARK_RAPID_EDIT_COUNT ?? 75);
 const runRecoveryBrowser = process.env.PATCHMARK_RECOVERY_BROWSER === "1";
-
-if (!projectDir) {
-  throw new Error(
-    "Set PATCHMARK_REAL_PROJECT_DIR to a copied Patchmark project fixture."
-  );
-}
 
 if (!Number.isInteger(rapidEditCount) || rapidEditCount < 1) {
   throw new Error("PATCHMARK_RAPID_EDIT_COUNT must be a positive integer.");
 }
 
-await run();
+const sourceRoot = getProjectFixtureRoot(PROJECT_FIXTURE_IDS.legacyCore);
+const sourceDigest = digestProjectTree(sourceRoot);
+const fixtureCopy = createProjectFixtureCopy(PROJECT_FIXTURE_IDS.legacyCore);
+const secondCopy = createProjectFixtureCopy(PROJECT_FIXTURE_IDS.legacyCore);
+assert.deepEqual(digestProjectTree(fixtureCopy.projectRoot), sourceDigest);
+assert.deepEqual(digestProjectTree(secondCopy.projectRoot), sourceDigest);
+projectDir = fixtureCopy.projectRoot;
+const fixtureContract = applyPersistenceProject(projectDir);
+const variantDigest = digestProjectTree(projectDir);
+
+try {
+  await run();
+} finally {
+  projectDir = null;
+  fixtureCopy.cleanup();
+  secondCopy.cleanup();
+  assert.deepEqual(digestProjectTree(sourceRoot), sourceDigest);
+}
 
 async function run() {
   const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
@@ -49,7 +70,7 @@ async function run() {
 
   const inventory = inventoryProject(projectDir);
   const fixtureServer = await startFixtureFileServer(projectDir, inventory, {
-    persistWrites: false
+    persistWrites: true
   });
   const userDataDir = mkdtempSync(join(tmpdir(), "patchmark-persistence-chrome-"));
   const chrome = spawn(
@@ -89,7 +110,7 @@ async function run() {
     progress("editor_ready");
     const projectLoadStartedAt = performance.now();
     await clickExactButton(client, "Open Project Folder");
-    await waitForProjectComments(client);
+    await waitForPersistenceComments(client);
     const projectLoadMs = performance.now() - projectLoadStartedAt;
     progress("project_loaded");
 
@@ -145,12 +166,16 @@ async function run() {
           "window.dispatchEvent(new Event('resize')); window.dispatchEvent(new Event('scroll')); true"
       })
     );
+    for (const result of noOpResults) {
+      assert.equal(result.error, null, `${result.name} must complete without error.`);
+      assert.equal(result.quiet, true, `${result.name} writes must settle.`);
+    }
     await clearAuditLogs(client);
     const reloadStartedAt = performance.now();
     await client.call("Page.reload", { ignoreCache: true });
     await waitForEditorShell(client);
     await clickExactButton(client, "Open Project Folder");
-    await waitForProjectComments(client);
+    await waitForPersistenceComments(client);
     const reloadQuiet = await waitForWriteQuiet(client, 500, 4_000);
     noOpResults.push({
       name: "reload",
@@ -164,10 +189,25 @@ async function run() {
     await clearAuditLogs(client);
     await clickExactButton(client, "Markdown Mode");
     await waitForMarkdownEditor(client);
+    const markdownBeforeEdit = await getMarkdownEditorValue(client);
+    assert.equal(markdownBeforeEdit, fixtureContract.markdown);
+    const commentsBeforeSave = readJsonFile(
+      join(projectDir, ".patchmark", "comments.json")
+    );
+    const patchesBeforeSave = readJsonFile(
+      join(projectDir, ".patchmark", "patches.json")
+    );
+    const identityBeforeSave = readLegacyIdentity(projectDir);
+    const treeBeforeSave = digestProjectTree(projectDir);
+    let appendedText = "";
     for (let index = 0; index < rapidEditCount; index += 1) {
-      await appendTextareaText(client, index % 2 === 0 ? "x" : "y");
+      const nextText = index % 2 === 0 ? "x" : "y";
+      appendedText += nextText;
+      await appendTextareaText(client, nextText);
       await delay(4);
     }
+    const expectedMarkdown = `${markdownBeforeEdit}${appendedText}`;
+    assert.equal(await getMarkdownEditorValue(client), expectedMarkdown);
     const rapidEditQuiet = await waitForWriteQuiet(client, 500, 4_000);
     const rapidEditAudit = await readAuditLogs(client);
     const performanceRecords = await evaluate(client, {
@@ -183,6 +223,44 @@ async function run() {
     await waitForButtonEnabled(client, "Save Changes", 120_000);
     const rapidSaveQuiet = await waitForWriteQuiet(client, 500, 120_000);
     const rapidSave = summarizeAudit(await readAuditLogs(client));
+    assert.equal(rapidSaveQuiet.quiet, true);
+    assert.ok(rapidSave.completedWrites > 0, "Explicit save must persist files.");
+    assert.equal(readFileSync(join(projectDir, "document.md"), "utf8"), expectedMarkdown);
+    const commentsAfterSave = readJsonFile(
+      join(projectDir, ".patchmark", "comments.json")
+    );
+    assert.deepEqual(
+      createStableCommentSemantics(commentsAfterSave),
+      createStableCommentSemantics(commentsBeforeSave)
+    );
+    assert.deepEqual(
+      readJsonFile(join(projectDir, ".patchmark", "patches.json")),
+      patchesBeforeSave
+    );
+    assert.deepEqual(readLegacyIdentity(projectDir), identityBeforeSave);
+    const treeAfterSave = digestProjectTree(projectDir);
+    const changedFiles = diffTreeFiles(treeBeforeSave, treeAfterSave);
+    assert.ok(changedFiles.includes("document.md"));
+    const savedSemanticDigest = createSemanticSaveDigest({
+      comments: createStableCommentSemantics(commentsAfterSave),
+      identity: identityBeforeSave,
+      markdown: expectedMarkdown,
+      patches: patchesBeforeSave
+    });
+
+    await reloadAcceptingBeforeUnload(client);
+    await waitForEditorShell(client);
+    await clickExactButton(client, "Open Project Folder");
+    await waitForPersistenceComments(client);
+    await clickExactButton(client, "Markdown Mode");
+    await waitForMarkdownEditor(client);
+    assert.equal(await getMarkdownEditorValue(client), expectedMarkdown);
+    assert.deepEqual(readLegacyIdentity(projectDir), identityBeforeSave);
+    assert.deepEqual(digestProjectTree(secondCopy.projectRoot), sourceDigest);
+    assert.equal(
+      readFileSync(join(secondCopy.projectRoot, "document.md"), "utf8").includes(appendedText),
+      false
+    );
     progress("rapid_edits_sampled");
 
     const partialSave = await runPartialDocumentSave(client);
@@ -204,6 +282,11 @@ async function run() {
         {
           editorUrl,
           projectDir,
+          fixture: {
+            contract: { ...fixtureContract, markdown: undefined },
+            sourceDigest: sourceDigest.digest,
+            variantDigest: variantDigest.digest
+          },
           projectLoadMs: Math.round(projectLoadMs * 100) / 100,
           originalHashes,
           initialLoad: summarizeAudit(initialLoad),
@@ -215,6 +298,19 @@ async function run() {
             beforeSave: rapidEditBeforeSave,
             saveQuiet: rapidSaveQuiet.quiet,
             explicitSave: rapidSave
+          },
+          saveReopen: {
+            changedFiles,
+            canonicalizedComments: commentsAfterSave.filter(
+              (comment) => comment.anchor?.anchor_context
+            ).length,
+            identity: identityBeforeSave,
+            markdownBytes: Buffer.byteLength(expectedMarkdown),
+            reopenedExact: true,
+            secondCopyUnchanged: true,
+            semanticDigest: savedSemanticDigest,
+            treeBefore: treeBeforeSave.digest,
+            treeAfter: treeAfterSave.digest
           },
           partialSave,
           recoveryBrowserEnabled: runRecoveryBrowser,
@@ -641,6 +737,67 @@ async function waitForMarkdownEditor(client) {
   throw new Error("Timed out waiting for Markdown Mode.");
 }
 
+async function waitForPersistenceComments(client) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const state = await evaluate(client, {
+      expression: `(() => {
+        const trigger = document.querySelector(".application-comments-trigger");
+        const loaded = Array.from(document.querySelectorAll("[aria-label='Workspace status'] *"))
+          .some((element) => element.textContent?.includes("Project:"));
+        return {
+          expanded: trigger?.getAttribute("aria-expanded") === "true",
+          loaded,
+          triggerReady: trigger instanceof HTMLButtonElement && !trigger.disabled
+        };
+      })()`
+    });
+    if (state.loaded && state.triggerReady) {
+      if (!state.expanded) {
+        await evaluate(client, {
+          expression: `(() => {
+            const trigger = document.querySelector(".application-comments-trigger");
+            if (!(trigger instanceof HTMLButtonElement) || trigger.disabled) {
+              throw new Error("Comments trigger is unavailable");
+            }
+            trigger.click();
+            return true;
+          })()`,
+          userGesture: true
+        });
+      }
+      for (let commentAttempt = 0; commentAttempt < 120; commentAttempt += 1) {
+        const commentsReady = await evaluate(client, {
+          expression: `(() => {
+            const panel = document.querySelector("#document-comments-panel");
+            const ids = Array.from(document.querySelectorAll("[data-comment-id]"))
+              .map((element) => element.getAttribute("data-comment-id"));
+            return {
+              expanded: document.querySelector(".application-comments-trigger")?.getAttribute("aria-expanded") === "true",
+              hidden: panel?.hidden ?? true,
+              primaryPresent: ids.includes(${JSON.stringify(
+                PERSISTENCE_FIXTURE.primaryCommentId
+              )}),
+              total: new Set(ids).size
+            };
+          })()`
+        });
+        if (
+          commentsReady.expanded &&
+          !commentsReady.hidden &&
+          commentsReady.primaryPresent &&
+          commentsReady.total === fixtureContract.commentCount
+        ) {
+          return;
+        }
+        await delay(50);
+      }
+      throw new Error("Timed out waiting for deterministic persistence comments.");
+    }
+    await delay(50);
+  }
+  throw new Error("Timed out waiting for persistence project readiness.");
+}
+
 async function appendTextareaText(client, text) {
   return evaluate(client, {
     expression: `(() => {
@@ -665,6 +822,73 @@ async function appendTextareaText(client, text) {
     })()`,
     userGesture: true
   });
+}
+
+async function getMarkdownEditorValue(client) {
+  return evaluate(client, {
+    expression: `(() => {
+      const textarea = document.querySelector(".markdown-source-editor");
+      if (!(textarea instanceof HTMLTextAreaElement)) {
+        throw new Error("Markdown textarea not found");
+      }
+      return textarea.value;
+    })()`
+  });
+}
+
+function readJsonFile(filePath) {
+  return JSON.parse(readFileSync(filePath, "utf8"));
+}
+
+function readLegacyIdentity(root) {
+  const manifest = readJsonFile(join(root, ".patchmark", "manifest.json"));
+  return {
+    documentId: manifest.document_id,
+    projectId: manifest.project_id,
+    schemaVersion: manifest.schema_version
+  };
+}
+
+function diffTreeFiles(before, after) {
+  const beforeFiles = new Map(
+    before.entries
+      .filter((entry) => entry.kind === "file")
+      .map((entry) => [entry.path, entry.sha256])
+  );
+  const afterFiles = new Map(
+    after.entries
+      .filter((entry) => entry.kind === "file")
+      .map((entry) => [entry.path, entry.sha256])
+  );
+  return [...new Set([...beforeFiles.keys(), ...afterFiles.keys()])]
+    .filter((path) => beforeFiles.get(path) !== afterFiles.get(path))
+    .sort();
+}
+
+function createSemanticSaveDigest({ comments, identity, markdown, patches }) {
+  return crypto
+    .createHash("sha256")
+    .update("patchmark-phase2-persistence-save\0")
+    .update(JSON.stringify({ comments, identity, markdown, patches }))
+    .digest("hex");
+}
+
+function createStableCommentSemantics(comments) {
+  return comments.map((comment) => ({
+    anchor: {
+      kind: comment.anchor?.kind,
+      markdownEndOffset: comment.anchor?.markdown_end_offset ?? null,
+      markdownStartOffset: comment.anchor?.markdown_start_offset ?? null,
+      selectedText: comment.anchor?.selected_text ?? null
+    },
+    comment: comment.comment,
+    createdAt: comment.created_at,
+    exportState: comment.export_state,
+    id: comment.id,
+    status: comment.status,
+    thread: comment.thread,
+    type: comment.type
+  }));
 }
 
 function addPerformanceQuery(url) {

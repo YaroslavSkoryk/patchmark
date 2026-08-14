@@ -14,3 +14,9 @@ tests. Tests that write must use `createProjectFixtureCopy` from
 The cores contain only required current-store files. Comments and patches are
 empty, and focused histories, bookmarks, recovery state, and regression data
 belong in later fixtures or deterministic builders.
+
+Phase 2 Comments, persistence, and comment-edit variants are deterministic
+overlays in `scripts/lib/fixtures/apply-*-project.mjs`. They reject the committed
+source root and may be applied only to a fresh `createProjectFixtureCopy`
+result. This keeps the schema cores small and immutable without duplicating
+their directory trees.

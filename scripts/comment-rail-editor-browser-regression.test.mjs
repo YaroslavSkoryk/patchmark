@@ -16,18 +16,28 @@ import { tmpdir } from "node:os";
 import { basename, dirname, join, relative, sep } from "node:path";
 import { pathToFileURL } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
+import {
+  COMMENT_RAIL_FIXTURE,
+  applyCommentRailProject
+} from "./lib/fixtures/apply-comment-rail-project.mjs";
+import {
+  PROJECT_FIXTURE_IDS,
+  createProjectFixtureCopy,
+  digestProjectTree,
+  getProjectFixtureRoot
+} from "./lib/project-fixture-foundation.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
-const projectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
+let projectDir = null;
 const viewportHeight = Number(process.env.PATCHMARK_BROWSER_HEIGHT ?? 1000);
 const viewportWidth = Number(process.env.PATCHMARK_BROWSER_WIDTH ?? 1440);
 const movementTolerance = 1;
 const scrollMovementTolerance = 2;
 const nearTopScrollTolerance = 100;
-const topCommentId = "PM-COMMENT-0008";
-const lowerCommentId = "PM-COMMENT-0029";
-const lineCommentId = "PM-COMMENT-0018";
-const linkedMultiBlockCommentId = "PM-COMMENT-0040";
+const topCommentId = COMMENT_RAIL_FIXTURE.topCommentId;
+const lowerCommentId = COMMENT_RAIL_FIXTURE.lowerCommentId;
+const lineCommentId = COMMENT_RAIL_FIXTURE.lineCommentId;
+const linkedMultiBlockCommentId = COMMENT_RAIL_FIXTURE.linkedCommentId;
 const visualEvidenceDir = process.env.PATCHMARK_PHASE5_SCREENSHOT_DIR;
 const shouldRunFullVisualAudit =
   process.env.PATCHMARK_PHASE5_FULL_VISUAL_AUDIT === "1";
@@ -35,11 +45,24 @@ const shouldRunFullVisualAuditOnly =
   process.env.PATCHMARK_PHASE5_AUDIT_ONLY === "1";
 
 async function runActualEditorRegression() {
-  if (!projectDir) {
-    throw new Error(
-      "Set PATCHMARK_REAL_PROJECT_DIR to a copied Patchmark project fixture."
-    );
+  const sourceRoot = getProjectFixtureRoot(PROJECT_FIXTURE_IDS.legacyCore);
+  const sourceDigest = digestProjectTree(sourceRoot);
+  const fixtureCopy = createProjectFixtureCopy(PROJECT_FIXTURE_IDS.legacyCore);
+  assert.deepEqual(digestProjectTree(fixtureCopy.projectRoot), sourceDigest);
+  projectDir = fixtureCopy.projectRoot;
+
+  try {
+    const fixtureContract = applyCommentRailProject(projectDir);
+    return await runFixtureEditorRegression(fixtureContract);
+  } finally {
+    projectDir = null;
+    fixtureCopy.cleanup();
+    assert.equal(existsSync(fixtureCopy.temporaryRoot), false);
+    assert.deepEqual(digestProjectTree(sourceRoot), sourceDigest);
   }
+}
+
+async function runFixtureEditorRegression(fixtureContract) {
 
   if (!existsSync(join(projectDir, "document.md"))) {
     throw new Error(`${projectDir} does not contain document.md.`);
@@ -110,6 +133,14 @@ async function runActualEditorRegression() {
     await waitForEditorShell(pageClient);
     await clickButtonByText(pageClient, "Open Project Folder");
     await waitForProjectComments(pageClient);
+    const closedState = await readCommentsRailSemanticState(pageClient);
+    assert.equal(closedState.triggerExists, true);
+    assert.equal(closedState.controlsPanel, true);
+    assert.equal(closedState.expanded, !closedState.hidden);
+    await ensureCommentsRailOpen(pageClient);
+    const openState = await readCommentsRailSemanticState(pageClient);
+    assert.equal(openState.expanded, true);
+    assert.equal(openState.hidden, false);
 
     if (shouldRunFullVisualAuditOnly) {
       await waitForVisualEditorProjection(pageClient);
@@ -220,7 +251,14 @@ async function runActualEditorRegression() {
     const visualEvidence = visualEvidenceDir
       ? await capturePhase5VisualEvidence(pageClient, visualEvidenceDir)
       : [];
+    await closeCommentsRail(pageClient);
+    const finalRailState = await readCommentsRailSemanticState(pageClient);
+    assert.equal(finalRailState.expanded, false);
+    assert.equal(finalRailState.hidden, true);
+    assert.equal(finalRailState.editorInteractive, true);
     printEditorSummary({
+      fixtureContract,
+      finalRailState,
       layoutEvents,
       measurements,
       projectDir,
@@ -1043,6 +1081,79 @@ async function waitForProjectComments(client) {
   );
 }
 
+async function ensureCommentsRailOpen(client) {
+  const state = await readCommentsRailSemanticState(client);
+
+  if (!state.hidden) {
+    return;
+  }
+
+  await evaluate(client, {
+    expression: `(() => {
+      const trigger = document.querySelector(".application-comments-trigger");
+      if (!(trigger instanceof HTMLButtonElement) || trigger.disabled) {
+        throw new Error("Comments trigger is unavailable");
+      }
+      trigger.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const next = await readCommentsRailSemanticState(client);
+    if (next.expanded && !next.hidden) return;
+    await delay(50);
+  }
+  throw new Error("Timed out waiting for the Comments rail to open.");
+}
+
+async function closeCommentsRail(client) {
+  const state = await readCommentsRailSemanticState(client);
+
+  if (state.hidden) {
+    return;
+  }
+
+  await evaluate(client, {
+    expression: `(() => {
+      const button = document.querySelector(".comments-panel-close");
+      if (!(button instanceof HTMLButtonElement) || button.disabled) {
+        throw new Error("Comments close control is unavailable");
+      }
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const next = await readCommentsRailSemanticState(client);
+    if (!next.expanded && next.hidden) return;
+    await delay(50);
+  }
+  throw new Error("Timed out waiting for the Comments rail to close.");
+}
+
+async function readCommentsRailSemanticState(client) {
+  return evaluate(client, {
+    expression: `(() => {
+      const trigger = document.querySelector(".application-comments-trigger");
+      const panel = document.querySelector("#document-comments-panel");
+      const visualButton = Array.from(document.querySelectorAll("button"))
+        .find((button) => button.textContent?.trim() === "Visual Mode");
+      return {
+        controlsPanel: trigger?.getAttribute("aria-controls") === "document-comments-panel",
+        editorInteractive: visualButton instanceof HTMLButtonElement && !visualButton.disabled,
+        expanded: trigger?.getAttribute("aria-expanded") === "true",
+        hidden: panel?.hidden ?? true,
+        modal: panel?.getAttribute("role") === "dialog",
+        triggerExists: trigger instanceof HTMLButtonElement
+      };
+    })()`
+  });
+}
+
 async function waitForStableState(client, label, expectedActiveId) {
   let previousMeasurement = null;
   let latestMeasurement = null;
@@ -1329,10 +1440,9 @@ async function capturePhase5VisualEvidence(client, outputDir) {
     await captureCommentHighlightEvidence({
       client,
       commentId: lowerCommentId,
-      expectedVisibleText: "PAUL Thailand online delivery",
-      label: "paul-table-link",
-      outputDir,
-      rejectVisibleText: "https://www.paulthailand.com/next-day-delivery"
+      expectedVisibleText: "lower aurora relay phrase",
+      label: "lower-aurora-relay",
+      outputDir
     })
   );
 
@@ -1347,8 +1457,8 @@ async function capturePhase5VisualEvidence(client, outputDir) {
       await captureCommentHighlightEvidence({
         client,
         commentId: lineCommentId,
-        expectedVisibleText: "new LINE Official Account friend",
-        label: "line-ordinary-text",
+        expectedVisibleText: "violet relay signal",
+        label: "violet-relay-signal",
         outputDir
       })
     );
@@ -1365,8 +1475,8 @@ async function capturePhase5VisualEvidence(client, outputDir) {
       await captureCommentHighlightEvidence({
         client,
         commentId: linkedMultiBlockCommentId,
-        expectedVisibleText: "Early Cranberries & Walnut signal",
-        label: "linked-multiblock-replacement",
+        expectedVisibleText: "linked replacement now maps",
+        label: "linked-synthetic-replacement",
         outputDir
       })
     );
@@ -1498,7 +1608,7 @@ async function waitForMarkdownSelection(client, row) {
 }
 
 async function clickCommentFind(client, commentId) {
-  await evaluate(client, {
+  const location = await evaluate(client, {
     expression: `(() => {
       const item = document.querySelector(${JSON.stringify(
         `[data-comment-id="${commentId}"]`
@@ -1506,15 +1616,40 @@ async function clickCommentFind(client, commentId) {
       const button = Array.from(item?.querySelectorAll("button") ?? [])
         .find((element) => /^Find(?: |$)/.test(element.textContent?.trim() ?? "") && !element.disabled);
 
-      if (!button) {
-        throw new Error("Find button not found for ${commentId}");
+      if (button) {
+        button.click();
+        return "direct";
       }
 
-      button.click();
-      return true;
+      const menuTrigger = item?.querySelector(".comment-action-menu-trigger");
+      if (!(menuTrigger instanceof HTMLButtonElement) || menuTrigger.disabled) {
+        throw new Error("Find action is unavailable for ${commentId}");
+      }
+      menuTrigger.click();
+      return "menu";
     })()`,
     userGesture: true
   });
+
+  if (location === "direct") {
+    return;
+  }
+
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    const clicked = await evaluate(client, {
+      expression: `(() => {
+        const button = Array.from(document.querySelectorAll(".comment-action-menu-panel [role='menuitem']"))
+          .find((element) => element.textContent?.trim() === "Find in document" && !element.disabled && element.getClientRects().length > 0);
+        if (!button) return false;
+        button.click();
+        return true;
+      })()`,
+      userGesture: true
+    });
+    if (clicked) return;
+    await delay(50);
+  }
+  throw new Error(`Find menu item not found for ${commentId}`);
 }
 
 function getActiveTargetSignature(row) {
@@ -2258,6 +2393,8 @@ function assertNear(actual, expected, tolerance, message) {
 }
 
 function printEditorSummary({
+  fixtureContract,
+  finalRailState,
   layoutEvents,
   measurements,
   projectDir,
@@ -2278,6 +2415,8 @@ function printEditorSummary({
       .map((row) => row.id)
   ]);
   const summary = {
+    fixtureContract: { ...fixtureContract, markdown: undefined },
+    finalRailState,
     projectDir,
     url,
     targets,
