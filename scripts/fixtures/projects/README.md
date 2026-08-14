@@ -20,3 +20,7 @@ overlays in `scripts/lib/fixtures/apply-*-project.mjs`. They reject the committe
 source root and may be applied only to a fresh `createProjectFixtureCopy`
 result. This keeps the schema cores small and immutable without duplicating
 their directory trees.
+
+Phase 3 version-history coverage follows the same overlay-only lifecycle. It
+adds fixed full snapshots and metadata only to a fresh legacy-core copy; the
+committed core never contains mutable or scenario-specific history state.
