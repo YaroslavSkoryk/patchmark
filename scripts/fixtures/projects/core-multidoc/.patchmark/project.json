@@ -1,0 +1,57 @@
+{
+  "format": "patchmark-project",
+  "schema_version": 2,
+  "project_id": "prj_fixture_constellation",
+  "title": "Synthetic Constellation",
+  "created_at": "2040-01-01T00:00:00.000Z",
+  "manifest_revision": 1,
+  "groups": [
+    {
+      "group_id": "group_plan",
+      "title": "Plan",
+      "position": 1000,
+      "created_at": "2040-01-01T00:00:00.000Z"
+    },
+    {
+      "group_id": "group_research",
+      "title": "Research",
+      "position": 2000,
+      "created_at": "2040-01-01T00:00:00.000Z"
+    }
+  ],
+  "documents": [
+    {
+      "document_id": "doc_operations",
+      "path": "operations.md",
+      "display_title": "Orbital Garden Operations",
+      "group_id": "group_plan",
+      "role": "decision",
+      "status": "active",
+      "position": 1000,
+      "added_at": "2040-01-01T00:00:00.000Z",
+      "archived_at": null
+    },
+    {
+      "document_id": "doc_evidence",
+      "path": "evidence.md",
+      "display_title": "Constellation Evidence",
+      "group_id": "group_research",
+      "role": "evidence",
+      "status": "active",
+      "position": 1000,
+      "added_at": "2040-01-01T00:00:00.000Z",
+      "archived_at": null
+    },
+    {
+      "document_id": "doc_summary",
+      "path": "summary.md",
+      "display_title": "Quiet Orbit Summary",
+      "group_id": null,
+      "role": "summary",
+      "status": "active",
+      "position": 3000,
+      "added_at": "2040-01-01T00:00:00.000Z",
+      "archived_at": null
+    }
+  ]
+}

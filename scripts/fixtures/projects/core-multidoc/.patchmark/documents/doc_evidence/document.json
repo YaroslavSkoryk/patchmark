@@ -1,0 +1,7 @@
+{
+  "format": "patchmark-document-store",
+  "schema_version": 1,
+  "document_id": "doc_evidence",
+  "created_at": "2040-01-01T00:00:00.000Z",
+  "source": "created"
+}

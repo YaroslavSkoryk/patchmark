@@ -1,0 +1,9 @@
+{
+  "schema_version": 1,
+  "project_id": "prj_fixture_atlas",
+  "document_id": "doc_fixture_atlas",
+  "project_name": "Synthetic Atlas",
+  "document_file": "document.md",
+  "created_at": "2040-01-01T00:00:00.000Z",
+  "updated_at": "2040-01-01T00:00:00.000Z"
+}
