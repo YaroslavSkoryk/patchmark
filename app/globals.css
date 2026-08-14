@@ -8001,6 +8001,7 @@ body:has(.workspace-dialog-backdrop) {
     position: static !important;
     display: block !important;
     min-height: 0;
+    overflow: visible;
     padding: 0 !important;
     background: #ffffff !important;
   }
@@ -8008,6 +8009,7 @@ body:has(.workspace-dialog-backdrop) {
   body.patchmark-pdf-preview-open .pdf-export-dialog {
     display: block;
     width: auto;
+    height: auto;
     max-height: none;
     min-height: 0;
     overflow: visible;

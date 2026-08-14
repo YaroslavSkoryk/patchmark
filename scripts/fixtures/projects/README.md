@@ -24,3 +24,7 @@ their directory trees.
 Phase 3 version-history coverage follows the same overlay-only lifecycle. It
 adds fixed full snapshots and metadata only to a fresh legacy-core copy; the
 committed core never contains mutable or scenario-specific history state.
+
+Phase 4 PDF-export coverage applies compact rich Markdown plus comment/history
+leak sentinels to a fresh legacy-core copy. Browser PDF files, page renders,
+screenshots, and semantic manifests always belong to unique external roots.
