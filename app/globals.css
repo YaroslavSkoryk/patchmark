@@ -8025,6 +8025,13 @@ body:has(.workspace-dialog-backdrop) {
     display: none !important;
   }
 
+  body.patchmark-pdf-preview-open
+    .patchmark-pdf-mdx-editor
+    .patchmark-pdf-prose
+    [class*="_codeMirrorToolbar_"] {
+    display: none;
+  }
+
   body.patchmark-pdf-preview-open .pdf-export-dialog-body {
     display: block;
     overflow: visible;

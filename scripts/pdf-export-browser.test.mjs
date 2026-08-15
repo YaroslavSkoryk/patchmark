@@ -49,6 +49,15 @@ const viewportWidth = Number(process.env.PATCHMARK_BROWSER_WIDTH ?? 1500);
 const cancelMarker = "UNSAVED CANCEL PDF SENTINEL";
 const successMarker = "UNSAVED SUCCESS PDF SENTINEL";
 const repeatMarker = "UNSAVED REPEAT PDF SENTINEL";
+const codeBlockLines = [
+  "export_scope=current_in_memory_markdown",
+  "project_mutation=none"
+];
+const codeBlockToolbarText = "Plain text";
+const codeBlockToolbarSelector =
+  '.patchmark-pdf-mdx-editor .patchmark-pdf-prose [class*="_codeMirrorToolbar_"]';
+const codeBlockWrapperSelector =
+  '.patchmark-pdf-mdx-editor .patchmark-pdf-prose [class*="_codeMirrorWrapper_"]';
 const paginationMarkers = Array.from(
   { length: 14 },
   (_, index) => `Evidence line ${String(index + 1).padStart(2, "0")}`
@@ -207,6 +216,32 @@ try {
     join(evidenceRoot, "print-layout-diagnostic.json"),
     `${JSON.stringify(printLayoutDiagnostic, null, 2)}\n`
   );
+  const screenCodeBlockDiagnostic = await readCodeBlockState(client, "screen");
+  writeFileSync(
+    join(evidenceRoot, "screen-code-block-diagnostic.json"),
+    `${JSON.stringify(screenCodeBlockDiagnostic, null, 2)}\n`
+  );
+  const printCodeBlockDiagnostic = await readCodeBlockState(client, "print");
+  writeFileSync(
+    join(evidenceRoot, "print-code-block-diagnostic.json"),
+    `${JSON.stringify(printCodeBlockDiagnostic, null, 2)}\n`
+  );
+  const restoredScreenCodeBlockDiagnostic = await readCodeBlockState(
+    client,
+    "screen"
+  );
+  writeFileSync(
+    join(evidenceRoot, "restored-screen-code-block-diagnostic.json"),
+    `${JSON.stringify(restoredScreenCodeBlockDiagnostic, null, 2)}\n`
+  );
+  if (!shortDocumentMode) {
+    assertScreenCodeBlockContract(screenCodeBlockDiagnostic);
+    assertPrintCodeBlockContract(printCodeBlockDiagnostic);
+    assertScreenCodeBlockGeometryPreserved(
+      restoredScreenCodeBlockDiagnostic,
+      screenCodeBlockDiagnostic
+    );
+  }
 
   await triggerPrintBoundary(client, 1, fixtureContract.suggestedName);
   const firstPdfPath = join(evidenceRoot, "synthetic-pdf-export-first.pdf");
@@ -218,12 +253,14 @@ try {
       fixtureContract.title,
       fixtureContract.activeDocumentSentinel,
       ...(shortDocumentMode ? [] : paginationMarkers),
+      ...(shortDocumentMode ? [] : codeBlockLines),
       fixtureContract.finalSentinel,
       cancelMarker,
       successMarker
     ],
     forbiddenMarkers: [
       repeatMarker,
+      codeBlockToolbarText,
       fixtureContract.commentOnlySentinel,
       fixtureContract.staleHistorySentinel
     ],
@@ -265,12 +302,14 @@ try {
       fixtureContract.title,
       fixtureContract.activeDocumentSentinel,
       ...(shortDocumentMode ? [] : paginationMarkers),
+      ...(shortDocumentMode ? [] : codeBlockLines),
       fixtureContract.finalSentinel,
       cancelMarker,
       successMarker,
       repeatMarker
     ],
     forbiddenMarkers: [
+      codeBlockToolbarText,
       fixtureContract.commentOnlySentinel,
       fixtureContract.staleHistorySentinel
     ],
@@ -335,6 +374,11 @@ try {
       semanticDigest: inspection.semanticDigest,
       title: inspection.title
     })),
+    codeBlock: {
+      print: printCodeBlockDiagnostic,
+      restoredScreen: restoredScreenCodeBlockDiagnostic,
+      screen: screenCodeBlockDiagnostic
+    },
     printBoundaryCalls: printBoundaryCalls.length,
     repeatedOutputFresh: true,
     screenshotPath
@@ -845,6 +889,212 @@ async function readLayoutState(client, media) {
   }
 }
 
+async function readCodeBlockState(client, media) {
+  await client.call("Emulation.setEmulatedMedia", { media });
+  try {
+    return await evaluate(client, {
+      expression: `(() => {
+        const toolbar = document.querySelector(${JSON.stringify(codeBlockToolbarSelector)});
+        const wrapper = document.querySelector(${JSON.stringify(codeBlockWrapperSelector)});
+        const codeContent = wrapper?.querySelector(".cm-content");
+        const printable = document.querySelector(".patchmark-pdf-prose");
+        const findExactText = (selector, text) =>
+          Array.from(printable?.querySelectorAll(selector) ?? []).find(
+            (element) => element.textContent?.trim() === text
+          );
+        const describe = (element) => {
+          const style = element ? getComputedStyle(element) : null;
+          const rect = element?.getBoundingClientRect();
+          return {
+            className: element?.getAttribute("class") ?? null,
+            clientHeight: element?.clientHeight ?? null,
+            clientWidth: element?.clientWidth ?? null,
+            computed: style
+              ? {
+                  backgroundColor: style.backgroundColor,
+                  border: style.border,
+                  display: style.display,
+                  height: style.height,
+                  opacity: style.opacity,
+                  overflow: style.overflow,
+                  padding: style.padding,
+                  pointerEvents: style.pointerEvents,
+                  position: style.position,
+                  visibility: style.visibility,
+                  width: style.width,
+                  zIndex: style.zIndex
+                }
+              : null,
+            rect: rect
+              ? {
+                  bottom: rect.bottom,
+                  height: rect.height,
+                  left: rect.left,
+                  right: rect.right,
+                  top: rect.top,
+                  width: rect.width
+                }
+              : null,
+            scrollHeight: element?.scrollHeight ?? null,
+            scrollWidth: element?.scrollWidth ?? null,
+            tagName: element?.tagName ?? null,
+            text: element?.textContent?.replace(/\\s+/g, " ").trim() ?? null
+          };
+        };
+        const matchingRules = [];
+        const visitRules = (rules, context, source) => {
+          for (const rule of Array.from(rules ?? [])) {
+            if (rule instanceof CSSMediaRule) {
+              if (matchMedia(rule.conditionText).matches) {
+                visitRules(rule.cssRules, [...context, "@media " + rule.conditionText], source);
+              }
+              continue;
+            }
+            if (!(rule instanceof CSSStyleRule) || !toolbar) continue;
+            try {
+              if (!toolbar.matches(rule.selectorText)) continue;
+            } catch {
+              continue;
+            }
+            matchingRules.push({
+              context,
+              cssText: rule.style.cssText,
+              selector: rule.selectorText,
+              source
+            });
+          }
+        };
+        for (const sheet of Array.from(document.styleSheets)) {
+          try {
+            visitRules(
+              sheet.cssRules,
+              [],
+              sheet.href ?? sheet.ownerNode?.getAttribute("data-href") ?? "inline"
+            );
+          } catch {
+            matchingRules.push({ source: sheet.href ?? "unreadable", unreadable: true });
+          }
+        }
+        return {
+          codeContent: describe(codeContent),
+          codeLines: Array.from(wrapper?.querySelectorAll(".cm-line") ?? [], (line) =>
+            line.textContent ?? ""
+          ),
+          controls: Array.from(toolbar?.querySelectorAll("button, [role='button'], [role='combobox']") ?? [], (control) => ({
+            ariaLabel: control.getAttribute("aria-label"),
+            disabled: control instanceof HTMLButtonElement ? control.disabled : null,
+            rect: describe(control).rect,
+            role: control.getAttribute("role"),
+            tabIndex: control.tabIndex,
+            tagName: control.tagName,
+            text: control.textContent?.replace(/\\s+/g, " ").trim() ?? "",
+            title: control.getAttribute("title")
+          })),
+          matchingRules,
+          media: ${JSON.stringify(media)},
+          selector: ${JSON.stringify(codeBlockToolbarSelector)},
+          surrounding: {
+            after: describe(findExactText("p", ${JSON.stringify(PDF_EXPORT_FIXTURE.finalSentinel)})),
+            before: describe(findExactText("h2", "Final Verification"))
+          },
+          toolbar: describe(toolbar),
+          toolbarContainedByWrapper: Boolean(toolbar && wrapper?.contains(toolbar)),
+          toolbarNextSiblingContainsCode: Boolean(
+            toolbar?.nextElementSibling && toolbar.nextElementSibling.contains(codeContent)
+          ),
+          wrapper: describe(wrapper)
+        };
+      })()`
+    });
+  } finally {
+    await client.call("Emulation.setEmulatedMedia", { media: "" });
+  }
+}
+
+function assertScreenCodeBlockContract(state) {
+  assert.equal(state.media, "screen");
+  assert.equal(state.toolbarContainedByWrapper, true);
+  assert.equal(state.toolbarNextSiblingContainsCode, true);
+  assert.match(state.toolbar.className, /_codeMirrorToolbar_/);
+  assert.match(state.wrapper.className, /_codeMirrorWrapper_/);
+  assert.equal(state.toolbar.computed.display, "flex");
+  assert.equal(state.toolbar.computed.position, "absolute");
+  assert.equal(state.toolbar.computed.visibility, "visible");
+  assert.ok(state.toolbar.rect.width > 0);
+  assert.ok(state.toolbar.rect.height > 0);
+  assert.deepEqual(state.codeLines, codeBlockLines);
+  assert.equal(state.codeContent.computed.display, "block");
+  assert.equal(state.codeContent.computed.visibility, "visible");
+  assert.equal(state.controls.length, 2);
+  assert.deepEqual(
+    state.controls.map(({ ariaLabel, disabled, role, text, title }) => ({
+      ariaLabel,
+      disabled,
+      role,
+      text,
+      title
+    })),
+    [
+      {
+        ariaLabel: "Language",
+        disabled: true,
+        role: "combobox",
+        text: codeBlockToolbarText,
+        title: null
+      },
+      {
+        ariaLabel: null,
+        disabled: true,
+        role: null,
+        text: "",
+        title: "Delete code block"
+      }
+    ]
+  );
+}
+
+function assertPrintCodeBlockContract(state) {
+  assert.equal(state.media, "print");
+  assert.equal(state.toolbarContainedByWrapper, true);
+  assert.equal(state.toolbarNextSiblingContainsCode, true);
+  assert.equal(state.toolbar.computed.display, "none");
+  assert.deepEqual(state.codeLines, codeBlockLines);
+  assert.equal(state.codeContent.computed.display, "block");
+  assert.equal(state.codeContent.computed.visibility, "visible");
+  assert.ok(state.codeContent.rect.width > 0);
+  assert.ok(state.codeContent.rect.height > 0);
+  assert.ok(state.codeContent.scrollWidth <= state.codeContent.clientWidth + 1);
+  assert.ok(state.codeContent.scrollHeight <= state.codeContent.clientHeight + 1);
+  for (const property of ["height", "width"]) {
+    assert.equal(state.toolbar.rect[property], 0);
+    for (const control of state.controls) {
+      assert.equal(control.rect[property], 0);
+    }
+  }
+  assert.equal(
+    state.matchingRules.some(
+      (rule) =>
+        rule.context?.includes("@media print") &&
+        rule.selector?.includes('[class*="_codeMirrorToolbar_"]') &&
+        /display:\s*none/.test(rule.cssText)
+    ),
+    true
+  );
+  assert.ok(state.codeContent.rect.left >= state.wrapper.rect.left);
+  assert.ok(state.codeContent.rect.right <= state.wrapper.rect.right);
+  assert.ok(state.codeContent.rect.top >= state.wrapper.rect.top);
+  assert.ok(state.codeContent.rect.bottom <= state.wrapper.rect.bottom);
+  assert.ok(state.wrapper.rect.top >= state.surrounding.before.rect.bottom);
+  assert.ok(state.surrounding.after.rect.top >= state.wrapper.rect.bottom);
+}
+
+function assertScreenCodeBlockGeometryPreserved(actual, expected) {
+  for (const key of ["codeContent", "controls", "surrounding", "toolbar", "wrapper"]) {
+    assert.deepEqual(actual[key], expected[key]);
+  }
+  assert.deepEqual(actual.codeLines, expected.codeLines);
+}
+
 async function readPrintBoundaryCount(client) {
   return evaluate(client, {
     expression: "window.__PATCHMARK_PDF_PRINT_CALLS__?.length ?? 0"
@@ -930,6 +1180,9 @@ function inspectAndRenderPdf({
     true,
     `PDF contains a blank content page: ${JSON.stringify(pageNonblank)}`
   );
+  if (!shortDocumentMode) {
+    assert.equal(countOccurrences(normalizedText, codeBlockLines.join(" ")), 1);
+  }
   let previousIndex = -1;
   for (const marker of expectedMarkers) {
     const markerIndex = normalizedText.indexOf(marker);
