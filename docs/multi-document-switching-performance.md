@@ -112,6 +112,10 @@ The corrected implementation:
 - removes the unbounded full-document serialization and comparison loop;
 - reuses the editor while binding each update to exact switch identity;
 - shows a safe target-only preview while MDXEditor performs unavoidable work;
+- hydrates only code blocks and tables near the viewport during the critical
+  path, while retaining exact lightweight content for deferred blocks;
+- activates deferred CodeMirror and table editors on viewport approach,
+  pointer use, keyboard use, or programmatic focus before editing;
 - clears the switch transaction after readiness so later programmatic edits are
   not mistaken for another switch;
 - skips unchanged outgoing persistence without weakening dirty save behavior;
@@ -127,7 +131,7 @@ The browser benchmark creates and removes an isolated three-document project:
 
 - two large, distinct documents with long paragraphs, 26 GFM tables, wide table
   delimiter rows, links, emphasis, inline code, comments, patches, and versions;
-- one large document also containing 24 fenced code blocks;
+- one large document also containing 110 fenced code blocks;
 - one small document for large → small and small → large transitions;
 - distinct bookmark ownership and an additional missing-file entry.
 
@@ -152,11 +156,21 @@ contain no fixed sleeps.
 ## Performance Interpretation
 
 File reads, normalization, and ownership validation are small compared with
-MDXEditor construction. Table-heavy documents become visible through the target
-preview well before the interactive editor. Documents containing many fenced
-code blocks remain slower because each code block constructs CodeMirror-backed
-editor state. This is a remaining MDXEditor cost, not readiness polling or a
-hidden correctly rendered editor.
+eager nested-editor construction. Every GFM table cell previously created a
+nested Lexical editor, and every fenced block created a CodeMirror editor,
+language support, toolbar, listeners, and DOM during the initial MDX import.
+Controlled production profiles showed that Markdown import itself remained
+roughly constant while the post-import long task grew with table and code-block
+counts.
+
+Patchmark now bounds that work to the viewport. Deferred tables and code blocks
+remain present in the identity-bound editor as inert, fidelity-preserving DOM,
+so document text, layout, scrolling, selection boundaries, and semantic
+readiness do not depend on constructing every nested editor. A 600 px viewport
+margin initializes editors before normal scrolling reaches them; direct pointer,
+keyboard, or programmatic focus initializes the requested editor immediately.
+The original MDXEditor table and CodeMirror implementations, languages, and
+Markdown serialization remain unchanged after activation.
 
 Exact timings are machine- and build-dependent. Preserve matched development and
 production samples in an evidence archive rather than using a fixed millisecond

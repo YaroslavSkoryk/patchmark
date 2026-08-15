@@ -13,6 +13,10 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import {
+  DeferredMdxHeavyEditorProvider,
+  deferredCodeBlockEditorDescriptor
+} from "@/components/deferred-mdx-heavy-editors";
+import {
   BlockTypeSelect,
   BoldItalicUnderlineToggles,
   CreateLink,
@@ -124,7 +128,10 @@ export function MdxEditorClient({
       thematicBreakPlugin(),
       frontmatterPlugin(),
       tablePlugin(),
-      codeBlockPlugin({ defaultCodeBlockLanguage: "markdown" }),
+      codeBlockPlugin({
+        codeBlockEditorDescriptors: [deferredCodeBlockEditorDescriptor],
+        defaultCodeBlockLanguage: "markdown"
+      }),
       codeMirrorPlugin({
         codeBlockLanguages: {
           "": "Plain text",
@@ -704,17 +711,19 @@ export function MdxEditorClient({
           />
         </div>
       ) : (
-        <StableMdxEditor
-          key={editorInstanceKey}
-          ref={editorRef}
-          className="patchmark-mdx-editor"
-          contentEditableClassName="patchmark-prose"
-          markdown={editorInitialMarkdownRef.current}
-          readOnly={readOnly}
-          onChange={stableMarkdownChangeHandler}
-          onError={stableRenderErrorHandler}
-          plugins={editorPlugins}
-        />
+        <DeferredMdxHeavyEditorProvider>
+          <StableMdxEditor
+            key={editorInstanceKey}
+            ref={editorRef}
+            className="patchmark-mdx-editor"
+            contentEditableClassName="patchmark-prose"
+            markdown={editorInitialMarkdownRef.current}
+            readOnly={readOnly}
+            onChange={stableMarkdownChangeHandler}
+            onError={stableRenderErrorHandler}
+            plugins={editorPlugins}
+          />
+        </DeferredMdxHeavyEditorProvider>
       )}
     </div>
   );

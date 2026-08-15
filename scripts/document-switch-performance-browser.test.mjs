@@ -32,6 +32,14 @@ const sampleCount = Number(process.env.PATCHMARK_SWITCH_SAMPLES ?? 6);
 const stressTransitions = Number(
   process.env.PATCHMARK_SWITCH_STRESS_TRANSITIONS ?? 60
 );
+const codeBlockCount = Number(
+  process.env.PATCHMARK_SWITCH_CODE_BLOCK_COUNT ?? 110
+);
+const structuredTableCount = Number(
+  process.env.PATCHMARK_SWITCH_TABLE_COUNT ?? 26
+);
+const profileEditorCostOnly =
+  process.env.PATCHMARK_SWITCH_PROFILE_EDITOR_COST_ONLY === "1";
 const outputPath = process.env.PATCHMARK_SWITCH_PERFORMANCE_OUTPUT;
 const expectOptimized =
   process.env.PATCHMARK_SWITCH_EXPECT_OPTIMIZED !== "0";
@@ -43,7 +51,7 @@ const fixtureContract = createDocumentSwitchProject(projectDir, {
   documentCount: 3,
   documentProfiles: [
     {
-      codeBlockCount: 24,
+      codeBlockCount,
       commentCount: 31,
       headingCount: 4,
       historyCount: 49,
@@ -51,7 +59,7 @@ const fixtureContract = createDocumentSwitchProject(projectDir, {
       paragraphRepeatCount: 8,
       patchCount: 59,
       structuredCellRepeatCount: 3,
-      structuredTableCount: 26,
+      structuredTableCount,
       structuredTableRowsPerTable: 9
     },
     {
@@ -62,7 +70,7 @@ const fixtureContract = createDocumentSwitchProject(projectDir, {
       paragraphRepeatCount: 6,
       patchCount: 41,
       structuredCellRepeatCount: 4,
-      structuredTableCount: 26,
+      structuredTableCount,
       structuredTableRowsPerTable: 9
     },
     {
@@ -84,6 +92,26 @@ const fixtureContract = createDocumentSwitchProject(projectDir, {
 
 if (!Number.isInteger(sampleCount) || sampleCount < 2) {
   throw new Error("PATCHMARK_SWITCH_SAMPLES must be an integer of at least 2.");
+}
+
+if (
+  !Number.isInteger(codeBlockCount) ||
+  codeBlockCount < 0 ||
+  codeBlockCount > 200
+) {
+  throw new Error(
+    "PATCHMARK_SWITCH_CODE_BLOCK_COUNT must be an integer from 0 through 200."
+  );
+}
+
+if (
+  !Number.isInteger(structuredTableCount) ||
+  structuredTableCount < 0 ||
+  structuredTableCount > 60
+) {
+  throw new Error(
+    "PATCHMARK_SWITCH_TABLE_COUNT must be an integer from 0 through 60."
+  );
 }
 
 if (!Number.isInteger(stressTransitions) || stressTransitions < 10) {
@@ -229,7 +257,43 @@ async function run() {
         ),
         "Unchanged warm switches must not create recovery churn."
       );
+      assert.ok(
+        summarizeSamples(largeSecondToFirstSamples).firstUsableMs.p95 < 1_000,
+        "The realistic code-heavy target must not retain a multi-second warm switch."
+      );
+      assert.ok(
+        summarizeSamples(largeFirstToSecondSamples).firstUsableMs.p95 < 1_000,
+        "The realistic table-heavy target must not retain a multi-second warm switch."
+      );
     }
+
+    if (profileEditorCostOnly) {
+      const summary = {
+        source: "deterministic_document_switch_editor_cost_profile",
+        codeBlockCount,
+        structuredTableCount,
+        fixture: readProjectFixtureSummary(projectDir, firstTitle),
+        cold: summarizeSamples([cold]),
+        warm: summarizeSamples(warmSamples),
+        largeFirstToSecond: summarizeSamples(largeFirstToSecondSamples),
+        largeSecondToFirst: summarizeSamples(largeSecondToFirstSamples)
+      };
+      if (outputPath) {
+        writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`);
+      }
+      console.log(JSON.stringify(summary, null, 2));
+      return;
+    }
+
+    const deferredHeavyEditors = await verifyDeferredHeavyEditorActivation(
+      client,
+      {
+        codeBlockCount,
+        codeDocument: firstDocument,
+        tableCount: structuredTableCount,
+        tableDocument: secondDocument
+      }
+    );
 
     await ensureActiveDocument(client, secondTitle);
     const largeToSmallSamples = [];
@@ -367,6 +431,7 @@ async function run() {
 
     const summary = {
       source: "deterministic_document_switch_fixture",
+      codeBlockCount,
       expectAtomic,
       expectOptimized,
       fixture: readProjectFixtureSummary(projectDir, firstTitle),
@@ -376,6 +441,7 @@ async function run() {
       })),
       cold: summarizeSamples([cold]),
       currentDocumentRequest,
+      deferredHeavyEditors,
       warm: summarizeSamples(warmSamples),
       largeFirstToSecond: summarizeSamples(largeFirstToSecondSamples),
       largeSecondToFirst: summarizeSamples(largeSecondToFirstSamples),
@@ -426,6 +492,105 @@ async function run() {
     rmSync(userDataDir, { force: true, recursive: true });
     rmSync(projectDir, { force: true, recursive: true });
   }
+}
+
+async function verifyDeferredHeavyEditorActivation(
+  client,
+  { codeBlockCount, codeDocument, tableCount, tableDocument }
+) {
+  await ensureActiveDocument(client, codeDocument.displayTitle);
+  const codeBefore = await evaluate(client, {
+    expression: `(() => {
+      const deferred = Array.from(
+        document.querySelectorAll(".patchmark-deferred-code-block")
+      );
+      const target = deferred.at(-1);
+      return {
+        codeMirrorCount: document.querySelectorAll(".cm-editor").length,
+        deferredCount: deferred.length,
+        targetText: target?.querySelector("code")?.textContent ?? null,
+        targetFingerprint: target?.querySelector("code")?.textContent
+          ?.replace(/\\s+/g, "").slice(0, 80) ?? null
+      };
+    })()`
+  });
+  assert.ok(
+    codeBefore.deferredCount >= Math.max(1, codeBlockCount - 4),
+    "Offscreen code blocks must remain lightweight until they approach the viewport."
+  );
+  assert.ok(codeBefore.targetText, "A deferred code block must preserve its code.");
+  await evaluate(client, {
+    expression: `document.querySelectorAll(".patchmark-deferred-code-block")
+      .item(document.querySelectorAll(".patchmark-deferred-code-block").length - 1)
+      ?.scrollIntoView({ block: "center" })`
+  });
+  await waitForCondition(
+    client,
+    `document.querySelectorAll(".cm-editor").length > ${codeBefore.codeMirrorCount}`,
+    "viewport-activated CodeMirror editor"
+  );
+  const codeAfter = await evaluate(client, {
+    expression: `({
+      codeMirrorCount: document.querySelectorAll(".cm-editor").length,
+      deferredCount: document.querySelectorAll(".patchmark-deferred-code-block").length,
+      targetVisible: Array.from(document.querySelectorAll(".cm-content"))
+        .some((content) => content.textContent?.replace(/\\s+/g, "")
+          .includes(${JSON.stringify(codeBefore.targetFingerprint)}))
+    })`
+  });
+  assert.equal(
+    codeAfter.targetVisible,
+    true,
+    "Viewport activation must retain exact code-block content."
+  );
+  assert.ok(
+    codeAfter.deferredCount < codeBefore.deferredCount,
+    "Viewport activation must replace the lightweight block with CodeMirror."
+  );
+
+  await ensureActiveDocument(client, tableDocument.displayTitle);
+  const tableBefore = await evaluate(client, {
+    expression: `(() => {
+      const deferred = Array.from(
+        document.querySelectorAll(".patchmark-deferred-table")
+      );
+      const target = deferred.at(-1);
+      return {
+        deferredCount: deferred.length,
+        targetText: target?.querySelector("td, th")?.textContent ?? null
+      };
+    })()`
+  });
+  assert.ok(
+    tableBefore.deferredCount >= Math.max(1, tableCount - 2),
+    "Offscreen tables must not eagerly construct every nested cell editor."
+  );
+  assert.ok(tableBefore.targetText, "A deferred table must preserve cell content.");
+  await evaluate(client, {
+    expression: `document.querySelectorAll(".patchmark-deferred-table")
+      .item(document.querySelectorAll(".patchmark-deferred-table").length - 1)
+      ?.scrollIntoView({ block: "center" })`
+  });
+  await waitForCondition(
+    client,
+    `document.querySelectorAll(".patchmark-deferred-table").length < ${tableBefore.deferredCount} &&
+      document.querySelector(".patchmark-prose table [data-tool-cell]") !== null`,
+    "viewport-activated full table editor"
+  );
+  const tableAfter = await evaluate(client, {
+    expression: `({
+      deferredCount: document.querySelectorAll(".patchmark-deferred-table").length,
+      targetVisible: document.querySelector(".patchmark-prose")?.textContent
+        ?.includes(${JSON.stringify(tableBefore.targetText)}) ?? false
+    })`
+  });
+  assert.equal(
+    tableAfter.targetVisible,
+    true,
+    "Viewport activation must retain exact table-cell content."
+  );
+
+  return { codeAfter, codeBefore, tableAfter, tableBefore };
 }
 
 async function measureSwitch(client, targetTitle, consistency) {

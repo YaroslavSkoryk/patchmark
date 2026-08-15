@@ -1429,6 +1429,48 @@ button {
   padding: 0;
 }
 
+.patchmark-deferred-code-block,
+.patchmark-deferred-table {
+  position: relative;
+  cursor: text;
+}
+
+.patchmark-deferred-code-block:focus-visible,
+.patchmark-deferred-table:focus-visible {
+  outline: 2px solid var(--control-focus-ring);
+  outline-offset: 2px;
+}
+
+.patchmark-deferred-code-block {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.patchmark-deferred-code-block pre {
+  margin: 0;
+  padding: 16px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.patchmark-deferred-code-language {
+  display: block;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.patchmark-deferred-table {
+  overflow-x: auto;
+}
+
+.patchmark-deferred-table table {
+  width: 100%;
+}
+
 .editor-body:has(> .markdown-source-editor) {
   display: flex;
   flex-direction: column;
