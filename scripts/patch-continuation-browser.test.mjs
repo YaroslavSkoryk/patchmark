@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import {
-  cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
@@ -23,52 +24,64 @@ import {
   waitForEditorShell,
   waitForProcessExit
 } from "./comment-rail-editor-browser-regression.test.mjs";
+import {
+  PATCH_CONTINUATION_FIXTURE,
+  applyPatchContinuationProject
+} from "./lib/fixtures/apply-patch-continuation-project.mjs";
+import {
+  PROJECT_FIXTURE_IDS,
+  createProjectFixtureCopy,
+  digestProjectTree,
+  getProjectFixtureRoot
+} from "./lib/project-fixture-foundation.mjs";
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3117/";
-const sourceProjectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
-const followUpText =
-  "Keep this guidance, but restore acceptable-margin and production-complexity validation.";
-
-if (!sourceProjectDir) {
-  throw new Error("Set PATCHMARK_REAL_PROJECT_DIR to a real Patchmark project.");
-}
-
-const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-continuation-"));
-const projectDir = join(fixtureRoot, basename(sourceProjectDir));
-cpSync(sourceProjectDir, projectDir, { recursive: true });
-
-const fixture = prepareFixture(projectDir);
-const inventory = inventoryProject(projectDir);
-const fixtureServer = await startFixtureFileServer(projectDir, inventory);
-const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
-
-if (!chromePath) {
-  throw new Error("Chrome was not found for patch continuation browser tests.");
-}
-
-await assertEditorIsReachable(editorUrl);
-
-const userDataDir = mkdtempSync(join(tmpdir(), "patchmark-continuation-chrome-"));
-const chrome = spawn(
-  chromePath,
-  [
-    "--headless=new",
-    "--remote-debugging-port=0",
-    `--user-data-dir=${userDataDir}`,
-    "--no-first-run",
-    "--disable-background-networking",
-    "--disable-default-apps",
-    "--disable-extensions",
-    "--disable-sync",
-    "--disable-features=Translate,MediaRouter",
-    "about:blank"
-  ],
-  { stdio: ["ignore", "ignore", "pipe"] }
-);
-
+const evidenceRoot = process.env.PATCHMARK_PATCH_CONTINUATION_EVIDENCE_DIR;
+const followUpText = PATCH_CONTINUATION_FIXTURE.followUpReply;
+const sourceRoot = getProjectFixtureRoot(PROJECT_FIXTURE_IDS.legacyCore);
+const sourceDigest = digestProjectTree(sourceRoot);
+const fixtureCopy = createProjectFixtureCopy(PROJECT_FIXTURE_IDS.legacyCore);
+const projectDir = fixtureCopy.projectRoot;
+let chrome;
 let client;
+let fixture;
+let fixtureServer;
+let userDataDir;
 
 try {
+  fixture = applyPatchContinuationProject(projectDir);
+  const initialState = readPersistedContinuationState(projectDir);
+  assertInitialContinuationState(initialState, fixture);
+  writeContinuationEvidence(evidenceRoot, "initial-state.json", {
+    phase: "initial",
+    ...summarizeContinuationState(initialState, fixture)
+  });
+  const inventory = inventoryProject(projectDir);
+  fixtureServer = await startFixtureFileServer(projectDir, inventory);
+  const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
+
+  if (!chromePath) {
+    throw new Error("Chrome was not found for patch continuation browser tests.");
+  }
+
+  await assertEditorIsReachable(editorUrl);
+  userDataDir = mkdtempSync(join(tmpdir(), "patchmark-continuation-chrome-"));
+  chrome = spawn(
+    chromePath,
+    [
+      "--headless=new",
+      "--remote-debugging-port=0",
+      `--user-data-dir=${userDataDir}`,
+      "--no-first-run",
+      "--disable-background-networking",
+      "--disable-default-apps",
+      "--disable-extensions",
+      "--disable-sync",
+      "--disable-features=Translate,MediaRouter",
+      "about:blank"
+    ],
+    { stdio: ["ignore", "ignore", "pipe"] }
+  );
   const browserWsUrl = await waitForDevToolsUrl(chrome);
   const pageWsUrl = await createPage(browserWsUrl, "about:blank");
   client = await CdpClient.connect(pageWsUrl);
@@ -107,6 +120,7 @@ try {
   await openPatchGroupByTitle(client, fixture.linkedPatch.display_title);
   console.log("browser-step: linked group opened");
   await waitForText(client, "Accept Patch");
+  await captureEvidenceScreenshot(client, evidenceRoot, "01-initial-patch-review.png");
   console.log("browser-step: linked patch review opened");
   await evaluate(client, {
     expression: `window.confirm = () => true; true`,
@@ -125,12 +139,22 @@ try {
   );
   assert.equal(appliedState.patchStatus, "accepted");
   assert.equal(appliedState.commentStatus, "open");
+  assert.deepEqual(appliedState.dependsOnPatchIds, [fixture.basePatch.id]);
+  assert.equal(appliedState.documentMarkdown, fixture.afterLinkedMarkdown);
   assert.equal(
     fixture.linkedPatch.suggested_text.includes(appliedState.selectedText),
     true,
     "The linked comment should remain anchored to text retained within the applied replacement."
   );
   assert.equal(appliedState.documentIncludesSuggestedText, true);
+  writeContinuationEvidence(evidenceRoot, "linked-applied-state.json", {
+    phase: "linked_patch_applied",
+    ...summarizeContinuationState(
+      readPersistedContinuationState(projectDir),
+      fixture
+    )
+  });
+  await captureEvidenceScreenshot(client, evidenceRoot, "02-continuation-ready.png");
 
   await clickVisibleButtonNonBlocking(client, "Continue discussion");
   console.log("browser-step: continuation clicked");
@@ -195,7 +219,8 @@ try {
   await clickVisibleButton(client, "Import ChatGPT Response");
   const followUpImport = createFollowUpImport({
     commentId: fixture.comment.id,
-    originalText: fixture.linkedPatch.suggested_text
+    originalText: fixture.linkedPatch.suggested_text,
+    suggestedText: fixture.followUpSuggestedText
   });
   await fillImportResponse(client, JSON.stringify(followUpImport, null, 2));
   await clickScopedButton(client, ".comment-import-dialog", "Import");
@@ -207,6 +232,7 @@ try {
   console.log("browser-step: follow-up patch imported");
   assert.equal(followUpState.acceptedStatus, "accepted");
   assert.equal(followUpState.pendingFollowUpExists, true);
+  assert.equal(followUpState.patchId, fixture.followUpPatchId);
 
   await openCommentPatchGroupByTitle(
     client,
@@ -246,6 +272,21 @@ try {
     followUpState.patchId,
     "accepted"
   );
+  const afterFollowUpState = await waitForPersistedMarkdown(
+    projectDir,
+    fixture.afterFollowUpMarkdown
+  );
+  assertContinuationRecords(afterFollowUpState, fixture, {
+    differentCommentStatus: "pending",
+    followUpStatus: "accepted",
+    linkedStatus: "accepted",
+    noLinkedStatus: "pending"
+  });
+  writeContinuationEvidence(evidenceRoot, "follow-up-applied-state.json", {
+    phase: "follow_up_applied",
+    ...summarizeContinuationState(afterFollowUpState, fixture)
+  });
+  await captureEvidenceScreenshot(client, evidenceRoot, "03-follow-up-applied.png");
   console.log("browser-step: follow-up lineage applied");
   await clickSelector(client, ".patch-review-workspace-header > button");
 
@@ -284,6 +325,21 @@ try {
   );
   console.log("browser-step: different-comment edge applied");
 
+  const beforeReloadState = await waitForPersistedMarkdown(
+    projectDir,
+    fixture.finalMarkdown
+  );
+  assertContinuationRecords(beforeReloadState, fixture, {
+    differentCommentStatus: "accepted",
+    followUpStatus: "accepted",
+    linkedStatus: "accepted",
+    noLinkedStatus: "accepted"
+  });
+  writeContinuationEvidence(evidenceRoot, "pre-reload-final-state.json", {
+    phase: "before_reload",
+    ...summarizeContinuationState(beforeReloadState, fixture)
+  });
+
   await client.call("Page.reload");
   await waitForEditorShell(client);
   await clickVisibleButton(client, "File");
@@ -305,6 +361,18 @@ try {
     "current project comments after reload"
   );
   console.log("browser-step: project reloaded");
+  const reloadedState = readPersistedContinuationState(projectDir);
+  assert.equal(reloadedState.markdown, fixture.finalMarkdown);
+  assertContinuationRecords(reloadedState, fixture, {
+    differentCommentStatus: "accepted",
+    followUpStatus: "accepted",
+    linkedStatus: "accepted",
+    noLinkedStatus: "accepted"
+  });
+  writeContinuationEvidence(evidenceRoot, "reloaded-state.json", {
+    phase: "reloaded",
+    ...summarizeContinuationState(reloadedState, fixture)
+  });
 
   await evaluate(client, {
     expression: `document.getElementById(${JSON.stringify(
@@ -321,6 +389,7 @@ try {
   );
   await selectReviewPatchByTitle(client, "Restore validation requirements");
   await waitForText(client, "Follow-up to: Browser continuation test patch");
+  await captureEvidenceScreenshot(client, evidenceRoot, "04-reloaded-lineage.png");
   await clickSelector(client, ".patch-review-workspace-header > button");
 
   await openCommentPatchGroupByTitle(
@@ -347,11 +416,34 @@ try {
   });
   assert.equal(resolvedContinuationCount, 0);
 
+  const finalState = readPersistedContinuationState(projectDir);
+  assert.equal(finalState.markdown, fixture.finalMarkdown);
+  assertContinuationRecords(finalState, fixture, {
+    differentCommentStatus: "accepted",
+    followUpStatus: "accepted",
+    linkedStatus: "accepted",
+    noLinkedStatus: "accepted"
+  });
+  assert.equal(
+    finalState.comments.find((comment) => comment.id === fixture.comment.id)
+      ?.status,
+    "resolved"
+  );
+  writeContinuationEvidence(evidenceRoot, "final-state.json", {
+    phase: "resolved",
+    ...summarizeContinuationState(finalState, fixture)
+  });
+  if (evidenceRoot) {
+    writeFileSync(join(evidenceRoot, "final-document.md"), finalState.markdown);
+  }
+
   console.log(
     JSON.stringify(
       {
-        editorUrl,
-        projectDir,
+        fixture: {
+          documentId: fixture.documentId,
+          projectId: fixture.projectId
+        },
         linkedPatchId: fixture.linkedPatch.id,
         linkedCommentId: fixture.comment.id,
         validated: [
@@ -374,153 +466,209 @@ try {
   console.log("Patch continuation browser tests passed.");
 } finally {
   await client?.close();
-  chrome.kill("SIGTERM");
-  await waitForProcessExit(chrome, 1000);
-  if (chrome.exitCode === null) {
-    chrome.kill("SIGKILL");
+  if (chrome) {
+    chrome.kill("SIGTERM");
     await waitForProcessExit(chrome, 1000);
-  }
-  await fixtureServer.close();
-  rmSync(userDataDir, { force: true, recursive: true });
-  rmSync(fixtureRoot, { force: true, recursive: true });
-}
-
-function prepareFixture(projectDir) {
-  const documentPath = join(projectDir, "document.md");
-  const commentsPath = join(projectDir, ".patchmark", "comments.json");
-  const patchesPath = join(projectDir, ".patchmark", "patches.json");
-  const documentMarkdown = readFileSync(documentPath, "utf8");
-  const comments = JSON.parse(readFileSync(commentsPath, "utf8"));
-  const patches = JSON.parse(readFileSync(patchesPath, "utf8"));
-  const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
-  const sourcePatch = patches.find((patch) => {
-    const comment = patch.comment_id ? commentsById.get(patch.comment_id) : null;
-    const currentText =
-      comment?.anchor.kind === "selected_text" &&
-      countOccurrences(documentMarkdown, comment.anchor.selected_text) === 1
-        ? comment.anchor.selected_text
-        : patch.applied_text ?? patch.suggested_text;
-
-    return (
-      patch.status === "accepted" &&
-      comment?.status === "open" &&
-      comment.anchor.kind !== "document" &&
-      typeof currentText === "string" &&
-      currentText.length >= 30 &&
-      currentText.length <= 3000 &&
-      countOccurrences(documentMarkdown, currentText) === 1
-    );
-  });
-
-  if (!sourcePatch) {
-    throw new Error("Could not find a suitable accepted linked patch fixture.");
-  }
-
-  const comment = commentsById.get(sourcePatch.comment_id);
-  const originalText =
-    comment.anchor.kind === "selected_text" &&
-    countOccurrences(documentMarkdown, comment.anchor.selected_text) === 1
-      ? comment.anchor.selected_text
-      : sourcePatch.applied_text ?? sourcePatch.suggested_text;
-  const paragraphs = documentMarkdown
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(
-      (paragraph) =>
-        paragraph.length >= 40 &&
-        paragraph.length <= 500 &&
-        !paragraph.startsWith("#") &&
-        !paragraph.includes("|") &&
-        paragraph !== originalText &&
-        countOccurrences(documentMarkdown, paragraph) === 1
-    );
-
-  if (paragraphs.length < 2) {
-    throw new Error("Could not find enough unique paragraphs for edge fixtures.");
-  }
-
-  const nextPatchNumber =
-    patches.reduce((maximum, patch) => {
-      const match = /^PM-PATCH-(\d+)$/.exec(patch.id);
-      return match ? Math.max(maximum, Number(match[1])) : maximum;
-    }, 0) + 1;
-  const createdAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  const linkedPatch = {
-    id: `PM-PATCH-${String(nextPatchNumber).padStart(4, "0")}`,
-    status: "pending",
-    comment_id: comment.id,
-    display_title: "Browser continuation test patch",
-    target_heading: sourcePatch.target_heading,
-    original_text: originalText,
-    suggested_text: appendRefinement(
-      originalText,
-      "Browser continuation refinement."
-    ),
-    reason: "Validates continued refinement through the linked comment.",
-    created_at: createdAt
-  };
-  const noLinkedPatch = {
-    id: `PM-PATCH-${String(nextPatchNumber + 1).padStart(4, "0")}`,
-    status: "pending",
-    original_text: paragraphs[0],
-    suggested_text: appendRefinement(
-      paragraphs[0],
-      "Browser no-link refinement."
-    ),
-    reason: "Add browser legacy guidance.",
-    created_at: createdAt
-  };
-  const differentComment = {
-    id: "PM-COMMENT-BROWSER-OTHER",
-    type: "note",
-    status: "resolved",
-    anchor: { kind: "document" },
-    comment: "Check unrelated browser validation guidance.",
-    thread: [],
-    export_state: { focus_state: "idle" },
-    created_at: createdAt,
-    updated_at: createdAt,
-    resolved_at: createdAt
-  };
-  const differentCommentPatch = {
-    id: `PM-PATCH-${String(nextPatchNumber + 2).padStart(4, "0")}`,
-    status: "pending",
-    comment_id: differentComment.id,
-    display_title: "Browser different-comment test patch",
-    original_text: paragraphs[1],
-    suggested_text: appendRefinement(
-      paragraphs[1],
-      "Browser different-comment refinement."
-    ),
-    reason: "Validates that unrelated comments do not create false lineage.",
-    created_at: createdAt
-  };
-
-  const normalizedComments = comments.map((candidate) => ({
-    ...candidate,
-    export_state: {
-      ...candidate.export_state,
-      focus_state: "idle",
-      marked_for_export_at: undefined
+    if (chrome.exitCode === null) {
+      chrome.kill("SIGKILL");
+      await waitForProcessExit(chrome, 1000);
     }
-  }));
-  writeFileSync(
-    commentsPath,
-    `${JSON.stringify([...normalizedComments, differentComment], null, 2)}\n`
-  );
-  writeFileSync(
-    patchesPath,
-    `${JSON.stringify(
-      [...patches, linkedPatch, noLinkedPatch, differentCommentPatch],
-      null,
-      2
-    )}\n`
-  );
-
-  return { comment, differentCommentPatch, linkedPatch, noLinkedPatch };
+  }
+  await fixtureServer?.close();
+  if (userDataDir) {
+    rmSync(userDataDir, { force: true, recursive: true });
+    assert.equal(existsSync(userDataDir), false);
+  }
+  fixtureCopy.cleanup();
+  assert.equal(existsSync(fixtureCopy.temporaryRoot), false);
+  assert.deepEqual(digestProjectTree(sourceRoot), sourceDigest);
 }
 
-function createFollowUpImport({ commentId, originalText }) {
+function readPersistedContinuationState(projectDir) {
+  return {
+    comments: JSON.parse(
+      readFileSync(join(projectDir, ".patchmark", "comments.json"), "utf8")
+    ),
+    markdown: readFileSync(join(projectDir, "document.md"), "utf8"),
+    patches: JSON.parse(
+      readFileSync(join(projectDir, ".patchmark", "patches.json"), "utf8")
+    ),
+    unrelatedDocumentMarkdown: readFileSync(
+      join(
+        projectDir,
+        PATCH_CONTINUATION_FIXTURE.unrelatedDocumentFileName
+      ),
+      "utf8"
+    )
+  };
+}
+
+function assertInitialContinuationState(state, fixture) {
+  assert.equal(state.markdown, fixture.initialMarkdown);
+  assert.equal(state.comments.length, 14);
+  assert.equal(state.patches.length, 5);
+  assertContinuationRecords(state, fixture, {
+    differentCommentStatus: "pending",
+    followUpStatus: null,
+    linkedStatus: "pending",
+    noLinkedStatus: "pending"
+  });
+}
+
+function assertContinuationRecords(
+  state,
+  fixture,
+  {
+    differentCommentStatus,
+    followUpStatus,
+    linkedStatus,
+    noLinkedStatus
+  }
+) {
+  const patchesById = new Map(state.patches.map((patch) => [patch.id, patch]));
+  assert.equal(patchesById.size, state.patches.length);
+  assert.equal(patchesById.get(fixture.basePatch.id)?.status, "accepted");
+  assert.equal(patchesById.get(fixture.linkedPatch.id)?.status, linkedStatus);
+  assert.deepEqual(
+    patchesById.get(fixture.linkedPatch.id)?.depends_on_patch_ids,
+    [fixture.basePatch.id]
+  );
+  assert.equal(
+    patchesById.get(fixture.noLinkedPatch.id)?.status,
+    noLinkedStatus
+  );
+  assert.equal(
+    patchesById.get(fixture.differentCommentPatch.id)?.status,
+    differentCommentStatus
+  );
+  assert.equal(
+    patchesById.get(fixture.followUpPatchId)?.status ?? null,
+    followUpStatus
+  );
+  assert.deepEqual(
+    patchesById.get(fixture.unrelatedPatch.id),
+    fixture.unrelatedPatch
+  );
+  assert.equal(
+    state.unrelatedDocumentMarkdown,
+    fixture.unrelatedDocumentMarkdown
+  );
+  assert.equal(
+    state.markdown.includes(fixture.unrelatedDocumentSentinel),
+    false
+  );
+  assert.equal(
+    state.markdown.includes(fixture.unrelatedPatchSentinel),
+    false
+  );
+  if (linkedStatus === "accepted") {
+    assert.equal(
+      countOccurrences(state.markdown, "Browser continuation refinement."),
+      1
+    );
+  }
+  if (followUpStatus === "accepted") {
+    assert.equal(
+      countOccurrences(state.markdown, fixture.followUpRefinement),
+      1
+    );
+  }
+}
+
+async function waitForPersistedMarkdown(projectDir, expectedMarkdown) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 160; attempt += 1) {
+    try {
+      latestState = readPersistedContinuationState(projectDir);
+      if (latestState.markdown === expectedMarkdown) {
+        return latestState;
+      }
+    } catch {
+      latestState = null;
+    }
+    await delay(75);
+  }
+
+  throw new Error(
+    `Timed out waiting for exact persisted continuation Markdown. Latest bytes: ${latestState?.markdown.length ?? 0}.`
+  );
+}
+
+function summarizeContinuationState(state, fixture) {
+  const patchesById = new Map(state.patches.map((patch) => [patch.id, patch]));
+  const linkedComment = state.comments.find(
+    (comment) => comment.id === fixture.comment.id
+  );
+  return {
+    commentStatus: linkedComment?.status ?? null,
+    documentBytes: Buffer.byteLength(state.markdown),
+    markerCounts: {
+      continuation: countOccurrences(
+        state.markdown,
+        "Browser continuation refinement."
+      ),
+      followUp: countOccurrences(state.markdown, fixture.followUpRefinement),
+      unrelatedDocument: countOccurrences(
+        state.markdown,
+        fixture.unrelatedDocumentSentinel
+      ),
+      unrelatedPatch: countOccurrences(
+        state.markdown,
+        fixture.unrelatedPatchSentinel
+      )
+    },
+    patchStatuses: {
+      base: patchesById.get(fixture.basePatch.id)?.status ?? null,
+      differentComment:
+        patchesById.get(fixture.differentCommentPatch.id)?.status ?? null,
+      followUp: patchesById.get(fixture.followUpPatchId)?.status ?? null,
+      linked: patchesById.get(fixture.linkedPatch.id)?.status ?? null,
+      noLinked: patchesById.get(fixture.noLinkedPatch.id)?.status ?? null,
+      unrelated: patchesById.get(fixture.unrelatedPatch.id)?.status ?? null
+    },
+    prerequisitePatchIds:
+      patchesById.get(fixture.linkedPatch.id)?.depends_on_patch_ids ?? [],
+    replyPersisted:
+      linkedComment?.thread.some(
+        (entry) =>
+          entry.role === "user" && entry.content === fixture.followUpReply
+      ) ?? false,
+    unrelatedDocumentUnchanged:
+      state.unrelatedDocumentMarkdown === fixture.unrelatedDocumentMarkdown,
+    unrelatedPatchUnchanged:
+      JSON.stringify(patchesById.get(fixture.unrelatedPatch.id)) ===
+      JSON.stringify(fixture.unrelatedPatch)
+  };
+}
+
+function writeContinuationEvidence(evidenceRoot, fileName, value) {
+  if (!evidenceRoot) {
+    return;
+  }
+  mkdirSync(evidenceRoot, { recursive: true });
+  writeFileSync(
+    join(evidenceRoot, fileName),
+    `${JSON.stringify(value, null, 2)}\n`
+  );
+}
+
+async function captureEvidenceScreenshot(client, evidenceRoot, fileName) {
+  if (!evidenceRoot) {
+    return;
+  }
+  mkdirSync(evidenceRoot, { recursive: true });
+  const screenshot = await client.call("Page.captureScreenshot", {
+    captureBeyondViewport: false,
+    format: "png"
+  });
+  writeFileSync(
+    join(evidenceRoot, fileName),
+    Buffer.from(screenshot.data, "base64")
+  );
+}
+
+function createFollowUpImport({ commentId, originalText, suggestedText }) {
   return {
     protocol: "patchmark.comment_reply_import",
     protocol_version: 1,
@@ -529,12 +677,9 @@ function createFollowUpImport({ commentId, originalText }) {
     patch_proposals: [
       {
         comment_id: commentId,
-        display_title: "Restore validation requirements",
+        display_title: PATCH_CONTINUATION_FIXTURE.followUpDisplayTitle,
         original_text: originalText,
-        suggested_text: appendRefinement(
-          originalText,
-          "Validate acceptable margins and production complexity."
-        ),
+        suggested_text: suggestedText,
         suggested_text_sources: [],
         reason: "Restores requirements requested in the latest follow-up.",
         reason_sources: [],
@@ -839,6 +984,8 @@ async function readFixtureState(
       const documentMarkdown = window.__patchmarkFixtureWrites.get("document.md") ?? "";
       return {
         commentStatus: comment?.status ?? null,
+        dependsOnPatchIds: patch?.depends_on_patch_ids ?? [],
+        documentMarkdown,
         selectedText: comment?.anchor?.selected_text ?? null,
         hasFollowUp: comment?.thread?.some((entry) => entry.role === "user" && entry.content === ${JSON.stringify(expectedFollowUp)}) ?? false,
         patchStatus: patch?.status ?? null,
@@ -983,15 +1130,4 @@ function countOccurrences(text, search) {
     index = text.indexOf(search, index + search.length);
   }
   return count;
-}
-
-function appendRefinement(text, refinement) {
-  const trimmedEnd = text.trimEnd();
-
-  if (trimmedEnd.startsWith("|") && trimmedEnd.endsWith("|")) {
-    const trailingWhitespace = text.slice(trimmedEnd.length);
-    return `${trimmedEnd.slice(0, -1).trimEnd()} ${refinement} |${trailingWhitespace}`;
-  }
-
-  return `${text} ${refinement}`;
 }

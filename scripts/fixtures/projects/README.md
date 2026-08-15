@@ -29,3 +29,9 @@ Phase 4 PDF-export coverage applies compact rich Markdown plus unrelated-documen
 comment, and history leak sentinels to a fresh legacy-core copy. Browser PDF
 files, page renders, screenshots, and semantic manifests always belong to unique
 external roots, and parsed output rejects fixture, server, and environment paths.
+
+Phase 5 patch-continuation coverage composes the deterministic Comment-rail scale
+overlay on a fresh legacy-core copy, then adds fixed linked, prerequisite, edge,
+and unrelated records. Browser runs own their project copies, profiles, servers,
+and optional external evidence roots; no canonical fixture contains mutable
+continuation state.
