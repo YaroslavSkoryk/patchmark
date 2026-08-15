@@ -69,6 +69,17 @@ try {
   assert.equal(loaded.markdown, firstContract.currentMarkdown);
   assert.match(loaded.markdown, new RegExp(PDF_EXPORT_FIXTURE.activeDocumentSentinel));
   assert.doesNotMatch(loaded.markdown, new RegExp(PDF_EXPORT_FIXTURE.staleHistorySentinel));
+  assert.doesNotMatch(
+    loaded.markdown,
+    new RegExp(PDF_EXPORT_FIXTURE.unrelatedDocumentSentinel)
+  );
+  assert.equal(
+    readFileSync(
+      join(first.projectRoot, PDF_EXPORT_FIXTURE.unrelatedDocumentFileName),
+      "utf8"
+    ),
+    firstContract.unrelatedMarkdown
+  );
 
   const comments = await readProjectComments(loaded.project);
   assert.equal(comments.length, firstContract.commentCount);

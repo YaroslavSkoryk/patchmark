@@ -113,14 +113,35 @@ try {
   const commentsPath = join(projectDir, ".patchmark", "comments.json");
   const manifestPath = join(projectDir, ".patchmark", "manifest.json");
   const versionPath = join(projectDir, fixtureContract.versionFile);
+  const unrelatedDocumentPath = join(
+    projectDir,
+    fixtureContract.unrelatedDocumentFileName
+  );
   const projectBytesBefore = new Map(
-    [documentPath, commentsPath, manifestPath, versionPath].map((path) => [
-      path,
-      readFileSync(path)
-    ])
+    [
+      documentPath,
+      commentsPath,
+      manifestPath,
+      unrelatedDocumentPath,
+      versionPath
+    ].map((path) => [path, readFileSync(path)])
   );
   const inventory = inventoryProject(projectDir);
   fixtureServer = await startFixtureFileServer(projectDir, inventory);
+  const forbiddenExportMarkers = [
+    fixtureContract.commentOnlySentinel,
+    fixtureContract.staleHistorySentinel,
+    fixtureContract.unrelatedDocumentSentinel,
+    projectDir,
+    fixtureCopy.temporaryRoot,
+    sourceRoot,
+    fixtureServer.baseUrl,
+    editorUrl,
+    process.env.HOME ?? "",
+    process.env.TMPDIR ?? "",
+    process.env.PATCHMARK_EDITOR_URL ?? "",
+    process.env.PATCHMARK_PDF_EVIDENCE_DIR ?? ""
+  ].filter(Boolean);
   const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
 
   if (!chromePath) {
@@ -261,8 +282,7 @@ try {
     forbiddenMarkers: [
       repeatMarker,
       codeBlockToolbarText,
-      fixtureContract.commentOnlySentinel,
-      fixtureContract.staleHistorySentinel
+      ...forbiddenExportMarkers
     ],
     pdfPath: firstPdfPath,
     renderDirectory: join(evidenceRoot, "first-rendered-pages")
@@ -310,8 +330,7 @@ try {
     ],
     forbiddenMarkers: [
       codeBlockToolbarText,
-      fixtureContract.commentOnlySentinel,
-      fixtureContract.staleHistorySentinel
+      ...forbiddenExportMarkers
     ],
     pdfPath: secondPdfPath,
     renderDirectory: join(evidenceRoot, "second-rendered-pages")

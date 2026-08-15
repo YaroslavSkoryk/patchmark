@@ -21,6 +21,8 @@ export const PDF_EXPORT_FIXTURE = Object.freeze({
   staleHistorySentinel: "STALE HISTORY PDF SENTINEL",
   suggestedName: "document.shareholder-clean.pdf",
   title: "Synthetic Indigo Ledger",
+  unrelatedDocumentFileName: "unrelated-document.md",
+  unrelatedDocumentSentinel: "UNRELATED DOCUMENT PDF SENTINEL",
   versionId: "PM-VERSION-PDF-STALE"
 });
 
@@ -77,12 +79,24 @@ export function applyPdfExportProject(projectRoot) {
     "",
     "This invented historical state must never leak into the active PDF."
   ].join("\n");
+  const unrelatedMarkdown = [
+    "# Synthetic Unrelated Document",
+    "",
+    PDF_EXPORT_FIXTURE.unrelatedDocumentSentinel,
+    "",
+    "This unregistered invented Markdown document must never enter the active export."
+  ].join("\n");
   const versionFile = ".patchmark/versions/pm-pdf-stale.md";
   const originalManifest = JSON.parse(
     readFileSync(join(root, ".patchmark", "manifest.json"), "utf8")
   );
 
   writeProjectFixtureText(root, PDF_EXPORT_FIXTURE.fileName, currentMarkdown);
+  writeProjectFixtureText(
+    root,
+    PDF_EXPORT_FIXTURE.unrelatedDocumentFileName,
+    unrelatedMarkdown
+  );
   writeProjectFixtureText(root, versionFile, staleMarkdown);
   writeProjectFixtureJson(root, ".patchmark/comments.json", [
     {
@@ -125,6 +139,7 @@ export function applyPdfExportProject(projectRoot) {
     currentMarkdown,
     selectedText,
     staleMarkdown,
+    unrelatedMarkdown,
     versionFile
   };
 }
