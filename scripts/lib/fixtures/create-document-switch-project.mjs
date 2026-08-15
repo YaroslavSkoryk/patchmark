@@ -47,6 +47,15 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
       "commentCountPerDocument must not exceed paragraphCountPerDocument."
     );
   }
+  const documentProfiles = options.documentProfiles ?? [];
+  if (
+    !Array.isArray(documentProfiles) ||
+    documentProfiles.length > documentCount
+  ) {
+    throw new Error(
+      "documentProfiles must be an array no longer than documentCount."
+    );
+  }
   const includeMissingDocument = options.includeMissingDocument === true;
   const bookmarkDocumentIndex =
     options.bookmarkDocumentIndex === undefined
@@ -76,22 +85,38 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
   const documents = [];
 
   for (let documentIndex = 0; documentIndex < documentCount; documentIndex += 1) {
+    const profile = resolveDocumentProfile(
+      documentIndex,
+      documentProfiles[documentIndex],
+      {
+        commentCount: commentCountPerDocument,
+        historyCount: historyCountPerDocument,
+        paragraphCount: paragraphCountPerDocument,
+        paragraphRepeatCount,
+        patchCount: patchCountPerDocument
+      }
+    );
     documents.push(
       createDocumentStore({
-        commentCount: commentCountPerDocument,
+        codeBlockCount: profile.codeBlockCount,
+        commentCount: profile.commentCount,
         displayTitle: createDisplayTitle(documentIndex),
         documentId: createDocumentId(documentIndex, token),
         documentIndex,
         groupId: groups[documentIndex % 2 === 0 ? 1 : 0].groupId,
-        historyCount: historyCountPerDocument,
-        paragraphCount: paragraphCountPerDocument,
-        paragraphRepeatCount,
-        patchCount: patchCountPerDocument,
+        headingCount: profile.headingCount,
+        historyCount: profile.historyCount,
+        paragraphCount: profile.paragraphCount,
+        paragraphRepeatCount: profile.paragraphRepeatCount,
+        patchCount: profile.patchCount,
         path: createDocumentPath(documentIndex),
         position: (documentIndex + 1) * 1000,
         projectId,
         projectTitle,
         root,
+        structuredCellRepeatCount: profile.structuredCellRepeatCount,
+        structuredTableCount: profile.structuredTableCount,
+        structuredTableRowsPerTable: profile.structuredTableRowsPerTable,
         withBookmark: documentIndex === bookmarkDocumentIndex,
         writeMarkdown: true
       })
@@ -100,11 +125,13 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
 
   const missingDocument = includeMissingDocument
     ? createDocumentStore({
+        codeBlockCount: 0,
         commentCount: 0,
         displayTitle: "Synthetic Missing Appendix",
         documentId: `doc_switch_missing_${token}`,
         documentIndex: documentCount,
         groupId: groups[0].groupId,
+        headingCount: 1,
         historyCount: 0,
         paragraphCount: 1,
         paragraphRepeatCount: 1,
@@ -114,6 +141,9 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
         projectId,
         projectTitle,
         root,
+        structuredCellRepeatCount: 1,
+        structuredTableCount: 0,
+        structuredTableRowsPerTable: 1,
         withBookmark: false,
         writeMarkdown: false
       })
@@ -158,12 +188,83 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
   };
 }
 
+function resolveDocumentProfile(documentIndex, profile, defaults) {
+  if (
+    profile !== undefined &&
+    (profile === null || typeof profile !== "object" || Array.isArray(profile))
+  ) {
+    throw new Error(`documentProfiles[${documentIndex}] must be an object.`);
+  }
+  const value = profile ?? {};
+  const paragraphCount = validateFixtureInteger(
+    `documentProfiles[${documentIndex}].paragraphCount`,
+    value.paragraphCount ?? defaults.paragraphCount,
+    { min: 1, max: 2_000 }
+  );
+  const commentCount = validateFixtureInteger(
+    `documentProfiles[${documentIndex}].commentCount`,
+    value.commentCount ?? defaults.commentCount,
+    { min: 0, max: 500 }
+  );
+  if (commentCount > paragraphCount) {
+    throw new Error(
+      `documentProfiles[${documentIndex}].commentCount must not exceed paragraphCount.`
+    );
+  }
+  return {
+    codeBlockCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].codeBlockCount`,
+      value.codeBlockCount ?? 0,
+      { min: 0, max: 200 }
+    ),
+    commentCount,
+    headingCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].headingCount`,
+      value.headingCount ?? 2,
+      { min: 1, max: Math.min(100, paragraphCount + 1) }
+    ),
+    historyCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].historyCount`,
+      value.historyCount ?? defaults.historyCount,
+      { min: 0, max: 100 }
+    ),
+    paragraphCount,
+    paragraphRepeatCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].paragraphRepeatCount`,
+      value.paragraphRepeatCount ?? defaults.paragraphRepeatCount,
+      { min: 1, max: 20 }
+    ),
+    structuredCellRepeatCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].structuredCellRepeatCount`,
+      value.structuredCellRepeatCount ?? 1,
+      { min: 1, max: 20 }
+    ),
+    structuredTableCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].structuredTableCount`,
+      value.structuredTableCount ?? 0,
+      { min: 0, max: 60 }
+    ),
+    structuredTableRowsPerTable: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].structuredTableRowsPerTable`,
+      value.structuredTableRowsPerTable ?? 1,
+      { min: 1, max: 40 }
+    ),
+    patchCount: validateFixtureInteger(
+      `documentProfiles[${documentIndex}].patchCount`,
+      value.patchCount ?? defaults.patchCount,
+      { min: 0, max: 1_000 }
+    )
+  };
+}
+
 function createDocumentStore({
+  codeBlockCount,
   commentCount,
   displayTitle,
   documentId,
   documentIndex,
   groupId,
+  headingCount,
   historyCount,
   paragraphCount,
   paragraphRepeatCount,
@@ -173,13 +274,22 @@ function createDocumentStore({
   projectId,
   projectTitle,
   root,
+  structuredCellRepeatCount,
+  structuredTableCount,
+  structuredTableRowsPerTable,
   withBookmark,
   writeMarkdown
 }) {
   const paragraphs = Array.from({ length: paragraphCount }, (_, paragraphIndex) =>
     createParagraph(tokenFor(documentId), documentIndex, paragraphIndex, paragraphRepeatCount)
   );
-  const markdown = createMarkdown(displayTitle, paragraphs);
+  const markdown = createMarkdown(displayTitle, paragraphs, headingCount, {
+    codeBlockCount,
+    documentIndex,
+    structuredCellRepeatCount,
+    structuredTableCount,
+    structuredTableRowsPerTable
+  });
   const comments = createComments({
     commentCount,
     documentIndex,
@@ -281,6 +391,7 @@ function createDocumentStore({
     documentId,
     documentKey: JSON.stringify(["project_document", projectId, documentId]),
     groupId,
+    headingCount,
     historyCount: versions.length,
     manifestPath: `${store}/manifest.json`,
     patchCount: patches.length,
@@ -314,14 +425,78 @@ function createDocumentPath(documentIndex) {
   return `switch-document-${String(documentIndex + 1).padStart(2, "0")}.md`;
 }
 
-function createMarkdown(displayTitle, paragraphs) {
-  return [
-    `# ${displayTitle}`,
-    "",
-    "## Generated relay notes",
-    "",
-    ...paragraphs.flatMap((paragraph) => [paragraph.markdown, ""])
-  ].join("\n");
+function createMarkdown(displayTitle, paragraphs, headingCount, structure) {
+  const lines = [`# ${displayTitle}`, ""];
+  if (headingCount === 1) {
+    lines.push(...paragraphs.flatMap((paragraph) => [paragraph.markdown, ""]));
+  } else {
+    const sectionCount = headingCount - 1;
+    for (let sectionIndex = 0; sectionIndex < sectionCount; sectionIndex += 1) {
+      lines.push(
+        sectionIndex === 0
+          ? "## Generated relay notes"
+          : `## Generated relay segment ${String(sectionIndex + 1).padStart(2, "0")}`,
+        ""
+      );
+      const start = Math.floor((sectionIndex * paragraphs.length) / sectionCount);
+      const end = Math.floor(
+        ((sectionIndex + 1) * paragraphs.length) / sectionCount
+      );
+      lines.push(
+        ...paragraphs
+          .slice(start, end)
+          .flatMap((paragraph) => [paragraph.markdown, ""])
+      );
+    }
+  }
+  lines.push(...createStructuredWorkload(structure));
+  return lines.join("\n");
+}
+
+function createStructuredWorkload({
+  codeBlockCount,
+  documentIndex,
+  structuredCellRepeatCount,
+  structuredTableCount,
+  structuredTableRowsPerTable
+}) {
+  const lines = [];
+  const delimiterWidth = 48 + documentIndex * 7;
+  for (let tableIndex = 0; tableIndex < structuredTableCount; tableIndex += 1) {
+    const tableNumber = String(tableIndex + 1).padStart(2, "0");
+    lines.push(
+      `| Relay | Assumption | Evidence | Decision |`,
+      `| ${"-".repeat(delimiterWidth + tableIndex)} | :${"-".repeat(delimiterWidth + 4)} | ${"-".repeat(delimiterWidth + 9)}: | ${"-".repeat(delimiterWidth + 14)} |`
+    );
+    for (let rowIndex = 0; rowIndex < structuredTableRowsPerTable; rowIndex += 1) {
+      const rowNumber = String(rowIndex + 1).padStart(2, "0");
+      const repeatedCell = `Deterministic market signal ${tableNumber}-${rowNumber} remains fictional and locally generated. `.repeat(
+        structuredCellRepeatCount
+      );
+      lines.push(
+        `| **Relay ${tableNumber}-${rowNumber}** | ${repeatedCell}| [Synthetic evidence](https://example.test/relay-${tableNumber}-${rowNumber}) | \`review-${tableNumber}-${rowNumber}\` |`
+      );
+    }
+    lines.push("");
+  }
+  for (let codeIndex = 0; codeIndex < codeBlockCount; codeIndex += 1) {
+    const codeNumber = String(codeIndex + 1).padStart(3, "0");
+    lines.push(
+      "```json",
+      JSON.stringify(
+        {
+          document: documentIndex + 1,
+          note: "Deterministic fixture content only",
+          relay: codeNumber
+        },
+        null,
+        2
+      ),
+      "```",
+      ""
+    );
+  }
+  return lines;
 }
 
 function createParagraph(token, documentIndex, paragraphIndex, repeatCount) {

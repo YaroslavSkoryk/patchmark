@@ -118,6 +118,10 @@ import {
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
 import { GuidedReviewWizard } from "@/components/guided-review/guided-review-wizard";
+import type {
+  DocumentEditorReadinessIdentity,
+  DocumentEditorReadyDetail
+} from "@/components/document-editor-readiness";
 import { ProjectDocumentNavigator } from "@/components/project-document-navigator";
 import {
   MarkdownSourceEditor,
@@ -440,6 +444,11 @@ type SaveStatus = "idle" | "saving" | "failed" | "unavailable";
 type SaveFeedback = {
   kind: "success" | "error" | "info";
   message: string;
+};
+type DocumentSwitchTransaction = DocumentEditorReadinessIdentity & {
+  documentId: string;
+  feedback: SaveFeedback;
+  phase: "awaiting_editor" | "ready";
 };
 type PreparedDocumentRecovery = {
   clearedRecoveryId?: string;
@@ -935,6 +944,11 @@ export function DocumentEditor() {
   const [requestedProjectDocumentId, setRequestedProjectDocumentId] = useState<
     string | null
   >(null);
+  const [documentSwitchTransaction, setDocumentSwitchTransaction] =
+    useState<DocumentSwitchTransaction | null>(null);
+  const documentSwitchTransactionRef =
+    useRef<DocumentSwitchTransaction | null>(documentSwitchTransaction);
+  documentSwitchTransactionRef.current = documentSwitchTransaction;
   const pendingDocumentSwitchPerformanceRef = useRef<{
     operationId: string | null;
     targetDocumentId: string;
@@ -1319,6 +1333,7 @@ export function DocumentEditor() {
     fileName !== null &&
     (baselineMarkdown === null || markdown !== baselineMarkdown);
   const isSaving = saveStatus === "saving";
+  const isDocumentSwitchPending = requestedProjectDocumentId !== null;
   const isProjectMode = projectHandle !== null;
   const isProjectRecoveryReadOnly =
     projectRecovery !== null && projectRecovery.kind !== "migration_rolled_back";
@@ -2210,6 +2225,79 @@ export function DocumentEditor() {
     return () => window.cancelAnimationFrame(animationFrameId);
   }, [comments, markdown]);
 
+  const handleDocumentEditorReady = useCallback(
+    (detail: DocumentEditorReadyDetail) => {
+      const transaction = documentSwitchTransactionRef.current;
+      if (
+        !transaction ||
+        detail.documentKey !== transaction.documentKey ||
+        detail.contentFingerprint !== transaction.contentFingerprint ||
+        detail.requestGeneration !== transaction.requestGeneration ||
+        detail.switchOperationId !== transaction.switchOperationId ||
+        detail.requestGeneration !== documentSwitchRequestRef.current ||
+        activeDocumentKeyRef.current !== transaction.documentKey
+      ) {
+        return;
+      }
+      markDocumentSwitchPerformance(
+        transaction.switchOperationId,
+        "semantic_readiness_callback"
+      );
+      if (editorDocumentRef.current) {
+        editorDocumentRef.current.dataset.documentEditorReady = "true";
+        editorDocumentRef.current.inert = false;
+        editorDocumentRef.current.setAttribute("aria-busy", "false");
+      }
+      markDocumentSwitchPerformance(
+        transaction.switchOperationId,
+        "committed_editor_visible_interactive"
+      );
+      markDocumentSwitchPerformance(
+        transaction.switchOperationId,
+        "first_usable_editor"
+      );
+      setDocumentSwitchTransaction((currentTransaction) =>
+        currentTransaction?.documentKey === transaction.documentKey &&
+        currentTransaction.requestGeneration === transaction.requestGeneration
+          ? { ...currentTransaction, phase: "ready" }
+          : currentTransaction
+      );
+      setRequestedProjectDocumentId((currentDocumentId) =>
+        currentDocumentId === transaction.documentId
+          ? null
+          : currentDocumentId
+      );
+      setSaveStatus("idle");
+      setSaveFeedback(transaction.feedback);
+    },
+    []
+  );
+
+  const handleDocumentEditorPending = useCallback(
+    (detail: DocumentEditorReadyDetail) => {
+      const transaction = documentSwitchTransactionRef.current;
+      if (
+        !transaction ||
+        transaction.phase !== "ready" ||
+        detail.documentKey !== transaction.documentKey ||
+        detail.contentFingerprint !== transaction.contentFingerprint ||
+        detail.requestGeneration !== transaction.requestGeneration ||
+        detail.switchOperationId !== transaction.switchOperationId ||
+        detail.requestGeneration !== documentSwitchRequestRef.current ||
+        activeDocumentKeyRef.current !== transaction.documentKey
+      ) {
+        return;
+      }
+      setDocumentSwitchTransaction({
+        ...transaction,
+        phase: "awaiting_editor"
+      });
+      setRequestedProjectDocumentId(transaction.documentId);
+      setSaveFeedback(null);
+    },
+    []
+  );
+
   useLayoutEffect(() => {
     const pendingSwitch = pendingDocumentSwitchPerformanceRef.current;
 
@@ -2230,24 +2318,62 @@ export function DocumentEditor() {
       pendingSwitch.operationId,
       "first_target_render"
     );
+    const transaction = documentSwitchTransactionRef.current;
+    if (
+      !transaction ||
+      transaction.phase !== "ready" ||
+      transaction.documentId !== pendingSwitch.targetDocumentId ||
+      transaction.requestGeneration !== documentSwitchRequestRef.current ||
+      activeDocumentKey !== transaction.documentKey
+    ) {
+      return;
+    }
+    const readyEditor = editorDocumentRef.current?.querySelector<HTMLElement>(
+      "[data-editor-content-fingerprint]"
+    );
+    if (
+      readyEditor?.dataset.editorDocumentKey !== transaction.documentKey ||
+      readyEditor.dataset.editorContentFingerprint !==
+        transaction.contentFingerprint ||
+      pendingDocumentSwitchPerformanceRef.current?.operationId !==
+        transaction.switchOperationId
+    ) {
+      return;
+    }
+    markDocumentSwitchPerformance(
+      transaction.switchOperationId,
+      "committed_editor_visible_interactive"
+    );
+    markDocumentSwitchPerformance(
+      transaction.switchOperationId,
+      "first_usable_editor"
+    );
+    markDocumentSwitchPerformance(
+      transaction.switchOperationId,
+      "switch_declared_complete"
+    );
+  }, [
+    activeDocumentKey,
+    comments,
+    documentSwitchTransaction,
+    markdown,
+    projectHandle
+  ]);
 
-    if (isProjectDataLoading) {
+  useEffect(() => {
+    if (documentSwitchTransaction?.phase !== "ready") {
       return;
     }
 
-    window.requestAnimationFrame(() => {
-      if (
-        pendingDocumentSwitchPerformanceRef.current?.operationId !==
-        pendingSwitch.operationId
-      ) {
-        return;
-      }
-      markDocumentSwitchPerformance(
-        pendingSwitch.operationId,
-        "first_usable_editor"
-      );
-    });
-  }, [comments, isProjectDataLoading, markdown, projectHandle]);
+    setDocumentSwitchTransaction((currentTransaction) =>
+      currentTransaction?.phase === "ready" &&
+      currentTransaction.documentKey === documentSwitchTransaction.documentKey &&
+      currentTransaction.requestGeneration ===
+        documentSwitchTransaction.requestGeneration
+        ? null
+        : currentTransaction
+    );
+  }, [documentSwitchTransaction]);
 
   useEffect(() => {
     if (!isDirty) {
@@ -3808,6 +3934,11 @@ export function DocumentEditor() {
     setSelectionActions(null);
     setVisualSelectionDraft(null);
     setMarkdownSelection({ end: 0, start: 0 });
+    editorDocumentRef.current?.removeAttribute("data-document-editor-ready");
+    if (editorDocumentRef.current) {
+      editorDocumentRef.current.inert = true;
+      editorDocumentRef.current.setAttribute("aria-busy", "true");
+    }
     const requestId = documentSwitchRequestRef.current + 1;
     documentSwitchRequestRef.current = requestId;
     setRequestedProjectDocumentId(documentId);
@@ -3840,8 +3971,14 @@ export function DocumentEditor() {
     setSaveStatus("saving");
     setSaveFeedback(null);
     try {
+      markDocumentSwitchPerformance(
+        performanceOperationId,
+        "outgoing_document_work_started"
+      );
       const recoveryStartedAt = performance.now();
-      const sourceRecoveryId = await persistActiveRecoveryBestEffort();
+      const sourceRecoveryId = isDirty
+        ? await persistActiveRecoveryBestEffort()
+        : null;
       if (sourceRecoveryId) {
         incrementDocumentSwitchPerformanceCounter(
           performanceOperationId,
@@ -3862,9 +3999,14 @@ export function DocumentEditor() {
         documentId,
         markdown,
         patches,
+        persistCurrentDocument: isDirty,
         project: projectHandle,
         performanceOperationId
       });
+      markDocumentSwitchPerformance(
+        performanceOperationId,
+        "target_source_available"
+      );
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
       const recoveryCleanupStartedAt = performance.now();
@@ -3894,23 +4036,29 @@ export function DocumentEditor() {
         performanceOperationId,
         pendingBookmarkDocumentKey: options.continueReading
           ? targetDocumentKey
-          : null
-      });
-      if (requestId === documentSwitchRequestRef.current) {
-        setRequestedProjectDocumentId(null);
-      }
-      setSaveFeedback({
-        kind: loaded.project.documentAvailability === "missing" ? "info" : "success",
-        message:
-          loaded.project.documentAvailability === "missing"
-            ? `The registered file ${loaded.project.document?.path} is missing.`
-            : `Opened ${loaded.project.document?.display_title}.`
+          : null,
+        switchRequest: {
+          feedback: {
+            kind:
+              loaded.project.documentAvailability === "missing"
+                ? "info"
+                : "success",
+            message:
+              loaded.project.documentAvailability === "missing"
+                ? `The registered file ${loaded.project.document?.path} is missing.`
+                : `Opened ${loaded.project.document?.display_title}.`
+          },
+          generation: requestId
+        }
       });
     } catch (error) {
       if (requestId !== documentSwitchRequestRef.current) {
         return;
       }
       setRequestedProjectDocumentId(null);
+      setDocumentSwitchTransaction((current) =>
+        current?.requestGeneration === requestId ? null : current
+      );
       setSaveStatus("failed");
       setSaveFeedback({
         kind: "error",
@@ -7573,7 +7721,7 @@ export function DocumentEditor() {
   }
 
   function handleEditorModeChange(nextMode: EditorMode) {
-    if (nextMode === mode) {
+    if (nextMode === mode || requestedProjectDocumentId !== null) {
       return;
     }
 
@@ -8951,6 +9099,10 @@ export function DocumentEditor() {
       localInstanceId?: string | null;
       pendingBookmarkDocumentKey?: string | null;
       performanceOperationId?: string | null;
+      switchRequest?: {
+        feedback: SaveFeedback;
+        generation: number;
+      };
     } = {}
   ): Promise<void> {
     const performanceOperationId = options.performanceOperationId;
@@ -9161,8 +9313,27 @@ export function DocumentEditor() {
     if (requestId !== deviceRecoveryLoadRequestRef.current) {
       return;
     }
+    const editorMarkdown = preparedRecovery?.markdown ?? loadedProject.markdown;
+    const loadedDocumentKey = createProjectDocumentKey(identity);
     pendingReadingBookmarkNavigationRef.current =
       options.pendingBookmarkDocumentKey ?? null;
+    markDocumentSwitchPerformance(
+      performanceOperationId,
+      "react_transaction_start"
+    );
+    setDocumentSwitchTransaction(
+      options.switchRequest
+        ? {
+            contentFingerprint: createDocumentHash(editorMarkdown),
+            documentId: identity.documentId,
+            documentKey: loadedDocumentKey,
+            feedback: options.switchRequest.feedback,
+            phase: "awaiting_editor",
+            requestGeneration: options.switchRequest.generation,
+            switchOperationId: performanceOperationId ?? null
+          }
+        : null
+    );
     setProjectHandle(loadedProject.project);
     setProjectDocuments(documents);
     setLocalProjectInstanceId(instanceId);
@@ -9172,7 +9343,7 @@ export function DocumentEditor() {
       loadedProject.project.document?.path ??
         loadedProject.project.manifest.document_file
     );
-    setMarkdown(preparedRecovery?.markdown ?? loadedProject.markdown);
+    setMarkdown(editorMarkdown);
     setBaselineMarkdown(loadedProject.markdown);
     setActiveFileHandle(null);
     setRestoredMarkdown(
@@ -9249,7 +9420,6 @@ export function DocumentEditor() {
         window.scrollTo({ top: restoredUiState.scrollY });
       });
     }
-    const loadedDocumentKey = createProjectDocumentKey(identity);
     if (pendingReadingBookmarkNavigationRef.current === loadedDocumentKey) {
       const loadedBookmark = getDocumentReadingBookmark({
         document: identity,
@@ -9267,7 +9437,7 @@ export function DocumentEditor() {
           void continueReadingAtBookmarkRef.current?.({
             bookmark: loadedBookmark,
             documentKey: loadedDocumentKey,
-            markdown: preparedRecovery?.markdown ?? loadedProject.markdown,
+            markdown: editorMarkdown,
             mode: modeRef.current,
             patches: projectPatches
           });
@@ -9295,10 +9465,32 @@ export function DocumentEditor() {
 
   const documentActionsBusy =
     isSaving ||
+    isDocumentSwitchPending ||
     isProjectDataLoading ||
     isProjectRecoveryReadOnly ||
     isReanchorMode;
-
+  const activeDocumentSwitchTransaction =
+    documentSwitchTransaction?.documentKey === activeDocumentKey
+      ? documentSwitchTransaction
+      : null;
+  const activeDocumentReadiness =
+    useMemo<DocumentEditorReadinessIdentity | null>(
+      () =>
+        activeDocumentSwitchTransaction
+          ? {
+              contentFingerprint:
+                activeDocumentSwitchTransaction.contentFingerprint,
+              documentKey: activeDocumentSwitchTransaction.documentKey,
+              requestGeneration:
+                activeDocumentSwitchTransaction.requestGeneration,
+              switchOperationId:
+                activeDocumentSwitchTransaction.switchOperationId
+            }
+          : null,
+      [activeDocumentSwitchTransaction]
+    );
+  const isAwaitingDocumentEditor =
+    activeDocumentSwitchTransaction?.phase === "awaiting_editor";
   const navigationOpen = isNarrowNavigation
     ? mobileNavigationOpen
     : !navigationCollapsed;
@@ -9478,7 +9670,9 @@ export function DocumentEditor() {
                 />
                 <ApplicationMenuItem
                   closeMenu={closeMenu}
-                  disabled={isSaving || isReanchorMode}
+                  disabled={
+                    isSaving || isDocumentSwitchPending || isReanchorMode
+                  }
                   onSelect={handleOpenProjectFolder}
                 >
                   Open Project Folder
@@ -9487,7 +9681,9 @@ export function DocumentEditor() {
               <ApplicationMenuGroup label="Create">
                 <ApplicationMenuItem
                   closeMenu={closeMenu}
-                  disabled={isSaving || isReanchorMode}
+                  disabled={
+                    isSaving || isDocumentSwitchPending || isReanchorMode
+                  }
                   onSelect={handleOpenLegacyProjectAssembly}
                 >
                   Create Project From Existing Patchmark Projects
@@ -9495,7 +9691,11 @@ export function DocumentEditor() {
                 <ApplicationMenuItem
                   closeMenu={closeMenu}
                   disabled={
-                    !fileName || isProjectMode || isSaving || isReanchorMode
+                    !fileName ||
+                    isProjectMode ||
+                    isSaving ||
+                    isDocumentSwitchPending ||
+                    isReanchorMode
                   }
                   onSelect={handleCreateProjectFromCurrentDocument}
                 >
@@ -9505,7 +9705,7 @@ export function DocumentEditor() {
               {fileName ? (
                 <ApplicationMenuGroup label="Export">
                   <ApplicationMenuItem
-                    busy={isSaving}
+                    busy={isSaving || isDocumentSwitchPending}
                     closeMenu={closeMenu}
                     disabled={documentActionsBusy}
                     onSelect={handleSaveAs}
@@ -9560,14 +9760,24 @@ export function DocumentEditor() {
               <ApplicationMenuGroup label="ChatGPT review">
                 <ApplicationMenuItem
                   closeMenu={closeMenu}
-                  disabled={isSaving || isCommentBusy || isReanchorMode}
+                  disabled={
+                    isSaving ||
+                    isDocumentSwitchPending ||
+                    isCommentBusy ||
+                    isReanchorMode
+                  }
                   onSelect={handleGenerateChatGptPrompt}
                 >
                   Generate ChatGPT Prompt
                 </ApplicationMenuItem>
                 <ApplicationMenuItem
                   closeMenu={closeMenu}
-                  disabled={isSaving || isCommentBusy || isReanchorMode}
+                  disabled={
+                    isSaving ||
+                    isDocumentSwitchPending ||
+                    isCommentBusy ||
+                    isReanchorMode
+                  }
                   onSelect={handleOpenChatGptImportDialog}
                 >
                   Import ChatGPT Response
@@ -9577,6 +9787,7 @@ export function DocumentEditor() {
                   disabled={
                     !projectHandle ||
                     isSaving ||
+                    isDocumentSwitchPending ||
                     isCommentBusy ||
                     isProjectDataLoading ||
                     isProjectRecoveryReadOnly ||
@@ -9672,6 +9883,7 @@ export function DocumentEditor() {
             }
             busy={
               isSaving ||
+              isDocumentSwitchPending ||
               isProjectDataLoading ||
               isCommentBusy ||
               isReadingBookmarkBusy
@@ -9809,7 +10021,11 @@ export function DocumentEditor() {
                   {readingBookmarkResolution?.state === "available" ? (
                     <button
                       type="button"
-                      disabled={isReadingBookmarkBusy || isReanchorMode}
+                      disabled={
+                        isReadingBookmarkBusy ||
+                        isDocumentSwitchPending ||
+                        isReanchorMode
+                      }
                       onClick={() => void handleContinueReading()}
                     >
                       Continue reading
@@ -9819,7 +10035,11 @@ export function DocumentEditor() {
                       <span role="status">Bookmark location unavailable</span>
                       <button
                         type="button"
-                        disabled={isReadingBookmarkBusy || isReanchorMode}
+                        disabled={
+                          isReadingBookmarkBusy ||
+                          isDocumentSwitchPending ||
+                          isReanchorMode
+                        }
                         onClick={() => void handleRemoveReadingBookmark()}
                       >
                         Remove unavailable bookmark
@@ -9832,6 +10052,7 @@ export function DocumentEditor() {
                 <button
                   type="button"
                   aria-pressed={mode === "visual"}
+                  disabled={requestedProjectDocumentId !== null}
                   onClick={() => handleEditorModeChange("visual")}
                 >
                   Visual Mode
@@ -9839,6 +10060,7 @@ export function DocumentEditor() {
                 <button
                   type="button"
                   aria-pressed={mode === "markdown"}
+                  disabled={requestedProjectDocumentId !== null}
                   onClick={() => handleEditorModeChange("markdown")}
                 >
                   Markdown Mode
@@ -9857,7 +10079,7 @@ export function DocumentEditor() {
             {projectRecovery.canRestore ? (
               <button
                 type="button"
-                disabled={isSaving}
+                disabled={isSaving || isDocumentSwitchPending}
                 onClick={handleRestoreProjectRecovery}
               >
                 Restore last complete save
@@ -9977,35 +10199,49 @@ export function DocumentEditor() {
           ref={editorDocumentRef}
           className="editor-body"
           data-document-key={activeDocumentKey ?? undefined}
+          data-document-switch-phase={activeDocumentSwitchTransaction?.phase}
+          data-document-switching={
+            isDocumentSwitchPending ? "true" : undefined
+          }
+          aria-busy={isDocumentSwitchPending || undefined}
+          inert={isDocumentSwitchPending ? true : undefined}
           onClick={handleEditorClick}
           onContextMenu={handleEditorContextMenu}
           onMouseUp={handleEditorMouseUp}
         >
+          {fileName && mode === "visual" && isAwaitingDocumentEditor ? (
+            <DocumentSwitchTargetPreview
+              markdown={markdown}
+              operationId={activeDocumentSwitchTransaction.switchOperationId}
+            />
+          ) : null}
           {fileName ? (
             mode === "visual" ? (
               <VisualMarkdownEditor
+                documentKey={activeDocumentKey}
+                documentReadiness={activeDocumentReadiness}
                 markdown={markdown}
+                onDocumentPending={handleDocumentEditorPending}
+                onDocumentReady={handleDocumentEditorReady}
                 onMarkdownChange={(nextMarkdown) =>
                   handleMarkdownChange(nextMarkdown, "manual_visual")
                 }
-                readOnly={
-                  isProjectRecoveryReadOnly ||
-                  requestedProjectDocumentId !== null
-                }
+                readOnly={isProjectRecoveryReadOnly}
                 resetKey={documentVersion}
                 selectionOnly={isReanchorMode}
               />
             ) : (
               <MarkdownSourceEditor
+                documentReadiness={activeDocumentReadiness}
                 markdown={markdown}
+                onDocumentReady={handleDocumentEditorReady}
                 onMarkdownChange={(nextMarkdown, hint) =>
                   handleMarkdownChange(nextMarkdown, "manual_source", hint)
                 }
                 onSelectionChange={handleMarkdownSelectionChange}
                 readOnly={
                   isProjectRecoveryReadOnly ||
-                  isReanchorMode ||
-                  requestedProjectDocumentId !== null
+                  isReanchorMode
                 }
                 selectionRequest={markdownSelectionRequest}
               />
@@ -10394,7 +10630,9 @@ export function DocumentEditor() {
           defaultSectionLine={defaultCommentHeading?.line ?? null}
           error={commentsError}
           headings={headings}
-          isBusy={isCommentBusy || isReanchorMode}
+          isBusy={
+            isCommentBusy || isDocumentSwitchPending || isReanchorMode
+          }
           isDocumentCommentAvailable={
             isProjectMode &&
             !isProjectRecoveryReadOnly &&
@@ -11070,7 +11308,7 @@ export function DocumentEditor() {
           batches={patchReviewQueueBatches}
           commentsById={commentsById}
           feedback={saveStatus === "failed" ? saveFeedback : null}
-          isPatchActionBusy={isSaving}
+          isPatchActionBusy={isSaving || isDocumentSwitchPending}
           onClose={handleClosePatchReviewWorkspace}
           onRejectPendingPatches={(group) => handleRejectPatchGroup(group)}
           onSelectBatch={(batch) => {
@@ -11095,7 +11333,7 @@ export function DocumentEditor() {
               comment={selectedPatchComment}
               followUpRelationship={selectedPatchFollowUpRelationship}
               hasMultipleReviewablePatches={reviewablePatches.length > 1}
-              isPatchActionBusy={isSaving}
+              isPatchActionBusy={isSaving || isDocumentSwitchPending}
               markdown={markdown}
               dependencyStatus={
                 selectedPatchDependencyStatus ??
@@ -12240,6 +12478,27 @@ function MarkdownSnippetPreview({ markdown }: { markdown: string }) {
   }
 
   return <div className="markdown-snippet-preview">{previewBlocks}</div>;
+}
+
+function DocumentSwitchTargetPreview({
+  markdown,
+  operationId
+}: {
+  markdown: string;
+  operationId: string | null;
+}) {
+  useLayoutEffect(() => {
+    markDocumentSwitchPerformance(operationId, "target_preview_visible");
+  }, [operationId]);
+
+  return (
+    <div
+      aria-label="Target document preview while Visual Mode becomes interactive"
+      className="document-switch-target-preview"
+    >
+      <MarkdownSnippetPreview markdown={markdown} />
+    </div>
+  );
 }
 
 function renderMarkdownPreviewBlocks(markdown: string): ReactNode[] {

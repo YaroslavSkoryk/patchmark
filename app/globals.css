@@ -1399,6 +1399,36 @@ button {
   flex: 1;
 }
 
+.editor-body[data-document-switch-phase="awaiting_editor"]:not(
+    [data-document-editor-ready="true"]
+  )
+  > :is(.visual-editor-shell, .markdown-source-editor) {
+  position: absolute;
+  inset: 0;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.editor-body[data-document-switching="true"]:not(
+    [data-document-editor-ready="true"]
+  ) {
+  pointer-events: none;
+}
+
+.document-switch-target-preview {
+  width: min(100%, 920px);
+  min-height: calc(72vh - 138px);
+  margin: 0 auto;
+  padding: 42px clamp(20px, 4vw, 64px) 88px;
+  pointer-events: none;
+}
+
+.document-switch-target-preview .markdown-snippet-preview {
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
 .editor-body:has(> .markdown-source-editor) {
   display: flex;
   flex-direction: column;
@@ -1661,6 +1691,7 @@ button {
 }
 
 .visual-editor-shell {
+  position: relative;
   min-height: 100%;
 }
 

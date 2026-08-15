@@ -57,6 +57,7 @@ export function startDocumentSwitchPerformanceOperation(
     startedAt
   };
   api.records.push(operation);
+  syncDocumentSwitchPerformanceDom(operation);
 
   if (api.records.length > MAX_RECORDED_OPERATIONS) {
     api.records.splice(0, api.records.length - MAX_RECORDED_OPERATIONS);
@@ -74,6 +75,7 @@ export function markDocumentSwitchPerformance(
 
   if (operation && (options.latest || !(name in operation.marks))) {
     operation.marks[name] = performance.now() - operation.startedAt;
+    syncDocumentSwitchPerformanceDom(operation);
   }
 }
 
@@ -87,6 +89,7 @@ export function recordDocumentSwitchPerformanceDuration(
   if (operation) {
     operation.durations[name] =
       (operation.durations[name] ?? 0) + Math.max(0, duration);
+    syncDocumentSwitchPerformanceDom(operation);
   }
 }
 
@@ -99,6 +102,7 @@ export function incrementDocumentSwitchPerformanceCounter(
 
   if (operation) {
     operation.counters[name] = (operation.counters[name] ?? 0) + amount;
+    syncDocumentSwitchPerformanceDom(operation);
   }
 }
 
@@ -110,6 +114,7 @@ export function updateDocumentSwitchPerformanceMetadata(
 
   if (operation) {
     Object.assign(operation.metadata, metadata);
+    syncDocumentSwitchPerformanceDom(operation);
   }
 }
 
@@ -122,6 +127,7 @@ export function finishDocumentSwitchPerformanceOperation(
     const finishedAt = performance.now();
     operation.finishedAt = finishedAt;
     operation.marks.secondary_work_complete = finishedAt - operation.startedAt;
+    syncDocumentSwitchPerformanceDom(operation);
   }
 }
 
@@ -153,6 +159,11 @@ function getDocumentSwitchPerformanceApi(): DocumentSwitchPerformanceApi | null 
     window.__PATCHMARK_DOCUMENT_SWITCH_PERFORMANCE__ = {
       clear() {
         records.splice(0, records.length);
+        if (typeof document !== "undefined") {
+          document.documentElement.removeAttribute(
+            "data-patchmark-switch-performance"
+          );
+        }
       },
       enabled: true,
       getRecords() {
@@ -169,6 +180,18 @@ function getDocumentSwitchPerformanceApi(): DocumentSwitchPerformanceApi | null 
   }
 
   return window.__PATCHMARK_DOCUMENT_SWITCH_PERFORMANCE__;
+}
+
+function syncDocumentSwitchPerformanceDom(
+  operation: DocumentSwitchPerformanceOperation
+): void {
+  if (typeof document === "undefined") {
+    return;
+  }
+  document.documentElement.setAttribute(
+    "data-patchmark-switch-performance",
+    JSON.stringify(operation)
+  );
 }
 
 function isDocumentSwitchPerformanceEnabled(): boolean {

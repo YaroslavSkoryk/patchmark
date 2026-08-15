@@ -1,6 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
+import type {
+  DocumentEditorReadinessIdentity,
+  DocumentEditorReadyDetail
+} from "@/components/document-editor-readiness";
 
 export type MarkdownSelection = {
   end: number;
@@ -24,8 +28,10 @@ export type MarkdownMutationHint = {
 
 type MarkdownSourceEditorProps = {
   ariaLabel?: string;
+  documentReadiness?: DocumentEditorReadinessIdentity | null;
   id?: string;
   markdown: string;
+  onDocumentReady?: (detail: DocumentEditorReadyDetail) => void;
   onMarkdownChange: (markdown: string, hint?: MarkdownMutationHint) => void;
   onSelectionChange?: (
     selection: MarkdownSelection,
@@ -37,8 +43,10 @@ type MarkdownSourceEditorProps = {
 
 export function MarkdownSourceEditor({
   ariaLabel = "Markdown Mode",
+  documentReadiness = null,
   id,
   markdown,
+  onDocumentReady,
   onMarkdownChange,
   onSelectionChange,
   readOnly = false,
@@ -46,9 +54,27 @@ export function MarkdownSourceEditor({
 }: MarkdownSourceEditorProps) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const onSelectionChangeRef = useRef(onSelectionChange);
+  const onDocumentReadyRef = useRef(onDocumentReady);
+  const lastReportedReadinessRef = useRef<string | null>(null);
   const isComposingRef = useRef(false);
   const pendingMutationHintRef = useRef<MarkdownMutationHint | null>(null);
   onSelectionChangeRef.current = onSelectionChange;
+  onDocumentReadyRef.current = onDocumentReady;
+
+  useLayoutEffect(() => {
+    if (!documentReadiness || textareaRef.current?.value !== markdown) {
+      return;
+    }
+    const readinessKey = JSON.stringify(documentReadiness);
+    if (lastReportedReadinessRef.current === readinessKey) {
+      return;
+    }
+    lastReportedReadinessRef.current = readinessKey;
+    onDocumentReadyRef.current?.({
+      ...documentReadiness,
+      mode: "markdown"
+    });
+  }, [documentReadiness, markdown]);
 
   useEffect(() => {
     if (!selectionRequest || !textareaRef.current) {
@@ -93,6 +119,13 @@ export function MarkdownSourceEditor({
       ref={textareaRef}
       id={id}
       className="markdown-source-editor"
+      data-editor-content-fingerprint={
+        documentReadiness?.contentFingerprint ?? undefined
+      }
+      data-editor-document-key={documentReadiness?.documentKey ?? undefined}
+      data-editor-request-generation={
+        documentReadiness?.requestGeneration ?? undefined
+      }
       aria-label={ariaLabel}
       spellCheck={false}
       wrap="soft"

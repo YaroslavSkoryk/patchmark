@@ -35,11 +35,45 @@ const stressTransitions = Number(
 const outputPath = process.env.PATCHMARK_SWITCH_PERFORMANCE_OUTPUT;
 const expectOptimized =
   process.env.PATCHMARK_SWITCH_EXPECT_OPTIMIZED !== "0";
+const expectAtomic = process.env.PATCHMARK_SWITCH_EXPECT_ATOMIC !== "0";
 const projectDir = mkdtempSync(join(tmpdir(), "patchmark-switch-performance-"));
 const fixtureContract = createDocumentSwitchProject(projectDir, {
   bookmarkDocumentIndex: 1,
   commentCountPerDocument: 31,
   documentCount: 3,
+  documentProfiles: [
+    {
+      codeBlockCount: 24,
+      commentCount: 31,
+      headingCount: 4,
+      historyCount: 49,
+      paragraphCount: 90,
+      paragraphRepeatCount: 8,
+      patchCount: 59,
+      structuredCellRepeatCount: 3,
+      structuredTableCount: 26,
+      structuredTableRowsPerTable: 9
+    },
+    {
+      commentCount: 17,
+      headingCount: 7,
+      historyCount: 37,
+      paragraphCount: 70,
+      paragraphRepeatCount: 6,
+      patchCount: 41,
+      structuredCellRepeatCount: 4,
+      structuredTableCount: 26,
+      structuredTableRowsPerTable: 9
+    },
+    {
+      commentCount: 0,
+      headingCount: 3,
+      historyCount: 3,
+      paragraphCount: 12,
+      paragraphRepeatCount: 2,
+      patchCount: 0
+    }
+  ],
   historyCountPerDocument: 49,
   includeMissingDocument: true,
   paragraphCountPerDocument: 85,
@@ -106,7 +140,7 @@ async function run() {
         directories: inventory.directories,
         files: inventory.files,
         projectName: fixtureContract.projectTitle
-      })}\n${createLongTaskObserverScript()}`
+      })}\n${createLongTaskObserverScript()}\n${createDocumentSwitchConsistencyObserverScript()}`
     });
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
@@ -138,7 +172,24 @@ async function run() {
     const thirdTitle = thirdDocument.displayTitle;
     await ensureActiveDocument(client, firstTitle);
     await assertActiveDocumentIdentity(client, firstDocument);
-    const cold = await measureSwitch(client, secondTitle);
+    const cold = await measureSwitch(client, secondTitle, {
+      sourceDocument: firstDocument,
+      targetDocument: secondDocument
+    });
+    assert.ok(
+      cold.record.marks.target_preview_visible <
+        cold.record.marks.first_usable_editor,
+      "A structured Visual Mode target must become visibly readable before its editor hydration completes."
+    );
+    assert.ok(
+      cold.record.marks.target_preview_visible < 1_000,
+      `The target-content preview took ${cold.record.marks.target_preview_visible} ms to appear.`
+    );
+    await assertDocumentScopedSurface(client, secondDocument);
+    const currentDocumentRequest = await assertCurrentDocumentRequestIsNoop(
+      client,
+      secondDocument
+    );
     if (expectOptimized) {
       assert.equal(cold.writeCount, 0, "An unchanged cold switch must not write.");
       assert.equal(
@@ -154,9 +205,16 @@ async function run() {
     );
 
     const warmSamples = [];
+    const largeFirstToSecondSamples = [];
+    const largeSecondToFirstSamples = [];
     let nextTitle = firstTitle;
     for (let index = 0; index < sampleCount; index += 1) {
-      warmSamples.push(await measureSwitch(client, nextTitle));
+      const sample = await measureSwitch(client, nextTitle);
+      warmSamples.push(sample);
+      (nextTitle === firstTitle
+        ? largeSecondToFirstSamples
+        : largeFirstToSecondSamples
+      ).push(sample);
       nextTitle = nextTitle === firstTitle ? secondTitle : firstTitle;
     }
     if (expectOptimized) {
@@ -172,6 +230,21 @@ async function run() {
         "Unchanged warm switches must not create recovery churn."
       );
     }
+
+    await ensureActiveDocument(client, secondTitle);
+    const largeToSmallSamples = [];
+    const smallToLargeSamples = [];
+    for (let index = 0; index < sampleCount; index += 1) {
+      largeToSmallSamples.push(await measureSwitch(client, thirdTitle));
+      await assertDocumentScopedSurface(client, thirdDocument);
+      smallToLargeSamples.push(await measureSwitch(client, secondTitle));
+      await assertDocumentScopedSurface(client, secondDocument);
+    }
+
+    const openSurfaceSwitch = await measureOpenSurfaceSwitch(
+      client,
+      firstDocument
+    );
 
     await ensureActiveDocument(client, secondTitle);
     await clickButtonByText(client, "Markdown Mode");
@@ -206,7 +279,12 @@ async function run() {
       `Boolean(document.querySelector(".patchmark-prose"))`,
       "Visual Mode after dirty save"
     );
-    const rapid = await measureRapidSwitch(client, secondTitle, thirdTitle);
+    const rapid = await measureRapidSwitch(
+      client,
+      firstDocument,
+      secondDocument,
+      thirdDocument
+    );
     assert.equal(rapid.activeTitle, thirdTitle, "The latest rapid switch must win.");
 
     const missing = await measureMissingSwitch(
@@ -289,6 +367,7 @@ async function run() {
 
     const summary = {
       source: "deterministic_document_switch_fixture",
+      expectAtomic,
       expectOptimized,
       fixture: readProjectFixtureSummary(projectDir, firstTitle),
       documents: fixtureContract.documents.map((document) => ({
@@ -296,7 +375,13 @@ async function run() {
         title: document.displayTitle
       })),
       cold: summarizeSamples([cold]),
+      currentDocumentRequest,
       warm: summarizeSamples(warmSamples),
+      largeFirstToSecond: summarizeSamples(largeFirstToSecondSamples),
+      largeSecondToFirst: summarizeSamples(largeSecondToFirstSamples),
+      largeToSmall: summarizeSamples(largeToSmallSamples),
+      smallToLarge: summarizeSamples(smallToLargeSamples),
+      openSurfaceSwitch,
       dirty: summarizeSamples([dirty]),
       rapid,
       bookmark: summarizeSamples([bookmark]),
@@ -309,6 +394,15 @@ async function run() {
       stress: {
         transitions: stressTransitions,
         derivedStateCacheSize,
+        firstUsableSeriesMs: stressSamples.map((sample) =>
+          round(sample.firstUsableMs)
+        ),
+        firstToSecond: summarizeSamples(
+          stressSamples.filter((_, index) => index % 2 === 0)
+        ),
+        secondToFirst: summarizeSamples(
+          stressSamples.filter((_, index) => index % 2 === 1)
+        ),
         ...summarizeSamples(stressSamples)
       }
     };
@@ -334,8 +428,11 @@ async function run() {
   }
 }
 
-async function measureSwitch(client, targetTitle) {
+async function measureSwitch(client, targetTitle, consistency) {
   await resetMeasurementState(client);
+  if (consistency) {
+    await startConsistencyObservation(client, consistency);
+  }
   const requestedAt = performance.now();
   await clickDocument(client, targetTitle);
   await waitForTargetEditor(client, targetTitle);
@@ -343,27 +440,171 @@ async function measureSwitch(client, targetTitle) {
   const record = await waitForSwitchRecord(client, targetTitle, true);
   const wallTime = performance.now() - requestedAt;
   const state = await readMeasurementState(client);
-  return createMeasurement(
+  const measurement = createMeasurement(
     record,
     state,
     observedFirstUsableMs,
     wallTime
   );
+  if (!consistency) {
+    return measurement;
+  }
+  const observedStates = await stopConsistencyObservation(client);
+  if (expectAtomic) {
+    assertAtomicSwitchStates(observedStates, consistency);
+  }
+  return { ...measurement, consistency: summarizeConsistency(observedStates) };
 }
 
-async function measureRapidSwitch(client, intermediateTitle, targetTitle) {
+async function assertCurrentDocumentRequestIsNoop(client, document) {
+  const recordsBefore = await evaluate(client, {
+    expression: `window.__PATCHMARK_DOCUMENT_SWITCH_PERFORMANCE__?.getRecords().length ?? 0`
+  });
+  const activeControl = await evaluate(client, {
+    expression: `(() => {
+      const button = Array.from(
+        document.querySelectorAll(".project-document-select")
+      ).find((candidate) =>
+        candidate.textContent?.includes(${JSON.stringify(document.displayTitle)})
+      );
+      button?.click();
+      return { disabled: button?.disabled ?? null, found: Boolean(button) };
+    })()`
+  });
+  assert.equal(activeControl.found, true, "The active document control must exist.");
+  assert.equal(
+    activeControl.disabled,
+    true,
+    "The committed document control must remain a disabled no-op."
+  );
+  await assertActiveDocumentIdentity(client, document);
+  const state = await evaluate(client, {
+    expression: `({
+      records: window.__PATCHMARK_DOCUMENT_SWITCH_PERFORMANCE__?.getRecords().length ?? 0,
+      requested: document.querySelector(
+        ".project-document-item[data-requested='true']"
+      ) !== null
+    })`
+  });
+  assert.equal(
+    state.records,
+    recordsBefore,
+    "Requesting the committed document must not start another switch."
+  );
+  assert.equal(
+    state.requested,
+    false,
+    "Requesting the committed document must not create pending state."
+  );
+  return { operationCount: state.records, requested: state.requested };
+}
+
+async function measureOpenSurfaceSwitch(client, targetDocument) {
+  const surfacesFound = await evaluate(client, {
+    expression: `(() => {
+      const comments = document.querySelector(".application-comments-trigger");
+      if (comments?.getAttribute("aria-expanded") !== "true") comments?.click();
+      const tools = document.querySelector(".document-tools");
+      if (tools instanceof HTMLDetailsElement) tools.open = true;
+      return {
+        comments: Boolean(comments),
+        tools: tools instanceof HTMLDetailsElement
+      };
+    })()`
+  });
+  assert.deepEqual(
+    surfacesFound,
+    { comments: true, tools: true },
+    "Comments and document tools must exist before this switch."
+  );
+  await waitForCondition(
+    client,
+    `document.querySelector(".application-comments-trigger")
+        ?.getAttribute("aria-expanded") === "true" &&
+      document.querySelector(".document-tools")?.hasAttribute("open") === true`,
+    "open comments and document tools"
+  );
+  const measurement = await measureSwitch(client, targetDocument.displayTitle);
+  await assertDocumentScopedSurface(client, targetDocument);
+  const settled = await evaluate(client, {
+    expression: `({
+      comments: document.querySelector(".application-comments-trigger")
+        ?.getAttribute("aria-expanded") === "true",
+      tools: document.querySelector(".document-tools")?.hasAttribute("open") === true
+    })`
+  });
+  assert.equal(
+    settled.comments,
+    true,
+    "The open comments surface must remain coherent after switching."
+  );
+  return {
+    commentsOpen: settled.comments,
+    firstUsableMs: round(measurement.firstUsableMs),
+    toolsOpen: settled.tools
+  };
+}
+
+async function measureRapidSwitch(
+  client,
+  sourceDocument,
+  intermediateDocument,
+  targetDocument
+) {
   await resetMeasurementState(client);
-  await clickDocument(client, intermediateTitle);
-  await delay(25);
-  await clickDocument(client, targetTitle);
-  await waitForTargetEditor(client, targetTitle);
-  const record = await waitForSwitchRecord(client, targetTitle, true);
+  await startConsistencyObservation(client, {
+    sourceDocument,
+    targetDocument
+  });
+  await clickDocument(client, intermediateDocument.displayTitle);
+  await waitForCondition(
+    client,
+    `document.querySelector(
+      ".project-document-item[data-requested='true'] .project-document-select span"
+    )?.textContent === ${JSON.stringify(intermediateDocument.displayTitle)}`,
+    "intermediate rapid switch request"
+  );
+  await clickDocument(client, targetDocument.displayTitle);
+  await waitForTargetEditor(client, targetDocument.displayTitle);
+  const record = await waitForSwitchRecord(
+    client,
+    targetDocument.displayTitle,
+    true
+  );
   const allRecords = await evaluate(client, {
     expression: `window.__PATCHMARK_DOCUMENT_SWITCH_PERFORMANCE__?.getRecords() ?? []`
   });
+  const observedStates = await stopConsistencyObservation(client);
+  if (expectAtomic) {
+    assertAtomicSwitchStates(observedStates, {
+      sourceDocument,
+      targetDocument
+    });
+  }
+  const intermediateCommittedStates = observedStates.filter(
+    (state) =>
+      state.activeTitle === intermediateDocument.displayTitle ||
+      state.documentMeta?.includes(intermediateDocument.displayTitle) ||
+      state.notification?.includes(
+        `Opened ${intermediateDocument.displayTitle}.`
+      )
+  );
+  if (expectAtomic) {
+    assert.deepEqual(
+      intermediateCommittedStates,
+      [],
+      `Rapid switching visibly committed the superseded intermediate document. ${JSON.stringify(
+        intermediateCommittedStates.slice(0, 6),
+        null,
+        2
+      )}`
+    );
+  }
   return {
     activeTitle: await readActiveDocumentTitle(client),
     completedTargetId: record.metadata.targetDocumentId,
+    consistency: summarizeConsistency(observedStates),
+    intermediateCommitted: intermediateCommittedStates.length > 0,
     operationCount: allRecords.length,
     staleOperationCompleted:
       allRecords.length > 1 &&
@@ -532,6 +773,7 @@ function createMeasurement(record, state, observedFirstUsableMs, wallTime) {
   return {
     firstUsableMs: observedFirstUsableMs,
     instrumentedFirstUsableMs: record.marks.first_usable_editor,
+    previewVisibleMs: record.marks.target_preview_visible,
     secondaryCompleteMs: record.marks.secondary_work_complete,
     wallTimeMs: wallTime,
     longestTaskMs: Math.max(0, ...longTasks.map((task) => task.duration)),
@@ -548,11 +790,19 @@ function createMeasurement(record, state, observedFirstUsableMs, wallTime) {
 
 function summarizeSamples(samples) {
   const firstUsable = samples.map((sample) => sample.firstUsableMs);
+  const previewVisible = samples
+    .map((sample) => sample.previewVisibleMs)
+    .filter(Number.isFinite);
   const secondary = samples.map((sample) => sample.secondaryCompleteMs);
   const longestTasks = samples.map((sample) => sample.longestTaskMs);
+  const consistency = samples.find((sample) => sample.consistency)?.consistency;
   return {
     samples: samples.length,
+    ...(consistency ? { consistency } : {}),
     firstUsableMs: summarizeNumbers(firstUsable),
+    ...(previewVisible.length > 0
+      ? { previewVisibleMs: summarizeNumbers(previewVisible) }
+      : {}),
     secondaryCompleteMs: summarizeNumbers(secondary),
     longestTaskMs: summarizeNumbers(longestTasks),
     medianReads: median(samples.map((sample) => sample.readCount)),
@@ -748,6 +998,28 @@ async function assertActiveDocumentIdentity(client, document) {
   });
 }
 
+async function assertDocumentScopedSurface(client, document) {
+  const state = await evaluate(client, {
+    expression: `({
+      comments: Number(
+        document.querySelector(".application-comments-count")?.textContent ??
+          "NaN"
+      ),
+      tools: document.querySelector(".document-tools summary small")
+        ?.textContent?.trim() ?? null
+    })`
+  });
+  assert.equal(
+    state.comments,
+    document.commentCount,
+    `${document.displayTitle} must expose only its comment count.`
+  );
+  assert.ok(
+    state.tools?.startsWith(`${document.headingCount} heading`),
+    `${document.displayTitle} must expose only its heading count. ${state.tools}`
+  );
+}
+
 async function clickDocument(client, title) {
   const clicked = await evaluate(client, {
     expression: `(() => {
@@ -910,6 +1182,269 @@ function readProjectFixtureSummary(root, title) {
     ),
     versions: manifest.versions?.length ?? 0
   };
+}
+
+async function startConsistencyObservation(
+  client,
+  { sourceDocument, targetDocument }
+) {
+  await evaluate(client, {
+    expression: `window.__patchmarkDocumentSwitchConsistency.start(${JSON.stringify(
+      {
+        sourceDocument: {
+          commentCount: sourceDocument.commentCount,
+          documentKey: sourceDocument.documentKey,
+          headingCount: sourceDocument.headingCount,
+          sentinel: sourceDocument.sentinel,
+          title: sourceDocument.displayTitle
+        },
+        targetDocument: {
+          commentCount: targetDocument.commentCount,
+          documentKey: targetDocument.documentKey,
+          headingCount: targetDocument.headingCount,
+          sentinel: targetDocument.sentinel,
+          title: targetDocument.displayTitle
+        }
+      }
+    )})`
+  });
+}
+
+async function stopConsistencyObservation(client) {
+  return evaluate(client, {
+    expression: `window.__patchmarkDocumentSwitchConsistency.stop()`
+  });
+}
+
+function assertAtomicSwitchStates(
+  observedStates,
+  { sourceDocument, targetDocument }
+) {
+  const mixedStates = observedStates.filter(
+    (state) =>
+      state.targetChromeCommitted &&
+      state.sourceFingerprintVisible &&
+      !state.targetFingerprintVisible
+  );
+  const prematureNotifications = observedStates.filter(
+    (state) =>
+      state.targetOpenedNotification && !state.targetFingerprintVisible
+  );
+  const stalePreviews = observedStates.filter(
+    (state) => state.stalePreviewVisible
+  );
+  const staleInteractiveStates = mixedStates.filter(
+    (state) => !state.saveChangesDisabled || !state.createSnapshotDisabled
+  );
+  const misleadingTargetStates = observedStates.filter(
+    (state) =>
+      state.targetChromeCommitted &&
+      !state.targetFingerprintVisible &&
+      (!state.switchingStateVisible ||
+        !state.saveChangesDisabled ||
+        !state.createSnapshotDisabled)
+  );
+
+  assert.deepEqual(
+    mixedStates,
+    [],
+    `Document switching exposed ${targetDocument.displayTitle} chrome with ${sourceDocument.displayTitle} editor content. ${JSON.stringify(
+      mixedStates.slice(0, 6),
+      null,
+      2
+    )}`
+  );
+  assert.deepEqual(
+    prematureNotifications,
+    [],
+    `The Opened notification preceded the target editor fingerprint. ${JSON.stringify(
+      prematureNotifications.slice(0, 6),
+      null,
+      2
+    )}`
+  );
+  assert.deepEqual(
+    staleInteractiveStates,
+    [],
+    `Document actions became interactive against stale editor content. ${JSON.stringify(
+      staleInteractiveStates.slice(0, 6),
+      null,
+      2
+    )}`
+  );
+  assert.deepEqual(
+    stalePreviews,
+    [],
+    `The target preview exposed ${sourceDocument.displayTitle} content. ${JSON.stringify(
+      stalePreviews.slice(0, 6),
+      null,
+      2
+    )}`
+  );
+  assert.deepEqual(
+    misleadingTargetStates,
+    [],
+    `Target chrome appeared without either ready target content or an explicit protected switching state. ${JSON.stringify(
+      misleadingTargetStates.slice(0, 6),
+      null,
+      2
+    )}`
+  );
+}
+
+function summarizeConsistency(observedStates) {
+  return {
+    mixedVisibleStateCount: observedStates.filter(
+      (state) =>
+        state.targetChromeCommitted &&
+        state.sourceFingerprintVisible &&
+        !state.targetFingerprintVisible
+    ).length,
+    observedStateCount: observedStates.length,
+    prematureOpenedNotificationCount: observedStates.filter(
+      (state) =>
+        state.targetOpenedNotification && !state.targetFingerprintVisible
+    ).length,
+    stalePreviewCount: observedStates.filter(
+      (state) => state.stalePreviewVisible
+    ).length,
+    targetPreviewObserved: observedStates.some(
+      (state) => state.targetPreviewVisible
+    ),
+    targetCommittedBeforeFingerprint: observedStates.some(
+      (state) =>
+        state.targetChromeCommitted && !state.targetFingerprintVisible
+    ),
+    targetOpenedAfterFingerprint: observedStates
+      .filter((state) => state.targetOpenedNotification)
+      .every((state) => state.targetFingerprintVisible)
+  };
+}
+
+function createDocumentSwitchConsistencyObserverScript() {
+  return `(() => {
+    let configuration = null;
+    let records = [];
+    let previousSignature = null;
+    const observer = new MutationObserver(() => sample());
+
+    function buttonDisabled(label) {
+      const button = Array.from(document.querySelectorAll("button"))
+        .find((candidate) => candidate.textContent?.trim() === label);
+      return !button || button.disabled;
+    }
+
+    function sample() {
+      if (!configuration) return;
+      const editor = document.querySelector(".editor-body");
+      const editorSurface = document.querySelector(".markdown-source-editor") ??
+        document.querySelector(".visual-editor-shell");
+      const editorText = document.querySelector(".markdown-source-editor")?.value ??
+        document.querySelector(".patchmark-prose")?.textContent ?? "";
+      const preview = document.querySelector(".document-switch-target-preview");
+      const previewText = preview?.textContent ?? "";
+      const previewVisible = Boolean(
+        preview &&
+        getComputedStyle(preview).visibility !== "hidden" &&
+        getComputedStyle(preview).display !== "none"
+      );
+      const editorContentVisible = Boolean(
+        editorSurface &&
+        getComputedStyle(editorSurface).visibility !== "hidden" &&
+        getComputedStyle(editorSurface).display !== "none"
+      );
+      const activeTitle = document.querySelector(
+        ".project-document-item[data-active='true'] .project-document-select span"
+      )?.textContent ?? null;
+      const requestedTitle = document.querySelector(
+        ".project-document-item[data-requested='true'] .project-document-select span"
+      )?.textContent ?? null;
+      const documentMeta = document.querySelector(".document-meta strong")
+        ?.textContent?.trim() ?? null;
+      const commentsCount = Number(
+        document.querySelector(".application-comments-count")?.textContent ??
+          "NaN"
+      );
+      const documentToolsSummary = document.querySelector(
+        ".document-tools summary small"
+      )?.textContent?.trim() ?? null;
+      const notification = document.querySelector(".document-save-banner")
+        ?.textContent?.trim() ?? null;
+      const documentKey = editor?.getAttribute("data-document-key") ?? null;
+      const targetChromeCommitted =
+        activeTitle === configuration.targetDocument.title ||
+        documentKey === configuration.targetDocument.documentKey ||
+        documentMeta?.includes(configuration.targetDocument.title) === true ||
+        (commentsCount === configuration.targetDocument.commentCount &&
+          documentToolsSummary?.startsWith(
+            configuration.targetDocument.headingCount + " heading"
+          ) === true);
+      const state = {
+        activeTitle,
+        commentsCount,
+        createSnapshotDisabled: buttonDisabled("Create Snapshot"),
+        documentKey,
+        documentMeta,
+        documentToolsSummary,
+        notification,
+        requestedTitle,
+        saveChangesDisabled: buttonDisabled("Save Changes"),
+        sourceFingerprintPresent: editorText.includes(
+          configuration.sourceDocument.sentinel
+        ),
+        sourceFingerprintVisible:
+          editorContentVisible &&
+          editorText.includes(configuration.sourceDocument.sentinel),
+        switchingStateVisible: Boolean(
+          document.querySelector(".document-switch-loading")
+        ),
+        targetPreviewVisible:
+          previewVisible &&
+          previewText.includes(configuration.targetDocument.sentinel),
+        stalePreviewVisible:
+          previewVisible &&
+          previewText.includes(configuration.sourceDocument.sentinel),
+        targetChromeCommitted,
+        targetFingerprintVisible:
+          editorContentVisible &&
+          editorText.includes(configuration.targetDocument.sentinel),
+        targetOpenedNotification:
+          notification?.includes(
+            "Opened " + configuration.targetDocument.title + "."
+          ) === true,
+        timestamp: performance.now()
+      };
+      const signature = JSON.stringify({ ...state, timestamp: 0 });
+      if (signature === previousSignature) return;
+      previousSignature = signature;
+      records.push(state);
+    }
+
+    window.__patchmarkDocumentSwitchConsistency = {
+      start(nextConfiguration) {
+        configuration = nextConfiguration;
+        records = [];
+        previousSignature = null;
+        observer.disconnect();
+        observer.observe(document.documentElement, {
+          attributes: true,
+          characterData: true,
+          childList: true,
+          subtree: true
+        });
+        sample();
+      },
+      stop() {
+        sample();
+        observer.disconnect();
+        const result = records;
+        configuration = null;
+        records = [];
+        previousSignature = null;
+        return result;
+      }
+    };
+  })();`;
 }
 
 function createLongTaskObserverScript() {

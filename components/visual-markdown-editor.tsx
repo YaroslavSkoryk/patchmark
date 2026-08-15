@@ -1,6 +1,12 @@
 "use client";
 
 import dynamic from "next/dynamic";
+import { useLayoutEffect } from "react";
+import type {
+  DocumentEditorReadinessIdentity,
+  DocumentEditorReadyDetail
+} from "@/components/document-editor-readiness";
+import { markDocumentSwitchPerformance } from "@/lib/performance/document-switch-performance";
 
 const MdxEditorClient = dynamic(
   () =>
@@ -17,7 +23,11 @@ const MdxEditorClient = dynamic(
 
 type VisualMarkdownEditorProps = {
   ariaLabel?: string;
+  documentKey?: string | null;
+  documentReadiness?: DocumentEditorReadinessIdentity | null;
   markdown: string;
+  onDocumentPending?: (detail: DocumentEditorReadyDetail) => void;
+  onDocumentReady?: (detail: DocumentEditorReadyDetail) => void;
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
   resetKey: number;
@@ -27,18 +37,33 @@ type VisualMarkdownEditorProps = {
 
 export function VisualMarkdownEditor({
   ariaLabel,
+  documentKey = null,
+  documentReadiness = null,
   markdown,
+  onDocumentPending,
+  onDocumentReady,
   onMarkdownChange,
   readOnly = false,
   resetKey,
   selectionOnly = false,
   showToolbar = true
 }: VisualMarkdownEditorProps) {
+  useLayoutEffect(() => {
+    markDocumentSwitchPerformance(
+      documentReadiness?.switchOperationId,
+      "mdx_editor_module_available"
+    );
+  }, [documentReadiness?.switchOperationId]);
+
   return (
     <div className="visual-editor-shell">
       <MdxEditorClient
         ariaLabel={ariaLabel}
+        documentReadiness={documentReadiness}
+        editorDocumentKey={documentKey}
         markdown={markdown}
+        onDocumentPending={onDocumentPending}
+        onDocumentReady={onDocumentReady}
         onMarkdownChange={onMarkdownChange}
         readOnly={readOnly}
         resetKey={resetKey}

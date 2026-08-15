@@ -806,6 +806,7 @@ export async function switchProjectDocument({
   documentId,
   markdown,
   patches,
+  persistCurrentDocument = true,
   project,
   performanceOperationId
 }: {
@@ -813,10 +814,14 @@ export async function switchProjectDocument({
   documentId: string;
   markdown: string;
   patches: PatchmarkPatch[];
+  persistCurrentDocument?: boolean;
   project: PatchmarkProjectHandle;
   performanceOperationId?: string | null;
 }): Promise<LoadedPatchmarkProject> {
-  if (project.documentAvailability !== "missing") {
+  if (
+    project.documentAvailability !== "missing" &&
+    persistCurrentDocument
+  ) {
     const persistenceStartedAt = performance.now();
     const result = await saveProjectState({
       comments,
@@ -844,10 +849,19 @@ export async function switchProjectDocument({
       "serialized_files",
       result.serializedFiles.length
     );
+  } else if (project.documentAvailability !== "missing") {
+    updateDocumentSwitchPerformanceMetadata(performanceOperationId, {
+      changedFiles: [],
+      saveStatus: "unchanged"
+    });
   }
   markDocumentSwitchPerformance(
     performanceOperationId,
     "current_authoritative_state_persisted"
+  );
+  markDocumentSwitchPerformance(
+    performanceOperationId,
+    "outgoing_document_work_complete"
   );
   return openProjectDocument(project, documentId, { performanceOperationId });
 }
@@ -2907,19 +2921,25 @@ async function openRegisteredProjectDocument(
     `Document store ${documentId} is missing manifest.json.`
   );
   const manifestReadStartedAt = performance.now();
-  const targetManifestText = await readTextFile(documentManifestFile);
-  recordDocumentSwitchPerformanceDuration(
-    operationId,
-    "read_target_manifest",
-    performance.now() - manifestReadStartedAt
-  );
   const markdownReadStartedAt = performance.now();
-  const targetMarkdown = await readTextFile(documentFile);
-  recordDocumentSwitchPerformanceDuration(
-    operationId,
-    "read_target_markdown",
-    performance.now() - markdownReadStartedAt
-  );
+  const [targetManifestText, targetMarkdown] = await Promise.all([
+    readTextFile(documentManifestFile).then((text) => {
+      recordDocumentSwitchPerformanceDuration(
+        operationId,
+        "read_target_manifest",
+        performance.now() - manifestReadStartedAt
+      );
+      return text;
+    }),
+    readTextFile(documentFile).then((text) => {
+      recordDocumentSwitchPerformanceDuration(
+        operationId,
+        "read_target_markdown",
+        performance.now() - markdownReadStartedAt
+      );
+      return text;
+    })
+  ]);
   incrementDocumentSwitchPerformanceCounter(
     operationId,
     "bytes_read",
@@ -3350,31 +3370,26 @@ async function createOpenedProjectHandle({
   const metadataDirectoryHandle = await directoryHandle.getDirectoryHandle(
     metadataDirectoryName
   );
-  const temporaryFiles = await listProjectTemporaryFiles(directoryHandle);
-  const commentsText = await readOptionalTextFile(
-    metadataDirectoryHandle,
-    commentsFileName
-  );
-  const patchesText = await readOptionalTextFile(
-    metadataDirectoryHandle,
-    patchesFileName
-  );
-  const reviewBatchesText = await readOptionalTextFile(
-    metadataDirectoryHandle,
-    reviewBatchesFileName
-  );
-  const reviewQueueOverridesText = await readOptionalTextFile(
-    metadataDirectoryHandle,
-    reviewQueueOverridesFileName
-  );
-  const rewriteSessionsText = await readOptionalTextFile(
-    metadataDirectoryHandle,
-    rewriteSessionsFileName
-  );
-  const commitText = await readOptionalTextFile(
-    metadataDirectoryHandle,
-    saveCommitFileName
-  );
+  const [
+    temporaryFiles,
+    commentsText,
+    patchesText,
+    reviewBatchesText,
+    reviewQueueOverridesText,
+    rewriteSessionsText,
+    commitText
+  ] = await Promise.all([
+    listProjectTemporaryFiles(directoryHandle),
+    readOptionalTextFile(metadataDirectoryHandle, commentsFileName),
+    readOptionalTextFile(metadataDirectoryHandle, patchesFileName),
+    readOptionalTextFile(metadataDirectoryHandle, reviewBatchesFileName),
+    readOptionalTextFile(
+      metadataDirectoryHandle,
+      reviewQueueOverridesFileName
+    ),
+    readOptionalTextFile(metadataDirectoryHandle, rewriteSessionsFileName),
+    readOptionalTextFile(metadataDirectoryHandle, saveCommitFileName)
+  ]);
   const currentStoreReadDuration = performance.now() - currentStoreStartedAt;
   recordDocumentSwitchPerformanceDuration(
     performanceOperationId,

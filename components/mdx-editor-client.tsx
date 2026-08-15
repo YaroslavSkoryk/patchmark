@@ -4,11 +4,14 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type SyntheticEvent,
+  memo,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState
 } from "react";
+import { flushSync } from "react-dom";
 import {
   BlockTypeSelect,
   BoldItalicUnderlineToggles,
@@ -43,6 +46,10 @@ import {
 } from "@mdxeditor/editor";
 import { CLEAR_HISTORY_COMMAND } from "lexical";
 import { normalizeMarkdownForVisualEditor } from "@/lib/markdown/normalize-for-visual-editor";
+import type {
+  DocumentEditorReadinessIdentity,
+  DocumentEditorReadyDetail
+} from "@/components/document-editor-readiness";
 import {
   getLatestEditPerformanceOperationId,
   incrementEditPerformanceCounter,
@@ -57,7 +64,11 @@ import {
 
 type MdxEditorClientProps = {
   ariaLabel?: string;
+  documentReadiness?: DocumentEditorReadinessIdentity | null;
+  editorDocumentKey?: string | null;
   markdown: string;
+  onDocumentPending?: (detail: DocumentEditorReadyDetail) => void;
+  onDocumentReady?: (detail: DocumentEditorReadyDetail) => void;
   onMarkdownChange: (markdown: string) => void;
   readOnly?: boolean;
   resetKey: number;
@@ -76,9 +87,15 @@ const clearHistoryAfterDocumentResetPlugin = realmPlugin({
   }
 });
 
+const StableMdxEditor = memo(MDXEditor);
+
 export function MdxEditorClient({
   ariaLabel = "editable markdown",
+  documentReadiness = null,
+  editorDocumentKey = null,
   markdown,
+  onDocumentPending,
+  onDocumentReady,
   onMarkdownChange,
   readOnly = false,
   resetKey,
@@ -98,8 +115,80 @@ export function MdxEditorClient({
     },
     [markdown]
   );
+  const editorPlugins = useMemo(
+    () => [
+      headingsPlugin(),
+      listsPlugin(),
+      quotePlugin(),
+      clearHistoryAfterDocumentResetPlugin(),
+      thematicBreakPlugin(),
+      frontmatterPlugin(),
+      tablePlugin(),
+      codeBlockPlugin({ defaultCodeBlockLanguage: "markdown" }),
+      codeMirrorPlugin({
+        codeBlockLanguages: {
+          "": "Plain text",
+          markdown: "Markdown",
+          md: "Markdown",
+          text: "Plain text",
+          json: "JSON",
+          yaml: "YAML",
+          yml: "YAML",
+          js: "JavaScript",
+          ts: "TypeScript",
+          tsx: "TypeScript (React)",
+          jsx: "JavaScript (React)",
+          html: "HTML",
+          css: "CSS"
+        }
+      }),
+      imagePlugin({ disableImageResize: true }),
+      jsxPlugin({
+        jsxComponentDescriptors: [
+          {
+            name: "br",
+            kind: "text",
+            props: [],
+            hasChildren: false,
+            Editor: GenericJsxEditor
+          }
+        ]
+      }),
+      linkPlugin(),
+      linkDialogPlugin(),
+      markdownShortcutPlugin(),
+      toolbarPlugin({
+        toolbarContents: () => (
+          <>
+            <UndoRedo />
+            <Separator />
+            <BlockTypeSelect />
+            <BoldItalicUnderlineToggles />
+            <ListsToggle />
+            <CreateLink />
+            <InsertCodeBlock />
+            <InsertTable />
+            <InsertImage />
+            <InsertThematicBreak />
+          </>
+        )
+      })
+    ],
+    []
+  );
+  const readinessContentFingerprint =
+    documentReadiness?.contentFingerprint ?? null;
+  const readinessDocumentKey = documentReadiness?.documentKey ?? null;
+  const readinessRequestGeneration =
+    documentReadiness?.requestGeneration ?? null;
+  const readinessSwitchOperationId =
+    documentReadiness?.switchOperationId ?? null;
   const editorRef = useRef<MDXEditorMethods>(null);
+  const editorInitialMarkdownRef = useRef(visualMarkdown);
   const editorShellRef = useRef<HTMLDivElement>(null);
+  const documentReadinessRef = useRef(documentReadiness);
+  const editorConstructionStartedAtRef = useRef(performance.now());
+  const initialMarkdownParsedRef = useRef<string | null>(null);
   const lastSyncedMarkdownRef = useRef(visualMarkdown);
   const lastResetKeyRef = useRef(resetKey);
   const renderErrorTimerRef = useRef<number | null>(null);
@@ -107,8 +196,34 @@ export function MdxEditorClient({
   const isMountedRef = useRef(false);
   const queuedRenderErrorRef = useRef<string | null>(null);
   const lastAutoRetryMarkdownRef = useRef<string | null>(null);
+  const lastReportedPendingRef = useRef<string | null>(null);
+  const lastReportedReadinessRef = useRef<string | null>(null);
+  const readinessObserverRef = useRef<MutationObserver | null>(null);
+  const onDocumentPendingRef = useRef(onDocumentPending);
+  const onDocumentReadyRef = useRef(onDocumentReady);
+  const markdownChangeHandlerRef = useRef(handleMarkdownChange);
+  const reportDocumentReadyRef = useRef(reportDocumentReady);
+  const renderErrorHandlerRef = useRef(queueRenderError);
+  const stableMarkdownChangeHandler = useMemo(
+    () => (nextMarkdown: string, initialMarkdownNormalize: boolean) =>
+      markdownChangeHandlerRef.current(
+        nextMarkdown,
+        initialMarkdownNormalize
+      ),
+    []
+  );
+  const stableRenderErrorHandler = useMemo(
+    () => (error: unknown) => renderErrorHandlerRef.current(error),
+    []
+  );
   const [renderError, setRenderError] = useState<string | null>(null);
   const [editorInstanceKey, setEditorInstanceKey] = useState(0);
+  onDocumentPendingRef.current = onDocumentPending;
+  onDocumentReadyRef.current = onDocumentReady;
+  markdownChangeHandlerRef.current = handleMarkdownChange;
+  reportDocumentReadyRef.current = reportDocumentReady;
+  renderErrorHandlerRef.current = queueRenderError;
+  documentReadinessRef.current = documentReadiness;
 
   useEffect(() => {
     isMountedRef.current = true;
@@ -129,43 +244,182 @@ export function MdxEditorClient({
       if (renderVerificationTimerRef.current !== null) {
         window.clearTimeout(renderVerificationTimerRef.current);
       }
+
+      readinessObserverRef.current?.disconnect();
     };
   }, []);
 
-  useEffect(() => {
-    if (
-      !editorRef.current ||
-      (visualMarkdown === lastSyncedMarkdownRef.current &&
-        resetKey === lastResetKeyRef.current)
-    ) {
-      return;
-    }
-
-    try {
-      editorRef.current.setMarkdown(visualMarkdown);
-      lastSyncedMarkdownRef.current = visualMarkdown;
-      lastResetKeyRef.current = resetKey;
-      setRenderError(null);
-    } catch (error) {
-      setRenderError(normalizeVisualModeError(error));
-    }
-  }, [resetKey, visualMarkdown]);
-
-  useEffect(() => {
+  useLayoutEffect(() => {
     const operationId = getLatestEditPerformanceOperationId();
     incrementEditPerformanceCounter(operationId, "mdx_editor_effect_count");
     markEditPerformanceOperation(operationId, "mdx_editor_settled");
     const switchOperationId =
+      documentReadiness?.switchOperationId ??
       getLatestDocumentSwitchPerformanceOperationId();
     incrementDocumentSwitchPerformanceCounter(
       switchOperationId,
       "mdx_editor_effect_count"
     );
     markDocumentSwitchPerformance(switchOperationId, "editor_initialized");
-  }, [visualMarkdown]);
+  }, [documentReadiness?.switchOperationId, visualMarkdown]);
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    const shell = editorShellRef.current;
+    const markdownChanged =
+      visualMarkdown !== lastSyncedMarkdownRef.current;
+    const sourceChanged =
+      markdownChanged || resetKey !== lastResetKeyRef.current;
+
+    readinessObserverRef.current?.disconnect();
+    readinessObserverRef.current = null;
+
+    if (
+      readinessContentFingerprint === null ||
+      readinessDocumentKey === null ||
+      readinessRequestGeneration === null
+    ) {
+      shell?.removeAttribute("data-editor-content-fingerprint");
+      lastReportedPendingRef.current = null;
+      lastReportedReadinessRef.current = null;
+      if (!editor || !sourceChanged) {
+        return;
+      }
+      try {
+        editor.setMarkdown(visualMarkdown);
+        lastSyncedMarkdownRef.current = visualMarkdown;
+        lastResetKeyRef.current = resetKey;
+        setRenderError(null);
+      } catch (error) {
+        setRenderError(normalizeVisualModeError(error));
+      }
+      return;
+    }
+
+    const readyDetail: DocumentEditorReadyDetail = {
+      contentFingerprint: readinessContentFingerprint,
+      documentKey: readinessDocumentKey,
+      mode: "visual",
+      requestGeneration: readinessRequestGeneration,
+      switchOperationId: readinessSwitchOperationId
+    };
+    const readinessKey = JSON.stringify(readyDetail);
+    shell?.removeAttribute("data-editor-content-fingerprint");
+    if (lastReportedReadinessRef.current === readinessKey) {
+      shell?.setAttribute(
+        "data-editor-content-fingerprint",
+        readinessContentFingerprint
+      );
+      return;
+    }
+    reportDocumentPending(readyDetail, readinessKey);
+
+    if (!editor || !shell) {
+      return;
+    }
+
+    const initialImportRepresentsTarget =
+      initialMarkdownParsedRef.current === visualMarkdown;
+    if (
+      !markdownChanged &&
+      (editorDocumentKey === readinessDocumentKey ||
+        initialImportRepresentsTarget) &&
+      editorDomHasContent(shell, visualMarkdown)
+    ) {
+      if (resetKey !== lastResetKeyRef.current) {
+        editor.setMarkdown(visualMarkdown);
+        lastResetKeyRef.current = resetKey;
+      }
+      markDocumentSwitchPerformance(
+        readinessSwitchOperationId,
+        "target_editor_identity_reused"
+      );
+      reportDocumentReadyRef.current(readyDetail, readinessKey);
+      return;
+    }
+
+    let observedTargetMutation = false;
+    const observer = new MutationObserver(() => {
+      if (!observedTargetMutation) {
+        observedTargetMutation = true;
+        markDocumentSwitchPerformance(
+          readinessSwitchOperationId,
+          "first_target_editor_dom_mutation"
+        );
+      }
+      if (
+        queuedRenderErrorRef.current !== null ||
+        !isCurrentDocumentReadiness(readyDetail) ||
+        !editorDomHasContent(shell, visualMarkdown)
+      ) {
+        return;
+      }
+      observer.disconnect();
+      if (readinessObserverRef.current === observer) {
+        readinessObserverRef.current = null;
+      }
+      markDocumentSwitchPerformance(
+        readinessSwitchOperationId,
+        "target_editor_update_committed"
+      );
+      reportDocumentReadyRef.current(readyDetail, readinessKey, true);
+    });
+    observer.observe(shell, {
+      childList: true,
+      characterData: true,
+      subtree: true
+    });
+    readinessObserverRef.current = observer;
+
+    try {
+      markDocumentSwitchPerformance(
+        readinessSwitchOperationId,
+        "target_editor_update_requested"
+      );
+      const importStartedAt = performance.now();
+      editor.setMarkdown(visualMarkdown);
+      recordDocumentSwitchPerformanceDuration(
+        readinessSwitchOperationId,
+        "mdx_markdown_import",
+        performance.now() - importStartedAt
+      );
+      markDocumentSwitchPerformance(
+        readinessSwitchOperationId,
+        "target_markdown_parsed"
+      );
+      lastSyncedMarkdownRef.current = visualMarkdown;
+      lastResetKeyRef.current = resetKey;
+      setRenderError(null);
+    } catch (error) {
+      observer.disconnect();
+      if (readinessObserverRef.current === observer) {
+        readinessObserverRef.current = null;
+      }
+      setRenderError(normalizeVisualModeError(error));
+    }
+
+    return () => {
+      observer.disconnect();
+      if (readinessObserverRef.current === observer) {
+        readinessObserverRef.current = null;
+      }
+    };
+  }, [
+    readinessContentFingerprint,
+    readinessDocumentKey,
+    readinessRequestGeneration,
+    readinessSwitchOperationId,
+    editorInstanceKey,
+    editorDocumentKey,
+    renderError,
+    resetKey,
+    visualMarkdown
+  ]);
 
   useEffect(() => {
-    const content = editorShellRef.current?.querySelector(".patchmark-prose");
+    const content = editorShellRef.current?.querySelector(
+      ".patchmark-prose"
+    );
 
     if (!content) {
       return;
@@ -197,7 +451,9 @@ export function MdxEditorClient({
         return;
       }
 
-      const content = editorShellRef.current?.querySelector(".patchmark-prose");
+      const content = editorShellRef.current?.querySelector(
+        ".patchmark-prose"
+      );
 
       if (content && content.childNodes.length === 0) {
         setRenderError(
@@ -226,6 +482,7 @@ export function MdxEditorClient({
 
     lastAutoRetryMarkdownRef.current = visualMarkdown;
     queuedRenderErrorRef.current = null;
+    editorInitialMarkdownRef.current = visualMarkdown;
     setEditorInstanceKey((currentKey) => currentKey + 1);
     setRenderError(null);
   }, [markdown, renderError, visualMarkdown]);
@@ -258,6 +515,7 @@ export function MdxEditorClient({
   function handleRetryVisualMode() {
     queuedRenderErrorRef.current = null;
     lastAutoRetryMarkdownRef.current = null;
+    editorInitialMarkdownRef.current = visualMarkdown;
     setEditorInstanceKey((currentKey) => currentKey + 1);
     setRenderError(null);
   }
@@ -276,6 +534,16 @@ export function MdxEditorClient({
     }
 
     if (initialMarkdownNormalize) {
+      initialMarkdownParsedRef.current = visualMarkdown;
+      recordDocumentSwitchPerformanceDuration(
+        readinessSwitchOperationId,
+        "target_editor_construction_and_initial_parse",
+        performance.now() - editorConstructionStartedAtRef.current
+      );
+      markDocumentSwitchPerformance(
+        readinessSwitchOperationId,
+        "target_markdown_parsed"
+      );
       lastSyncedMarkdownRef.current = visualMarkdown;
       return;
     }
@@ -284,6 +552,62 @@ export function MdxEditorClient({
     queuedRenderErrorRef.current = null;
     setRenderError(null);
     onMarkdownChange(nextMarkdown);
+  }
+
+  function isCurrentDocumentReadiness(
+    detail: DocumentEditorReadyDetail
+  ): boolean {
+    const current = documentReadinessRef.current;
+    return Boolean(
+      current &&
+        current.contentFingerprint === detail.contentFingerprint &&
+        current.documentKey === detail.documentKey &&
+        current.requestGeneration === detail.requestGeneration &&
+        current.switchOperationId === detail.switchOperationId
+    );
+  }
+
+  function reportDocumentPending(
+    detail: DocumentEditorReadyDetail,
+    readinessKey: string
+  ) {
+    if (lastReportedPendingRef.current === readinessKey) {
+      return;
+    }
+    lastReportedPendingRef.current = readinessKey;
+    onDocumentPendingRef.current?.(detail);
+  }
+
+  function reportDocumentReady(
+    detail: DocumentEditorReadyDetail,
+    readinessKey: string,
+    flushReadyState = false
+  ) {
+    if (
+      !isCurrentDocumentReadiness(detail) ||
+      lastReportedReadinessRef.current === readinessKey
+    ) {
+      return;
+    }
+    editorShellRef.current?.setAttribute(
+      "data-editor-content-fingerprint",
+      detail.contentFingerprint
+    );
+    lastReportedPendingRef.current = null;
+    lastReportedReadinessRef.current = readinessKey;
+    markDocumentSwitchPerformance(
+      detail.switchOperationId,
+      "target_content_fingerprint_visible"
+    );
+    markDocumentSwitchPerformance(
+      detail.switchOperationId,
+      "target_editor_semantically_ready"
+    );
+    if (flushReadyState) {
+      flushSync(() => onDocumentReadyRef.current?.(detail));
+    } else {
+      onDocumentReadyRef.current?.(detail);
+    }
   }
 
   function preventSelectionOnlyMutation(event: SyntheticEvent) {
@@ -337,6 +661,12 @@ export function MdxEditorClient({
   return (
     <div
       ref={editorShellRef}
+      data-editor-document-key={
+        documentReadiness?.documentKey ?? editorDocumentKey ?? undefined
+      }
+      data-editor-request-generation={
+        documentReadiness?.requestGeneration ?? undefined
+      }
       className={[
         selectionOnly ? "visual-editor-selection-only" : "",
         showToolbar ? "" : "visual-editor-toolbar-hidden"
@@ -374,76 +704,32 @@ export function MdxEditorClient({
           />
         </div>
       ) : (
-        <MDXEditor
+        <StableMdxEditor
           key={editorInstanceKey}
           ref={editorRef}
           className="patchmark-mdx-editor"
           contentEditableClassName="patchmark-prose"
-          markdown={visualMarkdown}
+          markdown={editorInitialMarkdownRef.current}
           readOnly={readOnly}
-          onChange={handleMarkdownChange}
-          onError={queueRenderError}
-          plugins={[
-            headingsPlugin(),
-            listsPlugin(),
-            quotePlugin(),
-            clearHistoryAfterDocumentResetPlugin(),
-            thematicBreakPlugin(),
-            frontmatterPlugin(),
-            tablePlugin(),
-            codeBlockPlugin({ defaultCodeBlockLanguage: "markdown" }),
-            codeMirrorPlugin({
-              codeBlockLanguages: {
-                "": "Plain text",
-                markdown: "Markdown",
-                md: "Markdown",
-                text: "Plain text",
-                json: "JSON",
-                yaml: "YAML",
-                yml: "YAML",
-                js: "JavaScript",
-                ts: "TypeScript",
-                tsx: "TypeScript (React)",
-                jsx: "JavaScript (React)",
-                html: "HTML",
-                css: "CSS"
-              }
-            }),
-            imagePlugin({ disableImageResize: true }),
-            jsxPlugin({
-              jsxComponentDescriptors: [
-                {
-                  name: "br",
-                  kind: "text",
-                  props: [],
-                  hasChildren: false,
-                  Editor: GenericJsxEditor
-                }
-              ]
-            }),
-            linkPlugin(),
-            linkDialogPlugin(),
-            markdownShortcutPlugin(),
-            toolbarPlugin({
-              toolbarContents: () => (
-                <>
-                  <UndoRedo />
-                  <Separator />
-                  <BlockTypeSelect />
-                  <BoldItalicUnderlineToggles />
-                  <ListsToggle />
-                  <CreateLink />
-                  <InsertCodeBlock />
-                  <InsertTable />
-                  <InsertImage />
-                  <InsertThematicBreak />
-                </>
-              )
-            })
-          ]}
+          onChange={stableMarkdownChangeHandler}
+          onError={stableRenderErrorHandler}
+          plugins={editorPlugins}
         />
       )}
     </div>
+  );
+}
+
+function editorDomHasContent(shell: HTMLElement, markdown: string): boolean {
+  const fallback = shell.querySelector<HTMLTextAreaElement>(
+    ".visual-editor-fallback textarea"
+  );
+  if (fallback) {
+    return fallback.value === markdown;
+  }
+  const content = shell.querySelector(".patchmark-prose");
+  return Boolean(
+    content && (markdown.trim().length === 0 || content.childNodes.length > 0)
   );
 }
 

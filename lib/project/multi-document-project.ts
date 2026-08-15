@@ -99,6 +99,11 @@ export type ProjectDirectoryHandle = EntryHandle & {
   resolve?: (possibleDescendant: EntryHandle) => Promise<string[] | null>;
 };
 
+const documentStoreDirectoryCache = new WeakMap<
+  ProjectDirectoryHandle,
+  Map<string, ProjectDirectoryHandle>
+>();
+
 export type LegacyConversionResult = {
   document: PatchmarkRegisteredDocument;
   manifest: PatchmarkProjectManifestV1;
@@ -626,7 +631,14 @@ export async function assertDocumentStoreIdentity(
   root: ProjectDirectoryHandle,
   documentId: string
 ): Promise<void> {
-  const store = await getDocumentStoreDirectory(root, documentId);
+  const store = await getCachedDocumentStoreDirectory(root, documentId);
+  await assertDocumentStoreDirectoryIdentity(store, documentId);
+}
+
+async function assertDocumentStoreDirectoryIdentity(
+  store: ProjectDirectoryHandle,
+  documentId: string
+): Promise<void> {
   const identityText = await readText(
     await store.getFileHandle(documentStoreIdentityFileName)
   );
@@ -650,8 +662,11 @@ export async function createDocumentScopedDirectoryHandle(
   root: ProjectDirectoryHandle,
   document: PatchmarkRegisteredDocument
 ): Promise<ProjectDirectoryHandle> {
-  const store = await getDocumentStoreDirectory(root, document.document_id);
-  await assertDocumentStoreIdentity(root, document.document_id);
+  const store = await getCachedDocumentStoreDirectory(
+    root,
+    document.document_id
+  );
+  await assertDocumentStoreDirectoryIdentity(store, document.document_id);
 
   return {
     name: root.name,
@@ -671,6 +686,24 @@ export async function createDocumentScopedDirectoryHandle(
     entries: root.entries?.bind(root),
     resolve: root.resolve?.bind(root)
   };
+}
+
+async function getCachedDocumentStoreDirectory(
+  root: ProjectDirectoryHandle,
+  documentId: string
+): Promise<ProjectDirectoryHandle> {
+  let projectCache = documentStoreDirectoryCache.get(root);
+  if (!projectCache) {
+    projectCache = new Map();
+    documentStoreDirectoryCache.set(root, projectCache);
+  }
+  const cached = projectCache.get(documentId);
+  if (cached) {
+    return cached;
+  }
+  const store = await getDocumentStoreDirectory(root, documentId);
+  projectCache.set(documentId, store);
+  return store;
 }
 
 export async function convertLegacyProject({
