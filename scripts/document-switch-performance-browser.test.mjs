@@ -1,15 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import {
-  mkdirSync,
   mkdtempSync,
   readFileSync,
   rmSync,
   writeFileSync
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import {
   CdpClient,
@@ -25,6 +23,7 @@ import {
   waitForEditorShell,
   waitForProcessExit
 } from "./comment-rail-editor-browser-regression.test.mjs";
+import { createDocumentSwitchProject } from "./lib/fixtures/create-document-switch-project.mjs";
 
 const editorUrl = addPerformanceQuery(
   process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3120/"
@@ -34,17 +33,20 @@ const stressTransitions = Number(
   process.env.PATCHMARK_SWITCH_STRESS_TRANSITIONS ?? 60
 );
 const outputPath = process.env.PATCHMARK_SWITCH_PERFORMANCE_OUTPUT;
-const sourceProjectDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
 const expectOptimized =
   process.env.PATCHMARK_SWITCH_EXPECT_OPTIMIZED !== "0";
-const fixtureRoot = sourceProjectDir
-  ? null
-  : mkdtempSync(join(tmpdir(), "patchmark-switch-performance-"));
-const projectDir = sourceProjectDir ?? join(fixtureRoot, "Strategy Performance");
-
-if (!sourceProjectDir) {
-  createStrategyScaleFixture(projectDir);
-}
+const projectDir = mkdtempSync(join(tmpdir(), "patchmark-switch-performance-"));
+const fixtureContract = createDocumentSwitchProject(projectDir, {
+  bookmarkDocumentIndex: 1,
+  commentCountPerDocument: 31,
+  documentCount: 3,
+  historyCountPerDocument: 49,
+  includeMissingDocument: true,
+  paragraphCountPerDocument: 85,
+  paragraphRepeatCount: 12,
+  patchCountPerDocument: 59,
+  seed: "document-switch-browser-v1"
+});
 
 if (!Number.isInteger(sampleCount) || sampleCount < 2) {
   throw new Error("PATCHMARK_SWITCH_SAMPLES must be an integer of at least 2.");
@@ -68,7 +70,7 @@ async function run() {
   await assertEditorIsReachable(editorUrl);
   const inventory = inventoryProject(projectDir);
   const fixtureServer = await startFixtureFileServer(projectDir, inventory, {
-    persistWrites: !sourceProjectDir
+    persistWrites: true
   });
   const userDataDir = mkdtempSync(
     join(tmpdir(), "patchmark-switch-performance-chrome-")
@@ -103,7 +105,7 @@ async function run() {
         baseUrl: fixtureServer.baseUrl,
         directories: inventory.directories,
         files: inventory.files,
-        projectName: basename(projectDir)
+        projectName: fixtureContract.projectTitle
       })}\n${createLongTaskObserverScript()}`
     });
     await client.call("Emulation.setDeviceMetricsOverride", {
@@ -124,19 +126,18 @@ async function run() {
     );
 
     const titles = await readAvailableDocumentTitles(client);
-    assert.ok(titles.length >= 2, "The project must contain two available documents.");
-    const firstTitle = sourceProjectDir
-      ? titles[0]
-      : titles.find((title) => title === "Action Plan") ?? titles[0];
-    const secondTitle = sourceProjectDir
-      ? titles[1]
-      : titles.find((title) => title === "Ready-to-Eat Channel Research") ??
-        titles[1];
-    const thirdTitle = sourceProjectDir
-      ? titles[2] ?? titles[0]
-      : titles.find((title) => title === "Business Dimensions Framework") ??
-        titles[2] ??
-        titles[0];
+    assert.deepEqual(
+      [...titles].sort(),
+      fixtureContract.documents.map((document) => document.displayTitle).sort(),
+      "The browser must expose the exact deterministic document set."
+    );
+    const [firstDocument, secondDocument, thirdDocument] =
+      fixtureContract.documents;
+    const firstTitle = firstDocument.displayTitle;
+    const secondTitle = secondDocument.displayTitle;
+    const thirdTitle = thirdDocument.displayTitle;
+    await ensureActiveDocument(client, firstTitle);
+    await assertActiveDocumentIdentity(client, firstDocument);
     const cold = await measureSwitch(client, secondTitle);
     if (expectOptimized) {
       assert.equal(cold.writeCount, 0, "An unchanged cold switch must not write.");
@@ -179,7 +180,8 @@ async function run() {
       `Boolean(document.querySelector(".markdown-source-editor"))`,
       "Markdown Mode"
     );
-    await appendMarkdown(client, `\nDirty switch marker ${Date.now()}\n`);
+    const dirtyMarker = "Deterministic dirty switch marker.";
+    await appendMarkdown(client, `\n${dirtyMarker}\n`);
     const dirty = await measureSwitch(client, firstTitle);
     assert.ok(dirty.writeCount > 0, "A dirty Markdown switch must persist first.");
     assert.equal(
@@ -207,66 +209,62 @@ async function run() {
     const rapid = await measureRapidSwitch(client, secondTitle, thirdTitle);
     assert.equal(rapid.activeTitle, thirdTitle, "The latest rapid switch must win.");
 
-    let fixtureScenarios = null;
-    if (!sourceProjectDir) {
-      const missing = await measureMissingSwitch(client, "Missing Appendix");
-      assert.equal(missing.writeCount, 0, "A missing target must not cause writes.");
-      assert.equal(
-        missing.unrelatedDocumentReadCount,
-        0,
-        "A missing target must not load unrelated document stores."
-      );
+    const missing = await measureMissingSwitch(
+      client,
+      fixtureContract.missingDocument.displayTitle,
+      fixtureContract.missingDocument.documentId
+    );
+    assert.equal(missing.writeCount, 0, "A missing target must not cause writes.");
+    assert.equal(
+      missing.unrelatedDocumentReadCount,
+      0,
+      "A missing target must not load unrelated document stores."
+    );
 
-      await measureSwitch(client, firstTitle);
-      await toggleGroup(client, "Research");
-      await waitForGroupExpanded(client, "Research", false);
-      const bookmark = await measureBookmarkSwitch(client, secondTitle);
-      assert.equal(bookmark.record.metadata.trigger, "bookmark");
-      assert.equal(bookmark.writeCount, 0, "Group expansion must remain local UI state.");
-      await waitForGroupExpanded(client, "Research", true);
+    await measureSwitch(client, firstTitle);
+    await toggleGroup(client, fixtureContract.bookmarkGroupTitle);
+    await waitForGroupExpanded(client, fixtureContract.bookmarkGroupTitle, false);
+    const bookmark = await measureBookmarkSwitch(client, secondTitle);
+    assert.equal(bookmark.record.metadata.trigger, "bookmark");
+    assert.equal(bookmark.writeCount, 0, "Group expansion must remain local UI state.");
+    await waitForGroupExpanded(client, fixtureContract.bookmarkGroupTitle, true);
 
-      await ensureMarkdownMode(client);
-      const failedSaveMarker = `Failed save marker ${Date.now()}`;
-      await appendMarkdown(client, `\n${failedSaveMarker}\n`);
-      const saveFailure = await measureSaveFailure(
-        client,
-        firstTitle,
-        secondTitle
-      );
-      assert.equal(saveFailure.activeTitle, secondTitle);
-      assert.ok(saveFailure.failedWriteCount > 0, "The injected save must fail.");
-      assert.equal(saveFailure.recoveryVisible, true);
-      const saveRetry = await measureSwitch(client, firstTitle);
-      assert.ok(saveRetry.writeCount > 0, "Retry must persist the dirty source.");
+    await ensureMarkdownMode(client);
+    const failedSaveMarker = "Deterministic failed-save marker.";
+    await appendMarkdown(client, `\n${failedSaveMarker}\n`);
+    const saveFailure = await measureSaveFailure(
+      client,
+      firstTitle,
+      secondTitle
+    );
+    assert.equal(saveFailure.activeTitle, secondTitle);
+    assert.ok(saveFailure.failedWriteCount > 0, "The injected save must fail.");
+    assert.equal(saveFailure.recoveryVisible, true);
+    const saveRetry = await measureSwitch(client, firstTitle);
+    assert.ok(saveRetry.writeCount > 0, "Retry must persist the dirty source.");
 
-      await measureSwitch(client, secondTitle);
-      const externalMarker = `External change marker ${Date.now()}`;
-      await updateFixtureMarkdownWithValidCommit(
-        client,
-        "action-plan.md",
-        ".patchmark/documents/doc_action/save-commit.json",
+    await measureSwitch(client, secondTitle);
+    const externalMarker = "Deterministic external-change marker.";
+    await updateFixtureMarkdownWithValidCommit(
+      client,
+      firstDocument.path,
+      firstDocument.saveCommitPath,
+      externalMarker
+    );
+    const externalChange = await measureSwitch(client, firstTitle);
+    await waitForCondition(
+      client,
+      `document.querySelector(".patchmark-prose")?.textContent?.includes(${JSON.stringify(
         externalMarker
-      );
-      const externalChange = await measureSwitch(client, firstTitle);
-      await waitForCondition(
-        client,
-        `document.querySelector(".patchmark-prose")?.textContent?.includes(${JSON.stringify(
-          externalMarker
-        )}) || document.querySelector(".markdown-source-editor")?.value?.includes(${JSON.stringify(
-          externalMarker
-        )})`,
-        "externally changed target Markdown"
-      );
-      const versionHistory = await verifyVersionHistoryMetadata(client, 49);
-      fixtureScenarios = {
-        bookmark: summarizeSamples([bookmark]),
-        externalChange: summarizeSamples([externalChange]),
-        missing,
-        saveFailure,
-        saveRetry: summarizeSamples([saveRetry]),
-        versionHistory
-      };
-    }
+      )}) || document.querySelector(".markdown-source-editor")?.value?.includes(${JSON.stringify(
+        externalMarker
+      )})`,
+      "externally changed target Markdown"
+    );
+    const versionHistory = await verifyVersionHistoryMetadata(
+      client,
+      firstDocument.historyCount
+    );
 
     const stressSamples = [];
     for (let index = 0; index < stressTransitions; index += 1) {
@@ -283,19 +281,31 @@ async function run() {
       0,
       "Switching must not retain an unvalidated derived editor-state cache."
     );
+    const reload = await verifyReloadBoundary(client, {
+      dirtyMarker,
+      firstDocument,
+      secondDocument
+    });
 
     const summary = {
-      source: sourceProjectDir ? "real_project_safe_read_fixture" : "generated_strategy_scale",
+      source: "deterministic_document_switch_fixture",
       expectOptimized,
-      editorUrl,
-      projectDir,
       fixture: readProjectFixtureSummary(projectDir, firstTitle),
-      documents: { firstTitle, secondTitle, thirdTitle },
+      documents: fixtureContract.documents.map((document) => ({
+        documentId: document.documentId,
+        title: document.displayTitle
+      })),
       cold: summarizeSamples([cold]),
       warm: summarizeSamples(warmSamples),
       dirty: summarizeSamples([dirty]),
       rapid,
-      ...(fixtureScenarios ?? {}),
+      bookmark: summarizeSamples([bookmark]),
+      externalChange: summarizeSamples([externalChange]),
+      missing,
+      reload,
+      saveFailure,
+      saveRetry: summarizeSamples([saveRetry]),
+      versionHistory,
       stress: {
         transitions: stressTransitions,
         derivedStateCacheSize,
@@ -315,11 +325,12 @@ async function run() {
       chrome.kill("SIGKILL");
       await waitForProcessExit(chrome, 1000);
     }
-    await fixtureServer.close();
+    void fixtureServer.forceClose().catch((error) => {
+      process.stderr.write(`Fixture server cleanup failed: ${String(error)}\n`);
+      process.exitCode = 1;
+    });
     rmSync(userDataDir, { force: true, recursive: true });
-    if (fixtureRoot) {
-      rmSync(fixtureRoot, { force: true, recursive: true });
-    }
+    rmSync(projectDir, { force: true, recursive: true });
   }
 }
 
@@ -388,7 +399,7 @@ async function measureBookmarkSwitch(client, targetTitle) {
   );
 }
 
-async function measureMissingSwitch(client, targetTitle) {
+async function measureMissingSwitch(client, targetTitle, targetDocumentId) {
   await resetMeasurementState(client);
   const requestedAt = performance.now();
   await clickDocument(client, targetTitle);
@@ -424,9 +435,39 @@ async function measureMissingSwitch(client, targetTitle) {
     firstVisibleMs: round(performance.now() - requestedAt),
     readCount: state.reads.length,
     unrelatedDocumentReadCount: state.reads.filter(
-      (read) => !read.path.includes("doc_missing")
+      (read) => !read.path.includes(targetDocumentId)
     ).length,
     writeCount: state.writes.length
+  };
+}
+
+async function verifyReloadBoundary(
+  client,
+  { dirtyMarker, firstDocument, secondDocument }
+) {
+  await client.call("Page.reload", { ignoreCache: true });
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitForCondition(
+    client,
+    `document.querySelectorAll(".project-document-item").length === ${fixtureContract.documents.length + 1}`,
+    "deterministic project after reload"
+  );
+  await ensureActiveDocument(client, firstDocument.displayTitle);
+  await measureSwitch(client, secondDocument.displayTitle);
+  const markerCount = await evaluate(client, {
+    expression: `(() => {
+      const text = document.querySelector(".markdown-source-editor")?.value ??
+        document.querySelector(".patchmark-prose")?.textContent ?? "";
+      return text.split(${JSON.stringify(dirtyMarker)}).length - 1;
+    })()`
+  });
+  assert.equal(markerCount, 1, "Reload must preserve the dirty-switch save exactly once.");
+  await assertActiveDocumentIdentity(client, secondDocument);
+  return {
+    activeDocumentId: secondDocument.documentId,
+    dirtyMarkerCount: markerCount,
+    persisted: true
   };
 }
 
@@ -635,18 +676,33 @@ async function waitForCondition(client, expression, label) {
 }
 
 async function waitForTargetEditor(client, targetTitle) {
+  const targetDocument = fixtureContract.documents.find(
+    (document) => document.displayTitle === targetTitle
+  );
+  assert.ok(targetDocument, `Unknown deterministic target ${targetTitle}.`);
+  const unrelatedSentinels = fixtureContract.documents
+    .filter((document) => document.documentId !== targetDocument.documentId)
+    .map((document) => document.sentinel);
   const expression = `(() => {
       const activeTitle = document.querySelector(
         ".project-document-item[data-active='true'] .project-document-select span"
       )?.textContent;
+      const documentKey = document.querySelector(".editor-body")?.getAttribute(
+        "data-document-key"
+      );
       const visualEditor = document.querySelector(".patchmark-prose");
       const sourceEditor = document.querySelector(".markdown-source-editor");
-      return activeTitle === ${JSON.stringify(targetTitle)} && (
-        (visualEditor?.textContent?.includes(${JSON.stringify(targetTitle)}) &&
-          visualEditor.getAttribute("contenteditable") !== "false") ||
-        (sourceEditor?.value?.includes(${JSON.stringify(`# ${targetTitle}`)}) &&
-          !sourceEditor.readOnly)
-      );
+      const editorText = visualEditor?.textContent ?? sourceEditor?.value ?? "";
+      return activeTitle === ${JSON.stringify(targetTitle)} &&
+        documentKey === ${JSON.stringify(targetDocument.documentKey)} &&
+        editorText.includes(${JSON.stringify(targetTitle)}) &&
+        editorText.includes(${JSON.stringify(targetDocument.sentinel)}) &&
+        !${JSON.stringify(unrelatedSentinels)}.some((sentinel) =>
+          editorText.includes(sentinel)
+        ) && (
+          (visualEditor && visualEditor.getAttribute("contenteditable") !== "false") ||
+          (sourceEditor && !sourceEditor.readOnly)
+        );
     })()`;
   try {
     await waitForCondition(
@@ -660,6 +716,7 @@ async function waitForTargetEditor(client, targetTitle) {
         activeTitle: document.querySelector(
           ".project-document-item[data-active='true'] .project-document-select span"
         )?.textContent ?? null,
+        documentKey: document.querySelector(".editor-body")?.getAttribute("data-document-key") ?? null,
         cache: window.__PATCHMARK_DOCUMENT_SWITCH_CACHE__ ?? null,
         requestedTitle: document.querySelector(
           ".project-document-item[data-requested='true'] .project-document-select span"
@@ -674,6 +731,21 @@ async function waitForTargetEditor(client, targetTitle) {
       )}`
     );
   }
+}
+
+async function assertActiveDocumentIdentity(client, document) {
+  const state = await evaluate(client, {
+    expression: `({
+      documentKey: document.querySelector(".editor-body")?.getAttribute("data-document-key") ?? null,
+      title: document.querySelector(
+        ".project-document-item[data-active='true'] .project-document-select span"
+      )?.textContent ?? null
+    })`
+  });
+  assert.deepEqual(state, {
+    documentKey: document.documentKey,
+    title: document.displayTitle
+  });
 }
 
 async function clickDocument(client, title) {
@@ -863,304 +935,4 @@ function addPerformanceQuery(url) {
   const parsed = new URL(url);
   parsed.searchParams.set("patchmarkSwitchPerformance", "1");
   return parsed.toString();
-}
-
-function createStrategyScaleFixture(root) {
-  const now = "2026-07-01T09:00:00.000Z";
-  mkdirSync(join(root, ".patchmark", "documents"), { recursive: true });
-  const missingDocument = createDocumentStore({
-    displayTitle: "Missing Appendix",
-    documentId: "doc_missing",
-    groupId: "group_research",
-    large: false,
-    now,
-    path: "missing-appendix.md",
-    position: 2000,
-    projectId: "prj_strategy_performance",
-    root,
-    role: "evidence"
-  });
-  rmSync(join(root, missingDocument.path));
-  const documents = [
-    createDocumentStore({
-      displayTitle: "Action Plan",
-      documentId: "doc_action",
-      groupId: "group_strategy",
-      large: true,
-      now,
-      path: "action-plan.md",
-      position: 1000,
-      projectId: "prj_strategy_performance",
-      root,
-      role: "decision"
-    }),
-    createDocumentStore({
-      displayTitle: "Ready-to-Eat Channel Research",
-      documentId: "doc_rte",
-      groupId: "group_research",
-      large: true,
-      now,
-      path: "ready-to-eat-channel-research.md",
-      position: 1000,
-      projectId: "prj_strategy_performance",
-      root,
-      role: "research",
-      withBookmark: true
-    }),
-    createDocumentStore({
-      displayTitle: "Business Dimensions Framework",
-      documentId: "doc_dimensions",
-      groupId: "group_strategy",
-      large: false,
-      now,
-      path: "business-dimensions-framework.md",
-      position: 2000,
-      projectId: "prj_strategy_performance",
-      root,
-      role: "summary"
-    }),
-    missingDocument
-  ];
-  writeFileSync(
-    join(root, ".patchmark", "project.json"),
-    serializeJson({
-      format: "patchmark-project",
-      schema_version: 2,
-      project_id: "prj_strategy_performance",
-      title: "Strategy Performance",
-      created_at: now,
-      manifest_revision: 1,
-      groups: [
-        {
-          group_id: "group_strategy",
-          title: "Strategy",
-          position: 1000,
-          created_at: now
-        },
-        {
-          group_id: "group_research",
-          title: "Research",
-          position: 2000,
-          created_at: now
-        }
-      ],
-      documents
-    })
-  );
-}
-
-function createDocumentStore({
-  displayTitle,
-  documentId,
-  groupId,
-  large,
-  now,
-  path,
-  position,
-  projectId,
-  root,
-  role,
-  withBookmark = false
-}) {
-  const markdown = createStressMarkdown(displayTitle, documentId, large);
-  const comments = createStressComments(markdown, documentId, large, now);
-  const patches = createStressPatches(documentId, large, now);
-  const versionCount = large ? 49 : 4;
-  const store = join(root, ".patchmark", "documents", documentId);
-  mkdirSync(join(store, "versions"), { recursive: true });
-  mkdirSync(join(store, "context-packs"), { recursive: true });
-  mkdirSync(join(store, "imports"), { recursive: true });
-  mkdirSync(join(store, "recovery"), { recursive: true });
-  writeFileSync(join(root, path), markdown);
-  const versions = Array.from({ length: versionCount }, (_, index) => {
-    const id = `PM-SNAPSHOT-${String(index + 1).padStart(3, "0")}`;
-    const file = `.patchmark/versions/${id}.md`;
-    writeFileSync(
-      join(store, "versions", `${id}.md`),
-      `${markdown}\nHistorical version ${index + 1}.\n`
-    );
-    return { id, file, created_at: now, reason: `fixture version ${index + 1}` };
-  });
-  const commitId = `PM-SAVE-000007-${documentId}`;
-  const bookmarkPhrase = `Anchor phrase 5 for ${documentId}.`;
-  const manifest = {
-    schema_version: 1,
-    project_id: projectId,
-    document_id: documentId,
-    project_name: displayTitle,
-    document_file: "document.md",
-    created_at: now,
-    updated_at: now,
-    current_version: versions.at(-1)?.id,
-    versions,
-    save_generation: 7,
-    save_commit_id: commitId,
-    ...(withBookmark
-      ? {
-          reading_bookmark: {
-            format_version: 1,
-            document: { project_id: projectId, document_id: documentId },
-            anchor: {
-              kind: "selected_text",
-              selected_text: bookmarkPhrase,
-              markdown_start_offset: markdown.indexOf(bookmarkPhrase),
-              markdown_end_offset:
-                markdown.indexOf(bookmarkPhrase) + bookmarkPhrase.length,
-              anchor_source: "markdown"
-            },
-            created_at: now,
-            updated_at: now
-          }
-        }
-      : {})
-  };
-  const commentsText = serializeJson(comments);
-  const patchesText = serializeJson(patches);
-  const manifestText = serializeJson(manifest);
-  writeFileSync(join(store, "comments.json"), commentsText);
-  writeFileSync(join(store, "patches.json"), patchesText);
-  writeFileSync(join(store, "manifest.json"), manifestText);
-  writeFileSync(join(store, "tasks.json"), "[]\n");
-  writeFileSync(
-    join(store, "document.json"),
-    serializeJson({
-      format: "patchmark-document-store",
-      schema_version: 1,
-      document_id: documentId,
-      created_at: now,
-      source: "created"
-    })
-  );
-  writeFileSync(
-    join(store, "save-commit.json"),
-    serializeJson({
-      format_version: 1,
-      generation: 7,
-      commit_id: commitId,
-      created_at: now,
-      files: {
-        document: descriptor("document.md", markdown),
-        comments: descriptor(".patchmark/comments.json", commentsText),
-        patches: descriptor(".patchmark/patches.json", patchesText),
-        manifest: descriptor(".patchmark/manifest.json", manifestText)
-      }
-    })
-  );
-  return {
-    document_id: documentId,
-    path,
-    display_title: displayTitle,
-    group_id: groupId,
-    role,
-    status: "active",
-    position,
-    added_at: now,
-    archived_at: null
-  };
-}
-
-function createStressMarkdown(title, documentId, large) {
-  const commentCount = large ? 31 : 5;
-  const patchCount = large ? 59 : 8;
-  const sectionCount = large ? 85 : 12;
-  const lines = [`# ${title}`, "", `Document fixture ${documentId}.`, ""];
-  for (let index = 0; index < commentCount; index += 1) {
-    lines.push(
-      `## Review Area ${index + 1}`,
-      "",
-      `Anchor phrase ${index + 1} for ${documentId}. This paragraph carries unique review context and enough surrounding language for deterministic selected-text projection.`,
-      ""
-    );
-  }
-  lines.push("## Patch Targets", "");
-  for (let index = 0; index < patchCount; index += 1) {
-    lines.push(`Patch target ${index + 1} for ${documentId} remains uniquely actionable.`);
-  }
-  for (let index = 0; index < sectionCount; index += 1) {
-    lines.push(
-      "",
-      `## Operating Dimension ${index + 1}`,
-      "",
-      `This is a substantial strategy paragraph ${index + 1} for ${documentId}. `.repeat(
-        large ? 12 : 3
-      ),
-      "",
-      "| Dimension | Signal | Decision |",
-      "| --- | --- | --- |",
-      `| Channel ${index + 1} | [Evidence](https://example.com/${documentId}/${index + 1}) | Continue measured validation |`,
-      `| Risk ${index + 1} | Market variability | Keep a reversible checkpoint |`
-    );
-  }
-  return `${lines.join("\n")}\n`;
-}
-
-function createStressComments(markdown, documentId, large, now) {
-  const commentCount = large ? 31 : 5;
-  return Array.from({ length: commentCount }, (_, index) => {
-    const selectedText = `Anchor phrase ${index + 1} for ${documentId}.`;
-    const start = markdown.indexOf(selectedText);
-    const replyCount = large ? (index < 16 ? 8 : 7) : 2;
-    return {
-      id: `PM-COMMENT-${String(index + 1).padStart(3, "0")}`,
-      type: index % 4 === 0 ? "risk" : "note",
-      status: "open",
-      anchor: {
-        kind: "selected_text",
-        selected_text: selectedText,
-        markdown_start_offset: start,
-        markdown_end_offset: start + selectedText.length,
-        context_before: markdown.slice(Math.max(0, start - 80), start),
-        context_after: markdown.slice(
-          start + selectedText.length,
-          start + selectedText.length + 80
-        ),
-        containing_heading: `Review Area ${index + 1}`,
-        anchor_source: "markdown"
-      },
-      comment: `Review thread ${index + 1} for ${documentId}.`,
-      thread: Array.from({ length: replyCount }, (_, replyIndex) => ({
-        id: `PM-REPLY-${String(index + 1).padStart(3, "0")}-${String(
-          replyIndex + 1
-        ).padStart(2, "0")}`,
-        role: replyIndex % 2 === 0 ? "user" : "chatgpt",
-        content: `Detailed reply ${replyIndex + 1} for comment ${index + 1}. `.repeat(6),
-        created_at: now
-      })),
-      export_state: { focus_state: "idle" },
-      created_at: now,
-      updated_at: now
-    };
-  });
-}
-
-function createStressPatches(documentId, large, now) {
-  const patchCount = large ? 59 : 8;
-  const commentCount = large ? 31 : 5;
-  return Array.from({ length: patchCount }, (_, index) => ({
-    id: `PM-PATCH-${String(index + 1).padStart(3, "0")}`,
-    status: "pending",
-    comment_id: `PM-COMMENT-${String((index % commentCount) + 1).padStart(
-      3,
-      "0"
-    )}`,
-    display_title: `Patch proposal ${index + 1}`,
-    target_heading: "Patch Targets",
-    original_text: `Patch target ${index + 1} for ${documentId} remains uniquely actionable.`,
-    suggested_text: `Patch target ${index + 1} for ${documentId} is now validated and actionable.`,
-    reason: `Measured recommendation ${index + 1}. `.repeat(5),
-    risk: "Preserve rollback and document identity guarantees.",
-    created_at: now
-  }));
-}
-
-function descriptor(path, text) {
-  return {
-    path,
-    sha256: createHash("sha256").update(text).digest("hex"),
-    bytes: Buffer.byteLength(text)
-  };
-}
-
-function serializeJson(value) {
-  return `${JSON.stringify(value, null, 2)}\n`;
 }

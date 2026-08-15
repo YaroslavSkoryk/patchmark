@@ -1,8 +1,4 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
-const fixtureDir = process.env.PATCHMARK_REAL_PROJECT_DIR;
 
 class MockFileHandle {
   constructor(name, contents) {
@@ -105,10 +101,6 @@ const malformed = "{ invalid json";
 assert.throws(() => JSON.parse(malformed));
 assert.equal(malformed, "{ invalid json");
 
-const persistedGenerationMetadata = fixtureDir
-  ? inspectGenerationMetadata(fixtureDir)
-  : { inspected: false };
-
 const report = {
   outOfOrder: {
     completionOrder: orderingFile.events
@@ -136,37 +128,10 @@ const report = {
   invalidJson: {
     parseRejected: true,
     sourceUnchanged: malformed === "{ invalid json"
-  },
-  persistedGenerationMetadata
+  }
 };
 
 process.stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-
-function inspectGenerationMetadata(projectDir) {
-  const paths = [
-    "document.md",
-    ".patchmark/comments.json",
-    ".patchmark/patches.json",
-    ".patchmark/manifest.json"
-  ];
-  const fields = [
-    "document_hash",
-    "document_sha256",
-    "mutation_generation",
-    "save_generation",
-    "save_id"
-  ];
-  const matches = [];
-
-  for (const path of paths) {
-    const contents = readFileSync(join(projectDir, path), "utf8");
-    for (const field of fields) {
-      if (contents.includes(`\"${field}\"`)) matches.push({ field, path });
-    }
-  }
-
-  return { inspected: true, matches };
-}
 
 function wait(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));

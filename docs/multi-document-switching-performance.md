@@ -23,8 +23,9 @@ and writes are recorded by the browser picker fixture. A `PerformanceObserver`
 records long tasks, while the switch profiler records phase durations, record
 counts, React renders and commits, projection passes, and rail-layout passes.
 
-The real Strategy project was not available in an accessible checkout during
-this investigation, so no real-project result is claimed.
+The required benchmark is deliberately synthetic. Its explicit document,
+paragraph, comment, patch, and history counts make correctness and timing samples
+reviewable without depending on private project content or machine-local paths.
 
 ## Baseline
 
@@ -246,12 +247,6 @@ PATCHMARK_SWITCH_PERFORMANCE_OUTPUT=/tmp/patchmark-switch-after.json \
 npm run test:document-switch-performance-browser
 ```
 
-For a safe in-memory run against an accessible real project, set
-`PATCHMARK_REAL_PROJECT_DIR`. Browser fixture writes remain in memory and do not
-modify the source project:
-
-```bash
-PATCHMARK_REAL_PROJECT_DIR=/absolute/path/to/project \
-PATCHMARK_EDITOR_URL=http://127.0.0.1:3120 \
-npm run test:document-switch-performance-browser
-```
+The browser benchmark always creates and removes its own deterministic project,
+fixture server, and Chrome profile. Arbitrary private projects are not accepted as
+test inputs; timing output therefore remains comparable and privacy-safe.

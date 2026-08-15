@@ -4,7 +4,7 @@ Date: 2026-07-15
 
 ## 1. Git root and branch
 
-- Root: `/Users/yskoryk/Documents/patchmark`
+- Root: the active Patchmark repository checkout.
 - Branch: `develop`
 - Work remained in the current checkout and branch.
 
@@ -126,15 +126,15 @@ One hundred representative concise history transitions serialized to 74,492 byte
 
 - Build: `npm run build`
 - Dedicated server: `npm run start -- --port 3117 --hostname 127.0.0.1`
-- Browser audit: `PATCHMARK_EDITOR_URL=http://127.0.0.1:3117/ PATCHMARK_REAL_PROJECT_DIR=<fixture> PATCHMARK_RAPID_EDIT_COUNT=100 npm run test:persistence-browser-audit`
+- Browser audit: `PATCHMARK_EDITOR_URL=http://127.0.0.1:3117/ PATCHMARK_RAPID_EDIT_COUNT=100 npm run test:persistence-browser-audit`
 - Recovery audit adds `PATCHMARK_RECOVERY_BROWSER=1` and uses the compact failure-injection fixture.
 
 ## 27. Fixture paths
 
-- Live source (read/hash only): `/Users/yskoryk/Documents/patchmark_docs/action_plan_market_growthb`
-- Full copied real-project fixture: `/private/tmp/patchmark-phase7b-real-project`
-- Compact real-data failure-injection fixture: `/private/tmp/patchmark-phase7b-small-project`
-- Patch-continuation browser tests create and remove their own temporary copy.
+- Current browser audits create deterministic fixture copies under task-owned
+  temporary roots and remove them after each run.
+- Recovery and patch-continuation browser tests create and remove their own
+  isolated deterministic copies.
 
 ## 28. Browser validation results
 
@@ -179,4 +179,3 @@ No existing Patchmark development/user server was stopped or restarted. Validati
 ## 35. Commit status
 
 No commit was created. No files were staged.
-

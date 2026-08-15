@@ -35,3 +35,10 @@ overlay on a fresh legacy-core copy, then adds fixed linked, prerequisite, edge,
 and unrelated records. Browser runs own their project copies, profiles, servers,
 and optional external evidence roots; no canonical fixture contains mutable
 continuation state.
+
+Phase 6 closes the real-project migration. Document-switch correctness and timing
+use the parameterized `createDocumentSwitchProject` builder with stable identities,
+content sentinels, bookmarks, histories, committed metadata, and an optional
+missing-document record. Persistence consistency retains its deterministic failure
+model; production metadata and round trips are asserted by deterministic fixture
+and persistence suites rather than unasserted scans of private folders.
