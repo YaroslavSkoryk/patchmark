@@ -11,6 +11,7 @@
     "test:control-interactions-browser": "node scripts/control-interaction-foundation-browser.test.mjs",
     "test:application-shell": "node scripts/application-shell.test.mjs",
     "test:application-shell-browser": "node scripts/application-shell-browser.test.mjs",
+    "test:compact-top-panel-browser": "node scripts/compact-top-panel-browser.test.mjs",
     "test:project-document-navigation": "node scripts/project-document-navigation.test.mjs",
     "test:project-document-navigation-browser": "node scripts/project-document-navigation-browser.test.mjs",
     "test:document-comment-foundation": "node scripts/document-comment-foundation.test.mjs",

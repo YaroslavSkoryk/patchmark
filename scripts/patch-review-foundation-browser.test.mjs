@@ -75,7 +75,7 @@ try {
   await waitForEditorShell(client);
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
-    `document.querySelector('.document-meta strong')?.textContent?.includes('Review Surface')`,
+    `document.querySelector('.application-document-breadcrumb')?.getAttribute('title')?.includes('Review Surface')`,
     "Phase 5 project"
   );
   await screenshot("01-desktop-review-closed.png");
@@ -254,7 +254,7 @@ try {
   });
   const mobileState = await readReviewState();
   measurements.mobile = mobileState;
-  assert.equal(mobileState.applicationBarHeight, 56);
+  assert.equal(mobileState.applicationBarHeight, 88);
   assert.ok(mobileState.queueHeight <= 66);
   assert.ok(mobileState.proposalTop < 360);
   assert.equal(mobileState.horizontalOverflow, false);

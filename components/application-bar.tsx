@@ -6,6 +6,7 @@ import {
 } from "@/components/action-menu";
 
 type ApplicationBarProps = {
+  actions: ReactNode;
   children: ReactNode;
 };
 
@@ -27,7 +28,7 @@ type ApplicationMenuItemProps = {
   closeMenu: () => void;
 };
 
-export function ApplicationBar({ children }: ApplicationBarProps) {
+export function ApplicationBar({ actions, children }: ApplicationBarProps) {
   return (
     <header
       className="application-bar"
@@ -35,8 +36,9 @@ export function ApplicationBar({ children }: ApplicationBarProps) {
       role="banner"
     >
       <nav className="application-bar-actions" aria-label="Application actions">
-        {children}
+        {actions}
       </nav>
+      <div className="application-bar-document">{children}</div>
     </header>
   );
 }
@@ -47,7 +49,16 @@ export function ApplicationMenu({ children, label }: ApplicationMenuProps) {
       label={`${label} menu`}
       rootClassName="application-menu"
       triggerClassName="application-menu-trigger"
-      triggerChildren={label}
+      triggerChildren={
+        <>
+          <span className="application-menu-label">{label}</span>
+          <span
+            className="application-menu-label-compact"
+            data-compact-label={label === "Review" ? "Rev" : label}
+            aria-hidden="true"
+          />
+        </>
+      }
       panelClassName="application-menu-panel"
     >
       {children}

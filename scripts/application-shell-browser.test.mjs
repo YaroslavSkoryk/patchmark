@@ -122,8 +122,8 @@ try {
   );
 
   const desktopShell = await readShellState(client);
-  assert.equal(desktopShell.bar.height, 56);
-  assert.equal(desktopShell.workspace.top, 68);
+  assert.equal(desktopShell.bar.height, 48);
+  assert.equal(desktopShell.workspace.top, 56);
   assert.deepEqual(desktopShell.controls, ["File", "Review"]);
   assert.equal(desktopShell.headerWrapped, false);
   assert.equal(desktopShell.horizontalOverflow, false);
@@ -195,7 +195,7 @@ try {
   await waitFor(
     client,
     "standalone Markdown import",
-    `document.querySelector(".document-meta strong")?.textContent?.includes("phase2-import.md")`
+    `document.querySelector(".application-breadcrumb-document")?.textContent?.includes("phase2-import.md")`
   );
   await waitForMenuClosed(client, "File");
 
@@ -387,7 +387,7 @@ try {
 
   await setViewport(client, { height: 900, mobile: false, width: 900 });
   const narrowShell = await readShellState(client);
-  assert.equal(narrowShell.bar.height, 56);
+  assert.equal(narrowShell.bar.height, 48);
   assert.equal(narrowShell.headerWrapped, false);
   assert.equal(narrowShell.horizontalOverflow, false);
   await capture(client, "06-narrow-shell-900x900.png");
@@ -398,7 +398,7 @@ try {
     maxTouchPoints: 5
   });
   const mobileShell = await readShellState(client);
-  assert.equal(mobileShell.bar.height, 56);
+  assert.equal(mobileShell.bar.height, 88);
   assert.equal(mobileShell.headerWrapped, false);
   assert.equal(mobileShell.horizontalOverflow, false);
   assert.ok(mobileShell.triggerHeight >= 40);
@@ -593,7 +593,7 @@ async function captureApplicationBarLayouts(pageClient) {
   ]) {
     await setViewport(pageClient, viewport);
     const state = await readShellState(pageClient);
-    assert.equal(state.bar.height, 56);
+    assert.equal(state.bar.height, 48);
     assert.deepEqual(state.actionOrder, ["File", "Review", "Comments"]);
     assert.equal(state.badgeParentIsComments, true);
     assert.equal(state.badgeText, "0");

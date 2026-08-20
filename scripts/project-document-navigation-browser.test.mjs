@@ -91,7 +91,7 @@ try {
   );
 
   const desktop = await readNavigationState(client);
-  assert.equal(desktop.appBarHeight, 56);
+  assert.equal(desktop.appBarHeight, 48);
   assert.equal(desktop.sidebarWidth, 272);
   assert.equal(desktop.activeTitle, "Action Plan");
   assert.equal(desktop.activeAriaCurrent, "page");
@@ -145,7 +145,7 @@ try {
   ]);
   await capture(client, "05-desktop-document-menu.png");
 
-  const editorPoint = await getRect(client, ".document-toolbar");
+  const editorPoint = await getRect(client, ".editor-body");
   await clickPoint(client, editorPoint);
   await waitForClosedNavigationMenus(client);
 
@@ -246,6 +246,11 @@ try {
     client,
     `document.querySelector(".document-sidebar")?.getAttribute("role") === "dialog"`,
     "open mobile navigation drawer"
+  );
+  await waitFor(
+    client,
+    `document.activeElement?.getAttribute("aria-label") === "Close document navigation"`,
+    "mobile navigation focus"
   );
   const mobileOpenState = await evaluate(client, {
     expression: `(() => ({

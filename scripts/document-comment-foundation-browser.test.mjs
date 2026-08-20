@@ -79,7 +79,7 @@ try {
   await openFixture({ height: 1000, mobile: false, width: 1440 });
   const collapsed = await readLayout();
   measurements.desktopCollapsed = collapsed;
-  assert.equal(collapsed.applicationBarHeight, 56);
+  assert.equal(collapsed.applicationBarHeight, 48);
   assert.equal(collapsed.commentsHidden, true);
   assert.equal(collapsed.navigationWidth, 272);
   assert.ok(collapsed.documentWidth > 1000);
@@ -325,7 +325,7 @@ try {
   await waitFor(`matchMedia('(max-width: 900px)').matches`, "mobile viewport");
   const mobileClosed = await readLayout();
   measurements.mobileClosed = mobileClosed;
-  assert.equal(mobileClosed.applicationBarHeight, 56);
+  assert.equal(mobileClosed.applicationBarHeight, 88);
   assert.equal(mobileClosed.commentsHidden, true);
   assert.equal(mobileClosed.horizontalOverflow, false);
   await screenshot("11-mobile-document-comments-closed.png");
@@ -334,6 +334,10 @@ try {
   await waitFor(
     `document.querySelector('#document-comments-panel')?.getAttribute('role') === 'dialog'`,
     "mobile comments dialog"
+  );
+  await waitFor(
+    `document.activeElement?.getAttribute('aria-label') === 'Close comments'`,
+    "mobile comments focus"
   );
   const mobileOpen = await readLayout();
   measurements.mobileOpen = mobileOpen;
@@ -405,7 +409,7 @@ try {
     userGesture: true
   });
   await waitFor(
-    `document.querySelector('.document-meta strong')?.textContent?.includes('Notes')`,
+    `document.querySelector('.application-document-breadcrumb')?.getAttribute('title')?.includes('Notes')`,
     "no-comments document"
   );
   await clickSelector(".application-comments-trigger");
@@ -468,7 +472,7 @@ async function openFixture(viewport) {
   await waitForEditorShell(client);
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
-    `document.querySelector('.document-meta strong')?.textContent?.includes('Phase 4 Evidence / Action Plan')`,
+    `document.querySelector('.application-document-breadcrumb')?.getAttribute('title')?.includes('Phase 4 Evidence / Action Plan')`,
     "Phase 4 fixture"
   );
   await waitFor(`Boolean(document.querySelector('.patchmark-prose'))`, "visual editor");

@@ -28,8 +28,6 @@ import {
 
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3118/";
 const evidenceDir = process.env.PATCHMARK_PROJECT_RESUME_EVIDENCE_DIR;
-const statusLayoutBaselineAudit =
-  process.env.PATCHMARK_STATUS_LAYOUT_BASELINE_AUDIT === "1";
 const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-resume-browser-"));
 const projectDir = join(fixtureRoot, "Strategy");
 createProjectFixture(projectDir);
@@ -144,14 +142,19 @@ try {
   );
   await waitFor(
     client,
-    `document.querySelector(".document-context-status")?.textContent?.trim() === "Resumed Strategy from its authoritative local folder."`,
-    "resumed project context status"
+    `document.querySelector(".workspace-status")?.textContent?.includes("Project: Strategy") && document.querySelector(".application-document-breadcrumb")?.textContent?.includes("Action Plan")`,
+    "resumed project context"
   );
-  const contextStatusLayout = await verifyContextStatusLayout(client);
+  assert.equal(
+    await textContent(client, ".document-context-status"),
+    "",
+    "Routine project resume must not add a persistent success banner."
+  );
+  const compactResumeLayout = await verifyCompactResumeLayout(client);
   if (evidenceDir) {
     writeFileSync(
       join(evidenceDir, "measurements.json"),
-      `${JSON.stringify(contextStatusLayout, null, 2)}\n`
+      `${JSON.stringify(compactResumeLayout, null, 2)}\n`
     );
   }
   progress("safe_recovery_loaded");
@@ -198,7 +201,7 @@ try {
   await waitForRecoveryCount(client, 0);
   await waitFor(
     client,
-    `document.querySelector(".document-save-banner-success")?.textContent?.includes("Saved project changes")`,
+    `document.querySelector(".document-status")?.textContent?.trim() === "Saved" && !document.querySelector(".document-save-banner-success")`,
     "independent project save"
   );
   await seedRecovery(client, {
@@ -305,7 +308,7 @@ try {
         recoveredConflictWorkingCopyNoWrite: true,
         explicitDiscardNoProjectWrites: true,
         multipleRecoveriesIndependent: true,
-        contextStatusLayout
+        compactResumeLayout
       },
       null,
       2
@@ -342,7 +345,7 @@ async function reloadAndResume(pageClient) {
   );
 }
 
-async function verifyContextStatusLayout(pageClient) {
+async function verifyCompactResumeLayout(pageClient) {
   const measurements = {};
   for (const [label, viewport] of [
     ["desktop", { height: 1000, width: 1440 }],
@@ -355,76 +358,51 @@ async function verifyContextStatusLayout(pageClient) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     const measurement = await evaluate(pageClient, {
       expression: `(() => {
-        const status = document.querySelector('.document-context-status');
-        if (!(status instanceof HTMLElement)) throw new Error('Context status not found.');
-        const parent = status.parentElement;
-        const previous = status.previousElementSibling;
-        const next = status.nextElementSibling;
-        if (!(parent instanceof HTMLElement) || !(previous instanceof HTMLElement) || !(next instanceof HTMLElement)) {
-          throw new Error('Context status row boundaries not found.');
+        const applicationBar = document.querySelector('.application-bar');
+        const breadcrumb = document.querySelector('.application-document-breadcrumb');
+        const documentStatus = document.querySelector('.document-status');
+        const modeSwitch = document.querySelector('.mode-switcher');
+        if (
+          !(applicationBar instanceof HTMLElement) ||
+          !(breadcrumb instanceof HTMLElement) ||
+          !(documentStatus instanceof HTMLElement) ||
+          !(modeSwitch instanceof HTMLElement)
+        ) {
+          throw new Error('Compact resume controls not found.');
         }
-        const statusRect = status.getBoundingClientRect();
-        const parentRect = parent.getBoundingClientRect();
-        const previousRect = previous.getBoundingClientRect();
-        const nextRect = next.getBoundingClientRect();
-        const style = getComputedStyle(status);
-        const textRange = document.createRange();
-        textRange.selectNodeContents(status);
-        const lineCount = new Set(
-          Array.from(textRange.getClientRects()).map((rect) => Math.round(rect.top * 100) / 100)
-        ).size;
+        const applicationBarRect = applicationBar.getBoundingClientRect();
+        const breadcrumbRect = breadcrumb.getBoundingClientRect();
+        const documentStatusRect = documentStatus.getBoundingClientRect();
+        const modeSwitchRect = modeSwitch.getBoundingClientRect();
         return {
-          applicationBarHeight: Math.round(document.querySelector('.application-bar')?.getBoundingClientRect().height ?? 0),
-          bottomGap: Number((nextRect.top - statusRect.bottom).toFixed(2)),
-          borderRadius: style.borderRadius,
-          fontSize: style.fontSize,
+          applicationBarHeight: Math.round(applicationBarRect.height),
+          breadcrumbText: breadcrumb.textContent?.trim() ?? '',
+          breadcrumbTitle: breadcrumb.title,
+          documentStatus: documentStatus.textContent?.trim() ?? '',
           horizontalOverflow: document.documentElement.scrollWidth > document.documentElement.clientWidth,
-          lineCount,
-          lineHeight: style.lineHeight,
-          marginBottom: Number.parseFloat(style.marginBottom),
-          marginTop: Number.parseFloat(style.marginTop),
-          paddingBottom: Number.parseFloat(style.paddingBottom),
-          paddingTop: Number.parseFloat(style.paddingTop),
-          parentHeight: Number(parentRect.height.toFixed(2)),
-          rightGap: Number((parentRect.right - statusRect.right).toFixed(2)),
-          rowSpan: Number((nextRect.top - previousRect.bottom).toFixed(2)),
-          statusHeight: Number(statusRect.height.toFixed(2)),
-          statusHorizontalOverflow: status.scrollWidth > status.clientWidth,
-          statusWidth: Number(statusRect.width.toFixed(2)),
-          text: status.textContent?.trim() ?? '',
-          topGap: Number((statusRect.top - previousRect.bottom).toFixed(2)),
+          modeSwitchRightInset: Number((applicationBarRect.right - modeSwitchRect.right).toFixed(2)),
+          noRoutineResumeStatus: !document.querySelector('.document-context-status'),
+          rowsAligned:
+            Math.abs(breadcrumbRect.top + breadcrumbRect.height / 2 - (documentStatusRect.top + documentStatusRect.height / 2)) <= 1,
           viewport: { height: innerHeight, width: innerWidth }
         };
       })()`
     });
 
-    assert.equal(measurement.applicationBarHeight, 56);
-    assert.equal(measurement.horizontalOverflow, false);
-    assert.equal(measurement.statusHorizontalOverflow, false);
-    assert.ok(measurement.rightGap >= 8, `${label} lost the context-status right inset.`);
-    assert.ok(
-      Math.abs(measurement.topGap + measurement.bottomGap - 8) <= 1,
-      `${label} changed the context-status row height.`
+    assert.equal(
+      measurement.applicationBarHeight,
+      label === "mobile" || label === "compact" ? 88 : 48
     );
-    if (statusLayoutBaselineAudit) {
-      assert.ok(
-        measurement.topGap - measurement.bottomGap >= 7,
-        `${label} did not reproduce the context-status imbalance.`
-      );
-    } else {
-      assert.ok(measurement.topGap >= 3, `${label} lost the top context-status gap.`);
-      assert.ok(measurement.bottomGap >= 3, `${label} lost the bottom context-status gap.`);
-      assert.ok(
-        Math.abs(measurement.topGap - measurement.bottomGap) <= 1,
-        `${label} context-status gaps are not balanced.`
-      );
-    }
-    if (label === "compact") {
-      assert.ok(measurement.lineCount >= 2, "Compact context status did not wrap.");
-    }
+    assert.equal(measurement.horizontalOverflow, false);
+    assert.equal(measurement.noRoutineResumeStatus, true);
+    assert.equal(measurement.rowsAligned, true);
+    assert.ok(measurement.modeSwitchRightInset >= 0, `${label} clipped the mode switch.`);
+    assert.match(measurement.breadcrumbText, /Action Plan/);
+    assert.match(measurement.breadcrumbTitle, /Strategy \/ Strategy Documents \/ Action Plan/);
+    assert.match(measurement.documentStatus, /Saved|Unsaved|Restored/);
 
     measurements[label] = measurement;
-    await captureScreenshot(pageClient, `${label}-context-status.png`);
+    await captureScreenshot(pageClient, `${label}-compact-resume.png`);
   }
   await setViewport(pageClient, { height: 1000, width: 1440 });
   return measurements;

@@ -101,7 +101,7 @@ try {
   await clickVisibleButton(client, "Open Project Folder");
   await waitFor(
     client,
-    `document.querySelector(".document-save-banner")?.textContent?.includes("Opened Patchmark project folder")`,
+    `Boolean(document.querySelector(".application-document-breadcrumb")) && !document.querySelector(".document-save-banner-success")`,
     "project open completion"
   );
   await clickSelector(client, ".application-comments-trigger");
@@ -346,7 +346,7 @@ try {
   await clickVisibleButton(client, "Open Project Folder");
   await waitFor(
     client,
-    `document.querySelector(".document-save-banner")?.textContent?.includes("Opened Patchmark project folder")`,
+    `Boolean(document.querySelector(".application-document-breadcrumb")) && !document.querySelector(".document-save-banner-success")`,
     "project reopen completion"
   );
   await clickSelector(client, ".application-comments-trigger");

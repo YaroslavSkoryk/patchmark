@@ -97,8 +97,8 @@ assert.match(
   globals,
   /\.markdown-source-editor \{[\s\S]*?flex: 1 1 auto;[\s\S]*?min-height: 0;/
 );
-assert.match(globals, /--application-bar-block-size: 56px;/);
-assert.match(globals, /--document-workspace-block-start: 12px;/);
+assert.match(globals, /--application-bar-block-size: 48px;/);
+assert.match(globals, /--document-workspace-block-start: 8px;/);
 assert.match(
   globals,
   /\.editor-panel:has\(\.markdown-source-editor\) \{[\s\S]*?min-height: calc\([\s\S]*?100dvh[\s\S]*?--application-bar-block-size[\s\S]*?--document-workspace-block-start[\s\S]*?--app-shell-block-end-space[\s\S]*?--safe-area-bottom[\s\S]*?\);/

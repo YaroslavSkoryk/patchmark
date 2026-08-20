@@ -85,6 +85,9 @@ assert.match(
 assert.match(css, /\.comment-action-menu-panel\s*\{[\s\S]*?position: fixed/);
 assert.match(css, /@media \(max-width: 900px\)[\s\S]*?\.comments-rail\s*\{[\s\S]*?position: fixed/);
 assert.match(css, /@media \(max-width: 520px\)[\s\S]*?\.comments-rail\s*\{[\s\S]*?max-height: 76dvh/);
-assert.match(css, /\.application-bar\s*\{[\s\S]*?height: 56px/);
+assert.match(
+  css,
+  /\.application-bar\s*\{[\s\S]*?height: var\(--application-bar-block-size\)/
+);
 
 console.log("Document/comment foundation tests passed.");

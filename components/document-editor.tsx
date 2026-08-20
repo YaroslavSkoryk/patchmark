@@ -102,7 +102,6 @@ import {
   type CommentPermanentDeletionMode
 } from "@/lib/comments/comment-permanent-deletion-operations";
 import { getDeletedCommentTombstone } from "@/lib/comments/comment-deletion-tombstones";
-import { DocumentActions } from "@/components/document-actions";
 import {
   ApplicationBar,
   ApplicationMenu,
@@ -444,10 +443,11 @@ type SaveStatus = "idle" | "saving" | "failed" | "unavailable";
 type SaveFeedback = {
   kind: "success" | "error" | "info";
   message: string;
+  transient?: boolean;
 };
 type DocumentSwitchTransaction = DocumentEditorReadinessIdentity & {
   documentId: string;
-  feedback: SaveFeedback;
+  feedback: SaveFeedback | null;
   phase: "awaiting_editor" | "ready";
 };
 type PreparedDocumentRecovery = {
@@ -879,6 +879,17 @@ export function DocumentEditor() {
   const [documentVersion, setDocumentVersion] = useState(0);
   const [saveStatus, setSaveStatus] = useState<SaveStatus>("idle");
   const [saveFeedback, setSaveFeedback] = useState<SaveFeedback | null>(null);
+
+  useEffect(() => {
+    if (!saveFeedback?.transient) {
+      return;
+    }
+    const feedback = saveFeedback;
+    const timer = window.setTimeout(() => {
+      setSaveFeedback((current) => (current === feedback ? null : current));
+    }, 1800);
+    return () => window.clearTimeout(timer);
+  }, [saveFeedback]);
   const [versionEntries, setVersionEntries] = useState<PatchmarkVersionEntry[]>(
     []
   );
@@ -2960,7 +2971,7 @@ export function DocumentEditor() {
         try {
           recoveryId = await persistActiveRecoveryNow();
         } catch {}
-        const result = await saveProjectState({
+        await saveProjectState({
           comments,
           markdown,
           patches,
@@ -2984,18 +2995,12 @@ export function DocumentEditor() {
         }
         setDeviceRecoveryWarning(null);
         setSaveStatus("idle");
-        setSaveFeedback({
-          kind: "success",
-          message:
-            result.status === "unchanged"
-              ? "Everything is already saved."
-              : "Saved project changes as one complete generation."
-        });
-      } catch (error) {
+        setSaveFeedback(null);
+      } catch {
         setSaveStatus("failed");
         setSaveFeedback({
           kind: "error",
-          message: getSaveErrorMessage(error)
+          message: getSaveErrorMessage()
         });
       }
 
@@ -3031,15 +3036,12 @@ export function DocumentEditor() {
       }
       setDeviceRecoveryWarning(null);
       setSaveStatus("idle");
-      setSaveFeedback({
-        kind: "success",
-        message: "Saved changes to the Markdown file."
-      });
-    } catch (error) {
+      setSaveFeedback(null);
+    } catch {
       setSaveStatus("failed");
       setSaveFeedback({
         kind: "error",
-        message: getSaveErrorMessage(error)
+        message: getSaveErrorMessage()
       });
     }
   }, [activeFileHandle, comments, fileName, isProjectDataLoading, isSaving, markdown, patches, persistActiveRecoveryNow, projectHandle]);
@@ -3396,15 +3398,12 @@ export function DocumentEditor() {
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
       setSaveStatus("idle");
-      setSaveFeedback({
-        kind: "success",
-        message: "Saved Markdown to the selected file."
-      });
-    } catch (error) {
+      setSaveFeedback(null);
+    } catch {
       setSaveStatus("failed");
       setSaveFeedback({
         kind: "error",
-        message: getSaveErrorMessage(error)
+        message: getSaveErrorMessage()
       });
     }
   }
@@ -3414,6 +3413,23 @@ export function DocumentEditor() {
       kind: "info",
       message: "Downloaded a Markdown copy. Save status is unchanged."
     });
+  }
+
+  async function handleCopyMarkdown() {
+    try {
+      await navigator.clipboard.writeText(markdown);
+      setSaveFeedback({
+        kind: "success",
+        message: "Copied Markdown.",
+        transient: true
+      });
+    } catch {
+      setSaveFeedback({
+        kind: "error",
+        message:
+          "Copy failed. Check clipboard permission and try Copy Markdown again."
+      });
+    }
   }
 
   async function handleOpenProjectFolder() {
@@ -3443,12 +3459,11 @@ export function DocumentEditor() {
       }
 
       await loadProjectIntoEditor(loadedProject);
-      setSaveFeedback({
-        kind: loadedProject.recovery ? "info" : "success",
-        message: loadedProject.recovery
-          ? loadedProject.recovery.message
-          : "Opened Patchmark project folder."
-      });
+      setSaveFeedback(
+        loadedProject.recovery
+          ? { kind: "info", message: loadedProject.recovery.message }
+          : null
+      );
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({
@@ -3579,10 +3594,7 @@ export function DocumentEditor() {
       await loadProjectIntoEditor(loadedProject, {
         localInstanceId: recentProject.local_instance_id
       });
-      setSaveFeedback({
-        kind: "success",
-        message: `Resumed ${getProjectTitle(loadedProject.project)} from its authoritative local folder.`
-      });
+      setSaveFeedback(null);
     } catch (error) {
       setResumeProjectError(getProjectErrorMessage(error));
     } finally {
@@ -4038,16 +4050,16 @@ export function DocumentEditor() {
           ? targetDocumentKey
           : null,
         switchRequest: {
-          feedback: {
-            kind:
-              loaded.project.documentAvailability === "missing"
-                ? "info"
-                : "success",
-            message:
-              loaded.project.documentAvailability === "missing"
-                ? `The registered file ${loaded.project.document?.path} is missing.`
-                : `Opened ${loaded.project.document?.display_title}.`
-          },
+          feedback:
+            loaded.project.documentAvailability === "missing"
+              ? {
+                  kind: "info",
+                  message:
+                    "The registered file " +
+                    loaded.project.document?.path +
+                    " is missing."
+                }
+              : null,
           generation: requestId
         }
       });
@@ -4435,10 +4447,7 @@ export function DocumentEditor() {
       await loadProjectIntoEditor(loaded, {
         localInstanceId: localProjectInstanceId
       });
-      setSaveFeedback({
-        kind: "success",
-        message: `Located ${loaded.project.document?.display_title}.`
-      });
+      setSaveFeedback(null);
     } catch (error) {
       setSaveStatus("failed");
       setSaveFeedback({ kind: "error", message: getProjectErrorMessage(error) });
@@ -4472,7 +4481,8 @@ export function DocumentEditor() {
         setSaveStatus("idle");
         setSaveFeedback({
           kind: "info",
-          message: "No changes since latest snapshot."
+          message: "No changes since latest snapshot.",
+          transient: true
         });
         return;
       }
@@ -4482,7 +4492,8 @@ export function DocumentEditor() {
       setSaveStatus("idle");
       setSaveFeedback({
         kind: "success",
-        message: "Created a Markdown snapshot in .patchmark/versions/."
+        message: "Created a Markdown snapshot in .patchmark/versions/.",
+        transient: true
       });
     } catch (error) {
       setSaveStatus("failed");
@@ -9100,7 +9111,7 @@ export function DocumentEditor() {
       pendingBookmarkDocumentKey?: string | null;
       performanceOperationId?: string | null;
       switchRequest?: {
-        feedback: SaveFeedback;
+        feedback: SaveFeedback | null;
         generation: number;
       };
     } = {}
@@ -9514,10 +9525,7 @@ export function DocumentEditor() {
     }
 
     restoreCommentsTriggerFocusRef.current = false;
-    const animationFrame = window.requestAnimationFrame(() => {
-      commentsTriggerRef.current?.focus();
-    });
-    return () => window.cancelAnimationFrame(animationFrame);
+    commentsTriggerRef.current?.focus();
   }, [commentsOpen]);
 
   useEffect(() => {
@@ -9636,7 +9644,9 @@ export function DocumentEditor() {
 
   return (
     <>
-      <ApplicationBar>
+      <ApplicationBar
+        actions={
+          <>
         <button
           ref={documentNavigationTriggerRef}
           className="application-navigation-trigger"
@@ -9702,6 +9712,72 @@ export function DocumentEditor() {
                   Create Project From Current Document
                 </ApplicationMenuItem>
               </ApplicationMenuGroup>
+              {fileName ? (
+                <ApplicationMenuGroup label="Document actions">
+                  <ApplicationMenuItem
+                    busy={documentActionsBusy}
+                    closeMenu={closeMenu}
+                    disabled={documentActionsBusy}
+                    onSelect={handleSaveChanges}
+                  >
+                    Save Changes
+                  </ApplicationMenuItem>
+                  {isProjectMode ? (
+                    <ApplicationMenuItem
+                      busy={documentActionsBusy}
+                      closeMenu={closeMenu}
+                      disabled={documentActionsBusy}
+                      onSelect={handleCreateSnapshot}
+                    >
+                      Create Snapshot
+                    </ApplicationMenuItem>
+                  ) : null}
+                  <ApplicationMenuItem
+                    closeMenu={closeMenu}
+                    disabled={documentActionsBusy}
+                    onSelect={handleCopyMarkdown}
+                  >
+                    Copy Markdown
+                  </ApplicationMenuItem>
+                </ApplicationMenuGroup>
+              ) : null}
+              {readingBookmark ? (
+                <ApplicationMenuGroup
+                  label={
+                    readingBookmarkResolution?.state === "available"
+                      ? "Reading bookmark"
+                      : "Reading bookmark · unavailable"
+                  }
+                >
+                  {readingBookmarkResolution?.state === "available" ? (
+                    <ApplicationMenuItem
+                      busy={isReadingBookmarkBusy}
+                      closeMenu={closeMenu}
+                      disabled={
+                        isReadingBookmarkBusy ||
+                        isDocumentSwitchPending ||
+                        isReanchorMode
+                      }
+                      onSelect={handleContinueReading}
+                    >
+                      Continue reading
+                    </ApplicationMenuItem>
+                  ) : (
+                    <ApplicationMenuItem
+                      busy={isReadingBookmarkBusy}
+                      closeMenu={closeMenu}
+                      disabled={
+                        isReadingBookmarkBusy ||
+                        isDocumentSwitchPending ||
+                        isReanchorMode
+                      }
+                      onSelect={handleRemoveReadingBookmark}
+                    >
+                      Remove unavailable bookmark
+                    </ApplicationMenuItem>
+                  )}
+                </ApplicationMenuGroup>
+              ) : null}
               {fileName ? (
                 <ApplicationMenuGroup label="Export">
                   <ApplicationMenuItem
@@ -9812,11 +9888,107 @@ export function DocumentEditor() {
           disabled={!fileName || isReanchorMode}
           onClick={() => (commentsOpen ? closeComments() : openComments())}
         >
-          <span>Comments</span>
+          <span className="application-comments-label">Comments</span>
           <span className="application-comments-count" aria-hidden="true">
             {activeComments.length}
           </span>
         </button>
+          </>
+        }
+      >
+        {fileName ? (
+          <>
+            <div
+              className="workspace-status sr-only"
+              aria-label="Workspace status"
+            >
+              <span>
+                Mode: {isProjectMode ? "Patchmark Project" : "Single Markdown File"}
+              </span>
+              {projectHandle ? (
+                <>
+                  <span>Project: {getProjectTitle(projectHandle)}</span>
+                  {activeDocumentGroup ? (
+                    <span>Group: {activeDocumentGroup.title}</span>
+                  ) : null}
+                  <span>
+                    Document: {projectHandle.document?.display_title ?? fileName}
+                  </span>
+                </>
+              ) : null}
+            </div>
+            <div className="application-document-divider" aria-hidden="true" />
+            <div
+              aria-label={`Current document: ${
+                projectHandle
+                  ? [
+                      getProjectTitle(projectHandle),
+                      activeDocumentGroup?.title,
+                      projectHandle.document?.display_title ?? fileName
+                    ]
+                      .filter(Boolean)
+                      .join(" / ")
+                  : fileName
+              }`}
+              className="application-document-breadcrumb"
+              role="navigation"
+              title={
+                projectHandle
+                  ? [
+                      getProjectTitle(projectHandle),
+                      activeDocumentGroup?.title,
+                      projectHandle.document?.display_title ?? fileName
+                    ]
+                      .filter(Boolean)
+                      .join(" / ")
+                  : fileName
+              }
+            >
+              {projectHandle ? (
+                <>
+                  <span className="application-breadcrumb-project">
+                    {getProjectTitle(projectHandle)}
+                  </span>
+                  {activeDocumentGroup ? (
+                    <span className="application-breadcrumb-group">
+                      {activeDocumentGroup.title}
+                    </span>
+                  ) : null}
+                  <strong className="application-breadcrumb-document">
+                    {projectHandle.document?.display_title ?? fileName}
+                  </strong>
+                </>
+              ) : (
+                <strong className="application-breadcrumb-document">{fileName}</strong>
+              )}
+            </div>
+            <DocumentStatus
+              status={isDocumentSwitchPending ? "opening" : documentStatus}
+            />
+            <div className="mode-switcher" aria-label="Editor mode">
+              <button
+                type="button"
+                aria-label="Visual Mode"
+                aria-pressed={mode === "visual"}
+                disabled={requestedProjectDocumentId !== null}
+                onClick={() => handleEditorModeChange("visual")}
+              >
+                <span>Visual</span><span className="sr-only"> Mode</span>
+              </button>
+              <button
+                type="button"
+                aria-label="Markdown Mode"
+                aria-pressed={mode === "markdown"}
+                disabled={requestedProjectDocumentId !== null}
+                onClick={() => handleEditorModeChange("markdown")}
+              >
+                <span>Markdown</span><span className="sr-only"> Mode</span>
+              </button>
+            </div>
+          </>
+        ) : (
+          <div className="application-bar-spacer" />
+        )}
       </ApplicationBar>
       <section
       ref={documentWorkspaceRef}
@@ -9962,114 +10134,6 @@ export function DocumentEditor() {
       </aside>
 
       <div className="editor-panel">
-        {fileName ? (
-          <div className="document-toolbar">
-            <div className="document-toolbar-primary">
-              <div
-                className="workspace-status sr-only"
-                aria-label="Workspace status"
-              >
-                <span>
-                  Mode:{" "}
-                  {isProjectMode ? "Patchmark Project" : "Single Markdown File"}
-                </span>
-                {projectHandle ? (
-                  <>
-                    <span>Project: {getProjectTitle(projectHandle)}</span>
-                    {activeDocumentGroup ? (
-                      <span>Group: {activeDocumentGroup.title}</span>
-                    ) : null}
-                    <span>
-                      Document:{" "}
-                      {projectHandle.document?.display_title ??
-                        projectHandle.manifest.document_file}
-                    </span>
-                  </>
-                ) : null}
-              </div>
-              <div className="document-meta">
-                <span>{isProjectMode ? "Project / document" : "Loaded file"}</span>
-                <strong title={fileName}>
-                  {projectHandle
-                    ? [
-                        getProjectTitle(projectHandle),
-                        activeDocumentGroup?.title,
-                        projectHandle.document?.display_title ?? fileName
-                      ]
-                        .filter(Boolean)
-                        .join(" / ")
-                    : fileName}
-                </strong>
-                <DocumentStatus status={documentStatus} />
-              </div>
-            </div>
-
-            <div className="document-toolbar-controls">
-              <DocumentActions
-                isSaving={documentActionsBusy}
-                markdown={markdown}
-                onCreateSnapshot={handleCreateSnapshot}
-                onSaveChanges={handleSaveChanges}
-                showCreateSnapshot={isProjectMode}
-              />
-              {readingBookmark ? (
-                <div
-                  className="reading-bookmark-controls"
-                  aria-label="Reading bookmark controls"
-                  key={`controls:${activeDocumentKey}`}
-                >
-                  {readingBookmarkResolution?.state === "available" ? (
-                    <button
-                      type="button"
-                      disabled={
-                        isReadingBookmarkBusy ||
-                        isDocumentSwitchPending ||
-                        isReanchorMode
-                      }
-                      onClick={() => void handleContinueReading()}
-                    >
-                      Continue reading
-                    </button>
-                  ) : (
-                    <>
-                      <span role="status">Bookmark location unavailable</span>
-                      <button
-                        type="button"
-                        disabled={
-                          isReadingBookmarkBusy ||
-                          isDocumentSwitchPending ||
-                          isReanchorMode
-                        }
-                        onClick={() => void handleRemoveReadingBookmark()}
-                      >
-                        Remove unavailable bookmark
-                      </button>
-                    </>
-                  )}
-                </div>
-              ) : null}
-              <div className="mode-switcher" aria-label="Editor mode">
-                <button
-                  type="button"
-                  aria-pressed={mode === "visual"}
-                  disabled={requestedProjectDocumentId !== null}
-                  onClick={() => handleEditorModeChange("visual")}
-                >
-                  Visual Mode
-                </button>
-                <button
-                  type="button"
-                  aria-pressed={mode === "markdown"}
-                  disabled={requestedProjectDocumentId !== null}
-                  onClick={() => handleEditorModeChange("markdown")}
-                >
-                  Markdown Mode
-                </button>
-              </div>
-            </div>
-          </div>
-        ) : null}
-
         {projectRecovery ? (
           <div
             className="document-save-banner document-save-banner-info project-recovery-banner"
@@ -10155,15 +10219,6 @@ export function DocumentEditor() {
               }
             }}
           />
-        ) : null}
-
-        {requestedProjectDocumentId ? (
-          <div className="document-switch-loading" role="status">
-            Opening {projectDocuments.find(
-              (document) =>
-                document.document_id === requestedProjectDocumentId
-            )?.display_title ?? "document"}…
-          </div>
         ) : null}
 
         {!fileName && recentProject ? (
@@ -13541,11 +13596,7 @@ function areReanchorWorkspaceStylesEqual(
   );
 }
 
-function getSaveErrorMessage(error: unknown): string {
-  if (error instanceof Error && error.message) {
-    return `Save failed: ${error.message}`;
-  }
-
+function getSaveErrorMessage(): string {
   return "Save failed. Your unsaved changes are still in Patchmark.";
 }
 

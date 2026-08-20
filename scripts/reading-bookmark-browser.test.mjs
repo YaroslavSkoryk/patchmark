@@ -206,13 +206,13 @@ async function run() {
     assert.ok(sourceResult.scrollTop > 0);
 
     await makeBookmarkUnavailableInMemory(pageClient);
-    await waitForText(pageClient, "Bookmark location unavailable");
+    await waitForText(pageClient, "Reading bookmark · unavailable");
     await waitForButtonMissing(pageClient, "Continue reading");
     await waitForButtonMissing(pageClient, "Remove bookmark");
     await waitForButton(pageClient, "Remove unavailable bookmark");
     await clickButtonByText(pageClient, "Remove unavailable bookmark");
     await waitForPersistedBookmark(fixtureDir, "doc_second", false);
-    await waitForTextMissing(pageClient, "Bookmark location unavailable");
+    await waitForTextMissing(pageClient, "Reading bookmark · unavailable");
     await waitForNavigatorBookmarks(pageClient, 1);
     assert.ok(readManifest(fixtureDir, "doc_first").reading_bookmark);
     assert.equal(readManifest(fixtureDir, "doc_second").reading_bookmark, undefined);

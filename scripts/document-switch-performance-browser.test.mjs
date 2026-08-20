@@ -749,10 +749,7 @@ async function measureRapidSwitch(
   const intermediateCommittedStates = observedStates.filter(
     (state) =>
       state.activeTitle === intermediateDocument.displayTitle ||
-      state.documentMeta?.includes(intermediateDocument.displayTitle) ||
-      state.notification?.includes(
-        `Opened ${intermediateDocument.displayTitle}.`
-      )
+      state.documentBreadcrumb?.includes(intermediateDocument.displayTitle)
   );
   if (expectAtomic) {
     assert.deepEqual(
@@ -1395,6 +1392,9 @@ function assertAtomicSwitchStates(
     (state) =>
       state.targetOpenedNotification && !state.targetFingerprintVisible
   );
+  const openedNotifications = observedStates.filter(
+    (state) => state.openedNotification
+  );
   const stalePreviews = observedStates.filter(
     (state) => state.stalePreviewVisible
   );
@@ -1424,6 +1424,15 @@ function assertAtomicSwitchStates(
     [],
     `The Opened notification preceded the target editor fingerprint. ${JSON.stringify(
       prematureNotifications.slice(0, 6),
+      null,
+      2
+    )}`
+  );
+  assert.deepEqual(
+    openedNotifications,
+    [],
+    `Routine document-open notifications must remain absent. ${JSON.stringify(
+      openedNotifications.slice(0, 6),
       null,
       2
     )}`
@@ -1466,6 +1475,9 @@ function summarizeConsistency(observedStates) {
         !state.targetFingerprintVisible
     ).length,
     observedStateCount: observedStates.length,
+    openedNotificationCount: observedStates.filter(
+      (state) => state.openedNotification
+    ).length,
     prematureOpenedNotificationCount: observedStates.filter(
       (state) =>
         state.targetOpenedNotification && !state.targetFingerprintVisible
@@ -1524,8 +1536,9 @@ function createDocumentSwitchConsistencyObserverScript() {
       const requestedTitle = document.querySelector(
         ".project-document-item[data-requested='true'] .project-document-select span"
       )?.textContent ?? null;
-      const documentMeta = document.querySelector(".document-meta strong")
-        ?.textContent?.trim() ?? null;
+      const documentBreadcrumb = document.querySelector(
+        ".application-document-breadcrumb"
+      )?.getAttribute("title") ?? null;
       const commentsCount = Number(
         document.querySelector(".application-comments-count")?.textContent ??
           "NaN"
@@ -1539,7 +1552,7 @@ function createDocumentSwitchConsistencyObserverScript() {
       const targetChromeCommitted =
         activeTitle === configuration.targetDocument.title ||
         documentKey === configuration.targetDocument.documentKey ||
-        documentMeta?.includes(configuration.targetDocument.title) === true ||
+        documentBreadcrumb?.includes(configuration.targetDocument.title) === true ||
         (commentsCount === configuration.targetDocument.commentCount &&
           documentToolsSummary?.startsWith(
             configuration.targetDocument.headingCount + " heading"
@@ -1549,7 +1562,7 @@ function createDocumentSwitchConsistencyObserverScript() {
         commentsCount,
         createSnapshotDisabled: buttonDisabled("Create Snapshot"),
         documentKey,
-        documentMeta,
+        documentBreadcrumb,
         documentToolsSummary,
         notification,
         requestedTitle,
@@ -1560,9 +1573,9 @@ function createDocumentSwitchConsistencyObserverScript() {
         sourceFingerprintVisible:
           editorContentVisible &&
           editorText.includes(configuration.sourceDocument.sentinel),
-        switchingStateVisible: Boolean(
-          document.querySelector(".document-switch-loading")
-        ),
+        switchingStateVisible:
+          editor?.getAttribute("data-document-switching") === "true" ||
+          Boolean(document.querySelector(".document-status-opening")),
         targetPreviewVisible:
           previewVisible &&
           previewText.includes(configuration.targetDocument.sentinel),
@@ -1577,6 +1590,7 @@ function createDocumentSwitchConsistencyObserverScript() {
           notification?.includes(
             "Opened " + configuration.targetDocument.title + "."
           ) === true,
+        openedNotification: /^Opened /.test(notification ?? ""),
         timestamp: performance.now()
       };
       const signature = JSON.stringify({ ...state, timestamp: 0 });

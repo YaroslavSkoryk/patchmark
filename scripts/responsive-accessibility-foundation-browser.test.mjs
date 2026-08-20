@@ -87,7 +87,7 @@ try {
   await waitForEditorShell(client);
   await clickButtonByText(client, "Open Project Folder");
   await waitFor(
-    `document.querySelector('.document-meta strong')?.textContent?.includes('Review Surface')`,
+    `document.querySelector('.application-document-breadcrumb')?.getAttribute('title')?.includes('Review Surface')`,
     "Phase 7 fixture"
   );
   const initialWrites = await fixtureWriteCount();
@@ -101,7 +101,7 @@ try {
   }
 
   measurements.desktop = await readLayout();
-  assert.equal(measurements.desktop.applicationBarHeight, 56);
+  assert.equal(measurements.desktop.applicationBarHeight, 48);
   assert.equal(measurements.desktop.documentWidth, 1080);
   assert.equal(measurements.desktop.horizontalOverflow, false);
   await screenshot("01-desktop-workspace-1440x1000.png");
@@ -135,7 +135,7 @@ try {
     await setViewport({ height: 900, mobile: false, width: 768 });
   await waitFor(`matchMedia('(max-width: 900px)').matches`, "narrow layout");
   measurements.narrow = await readLayout();
-  assert.equal(measurements.narrow.applicationBarHeight, 56);
+  assert.equal(measurements.narrow.applicationBarHeight, 48);
   assert.equal(measurements.narrow.horizontalOverflow, false);
   await screenshot("02-narrow-workspace-768x900.png");
 
@@ -145,7 +145,7 @@ try {
     maxTouchPoints: 5
   });
   measurements.mobile = await readLayout();
-  assert.equal(measurements.mobile.applicationBarHeight, 56);
+  assert.equal(measurements.mobile.applicationBarHeight, 88);
   assert.equal(measurements.mobile.horizontalOverflow, false);
   assert.equal(measurements.mobile.hoverFine, false);
   assert.equal(measurements.mobile.smallApplicationTargetCount, 0);
@@ -154,7 +154,7 @@ try {
   await setViewport({ height: 844, mobile: true, width: 320 });
   await setSafeArea({ bottom: 34, left: 10, right: 10, top: 12 });
   measurements.compact = await readLayout();
-  assert.equal(measurements.compact.applicationBarHeight, 56);
+  assert.equal(measurements.compact.applicationBarHeight, 88);
   assert.equal(measurements.compact.documentWidth, 280);
   assert.equal(measurements.compact.horizontalOverflow, false);
   await screenshot("04-compact-reflow-320x844.png");
@@ -164,6 +164,10 @@ try {
     `Boolean(document.querySelector('#document-navigation-drawer[role="dialog"]'))`,
     "navigation dialog"
   );
+  await waitFor(
+    `document.activeElement?.getAttribute('aria-label') === 'Close document navigation'`,
+    "navigation dialog focus"
+  );
   measurements.navigation = await readSurface("#document-navigation-drawer");
   assert.equal(measurements.navigation.focus.inside, true);
   assert.equal(measurements.navigation.focus.name, "Close document navigation");
@@ -171,7 +175,7 @@ try {
   assert.equal(measurements.navigation.applicationBarInert, true);
   assert.equal(measurements.navigation.editorPanelInert, true);
   assert.equal(measurements.navigation.paddingBottom, "58px");
-  assert.ok(measurements.navigation.rect.top >= 68);
+  assert.ok(measurements.navigation.rect.top >= 100);
   assert.equal(measurements.navigation.pageHorizontalOverflow, false);
   const navigationAx = await readAxNames();
   assert.equal(navigationAx.dialogs.includes("Document navigation"), true);
@@ -646,6 +650,10 @@ async function verifyCommentActivationRegression(initialWrites) {
 
 async function verifyMarkdownLayoutRegression(initialWrites) {
   await setViewport({ height: 900, mobile: false, width: 1440 });
+  await waitFor(
+    `!matchMedia('(max-width: 900px)').matches && document.querySelector('#document-navigation-drawer')?.hidden === false`,
+    "stable desktop navigation before Markdown layout checks"
+  );
   await ensureCommentsClosed();
   await ensureEditorMode("Visual Mode");
   const visualBefore = await readVisualEditorLayout();
@@ -1215,7 +1223,7 @@ async function setMarkdownEditorState() {
       textarea.scrollTop = Math.min(640, Math.max(0, textarea.scrollHeight - textarea.clientHeight));
       return {
         active: document.activeElement === textarea,
-        documentTitle: document.querySelector('.document-meta strong')?.textContent?.trim() ?? '',
+        documentTitle: document.querySelector('.application-document-breadcrumb')?.getAttribute('title') ?? '',
         scrollTop: Math.round(textarea.scrollTop),
         selectionEnd: textarea.selectionEnd,
         selectionStart: textarea.selectionStart,
@@ -1238,7 +1246,7 @@ async function readMarkdownEditorState() {
       if (!(textarea instanceof HTMLTextAreaElement)) throw new Error('Missing Markdown editor');
       return {
         active: document.activeElement === textarea,
-        documentTitle: document.querySelector('.document-meta strong')?.textContent?.trim() ?? '',
+        documentTitle: document.querySelector('.application-document-breadcrumb')?.getAttribute('title') ?? '',
         scrollTop: Math.round(textarea.scrollTop),
         selectionEnd: textarea.selectionEnd,
         selectionStart: textarea.selectionStart,
@@ -1359,7 +1367,7 @@ async function readCommentRegressionState(commentId) {
         commentId: item?.getAttribute('data-comment-id') ?? card?.id?.replace('patchmark-comment-card-', '') ?? null,
         commentsOpen: document.querySelector('#document-comments-panel')?.hidden === false,
         contextStatus: document.querySelector('.document-context-status')?.textContent?.trim() ?? '',
-        documentTitle: document.querySelector('.document-meta strong')?.textContent?.trim() ?? '',
+        documentTitle: document.querySelector('.application-document-breadcrumb')?.getAttribute('title') ?? '',
         fixtureWrites: window.__patchmarkFixtureWriteLog?.length ?? 0,
         focusState: card?.querySelector('.comment-focus-state')?.textContent?.trim() ?? '',
         highlightRangeCount,

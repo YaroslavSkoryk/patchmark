@@ -14,10 +14,6 @@ const documentEditor = readFileSync(
   new URL("../components/document-editor.tsx", import.meta.url),
   "utf8"
 );
-const documentActions = readFileSync(
-  new URL("../components/document-actions.tsx", import.meta.url),
-  "utf8"
-);
 const markdownFileLoader = readFileSync(
   new URL("../components/markdown-file-loader.tsx", import.meta.url),
   "utf8"
@@ -86,18 +82,28 @@ assert.match(applicationBar, /role="banner"/);
 assert.doesNotMatch(applicationBar, /application-identity/);
 assert.doesNotMatch(applicationBar, />Patchmark<\/h1>/);
 
-for (const label of ["Save Changes", "Create Snapshot", "Copy Markdown"]) {
-  assert.ok(documentActions.includes(label), `${label} must remain document-local`);
+for (const [label, handler] of [
+  ["Save Changes", "handleSaveChanges"],
+  ["Create Snapshot", "handleCreateSnapshot"],
+  ["Copy Markdown", "handleCopyMarkdown"]
+]) {
+  assert.match(
+    documentEditor,
+    new RegExp(`onSelect=\\{${handler}\\}[\\s\\S]{0,180}${label}`),
+    `${label} must keep its original behavior in the File menu`
+  );
 }
 
 for (const label of ["Save As", "Download .md", "Export PDF"]) {
-  assert.equal(
-    documentActions.includes(label),
-    false,
-    `${label} should not remain duplicated in the document action row`
-  );
   assert.ok(documentEditor.includes(label), `${label} must remain in the File menu`);
 }
+
+assert.match(documentEditor, /<ApplicationMenuGroup label="Document actions">/);
+assert.match(documentEditor, /className="application-document-breadcrumb"/);
+assert.match(documentEditor, /className="mode-switcher" aria-label="Editor mode"/);
+assert.doesNotMatch(documentEditor, /className="document-toolbar"/);
+assert.doesNotMatch(documentEditor, /className="document-switch-loading"/);
+assert.match(documentEditor, /message: "Copied Markdown\."[\s\S]{0,80}transient: true/);
 
 assert.match(markdownFileLoader, /role=\{menuItem \? "menuitem" : undefined\}/);
 assert.match(
@@ -110,7 +116,7 @@ assert.match(projectNavigator, /Add existing document/);
 
 assert.match(
   css,
-  /\.application-bar\s*\{[\s\S]*?height: 56px;[\s\S]*?border-bottom: 1px solid var\(--border\)/
+  /--application-bar-block-size: 48px;[\s\S]*?\.application-bar\s*\{[\s\S]*?height: var\(--application-bar-block-size\);[\s\S]*?border-bottom: 1px solid var\(--border\)/
 );
 assert.doesNotMatch(
   css,
@@ -118,7 +124,10 @@ assert.doesNotMatch(
 );
 assert.doesNotMatch(css, /\.application-identity\s*\{/);
 assert.doesNotMatch(css, /\.application-bar-actions\s*\{[^}]*margin-left:\s*auto/);
-assert.match(css, /\.document-workspace\s*\{[\s\S]*?margin: 12px auto 0/);
+assert.match(
+  css,
+  /--document-workspace-block-start: 8px;[\s\S]*?\.document-workspace\s*\{[\s\S]*?margin: var\(--document-workspace-block-start\) auto 0/
+);
 assert.match(css, /\.application-menu-panel\s*\{[\s\S]*?z-index: 80/);
 assert.match(
   css,

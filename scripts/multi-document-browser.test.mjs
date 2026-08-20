@@ -192,7 +192,7 @@ try {
   await waitForDocumentGroup(projectDir, "doc_summary", sharedGroupId);
   await waitFor(
     client,
-    `document.querySelector(".document-meta strong")?.textContent === "Crust Chant / Shared Research / Evidence Summary"`,
+    `document.querySelector(".application-document-breadcrumb")?.getAttribute("title") === "Crust Chant / Shared Research / Evidence Summary"`,
     "group-aware breadcrumb"
   );
 

@@ -213,10 +213,20 @@ async function assertDesktopStates(pageClient) {
 
   const loadingPoint = await controlCenter(pageClient, "loading");
   await clickMouse(pageClient, loadingPoint);
+  const initialLoadingState = await readControlState(pageClient, "loading");
+  assert.equal(initialLoadingState.ariaBusy, "true");
+  assert.equal(initialLoadingState.disabled, true);
+  assert.equal(
+    await evaluate(pageClient, {
+      expression: `document.elementFromPoint(${loadingPoint.x}, ${loadingPoint.y})?.closest('[data-control="loading"]') !== null`
+    }),
+    true,
+    "The duplicate pointer activation must target the disabled loading control"
+  );
   await clickMouse(pageClient, loadingPoint);
-  const loadingState = await readControlState(pageClient, "loading");
-  assert.equal(loadingState.ariaBusy, "true");
-  assert.equal(loadingState.disabled, true);
+  const loadingStateAfterDuplicate = await readControlState(pageClient, "loading");
+  assert.equal(loadingStateAfterDuplicate.ariaBusy, "true");
+  assert.equal(loadingStateAfterDuplicate.disabled, true);
   assert.equal(
     await readActivationCount(pageClient, "loading"),
     1,
@@ -284,11 +294,14 @@ async function captureDarkPreferenceLimitation(pageClient) {
 }
 
 async function navigateAndPrepare(pageClient) {
+  const previousTimeOrigin = await evaluate(pageClient, {
+    expression: "performance.timeOrigin"
+  });
   await pageClient.call("Page.navigate", { url: editorUrl });
 
   for (let attempt = 0; attempt < 100; attempt += 1) {
     const ready = await evaluate(pageClient, {
-      expression: `Boolean(document.querySelector("[data-control-fixture-ready='true']"))`
+      expression: `performance.timeOrigin !== ${JSON.stringify(previousTimeOrigin)} && Boolean(document.querySelector("[data-control-fixture-ready='true']")) && getComputedStyle(document.documentElement).getPropertyValue("--control-disabled-opacity").trim() === "0.52"`
     });
     if (ready) {
       await evaluate(pageClient, {
