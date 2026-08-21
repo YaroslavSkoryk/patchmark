@@ -27,6 +27,11 @@ export const DEVICE_PRIVATE_STATE_SCHEMA_VERSION = 1 as const;
 export const LEGACY_IDENTITY_ALIAS_SCHEMA_VERSION = 1 as const;
 export const TRUSTED_IDENTITY_ADOPTION_SCHEMA_VERSION = 1 as const;
 export const IDENTITY_MIGRATION_PLAN_SCHEMA_VERSION = 1 as const;
+export const MERKLE_ROOT_SCHEMA_VERSION = 1 as const;
+export const STATE_BLOB_SCHEMA_VERSION = 1 as const;
+export const STATE_BLOB_RECORD_VERSION = 1 as const;
+export const SLICE6_ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION = 2 as const;
+export const ACKNOWLEDGEMENT_SEQUENCE_RESERVATION_VERSION = 1 as const;
 
 export const INITIAL_REDUCER_VERSION = "patchmark-hc-reducer-v1" as const;
 export const INITIAL_MERGE_ALGORITHM_ID = "patchmark-line-merge" as const;

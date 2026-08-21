@@ -1,6 +1,7 @@
 import {
   parseDigestId,
   parseEntityId,
+  type AcknowledgementId,
   type AttestationId,
   type ControlActionId,
   type ControlEventId,
@@ -9,7 +10,9 @@ import {
   type MarkdownBlobId,
   type ProjectId,
   type SemanticEventId,
-  type SemanticPayloadId
+  type SemanticPayloadId,
+  type SnapshotId,
+  type StateBlobId
 } from "./identities.ts";
 
 declare const collaborationStorageAddressBrand: unique symbol;
@@ -35,9 +38,15 @@ export type CollaborationEventObjectKind =
   | "control-event"
   | "attestation";
 
+export type CollaborationConsolidationObjectKind =
+  | "state-blob"
+  | "snapshot"
+  | "acknowledgement";
+
 export type CollaborationObjectKind =
   | CollaborationStoredObjectKind
-  | CollaborationEventObjectKind;
+  | CollaborationEventObjectKind
+  | CollaborationConsolidationObjectKind;
 
 export type CollaborationObjectIdByKind = {
   "markdown-blob": MarkdownBlobId;
@@ -47,6 +56,9 @@ export type CollaborationObjectIdByKind = {
   "semantic-event": SemanticEventId;
   "control-event": ControlEventId;
   attestation: AttestationId;
+  "state-blob": StateBlobId;
+  snapshot: SnapshotId;
+  acknowledgement: AcknowledgementId;
 };
 
 export type CollaborationObjectId =
@@ -148,7 +160,10 @@ const objectKinds = [
   "control-action",
   "semantic-event",
   "control-event",
-  "attestation"
+  "attestation",
+  "state-blob",
+  "snapshot",
+  "acknowledgement"
 ] as const satisfies readonly CollaborationObjectKind[];
 const objectKindPattern = objectKinds.join("|");
 const objectAddressPattern = new RegExp(
@@ -157,6 +172,7 @@ const objectAddressPattern = new RegExp(
 const revisionIndexAddressPattern = /^patchmark-collaboration\/v1\/indexes\/revision-references\/([a-z2-7]{52})$/;
 const projectStateAddressPattern = /^patchmark-collaboration\/v1\/indexes\/event-control-state\/([a-z2-7]{25}[aiqy])$/;
 const reservationAddressPattern = /^patchmark-collaboration\/v1\/reservations\/semantic\/([a-z2-7]{25}[aiqy])\/([a-z2-7]{25}[aiqy])$/;
+const acknowledgementReservationAddressPattern = /^patchmark-collaboration\/v1\/reservations\/acknowledgement\/([a-z2-7]{25}[aiqy])\/([a-z2-7]{25}[aiqy])$/;
 
 export const collaborationStoragePrefixes = Object.freeze({
   root: asPrefix(root),
@@ -165,7 +181,8 @@ export const collaborationStoragePrefixes = Object.freeze({
   staging: asPrefix(`${root}staging/`),
   revisionReferenceIndexes: asPrefix(`${root}indexes/revision-references/`),
   eventControlStateIndexes: asPrefix(`${root}indexes/event-control-state/`),
-  semanticReservations: asPrefix(`${root}reservations/semantic/`)
+  semanticReservations: asPrefix(`${root}reservations/semantic/`),
+  acknowledgementReservations: asPrefix(`${root}reservations/acknowledgement/`)
 });
 
 export function collaborationObjectAddresses<TKind extends CollaborationObjectKind>(
@@ -212,6 +229,17 @@ export function collaborationSemanticReservationAddress(
   );
 }
 
+export function collaborationAcknowledgementReservationAddress(
+  projectId: ProjectId,
+  deviceId: DeviceId
+): CollaborationStorageAddress {
+  const project = parseEntityId("project", projectId);
+  const device = parseEntityId("device", deviceId);
+  return asAddress(
+    `${root}reservations/acknowledgement/${entitySuffix(project)}/${entitySuffix(device)}`
+  );
+}
+
 export function parseCollaborationStorageAddress(
   value: unknown
 ): CollaborationStorageAddress {
@@ -241,6 +269,12 @@ export function parseCollaborationStorageAddress(
   if (reservationMatch) {
     parseEntityId("project", `pm:project:v1:${reservationMatch[1]}`);
     parseEntityId("device", `pm:device:v1:${reservationMatch[2]}`);
+    return value as CollaborationStorageAddress;
+  }
+  const acknowledgementReservationMatch = acknowledgementReservationAddressPattern.exec(value);
+  if (acknowledgementReservationMatch) {
+    parseEntityId("project", `pm:project:v1:${acknowledgementReservationMatch[1]}`);
+    parseEntityId("device", `pm:device:v1:${acknowledgementReservationMatch[2]}`);
     return value as CollaborationStorageAddress;
   }
   throw new Error("Value is outside the Patchmark collaboration storage namespace.");
@@ -291,6 +325,12 @@ export function parseCollaborationObjectId<TKind extends CollaborationObjectKind
       return parseDigestId("control-event", value) as CollaborationObjectIdByKind[TKind];
     case "attestation":
       return parseDigestId("attestation", value) as CollaborationObjectIdByKind[TKind];
+    case "state-blob":
+      return parseDigestId("state-blob", value) as CollaborationObjectIdByKind[TKind];
+    case "snapshot":
+      return parseDigestId("snapshot", value) as CollaborationObjectIdByKind[TKind];
+    case "acknowledgement":
+      return parseDigestId("acknowledgement", value) as CollaborationObjectIdByKind[TKind];
   }
 }
 

@@ -1,0 +1,357 @@
+{
+  "profile": "patchmark-collaboration-roots-v1",
+  "ids": {
+    "project": "pm:project:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "person": "pm:person:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "device": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "public_key": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "offline_root_key": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaba",
+    "key_epoch": "pm:key-epoch:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "control_head": "pm:control-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "checkpoint": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaada",
+    "event_b": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba",
+    "event_c": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca",
+    "attestation_b": "pm:attestation:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba",
+    "attestation_c": "pm:attestation:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca",
+    "conflict": "pm:derived-conflict:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "payload": "pm:semantic-payload:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "document": "pm:document:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revision": "pm:document-revision:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "merkle_vectors": [
+    {
+      "name": "empty_frontier_set",
+      "family": "base_frontier",
+      "kind": "set",
+      "entries": [],
+      "root_id_kind": "frontier-root"
+    },
+    {
+      "name": "empty_history_map",
+      "family": "accepted_history",
+      "kind": "map",
+      "entries": [],
+      "root_id_kind": "accepted-history-root"
+    },
+    {
+      "name": "one_leaf",
+      "family": "base_frontier",
+      "kind": "set",
+      "entries": [{ "key": "one" }]
+    },
+    {
+      "name": "two_leaves",
+      "family": "base_frontier",
+      "kind": "set",
+      "entries": [{ "key": "two" }, { "key": "one" }]
+    },
+    {
+      "name": "odd_three_leaves",
+      "family": "base_frontier",
+      "kind": "set",
+      "entries": [{ "key": "three" }, { "key": "one" }, { "key": "two" }]
+    },
+    {
+      "name": "non_power_of_two_five",
+      "family": "base_frontier",
+      "kind": "set",
+      "entries": [{ "key": "five" }, { "key": "one" }, { "key": "three" }, { "key": "two" }, { "key": "four" }]
+    },
+    {
+      "name": "permuted_five",
+      "family": "base_frontier",
+      "kind": "set",
+      "entries": [{ "key": "two" }, { "key": "four" }, { "key": "one" }, { "key": "five" }, { "key": "three" }]
+    },
+    {
+      "name": "same_keys_other_family",
+      "family": "semantic_state",
+      "kind": "set",
+      "entries": [{ "key": "five" }, { "key": "one" }, { "key": "three" }, { "key": "two" }, { "key": "four" }]
+    },
+    {
+      "name": "one_history_map_leaf",
+      "family": "accepted_history",
+      "kind": "map",
+      "entries": [{ "key": "event", "value": "attestation" }]
+    },
+    {
+      "name": "semantic_map_leaf",
+      "family": "semantic_state",
+      "kind": "map",
+      "entries": [{ "key": ["project", "alpha"], "value": { "title": "Alpha", "deleted": false } }],
+      "root_id_kind": "semantic-state-root"
+    },
+    {
+      "name": "revision_map_leaf",
+      "family": "revision_heads",
+      "kind": "map",
+      "entries": [{ "key": "document", "value": ["revision-a", "revision-b"] }],
+      "root_id_kind": "revision-heads-root"
+    },
+    {
+      "name": "conflict_map_leaf",
+      "family": "conflict_set",
+      "kind": "map",
+      "entries": [{ "key": "conflict", "value": { "contenders": ["a", "b"] } }],
+      "root_id_kind": "conflict-set-root"
+    }
+  ],
+  "duplicate_key_case": {
+    "family": "accepted_history",
+    "kind": "map",
+    "entries": [
+      { "key": { "a": 1, "b": 2 }, "value": "first" },
+      { "key": { "b": 2, "a": 1 }, "value": "second" }
+    ]
+  },
+  "component_inputs": {
+    "base_frontier_event_ids": [
+      "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba",
+      "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca"
+    ],
+    "accepted_events": [
+      {
+        "event_id": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba",
+        "author_attestation_id": "pm:attestation:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba"
+      },
+      {
+        "event_id": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca",
+        "author_attestation_id": "pm:attestation:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca"
+      }
+    ],
+    "projection": {
+      "schema_version": 1,
+      "object_kind": "collaboration_projection",
+      "reducer_version": "patchmark-hc-reducer-v1",
+      "project_id": "pm:project:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "project_title": {
+        "register_version": 1,
+        "state": "unset",
+        "resolved_value": null,
+        "last_uncontested_value": null,
+        "contenders": []
+      },
+      "group_order": [],
+      "groups": [],
+      "document_order": [],
+      "documents": [],
+      "review_batches": [],
+      "rewrite_sessions": [],
+      "revision_heads": [],
+      "conflicts": [],
+      "reduction_rejections": [],
+      "replayed_event_ids": [],
+      "accepted_frontier": [],
+      "event_provenance": []
+    }
+  },
+  "resolution_operations": [
+    {
+      "operation_kind": "resolve_metadata_conflict",
+      "conflict_id": "pm:derived-conflict:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "observed_contender_event_ids": [
+        "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba",
+        "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca"
+      ],
+      "chosen_payload_id": "pm:semantic-payload:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "key_epoch": {
+    "public_commitment_hex": "00010203feff"
+  },
+  "control_state": {
+    "schema_version": 1,
+    "object_kind": "control_state_commitment",
+    "project_id": "pm:project:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "owner_person_id": "pm:person:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "active_control_device_id": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "offline_root_key_id": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaba",
+    "key_epoch_id": "pm:key-epoch:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "key_epoch_commitment": "replaced-by-runtime",
+    "merge_policy": "manual",
+    "root_sequence": 0,
+    "recovery_last_uncontested_control_id": null,
+    "device_authorities": [
+      {
+        "device_id": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "person_id": "pm:person:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "signing_key_id": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "role": "owner",
+        "capabilities": ["read_project_content"],
+        "status": "active",
+        "maximum_accepted_semantic_sequence": null
+      }
+    ]
+  },
+  "snapshot": {
+    "boundary_revisions": [
+      {
+        "document_id": "pm:document:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "revision_id": "pm:document-revision:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "traversal": "boundary_root"
+      }
+    ],
+    "live_conflict_dependencies": []
+  },
+  "acknowledgement": {
+    "schema_version": 2,
+    "object_kind": "acknowledgement_core",
+    "chain_position": "first",
+    "project_id": "pm:project:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "person_id": "pm:person:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "device_id": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "acknowledgement_sequence": 0,
+    "previous_acknowledgement_id": null,
+    "observed_control_head_id": "pm:control-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "acknowledged_checkpoint_id": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaada",
+    "observed_semantic_frontier": [
+      "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaba",
+      "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaca"
+    ],
+    "highest_contiguous_semantic_sequences": [
+      {
+        "device_id": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "highest_contiguous_sequence": 1
+      }
+    ],
+    "projection_root": "replaced-by-runtime"
+  },
+  "verification_cases": {
+    "complete_checkpoint_status": "full_history_verified",
+    "onboarding_boundary_status": "owner_authorized_boundary_verified",
+    "onboarding_full_history_verified": false
+  },
+  "expected": {
+    "merkle": {
+      "empty_frontier_set": {
+        "entry_count": 0,
+        "root_hex": "b7df743c9a369397ac2af80db51644dcd7c9fa56790d3c1ce573b87404f95655",
+        "root_id": "pm:frontier-root:v1:w7pxipe2g2jzplbk7ag3kfse3tl4t6swpegtyhhfoo4hibhzkzkq"
+      },
+      "empty_history_map": {
+        "entry_count": 0,
+        "root_hex": "0151e6865e7935ae7f82f5a22b7816928218c341c1e08bafa5d532762916319c",
+        "root_id": "pm:accepted-history-root:v1:afi6nbs6pe22474c6wrcw6awskbbrq2byhqixl5f2uzhmkiwggoa"
+      },
+      "one_leaf": {
+        "entry_count": 1,
+        "root_hex": "c1c075bb1866ce1be3308c984bee64cff8703f0cff44f8e5cfc9721a2cc18308"
+      },
+      "two_leaves": {
+        "entry_count": 2,
+        "root_hex": "596abeb48563a0e0b9c32974d28f5cbc1cb622384e77ebd817826968b07ea0e3"
+      },
+      "odd_three_leaves": {
+        "entry_count": 3,
+        "root_hex": "1db4d880a8a0adfd467238900bb28813d5afce5dc33ca7fcee508312b6c51739"
+      },
+      "non_power_of_two_five": {
+        "entry_count": 5,
+        "root_hex": "4e8ca83e7f47888684c0a1820624403ffeb1bcf97569085f0ebea0830c6bc221"
+      },
+      "permuted_five": {
+        "entry_count": 5,
+        "root_hex": "4e8ca83e7f47888684c0a1820624403ffeb1bcf97569085f0ebea0830c6bc221"
+      },
+      "same_keys_other_family": {
+        "entry_count": 5,
+        "root_hex": "b56af18d5893059159041c64aebaabbdc7875cc11952ab0e86750b9ff828db6a"
+      },
+      "one_history_map_leaf": {
+        "entry_count": 1,
+        "root_hex": "51f4869d83a0119bdf59f9555819c03e2e7d84aba957c1b46b46e461984bb9eb"
+      },
+      "semantic_map_leaf": {
+        "entry_count": 1,
+        "root_hex": "4d564f3e89b0ee3ec807230121bd8ea006cded7af1a55b52cca6f804df159871",
+        "root_id": "pm:semantic-state-root:v1:jvle6pujwdxd5sahemasdpmouadm33l26gsvwuwmu34ajxyvtbyq"
+      },
+      "revision_map_leaf": {
+        "entry_count": 1,
+        "root_hex": "5c9686cb48f9e9cce6061326c7826e00dd6c23ebd8a3165d859e688db3d8ff1d",
+        "root_id": "pm:revision-heads-root:v1:lslins2i7hu4zzqgcmtmpatoadowyi7l3crrmxmftzui3m6y74oq"
+      },
+      "conflict_map_leaf": {
+        "entry_count": 1,
+        "root_hex": "1e6686c34a9506efa64dce9fb6484722ea14e369ac8e40e65208e6c5be2bdbb9",
+        "root_id": "pm:conflict-set-root:v1:dztinq2ksudo7jsnz2p3mschelvbjy3jvshebzssbdtmlprl3o4q"
+      }
+    },
+    "rejection": {
+      "duplicate_canonical_key": true
+    },
+    "component_roots": {
+      "base_frontier": {
+        "entry_count": 2,
+        "root_hex": "82d374b1ceb37d7fa899f592679e9f3b484b5faf21047b42173a81d3a8c864d1",
+        "root_id": "pm:frontier-root:v1:qljxjmoown6x7kez6wjgphu7hneewx5peechwqqxhka5hkgimtiq"
+      },
+      "accepted_history": {
+        "entry_count": 2,
+        "root_hex": "5bac85915cfb518a2f76ad78f0253ab0518ba9fd66716bf773d00a3ac69e5184",
+        "root_id": "pm:accepted-history-root:v1:lowilek47niyul3wvv4pajj2wbiyxkp5mzywx53t2afdvru6kgca"
+      },
+      "semantic_state": {
+        "entry_count": 1,
+        "root_hex": "57537d40485c3cc284c8c0b804eeefa65b72e139eafb5668825d35e308846f58",
+        "root_id": "pm:semantic-state-root:v1:k5jx2qcilq6mfbgiyc4aj3xpuznxfyjz5l5vm2eclu26gceen5ma"
+      },
+      "revision_heads": {
+        "entry_count": 0,
+        "root_hex": "9121471ede64a8b4b9ae99f2ba9ddcef74f4e527e8059ac1bdf93fa36bffd3ba",
+        "root_id": "pm:revision-heads-root:v1:sequohw6msuljonothzlvho4552pjzjh5aczvqn57e72g2772o5a"
+      },
+      "conflict_set": {
+        "entry_count": 0,
+        "root_hex": "be303f2280b7b5ce7b40cdc16ae0f44e827a965f24fd5645cad508e3d273ce94",
+        "root_id": "pm:conflict-set-root:v1:xyyd6iuaw624462azxawvyhuj2bhvfs7et6vmrok2ueohuttz2ka"
+      }
+    },
+    "key_epoch": {
+      "canonical_hex": "82782170617463686d61726b2f6b65792d65706f63682d636f6d6d69746d656e742f7631a66a70726f6a6563745f69647828706d3a70726f6a6563743a76313a61616161616161616161616161616161616161616161616161616b6f626a6563745f6b696e64781b6b65795f65706f63685f7075626c69635f636f6d6d69746d656e746c6b65795f65706f63685f6964782a706d3a6b65792d65706f63683a76313a61616161616161616161616161616161616161616161616161616e736368656d615f76657273696f6e0174636f6d6d69746d656e745f616c676f726974686d781b7368613235362d7075626c69632d636f6d6d69746d656e742d7631777075626c69635f636f6d6d69746d656e745f62797465734600010203feff",
+      "digest_hex": "38a2b1e6ccd7b911b2bbd04d891e9cc22ba243721104930beb3b059813954d49",
+      "id": "pm:key-epoch-commitment:v1:hcrldzwm264rdmv32bgyshu4yiv2eq3scecjgc7lhmczqe4vjveq"
+    },
+    "control_state": {
+      "digest_hex": "d838ab79843c1a2f75bfc0f7dfc9a886cfbd3deba92223d6718e4942b93b04f0",
+      "id": "pm:control-state-root:v1:3a4kw6mehqnc65n7yd357sniq3h32pplverchvtrrzeufoj3atya"
+    },
+    "resolution_operations": {
+      "canonical_hex": "82782270617463686d61726b2f7265736f6c7574696f6e2d6f7065726174696f6e732f763181a46b636f6e666c6963745f6964784b706d3a646572697665642d636f6e666c6963743a76313a616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616e6f7065726174696f6e5f6b696e6478197265736f6c76655f6d657461646174615f636f6e666c6963747163686f73656e5f7061796c6f61645f6964784b706d3a73656d616e7469632d7061796c6f61643a76313a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161781c6f627365727665645f636f6e74656e6465725f6576656e745f696473827849706d3a73656d616e7469632d6576656e743a76313a616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616162617849706d3a73656d616e7469632d6576656e743a76313a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616361",
+      "digest_hex": "c6be345ab314b8c6592ffe077ddb956d5477355c78de3cde7d8053bb235bae92"
+    },
+    "composite_projection": {
+      "canonical_hex": "8a781c70617463686d61726b2f70726f6a656374696f6e2d726f6f742f76317828706d3a70726f6a6563743a76313a61616161616161616161616161616161616161616161616161617770617463686d61726b2d68632d726564756365722d76317848706d3a636f6e74726f6c2d6576656e743a76313a61616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161582082d374b1ceb37d7fa899f592679e9f3b484b5faf21047b42173a81d3a8c864d158205bac85915cfb518a2f76ad78f0253ab0518ba9fd66716bf773d00a3ac69e5184582057537d40485c3cc284c8c0b804eeefa65b72e139eafb5668825d35e308846f5858209121471ede64a8b4b9ae99f2ba9ddcef74f4e527e8059ac1bdf93fa36bffd3ba5820be303f2280b7b5ce7b40cdc16ae0f44e827a965f24fd5645cad508e3d273ce945820c6be345ab314b8c6592ffe077ddb956d5477355c78de3cde7d8053bb235bae92",
+      "digest_hex": "a30b9558ca332977ef328f0f755c55a4d7bc253857663af176cc902a8ba16932",
+      "id": "pm:projection-root:v1:umfzkwgkgmuxp3zsr4hxkxcvutl3yjjyk5tdv4lwzsicvc5bneza"
+    },
+    "state_blob": {
+      "digest_hex": "31e0a0295c87e7b92a483d6ff293f674e31ba65677029750adc23b736e5a1596",
+      "id": "pm:state-blob:v1:ghqkakk4q7t3sksihvx7fe7wotrrxjswo4bjoufnyi5xg3s2cwla"
+    },
+    "snapshot": {
+      "digest_hex": "b247ae300c3bc01546692da35285310a563faee74c7768157aae40e4baa65135",
+      "id": "pm:snapshot:v1:wjd24mamhpabkrtjfwrvfbjrbjld7lxhjr3wqfl2vzaojovgke2q"
+    },
+    "acknowledgement": {
+      "digest_hex": "7eaa0e5c0bc94af4941a2f14be5af2c9cdd4faee82240622138fdabb4650ea7e",
+      "id": "pm:acknowledgement:v1:p2va4xalzffpjfa2f4kl4wxszhg5j6xoqisamiqtr7nlwrsq5j7a",
+      "signature_preimage_hex": "83782670617463686d61726b2f7369676e61747572652f61636b6e6f776c656467656d656e742f76317828706d3a70726f6a6563743a76313a616161616161616161616161616161616161616161616161616158207eaa0e5c0bc94af4941a2f14be5af2c9cdd4faee82240622138fdabb4650ea7e"
+    },
+    "verification_cases": {
+      "complete_checkpoint": {
+        "status": "full_history_verified",
+        "checkpoint_id": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaada",
+        "projection_root": "pm:projection-root:v1:umfzkwgkgmuxp3zsr4hxkxcvutl3yjjyk5tdv4lwzsicvc5bneza"
+      },
+      "onboarding_boundary": {
+        "status": "owner_authorized_boundary_verified",
+        "checkpoint_id": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaada",
+        "snapshot_id": "pm:snapshot:v1:wjd24mamhpabkrtjfwrvfbjrbjld7lxhjr3wqfl2vzaojovgke2q",
+        "full_history_verified": false,
+        "verification_basis": "owner_authorized_current_state"
+      }
+    }
+  }
+}

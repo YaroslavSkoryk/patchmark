@@ -6,7 +6,8 @@ import {
   ATTESTATION_RECORD_VERSION,
   CHECKPOINT_PAYLOAD_SCHEMA_VERSION,
   SNAPSHOT_CORE_SCHEMA_VERSION,
-  SNAPSHOT_RECORD_VERSION
+  SNAPSHOT_RECORD_VERSION,
+  SLICE6_ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION
 } from "./versions.ts";
 import {
   type AcceptedHistoryRootId,
@@ -56,16 +57,19 @@ export type CheckpointResolutionOperation =
   | Readonly<{
       operation_kind: "resolve_content_conflict";
       conflict_id: DerivedConflictId;
+      observed_contender_event_ids: readonly SemanticEventId[];
       adopted_revision_id: DocumentRevisionId;
     }>
   | Readonly<{
       operation_kind: "resolve_metadata_conflict";
       conflict_id: DerivedConflictId;
+      observed_contender_event_ids: readonly SemanticEventId[];
       chosen_payload_id: SemanticPayloadId;
     }>
   | Readonly<{
       operation_kind: "resolve_tombstone_conflict";
       conflict_id: DerivedConflictId;
+      observed_contender_event_ids: readonly SemanticEventId[];
       resolution: "keep_deleted" | "restore_as_new_identity";
     }>;
 
@@ -163,7 +167,41 @@ export type SubsequentAcknowledgementCore = Omit<
 
 export type AcknowledgementCore =
   | FirstAcknowledgementCore
-  | SubsequentAcknowledgementCore;
+  | SubsequentAcknowledgementCore
+  | FirstSlice6AcknowledgementCore
+  | SubsequentSlice6AcknowledgementCore;
+
+export type AcknowledgedSemanticSequence = Readonly<{
+  device_id: DeviceId;
+  highest_contiguous_sequence: UInt64;
+}>;
+
+type Slice6AcknowledgementCommon = Readonly<{
+  schema_version: typeof SLICE6_ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION;
+  object_kind: "acknowledgement_core";
+  project_id: import("./identities.ts").ProjectId;
+  person_id: PersonId;
+  device_id: DeviceId;
+  acknowledgement_sequence: UInt64;
+  observed_control_head_id: ControlEventId;
+  acknowledged_checkpoint_id: CheckpointId;
+  observed_semantic_frontier: readonly SemanticEventId[];
+  highest_contiguous_semantic_sequences: readonly AcknowledgedSemanticSequence[];
+  projection_root: ProjectionRootId;
+  display_timestamp?: NonAuthoritativeTimestamp;
+}>;
+
+export type FirstSlice6AcknowledgementCore = Slice6AcknowledgementCommon &
+  Readonly<{
+    chain_position: "first";
+    previous_acknowledgement_id: null;
+  }>;
+
+export type SubsequentSlice6AcknowledgementCore = Slice6AcknowledgementCommon &
+  Readonly<{
+    chain_position: "subsequent";
+    previous_acknowledgement_id: AcknowledgementId;
+  }>;
 
 export type AcknowledgementRecord = Readonly<{
   record_version: typeof ACKNOWLEDGEMENT_RECORD_VERSION;
@@ -528,7 +566,7 @@ export function parseAcknowledgementCore(
   value: unknown,
   existingCheckpointId: CheckpointId
 ): AcknowledgementCore {
-  const record = expectExactRecord(
+  const discriminator = expectExactRecord(
     value,
     "acknowledgement core",
     [
@@ -544,13 +582,44 @@ export function parseAcknowledgementCore(
       "observed_semantic_frontier",
       "projection_root"
     ],
-    ["display_timestamp"]
+    ["display_timestamp", "person_id", "highest_contiguous_semantic_sequences"]
   );
-  expectLiteral(
-    record.schema_version,
-    ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION,
-    "acknowledgement core schema version"
-  );
+  if (
+    discriminator.schema_version !== ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION &&
+    discriminator.schema_version !== SLICE6_ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION
+  ) {
+    throw new Error("Acknowledgement core schema version is unsupported.");
+  }
+  const schemaVersion = discriminator.schema_version;
+  const record = schemaVersion === ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION
+    ? expectExactRecord(value, "legacy acknowledgement core", [
+        "schema_version",
+        "object_kind",
+        "chain_position",
+        "project_id",
+        "device_id",
+        "acknowledgement_sequence",
+        "previous_acknowledgement_id",
+        "observed_control_head_id",
+        "acknowledged_checkpoint_id",
+        "observed_semantic_frontier",
+        "projection_root"
+      ], ["display_timestamp"])
+    : expectExactRecord(value, "Slice 6 acknowledgement core", [
+        "schema_version",
+        "object_kind",
+        "chain_position",
+        "project_id",
+        "person_id",
+        "device_id",
+        "acknowledgement_sequence",
+        "previous_acknowledgement_id",
+        "observed_control_head_id",
+        "acknowledged_checkpoint_id",
+        "observed_semantic_frontier",
+        "highest_contiguous_semantic_sequences",
+        "projection_root"
+      ], ["display_timestamp"]);
   expectLiteral(
     record.object_kind,
     "acknowledgement_core",
@@ -571,7 +640,6 @@ export function parseAcknowledgementCore(
     );
   }
   const common = {
-    schema_version: ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION,
     object_kind: "acknowledgement_core" as const,
     project_id: parseEntityId("project", record.project_id),
     device_id: parseEntityId("device", record.device_id),
@@ -595,34 +663,81 @@ export function parseAcknowledgementCore(
           )
         })
   };
-  if (chainPosition === "first") {
+  const chain = chainPosition === "first"
+    ? (() => {
     expectLiteral(
       record.previous_acknowledgement_id,
       null,
       "first acknowledgement previous ID"
     );
-    return freezeRecord({
-      ...common,
+    return {
       chain_position: "first" as const,
       acknowledgement_sequence: expectZeroUInt64(
         record.acknowledgement_sequence,
         "first acknowledgement sequence"
       ),
       previous_acknowledgement_id: null
+    };
+  })()
+    : {
+        chain_position: "subsequent" as const,
+        acknowledgement_sequence: expectPositiveUInt64(
+          record.acknowledgement_sequence,
+          "subsequent acknowledgement sequence"
+        ),
+        previous_acknowledgement_id: parseDigestId(
+          "acknowledgement",
+          record.previous_acknowledgement_id
+        )
+      };
+  if (schemaVersion === ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION) {
+    return freezeRecord({
+      schema_version: ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION,
+      ...common,
+      ...chain
     });
   }
   return freezeRecord({
+    schema_version: SLICE6_ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION,
     ...common,
-    chain_position: "subsequent" as const,
-    acknowledgement_sequence: expectPositiveUInt64(
-      record.acknowledgement_sequence,
-      "subsequent acknowledgement sequence"
+    person_id: parseEntityId("person", record.person_id),
+    highest_contiguous_semantic_sequences: parseAcknowledgedSemanticSequences(
+      record.highest_contiguous_semantic_sequences
     ),
-    previous_acknowledgement_id: parseDigestId(
-      "acknowledgement",
-      record.previous_acknowledgement_id
-    )
+    ...chain
   });
+}
+
+function parseAcknowledgedSemanticSequences(
+  value: unknown
+): readonly AcknowledgedSemanticSequence[] {
+  return parseUniqueArray(
+    value,
+    "acknowledgement contiguous semantic sequences",
+    (candidate) => {
+      const record = expectExactRecord(candidate, "acknowledged semantic sequence", [
+        "device_id",
+        "highest_contiguous_sequence"
+      ]);
+      return freezeRecord({
+        device_id: parseEntityId("device", record.device_id),
+        highest_contiguous_sequence: expectZeroOrPositiveUInt64(
+          record.highest_contiguous_sequence,
+          "highest contiguous semantic sequence"
+        )
+      });
+    },
+    (candidate) => candidate.device_id,
+    { allowEmpty: false, requireSorted: true }
+  );
+}
+
+function expectZeroOrPositiveUInt64(value: unknown, label: string): UInt64 {
+  try {
+    return expectZeroUInt64(value, label);
+  } catch {
+    return expectPositiveUInt64(value, label);
+  }
 }
 
 export function parseAcknowledgementRecord(
@@ -732,7 +847,7 @@ function parseCheckpointResolutionOperation(
   const record = expectExactRecord(
     value,
     "checkpoint resolution operation",
-    ["operation_kind", "conflict_id"],
+    ["operation_kind", "conflict_id", "observed_contender_event_ids"],
     ["adopted_revision_id", "chosen_payload_id", "resolution"]
   );
   const operationKind = expectEnum(
@@ -745,11 +860,17 @@ function parseCheckpointResolutionOperation(
     "checkpoint resolution operation kind"
   );
   const conflictId = parseDigestId("derived-conflict", record.conflict_id);
+  const observedContenders = parseSortedUniqueArray(
+    record.observed_contender_event_ids,
+    "checkpoint resolution observed contenders",
+    (candidate) => parseDigestId("semantic-event", candidate)
+  );
   if (operationKind === "resolve_content_conflict") {
     requireOnlyVariantField(record, "adopted_revision_id");
     return freezeRecord({
       operation_kind: "resolve_content_conflict" as const,
       conflict_id: conflictId,
+      observed_contender_event_ids: observedContenders,
       adopted_revision_id: parseDigestId(
         "document-revision",
         record.adopted_revision_id
@@ -761,6 +882,7 @@ function parseCheckpointResolutionOperation(
     return freezeRecord({
       operation_kind: "resolve_metadata_conflict" as const,
       conflict_id: conflictId,
+      observed_contender_event_ids: observedContenders,
       chosen_payload_id: parseDigestId(
         "semantic-payload",
         record.chosen_payload_id
@@ -771,6 +893,7 @@ function parseCheckpointResolutionOperation(
   return freezeRecord({
     operation_kind: "resolve_tombstone_conflict" as const,
     conflict_id: conflictId,
+    observed_contender_event_ids: observedContenders,
     resolution: expectEnum(
       record.resolution,
       ["keep_deleted", "restore_as_new_identity"] as const,
@@ -799,7 +922,7 @@ function parseBoundaryRevisions(value: unknown): readonly BoundaryRevisionEntry[
         )
       });
     },
-    (candidate) => candidate.document_id,
+    (candidate) => `${candidate.document_id}\u0000${candidate.revision_id}`,
     { allowEmpty: false, requireSorted: true }
   );
 }

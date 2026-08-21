@@ -1,9 +1,10 @@
 import type { CollaborationCapability, CollaborationRole } from "./capabilities.ts";
-import type { AttestationRecord } from "./checkpoints.ts";
+import type { AttestationRecord, AttestationSubjectKind } from "./checkpoints.ts";
 import type {
   ControlActionId,
   ControlEventId,
   ControlStateRootId,
+  AcknowledgementId,
   DeviceId,
   KeyEpochCommitmentId,
   KeyEpochId,
@@ -11,7 +12,8 @@ import type {
   ProjectId,
   PublicKeyId,
   SemanticEventId,
-  SemanticPayloadId
+  SemanticPayloadId,
+  SnapshotId
 } from "./identities.ts";
 import type { SemanticEventRecord, SemanticKind } from "./semantic.ts";
 import type { UInt64 } from "./validation.ts";
@@ -142,8 +144,8 @@ export type ControlAuthorityState = Readonly<{
 export type AttestationVerificationRequest = Readonly<{
   schema_version: 1;
   project_id: ProjectId;
-  subject_kind: "semantic_event" | "control_event";
-  subject_id: SemanticEventId | ControlEventId;
+  subject_kind: AttestationSubjectKind;
+  subject_id: SemanticEventId | ControlEventId | SnapshotId | AcknowledgementId;
   raw_subject_digest: Uint8Array;
   signature_preimage: Uint8Array;
   signer_key_id: PublicKeyId;

@@ -264,6 +264,9 @@ export function buildAcknowledgementPreimage(
       ["object_kind", text(core.object_kind)],
       ["chain_position", text(core.chain_position)],
       ["project_id", text(core.project_id)],
+      ...(core.schema_version === 2
+        ? [["person_id", text(core.person_id)] as const]
+        : []),
       ["device_id", text(core.device_id)],
       ["acknowledgement_sequence", canonicalUint(core.acknowledgement_sequence)],
       [
@@ -275,6 +278,17 @@ export function buildAcknowledgementPreimage(
       ["observed_control_head_id", text(core.observed_control_head_id)],
       ["acknowledged_checkpoint_id", text(core.acknowledged_checkpoint_id)],
       ["observed_semantic_frontier", textArray(core.observed_semantic_frontier)],
+      ...(core.schema_version === 2
+        ? [[
+            "highest_contiguous_semantic_sequences",
+            canonicalArray(core.highest_contiguous_semantic_sequences.map((entry) =>
+              canonicalMap([
+                ["device_id", text(entry.device_id)],
+                ["highest_contiguous_sequence", canonicalUint(entry.highest_contiguous_sequence)]
+              ])
+            ))
+          ] as const]
+        : []),
       ["projection_root", text(core.projection_root)]
     ])
   );
@@ -791,7 +805,8 @@ function resolutionOperations(
     operations.map((operation) => {
       const entries: Array<readonly [string, CanonicalValue]> = [
         ["operation_kind", text(operation.operation_kind)],
-        ["conflict_id", text(operation.conflict_id)]
+        ["conflict_id", text(operation.conflict_id)],
+        ["observed_contender_event_ids", textArray(operation.observed_contender_event_ids)]
       ];
       if (operation.operation_kind === "resolve_content_conflict") {
         entries.push(["adopted_revision_id", text(operation.adopted_revision_id)]);
