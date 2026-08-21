@@ -866,6 +866,25 @@ async function validatePayloadContentDependencies(
       }
       break;
     }
+    case "patch_operation":
+      if (
+        payload.core.data.operation !== "decide" &&
+        payload.core.data.revision_id !== undefined
+      ) {
+        revisions.push({
+          id: payload.core.data.revision_id,
+          document_id: payload.core.data.document_id
+        });
+      }
+      break;
+    case "rewrite_operation":
+      if (payload.core.data.operation === "apply") {
+        revisions.push({
+          id: payload.core.data.revision_id,
+          document_id: payload.core.data.document_id
+        });
+      }
+      break;
     case "conflict_resolution":
       if (payload.core.data.adopted_revision_id !== null) {
         revisions.push({ id: payload.core.data.adopted_revision_id });
@@ -1211,6 +1230,12 @@ function capabilityForPayload(payload: SemanticPayloadRecord): CollaborationCapa
         : payload.core.data.operation.startsWith("document_")
           ? "create_document"
           : "edit_markdown";
+    case "review_batch_operation":
+      return "import_model_work";
+    case "rewrite_operation":
+      return payload.core.data.operation === "apply"
+        ? "adopt_revision"
+        : "edit_markdown";
     case "conflict_resolution":
     case "consolidation_checkpoint":
       return "resolve_content_conflict";

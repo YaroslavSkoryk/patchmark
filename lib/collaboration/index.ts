@@ -27,3 +27,8 @@ export * from "./event-control-indexes.ts";
 export * from "./event-object-store.ts";
 export * from "./event-control-reconstruction.ts";
 export * from "./event-control-store.ts";
+export * from "./projection-types.ts";
+export * from "./projection-causality.ts";
+export * from "./projection-revisions.ts";
+export * from "./projector.ts";
+export * from "./merge-candidates.ts";

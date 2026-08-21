@@ -1,5 +1,6 @@
 import {
   DERIVED_CONFLICT_SCHEMA_VERSION,
+  INITIAL_REDUCER_VERSION,
   MERGE_KEY_CORE_SCHEMA_VERSION,
   MERGE_CANDIDATE_SCHEMA_VERSION
 } from "./versions.ts";
@@ -134,10 +135,49 @@ export type DerivedTombstoneConflict = DerivedConflictBase<"tombstone"> &
     contender_event_ids: readonly SemanticEventId[];
   }>;
 
+export const reducerConflictKinds = [
+  "field_value",
+  "decision",
+  "tombstone",
+  "alias_path",
+  "status",
+  "revision",
+  "unresolved_reference",
+  "lifecycle"
+] as const;
+
+export type ReducerConflictKind = (typeof reducerConflictKinds)[number];
+
+/**
+ * Slice 5's strict conflict identity. Earlier Slice 1 conflict variants remain
+ * valid; projector-derived conflicts use this fully committed reducer shape.
+ */
+export type DerivedReducerConflict = DerivedConflictBase<"reducer"> &
+  Readonly<{
+    reducer_version: typeof INITIAL_REDUCER_VERSION;
+    reducer_conflict_kind: ReducerConflictKind;
+    subject_kind:
+      | "project"
+      | "document"
+      | "group"
+      | "comment"
+      | "reply"
+      | "patch"
+      | "review_batch"
+      | "rewrite_session";
+    subject_id: string;
+    field: string;
+    base_value_commitment: string | null;
+    contender_event_ids: readonly SemanticEventId[];
+    contender_value_commitments: readonly string[];
+    context_event_ids: readonly SemanticEventId[];
+  }>;
+
 export type DerivedConflictCore =
   | DerivedContentConflict
   | DerivedMetadataConflict
-  | DerivedTombstoneConflict;
+  | DerivedTombstoneConflict
+  | DerivedReducerConflict;
 
 export type DerivedConflictRecord = Readonly<{
   record_version: 1;
@@ -348,7 +388,12 @@ export function parseDerivedConflictCore(value: unknown): DerivedConflictCore {
       "field",
       "contender_payload_ids",
       "tombstone_event_id",
-      "contender_event_ids"
+      "contender_event_ids",
+      "reducer_version",
+      "reducer_conflict_kind",
+      "base_value_commitment",
+      "contender_value_commitments",
+      "context_event_ids"
     ]
   );
   expectLiteral(
@@ -360,7 +405,7 @@ export function parseDerivedConflictCore(value: unknown): DerivedConflictCore {
   const projectId = parseEntityId("project", discriminator.project_id);
   const conflictKind = expectEnum(
     discriminator.conflict_kind,
-    ["content", "metadata", "tombstone"] as const,
+    ["content", "metadata", "tombstone", "reducer"] as const,
     "derived conflict kind"
   );
 
@@ -429,6 +474,89 @@ export function parseDerivedConflictCore(value: unknown): DerivedConflictCore {
     });
   }
 
+  if (conflictKind === "reducer") {
+    assertKeysPresent(discriminator, [
+      "reducer_version",
+      "reducer_conflict_kind",
+      "subject_kind",
+      "subject_id",
+      "field",
+      "base_value_commitment",
+      "contender_event_ids",
+      "contender_value_commitments",
+      "context_event_ids"
+    ]);
+    assertOnlyVariantKeys(discriminator, [
+      "reducer_version",
+      "reducer_conflict_kind",
+      "subject_kind",
+      "subject_id",
+      "field",
+      "base_value_commitment",
+      "contender_event_ids",
+      "contender_value_commitments",
+      "context_event_ids"
+    ]);
+    expectLiteral(
+      discriminator.reducer_version,
+      INITIAL_REDUCER_VERSION,
+      "derived reducer version"
+    );
+    const subjectKind = expectEnum(
+      discriminator.subject_kind,
+      [
+        "project",
+        "document",
+        "group",
+        "comment",
+        "reply",
+        "patch",
+        "review_batch",
+        "rewrite_session"
+      ] as const,
+      "reducer conflict subject kind"
+    );
+    return freezeRecord({
+      schema_version: DERIVED_CONFLICT_SCHEMA_VERSION,
+      conflict_kind: "reducer" as const,
+      authority: "none" as const,
+      project_id: projectId,
+      reducer_version: INITIAL_REDUCER_VERSION,
+      reducer_conflict_kind: expectEnum(
+        discriminator.reducer_conflict_kind,
+        reducerConflictKinds,
+        "reducer conflict kind"
+      ),
+      subject_kind: subjectKind,
+      subject_id: parseReducerSubjectId(
+        subjectKind,
+        discriminator.subject_id
+      ),
+      field: parseAlgorithmVersion(discriminator.field, "reducer field"),
+      base_value_commitment: parseOptionalCommitment(
+        discriminator.base_value_commitment,
+        "base value commitment"
+      ),
+      contender_event_ids: parseSortedUniqueArray(
+        discriminator.contender_event_ids,
+        "reducer contender event IDs",
+        (candidate) => parseDigestId("semantic-event", candidate)
+      ),
+      contender_value_commitments: parseSortedUniqueArray(
+        discriminator.contender_value_commitments,
+        "reducer contender value commitments",
+        (candidate) => parseCommitment(candidate),
+        { allowEmpty: true }
+      ),
+      context_event_ids: parseSortedUniqueArray(
+        discriminator.context_event_ids,
+        "reducer context event IDs",
+        (candidate) => parseDigestId("semantic-event", candidate),
+        { allowEmpty: true }
+      )
+    });
+  }
+
   assertKeysPresent(discriminator, [
     "subject_kind",
     "subject_id",
@@ -489,6 +617,42 @@ function parseSubjectId(kind: unknown, value: unknown): string {
     "conflict subject kind"
   );
   return parseEntityId(subjectKind, value);
+}
+
+function parseReducerSubjectId(
+  kind: DerivedReducerConflict["subject_kind"],
+  value: unknown
+): string {
+  if (kind === "review_batch") return parseEntityId("review-batch", value);
+  if (kind === "rewrite_session") {
+    return parseEntityId("rewrite-session", value);
+  }
+  return parseSubjectId(kind, value);
+}
+
+function parseOptionalCommitment(value: unknown, label: string): string | null {
+  return value === null ? null : parseCommitment(value, label);
+}
+
+function parseCommitment(value: unknown, label = "value commitment"): string {
+  if (typeof value !== "string") {
+    throw new Error(`${label} must be a digest commitment.`);
+  }
+  if (/^sha256:[0-9a-f]{64}$/.test(value)) {
+    return value;
+  }
+  for (const kind of [
+    "semantic-payload",
+    "document-revision",
+    "semantic-event"
+  ] as const) {
+    try {
+      return parseDigestId(kind, value);
+    } catch {
+      // Try the next permitted commitment namespace.
+    }
+  }
+  throw new Error(`${label} must use a supported digest commitment namespace.`);
 }
 
 const baseConflictKeys = new Set([

@@ -452,6 +452,19 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
       if (core.data.operation === "create" || core.data.operation === "edit") {
         entries.push(["content", text(core.data.content)]);
       }
+      if (
+        (core.data.operation === "create" ||
+          core.data.operation === "reanchor") &&
+        core.data.anchor !== undefined
+      ) {
+        entries.push([
+          "anchor",
+          canonicalMap([
+            ["anchor_kind", text(core.data.anchor.anchor_kind)],
+            ["anchor_key", text(core.data.anchor.anchor_key)]
+          ])
+        ]);
+      }
       return canonicalMap(entries);
     }
     case "reply_operation": {
@@ -475,6 +488,19 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
       ];
       if (core.data.operation === "decide") {
         entries.push(["decision", text(core.data.decision)]);
+      } else {
+        if (core.data.revision_id !== undefined) {
+          entries.push(["revision_id", text(core.data.revision_id)]);
+        }
+        if (core.data.dependency_patch_version_ids !== undefined) {
+          entries.push([
+            "dependency_patch_version_ids",
+            textArray(core.data.dependency_patch_version_ids)
+          ]);
+        }
+        if (core.data.target_provenance !== undefined) {
+          entries.push(["target_provenance", text(core.data.target_provenance)]);
+        }
       }
       return canonicalMap(entries);
     }
@@ -488,11 +514,41 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
       if ("group_id" in core.data) {
         entries.push(["group_id", text(core.data.group_id)]);
       }
+      if ("target_document_id" in core.data) {
+        entries.push(["target_document_id", text(core.data.target_document_id)]);
+      }
       if ("value" in core.data) entries.push(["value", text(core.data.value)]);
       return canonicalMap(entries);
     }
-    case "conflict_resolution":
-      return canonicalMap([
+    case "review_batch_operation": {
+      const entries: Array<readonly [string, CanonicalValue]> = [
+        ["operation", text(core.data.operation)],
+        ["review_batch_id", text(core.data.review_batch_id)]
+      ];
+      if (core.data.operation === "respond") {
+        entries.push(
+          ["response_hash", text(core.data.response_hash)],
+          [
+            "contribution_payload_ids",
+            textArray(core.data.contribution_payload_ids)
+          ]
+        );
+      }
+      return canonicalMap(entries);
+    }
+    case "rewrite_operation": {
+      const entries: Array<readonly [string, CanonicalValue]> = [
+        ["operation", text(core.data.operation)],
+        ["document_id", text(core.data.document_id)],
+        ["rewrite_session_id", text(core.data.rewrite_session_id)]
+      ];
+      if (core.data.operation === "apply") {
+        entries.push(["revision_id", text(core.data.revision_id)]);
+      }
+      return canonicalMap(entries);
+    }
+    case "conflict_resolution": {
+      const entries: Array<readonly [string, CanonicalValue]> = [
         ["conflict_id", text(core.data.conflict_id)],
         [
           "adopted_revision_id",
@@ -500,7 +556,23 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
             ? canonicalNull
             : text(core.data.adopted_revision_id)
         ]
-      ]);
+      ];
+      if (core.data.observed_contender_event_ids !== undefined) {
+        entries.push([
+          "observed_contender_event_ids",
+          textArray(core.data.observed_contender_event_ids)
+        ]);
+      }
+      if (core.data.adopted_event_id !== undefined) {
+        entries.push([
+          "adopted_event_id",
+          core.data.adopted_event_id === null
+            ? canonicalNull
+            : text(core.data.adopted_event_id)
+        ]);
+      }
+      return canonicalMap(entries);
+    }
     case "consolidation_checkpoint":
       return canonicalMap([
         ["base_frontier_event_ids", textArray(core.data.base_frontier_event_ids)],
@@ -658,12 +730,32 @@ function derivedConflictMap(core: DerivedConflictCore): CanonicalMap {
       ["field", text(core.field)],
       ["contender_payload_ids", textArray(core.contender_payload_ids)]
     );
-  } else {
+  } else if (core.conflict_kind === "tombstone") {
     entries.push(
       ["subject_kind", text(core.subject_kind)],
       ["subject_id", text(core.subject_id)],
       ["tombstone_event_id", text(core.tombstone_event_id)],
       ["contender_event_ids", textArray(core.contender_event_ids)]
+    );
+  } else {
+    entries.push(
+      ["reducer_version", text(core.reducer_version)],
+      ["reducer_conflict_kind", text(core.reducer_conflict_kind)],
+      ["subject_kind", text(core.subject_kind)],
+      ["subject_id", text(core.subject_id)],
+      ["field", text(core.field)],
+      [
+        "base_value_commitment",
+        core.base_value_commitment === null
+          ? canonicalNull
+          : text(core.base_value_commitment)
+      ],
+      ["contender_event_ids", textArray(core.contender_event_ids)],
+      [
+        "contender_value_commitments",
+        textArray(core.contender_value_commitments)
+      ],
+      ["context_event_ids", textArray(core.context_event_ids)]
     );
   }
   return canonicalMap(entries);

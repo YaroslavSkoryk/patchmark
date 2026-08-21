@@ -21,7 +21,9 @@ import {
   type PatchId,
   type PatchVersionId,
   type ProjectId,
+  type ReviewBatchId,
   type ReplyId,
+  type RewriteSessionId,
   type SemanticEventId,
   type SemanticPayloadId,
   parseDigestId,
@@ -50,6 +52,8 @@ export const semanticKinds = [
   "reply_operation",
   "patch_operation",
   "metadata_operation",
+  "review_batch_operation",
+  "rewrite_operation",
   "conflict_resolution",
   "consolidation_checkpoint"
 ] as const;
@@ -96,18 +100,41 @@ export type ExternalRevisionImportPayload = SemanticPayloadBase<
   }
 >;
 
+export type SharedCommentAnchor =
+  | Readonly<{
+      anchor_kind: "document";
+      anchor_key: "document";
+    }>
+  | Readonly<{
+      anchor_kind: "section" | "selected_text";
+      anchor_key: string;
+    }>;
+
 export type CommentOperationPayload = SemanticPayloadBase<
   "comment_operation",
   | {
-      operation: "create" | "edit";
+      operation: "create";
+      document_id: DocumentId;
+      comment_id: CommentId;
+      content: string;
+      anchor?: SharedCommentAnchor;
+    }
+  | {
+      operation: "edit";
       document_id: DocumentId;
       comment_id: CommentId;
       content: string;
     }
   | {
-      operation: "resolve" | "delete";
+      operation: "resolve" | "reopen" | "delete";
       document_id: DocumentId;
       comment_id: CommentId;
+    }
+  | {
+      operation: "reanchor";
+      document_id: DocumentId;
+      comment_id: CommentId;
+      anchor: SharedCommentAnchor;
     }
 >;
 
@@ -135,6 +162,9 @@ export type PatchOperationPayload = SemanticPayloadBase<
       document_id: DocumentId;
       patch_id: PatchId;
       patch_version_id: PatchVersionId;
+      revision_id?: DocumentRevisionId;
+      dependency_patch_version_ids?: readonly PatchVersionId[];
+      target_provenance?: string;
     }
   | {
       operation: "decide";
@@ -152,13 +182,32 @@ export type MetadataOperationPayload = SemanticPayloadBase<
       value: string;
     }
   | {
-      operation: "document_create" | "document_archive" | "document_restore";
+      operation:
+        | "document_create"
+        | "document_archive"
+        | "document_restore"
+        | "document_delete";
       document_id: DocumentId;
     }
   | {
       operation: "document_title" | "document_path";
       document_id: DocumentId;
       value: string;
+    }
+  | {
+      operation: "document_position";
+      document_id: DocumentId;
+      value: string;
+    }
+  | {
+      operation: "document_group";
+      document_id: DocumentId;
+      group_id: GroupId;
+    }
+  | {
+      operation: "document_reference";
+      document_id: DocumentId;
+      target_document_id: DocumentId;
     }
   | {
       operation: "group_create";
@@ -170,6 +219,44 @@ export type MetadataOperationPayload = SemanticPayloadBase<
       group_id: GroupId;
       value: string;
     }
+  | {
+      operation: "group_position";
+      group_id: GroupId;
+      value: string;
+    }
+>;
+
+export type ReviewBatchOperationPayload = SemanticPayloadBase<
+  "review_batch_operation",
+  | {
+      operation: "create";
+      review_batch_id: ReviewBatchId;
+    }
+  | {
+      operation: "respond";
+      review_batch_id: ReviewBatchId;
+      response_hash: string;
+      contribution_payload_ids: readonly SemanticPayloadId[];
+    }
+  | {
+      operation: "cancel";
+      review_batch_id: ReviewBatchId;
+    }
+>;
+
+export type RewriteOperationPayload = SemanticPayloadBase<
+  "rewrite_operation",
+  | {
+      operation: "create" | "discard";
+      document_id: DocumentId;
+      rewrite_session_id: RewriteSessionId;
+    }
+  | {
+      operation: "apply";
+      document_id: DocumentId;
+      rewrite_session_id: RewriteSessionId;
+      revision_id: DocumentRevisionId;
+    }
 >;
 
 export type ConflictResolutionPayload = SemanticPayloadBase<
@@ -177,6 +264,8 @@ export type ConflictResolutionPayload = SemanticPayloadBase<
   {
     conflict_id: DerivedConflictId;
     adopted_revision_id: DocumentRevisionId | null;
+    observed_contender_event_ids?: readonly SemanticEventId[];
+    adopted_event_id?: SemanticEventId | null;
   }
 >;
 
@@ -189,6 +278,8 @@ export type SemanticPayloadCore =
   | ReplyOperationPayload
   | PatchOperationPayload
   | MetadataOperationPayload
+  | ReviewBatchOperationPayload
+  | RewriteOperationPayload
   | ConflictResolutionPayload
   | ConsolidationCheckpointPayload;
 
@@ -334,11 +425,17 @@ export function parseSemanticPayloadCore(value: unknown): SemanticPayloadCore {
       return parsePatchPayload(projectId, data);
     case "metadata_operation":
       return parseMetadataPayload(projectId, data);
+    case "review_batch_operation":
+      return parseReviewBatchPayload(projectId, data);
+    case "rewrite_operation":
+      return parseRewritePayload(projectId, data);
     case "conflict_resolution": {
-      const body = expectExactRecord(data, "conflict resolution payload", [
-        "conflict_id",
-        "adopted_revision_id"
-      ]);
+      const body = expectExactRecord(
+        data,
+        "conflict resolution payload",
+        ["conflict_id", "adopted_revision_id"],
+        ["observed_contender_event_ids", "adopted_event_id"]
+      );
       return freezeRecord({
         schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
         project_id: projectId,
@@ -348,7 +445,24 @@ export function parseSemanticPayloadCore(value: unknown): SemanticPayloadCore {
           adopted_revision_id:
             body.adopted_revision_id === null
               ? null
-              : parseDigestId("document-revision", body.adopted_revision_id)
+              : parseDigestId("document-revision", body.adopted_revision_id),
+          ...(body.observed_contender_event_ids === undefined
+            ? {}
+            : {
+                observed_contender_event_ids: parseSortedUniqueArray(
+                  body.observed_contender_event_ids,
+                  "observed conflict contender event IDs",
+                  (candidate) => parseDigestId("semantic-event", candidate)
+                )
+              }),
+          ...(body.adopted_event_id === undefined
+            ? {}
+            : {
+                adopted_event_id:
+                  body.adopted_event_id === null
+                    ? null
+                    : parseDigestId("semantic-event", body.adopted_event_id)
+              })
         })
       });
     }
@@ -596,11 +710,11 @@ function parseCommentPayload(
     value,
     "comment operation payload",
     ["operation", "document_id", "comment_id"],
-    ["content"]
+    ["content", "anchor"]
   );
   const operation = expectEnum(
     body.operation,
-    ["create", "edit", "resolve", "delete"] as const,
+    ["create", "edit", "resolve", "reopen", "reanchor", "delete"] as const,
     "comment operation"
   );
   const common = {
@@ -609,6 +723,7 @@ function parseCommentPayload(
   };
   if (operation === "create" || operation === "edit") {
     requirePresent(body, "content", "comment operation");
+    if (operation === "edit") requireAbsent(body, "anchor", "comment edit");
     return freezeRecord({
       schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
       project_id: projectId,
@@ -616,11 +731,28 @@ function parseCommentPayload(
       data: freezeRecord({
         ...common,
         operation,
-        content: expectString(body.content, "comment content")
+        content: expectString(body.content, "comment content"),
+        ...(body.anchor === undefined
+          ? {}
+          : { anchor: parseSharedCommentAnchor(body.anchor) })
       })
     });
   }
   requireAbsent(body, "content", "comment operation");
+  if (operation === "reanchor") {
+    requirePresent(body, "anchor", "comment re-anchor");
+    return freezeRecord({
+      schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
+      project_id: projectId,
+      semantic_kind: "comment_operation" as const,
+      data: freezeRecord({
+        ...common,
+        operation,
+        anchor: parseSharedCommentAnchor(body.anchor)
+      })
+    });
+  }
+  requireAbsent(body, "anchor", "comment status operation");
   return freezeRecord({
     schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
     project_id: projectId,
@@ -679,7 +811,12 @@ function parsePatchPayload(
     value,
     "patch operation payload",
     ["operation", "document_id", "patch_id", "patch_version_id"],
-    ["decision"]
+    [
+      "decision",
+      "revision_id",
+      "dependency_patch_version_ids",
+      "target_provenance"
+    ]
   );
   const operation = expectEnum(
     body.operation,
@@ -693,6 +830,9 @@ function parsePatchPayload(
   };
   if (operation === "decide") {
     requirePresent(body, "decision", "patch decision");
+    requireAbsent(body, "revision_id", "patch decision");
+    requireAbsent(body, "dependency_patch_version_ids", "patch decision");
+    requireAbsent(body, "target_provenance", "patch decision");
     return freezeRecord({
       schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
       project_id: projectId,
@@ -713,7 +853,36 @@ function parsePatchPayload(
     schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
     project_id: projectId,
     semantic_kind: "patch_operation" as const,
-    data: freezeRecord({ ...common, operation })
+    data: freezeRecord({
+      ...common,
+      operation,
+      ...(body.revision_id === undefined
+        ? {}
+        : {
+            revision_id: parseDigestId(
+              "document-revision",
+              body.revision_id
+            )
+          }),
+      ...(body.dependency_patch_version_ids === undefined
+        ? {}
+        : {
+            dependency_patch_version_ids: parseSortedUniqueArray(
+              body.dependency_patch_version_ids,
+              "patch dependency version IDs",
+              (candidate) => parseEntityId("patch-version", candidate),
+              { allowEmpty: true }
+            )
+          }),
+      ...(body.target_provenance === undefined
+        ? {}
+        : {
+            target_provenance: expectString(
+              body.target_provenance,
+              "patch target provenance"
+            )
+          })
+    })
   });
 }
 
@@ -725,7 +894,7 @@ function parseMetadataPayload(
     value,
     "metadata operation payload",
     ["operation"],
-    ["document_id", "group_id", "value"]
+    ["document_id", "group_id", "target_document_id", "value"]
   );
   const operation = expectEnum(
     body.operation,
@@ -734,10 +903,15 @@ function parseMetadataPayload(
       "document_create",
       "document_archive",
       "document_restore",
+      "document_delete",
       "document_title",
       "document_path",
+      "document_position",
+      "document_group",
+      "document_reference",
       "group_create",
-      "group_rename"
+      "group_rename",
+      "group_position"
     ] as const,
     "metadata operation"
   );
@@ -751,7 +925,8 @@ function parseMetadataPayload(
   if (
     operation === "document_create" ||
     operation === "document_archive" ||
-    operation === "document_restore"
+    operation === "document_restore" ||
+    operation === "document_delete"
   ) {
     requireOnly(body, ["document_id"], "document status operation");
     return metadataPayload(projectId, {
@@ -759,12 +934,36 @@ function parseMetadataPayload(
       document_id: parseEntityId("document", body.document_id)
     });
   }
-  if (operation === "document_title" || operation === "document_path") {
+  if (
+    operation === "document_title" ||
+    operation === "document_path" ||
+    operation === "document_position"
+  ) {
     requireOnly(body, ["document_id", "value"], "document metadata operation");
     return metadataPayload(projectId, {
       operation,
       document_id: parseEntityId("document", body.document_id),
       value: expectString(body.value, "document metadata value")
+    });
+  }
+  if (operation === "document_group") {
+    requireOnly(body, ["document_id", "group_id"], "document group operation");
+    return metadataPayload(projectId, {
+      operation,
+      document_id: parseEntityId("document", body.document_id),
+      group_id: parseEntityId("group", body.group_id)
+    });
+  }
+  if (operation === "document_reference") {
+    requireOnly(
+      body,
+      ["document_id", "target_document_id"],
+      "document reference operation"
+    );
+    return metadataPayload(projectId, {
+      operation,
+      document_id: parseEntityId("document", body.document_id),
+      target_document_id: parseEntityId("document", body.target_document_id)
     });
   }
   requireOnly(body, ["group_id", "value"], "group metadata operation");
@@ -773,6 +972,141 @@ function parseMetadataPayload(
     group_id: parseEntityId("group", body.group_id),
     value: expectString(body.value, "group metadata value")
   });
+}
+
+function parseReviewBatchPayload(
+  projectId: ProjectId,
+  value: unknown
+): ReviewBatchOperationPayload {
+  const body = expectExactRecord(
+    value,
+    "review batch operation payload",
+    ["operation", "review_batch_id"],
+    ["response_hash", "contribution_payload_ids"]
+  );
+  const operation = expectEnum(
+    body.operation,
+    ["create", "respond", "cancel"] as const,
+    "review batch operation"
+  );
+  const reviewBatchId = parseEntityId("review-batch", body.review_batch_id);
+  if (operation === "respond") {
+    requirePresent(body, "response_hash", "review batch response");
+    requirePresent(
+      body,
+      "contribution_payload_ids",
+      "review batch response"
+    );
+    return freezeRecord({
+      schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
+      project_id: projectId,
+      semantic_kind: "review_batch_operation" as const,
+      data: freezeRecord({
+        operation,
+        review_batch_id: reviewBatchId,
+        response_hash: parseLowercaseSha256(
+          body.response_hash,
+          "review response hash"
+        ),
+        contribution_payload_ids: parseSortedUniqueArray(
+          body.contribution_payload_ids,
+          "review contribution payload IDs",
+          (candidate) => parseDigestId("semantic-payload", candidate),
+          { allowEmpty: true }
+        )
+      })
+    });
+  }
+  requireAbsent(body, "response_hash", "review batch lifecycle operation");
+  requireAbsent(
+    body,
+    "contribution_payload_ids",
+    "review batch lifecycle operation"
+  );
+  return freezeRecord({
+    schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
+    project_id: projectId,
+    semantic_kind: "review_batch_operation" as const,
+    data: freezeRecord({ operation, review_batch_id: reviewBatchId })
+  });
+}
+
+function parseRewritePayload(
+  projectId: ProjectId,
+  value: unknown
+): RewriteOperationPayload {
+  const body = expectExactRecord(
+    value,
+    "rewrite operation payload",
+    ["operation", "document_id", "rewrite_session_id"],
+    ["revision_id"]
+  );
+  const operation = expectEnum(
+    body.operation,
+    ["create", "apply", "discard"] as const,
+    "rewrite operation"
+  );
+  const common = {
+    document_id: parseEntityId("document", body.document_id),
+    rewrite_session_id: parseEntityId(
+      "rewrite-session",
+      body.rewrite_session_id
+    )
+  };
+  if (operation === "apply") {
+    requirePresent(body, "revision_id", "rewrite apply operation");
+    return freezeRecord({
+      schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
+      project_id: projectId,
+      semantic_kind: "rewrite_operation" as const,
+      data: freezeRecord({
+        ...common,
+        operation,
+        revision_id: parseDigestId("document-revision", body.revision_id)
+      })
+    });
+  }
+  requireAbsent(body, "revision_id", "rewrite lifecycle operation");
+  return freezeRecord({
+    schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
+    project_id: projectId,
+    semantic_kind: "rewrite_operation" as const,
+    data: freezeRecord({ ...common, operation })
+  });
+}
+
+function parseSharedCommentAnchor(value: unknown): SharedCommentAnchor {
+  const record = expectExactRecord(value, "shared comment anchor", [
+    "anchor_kind",
+    "anchor_key"
+  ]);
+  const anchorKind = expectEnum(
+    record.anchor_kind,
+    ["document", "section", "selected_text"] as const,
+    "shared comment anchor kind"
+  );
+  const anchorKey = expectString(record.anchor_key, "shared comment anchor key");
+  if (anchorKind === "document" && anchorKey !== "document") {
+    throw new Error("A document anchor must use the document anchor key.");
+  }
+  if (anchorKind === "document") {
+    return freezeRecord({
+      anchor_kind: "document" as const,
+      anchor_key: "document" as const
+    });
+  }
+  if (anchorKey.length === 0) {
+    throw new Error("A scoped comment anchor key must not be empty.");
+  }
+  return freezeRecord({ anchor_kind: anchorKind, anchor_key: anchorKey });
+}
+
+function parseLowercaseSha256(value: unknown, label: string): string {
+  const text = expectString(value, label);
+  if (!/^[0-9a-f]{64}$/.test(text)) {
+    throw new Error(`${label} must be a lowercase SHA-256 hex digest.`);
+  }
+  return text;
 }
 
 function metadataPayload<TData extends MetadataOperationPayload["data"]>(
