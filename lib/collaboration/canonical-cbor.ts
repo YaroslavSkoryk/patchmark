@@ -32,6 +32,18 @@ export type CanonicalValue =
   | CanonicalArray
   | CanonicalMap;
 
+export type CanonicalValueView =
+  | Readonly<{ kind: "array"; values: readonly CanonicalValue[] }>
+  | Readonly<{ kind: "boolean"; value: boolean }>
+  | Readonly<{ kind: "bytes"; value: Uint8Array }>
+  | Readonly<{
+      kind: "map";
+      entries: readonly (readonly [string, CanonicalValue])[];
+    }>
+  | Readonly<{ kind: "null" }>
+  | Readonly<{ kind: "text"; value: string }>
+  | Readonly<{ kind: "uint"; value: bigint }>;
+
 type CanonicalPayload =
   | Readonly<{ bytes: readonly number[] }>
   | Readonly<{ text: string }>
@@ -164,6 +176,45 @@ export function assertCanonicalCbor(
   const decoded = decodeCanonicalCbor(bytes);
   if (!equalBytes(encodeCanonicalCbor(decoded), encodeCanonicalCbor(expected))) {
     throw new Error("Canonical CBOR value does not match the expected schema value.");
+  }
+}
+
+/**
+ * Exposes a read-only view for schema-specific decoders. Child values remain
+ * inside the closed canonical-value model, and byte strings are copied.
+ */
+export function inspectCanonicalValue(value: CanonicalValue): CanonicalValueView {
+  assertCanonicalValue(value);
+  const kind = value[canonicalKind];
+  const payload = payloads.get(value);
+  switch (kind) {
+    case "array":
+      return Object.freeze({
+        kind,
+        values: Object.freeze([...readPayload(payload, "values")])
+      });
+    case "boolean":
+      return Object.freeze({ kind, value: readPayload(payload, "boolean") });
+    case "bytes":
+      return Object.freeze({
+        kind,
+        value: Uint8Array.from(readPayload(payload, "bytes"))
+      });
+    case "map":
+      return Object.freeze({
+        kind,
+        entries: Object.freeze(
+          readPayload(payload, "entries").map(([key, child]) =>
+            Object.freeze([readText(key), child] as const)
+          )
+        )
+      });
+    case "null":
+      return Object.freeze({ kind });
+    case "text":
+      return Object.freeze({ kind, value: readPayload(payload, "text") });
+    case "uint":
+      return Object.freeze({ kind, value: readPayload(payload, "uint") });
   }
 }
 

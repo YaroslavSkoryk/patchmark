@@ -17,3 +17,7 @@ export * from "./private-state.ts";
 export * from "./boundaries.ts";
 export * from "./protocol.ts";
 export * from "./preimages.ts";
+export * from "./storage.ts";
+export * from "./revision-indexes.ts";
+export * from "./revision-storage-codec.ts";
+export * from "./immutable-store.ts";

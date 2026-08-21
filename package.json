@@ -51,6 +51,7 @@
     "test:collaboration-contracts": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-contracts.test.mjs",
     "test:collaboration-canonical": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-canonical-vectors.test.mjs",
     "test:collaboration-canonical-browser": "node scripts/collaboration-canonical-vectors-browser.test.mjs",
+    "test:collaboration-store": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-immutable-store.test.mjs",
     "test:document-groups": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/document-groups.test.mjs",
     "test:project-resume-recovery": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/project-resume-recovery.test.mjs",
     "test:project-resume-recovery-browser": "node scripts/project-resume-recovery-browser.test.mjs",
