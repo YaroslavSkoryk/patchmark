@@ -1,7 +1,15 @@
 import {
   parseDigestId,
+  parseEntityId,
+  type AttestationId,
+  type ControlActionId,
+  type ControlEventId,
+  type DeviceId,
   type DocumentRevisionId,
-  type MarkdownBlobId
+  type MarkdownBlobId,
+  type ProjectId,
+  type SemanticEventId,
+  type SemanticPayloadId
 } from "./identities.ts";
 
 declare const collaborationStorageAddressBrand: unique symbol;
@@ -15,12 +23,49 @@ export type CollaborationStoragePrefix = string & {
   readonly [collaborationStoragePrefixBrand]: "collaboration-storage-prefix";
 };
 
+/** Slice 3 object families retained for its focused store API. */
 export type CollaborationStoredObjectKind =
   | "markdown-blob"
   | "document-revision";
 
+export type CollaborationEventObjectKind =
+  | "semantic-payload"
+  | "control-action"
+  | "semantic-event"
+  | "control-event"
+  | "attestation";
+
+export type CollaborationObjectKind =
+  | CollaborationStoredObjectKind
+  | CollaborationEventObjectKind;
+
+export type CollaborationObjectIdByKind = {
+  "markdown-blob": MarkdownBlobId;
+  "document-revision": DocumentRevisionId;
+  "semantic-payload": SemanticPayloadId;
+  "control-action": ControlActionId;
+  "semantic-event": SemanticEventId;
+  "control-event": ControlEventId;
+  attestation: AttestationId;
+};
+
+export type CollaborationObjectId =
+  CollaborationObjectIdByKind[CollaborationObjectKind];
+
+export type CollaborationAddressedObject = {
+  [TKind in CollaborationObjectKind]: Readonly<{
+    kind: TKind;
+    id: CollaborationObjectIdByKind[TKind];
+  }>;
+}[CollaborationObjectKind];
+
 export type CollaborationByteWriteContext = Readonly<{
-  stage: "staging" | "object_data" | "commit_marker" | "derived_index";
+  stage:
+    | "staging"
+    | "object_data"
+    | "commit_marker"
+    | "derived_index"
+    | "sequence_reservation";
 }>;
 
 export interface CollaborationByteStorageBackend {
@@ -43,8 +88,8 @@ export type CollaborationStoreFailureStage =
 
 export type CollaborationStoreFailureContext = Readonly<{
   stage: CollaborationStoreFailureStage;
-  object_kind?: CollaborationStoredObjectKind;
-  object_id?: MarkdownBlobId | DocumentRevisionId;
+  object_kind?: CollaborationObjectKind;
+  object_id?: CollaborationObjectId;
 }>;
 
 export type CollaborationStoreFailureInjector = (
@@ -72,6 +117,7 @@ export type CollaborationPutResult<TId extends string, TValue> = Readonly<{
 
 export type CollaborationStoreErrorCode =
   | "backend_failed"
+  | "chain_blocked"
   | "corrupted"
   | "dependency_invalid"
   | "dependency_missing"
@@ -79,6 +125,7 @@ export type CollaborationStoreErrorCode =
   | "mismatched"
   | "not_found"
   | "ownership_mismatch"
+  | "reservation_conflict"
   | "self_reference";
 
 export class CollaborationStoreError extends Error {
@@ -94,40 +141,42 @@ export class CollaborationStoreError extends Error {
 }
 
 const root = "patchmark-collaboration/v1/";
-const objectAddressPattern = /^patchmark-collaboration\/v1\/(data|commits|staging)\/(markdown-blob|document-revision)\/([a-z2-7]{52})$/;
-const indexAddressPattern = /^patchmark-collaboration\/v1\/indexes\/revision-references\/([a-z2-7]{52})$/;
+const objectKinds = [
+  "markdown-blob",
+  "document-revision",
+  "semantic-payload",
+  "control-action",
+  "semantic-event",
+  "control-event",
+  "attestation"
+] as const satisfies readonly CollaborationObjectKind[];
+const objectKindPattern = objectKinds.join("|");
+const objectAddressPattern = new RegExp(
+  `^patchmark-collaboration/v1/(data|commits|staging)/(${objectKindPattern})/([a-z2-7]{52})$`
+);
+const revisionIndexAddressPattern = /^patchmark-collaboration\/v1\/indexes\/revision-references\/([a-z2-7]{52})$/;
+const projectStateAddressPattern = /^patchmark-collaboration\/v1\/indexes\/event-control-state\/([a-z2-7]{25}[aiqy])$/;
+const reservationAddressPattern = /^patchmark-collaboration\/v1\/reservations\/semantic\/([a-z2-7]{25}[aiqy])\/([a-z2-7]{25}[aiqy])$/;
 
 export const collaborationStoragePrefixes = Object.freeze({
   root: asPrefix(root),
   data: asPrefix(`${root}data/`),
   commits: asPrefix(`${root}commits/`),
   staging: asPrefix(`${root}staging/`),
-  revisionReferenceIndexes: asPrefix(`${root}indexes/revision-references/`)
+  revisionReferenceIndexes: asPrefix(`${root}indexes/revision-references/`),
+  eventControlStateIndexes: asPrefix(`${root}indexes/event-control-state/`),
+  semanticReservations: asPrefix(`${root}reservations/semantic/`)
 });
 
-export function collaborationObjectAddresses(
-  kind: "markdown-blob",
-  id: MarkdownBlobId
+export function collaborationObjectAddresses<TKind extends CollaborationObjectKind>(
+  kind: TKind,
+  id: CollaborationObjectIdByKind[TKind]
 ): Readonly<{
   data: CollaborationStorageAddress;
   commit: CollaborationStorageAddress;
   staging: CollaborationStorageAddress;
-}>;
-export function collaborationObjectAddresses(
-  kind: "document-revision",
-  id: DocumentRevisionId
-): Readonly<{
-  data: CollaborationStorageAddress;
-  commit: CollaborationStorageAddress;
-  staging: CollaborationStorageAddress;
-}>;
-export function collaborationObjectAddresses(
-  kind: CollaborationStoredObjectKind,
-  id: MarkdownBlobId | DocumentRevisionId
-) {
-  const parsed = kind === "markdown-blob"
-    ? parseDigestId("markdown-blob", id)
-    : parseDigestId("document-revision", id);
+}> {
+  const parsed = parseCollaborationObjectId(kind, id);
   const digest = parsed.slice(parsed.lastIndexOf(":") + 1);
   return Object.freeze({
     data: asAddress(`${root}data/${kind}/${digest}`),
@@ -141,7 +190,25 @@ export function collaborationRevisionReferenceIndexAddress(
 ): CollaborationStorageAddress {
   const parsed = parseDigestId("document-revision", id);
   return asAddress(
-    `${root}indexes/revision-references/${parsed.slice(parsed.lastIndexOf(":") + 1)}`
+    `${root}indexes/revision-references/${digestSuffix(parsed)}`
+  );
+}
+
+export function collaborationEventControlStateIndexAddress(
+  projectId: ProjectId
+): CollaborationStorageAddress {
+  const project = parseEntityId("project", projectId);
+  return asAddress(`${root}indexes/event-control-state/${entitySuffix(project)}`);
+}
+
+export function collaborationSemanticReservationAddress(
+  projectId: ProjectId,
+  deviceId: DeviceId
+): CollaborationStorageAddress {
+  const project = parseEntityId("project", projectId);
+  const device = parseEntityId("device", deviceId);
+  return asAddress(
+    `${root}reservations/semantic/${entitySuffix(project)}/${entitySuffix(device)}`
   );
 }
 
@@ -153,16 +220,27 @@ export function parseCollaborationStorageAddress(
   }
   const objectMatch = objectAddressPattern.exec(value);
   if (objectMatch) {
-    const kind = objectMatch[2] as CollaborationStoredObjectKind;
-    parseDigestId(kind, `pm:${kind}:v1:${objectMatch[3]}`);
+    const kind = parseCollaborationObjectKind(objectMatch[2]);
+    parseCollaborationObjectId(kind, `pm:${kind}:v1:${objectMatch[3]}`);
     return value as CollaborationStorageAddress;
   }
-  const indexMatch = indexAddressPattern.exec(value);
-  if (indexMatch) {
+  const revisionMatch = revisionIndexAddressPattern.exec(value);
+  if (revisionMatch) {
     parseDigestId(
       "document-revision",
-      `pm:document-revision:v1:${indexMatch[1]}`
+      `pm:document-revision:v1:${revisionMatch[1]}`
     );
+    return value as CollaborationStorageAddress;
+  }
+  const projectMatch = projectStateAddressPattern.exec(value);
+  if (projectMatch) {
+    parseEntityId("project", `pm:project:v1:${projectMatch[1]}`);
+    return value as CollaborationStorageAddress;
+  }
+  const reservationMatch = reservationAddressPattern.exec(value);
+  if (reservationMatch) {
+    parseEntityId("project", `pm:project:v1:${reservationMatch[1]}`);
+    parseEntityId("device", `pm:device:v1:${reservationMatch[2]}`);
     return value as CollaborationStorageAddress;
   }
   throw new Error("Value is outside the Patchmark collaboration storage namespace.");
@@ -170,18 +248,58 @@ export function parseCollaborationStorageAddress(
 
 export function objectIdFromStorageAddress(
   value: CollaborationStorageAddress
-): Readonly<{
-  kind: CollaborationStoredObjectKind;
-  id: MarkdownBlobId | DocumentRevisionId;
-}> | null {
+): CollaborationAddressedObject | null {
   const address = parseCollaborationStorageAddress(value);
   const match = objectAddressPattern.exec(address);
   if (!match) return null;
-  const kind = match[2] as CollaborationStoredObjectKind;
-  const id = kind === "markdown-blob"
-    ? parseDigestId("markdown-blob", `pm:${kind}:v1:${match[3]}`)
-    : parseDigestId("document-revision", `pm:${kind}:v1:${match[3]}`);
-  return Object.freeze({ kind, id });
+  const kind = parseCollaborationObjectKind(match[2]);
+  const id = parseCollaborationObjectId(
+    kind,
+    `pm:${kind}:v1:${match[3]}`
+  );
+  return Object.freeze({ kind, id }) as CollaborationAddressedObject;
+}
+
+export function parseCollaborationObjectKind(
+  value: unknown
+): CollaborationObjectKind {
+  if (
+    typeof value !== "string" ||
+    !objectKinds.includes(value as CollaborationObjectKind)
+  ) {
+    throw new Error("Unsupported collaboration stored-object kind.");
+  }
+  return value as CollaborationObjectKind;
+}
+
+export function parseCollaborationObjectId<TKind extends CollaborationObjectKind>(
+  kind: TKind,
+  value: unknown
+): CollaborationObjectIdByKind[TKind] {
+  switch (kind) {
+    case "markdown-blob":
+      return parseDigestId("markdown-blob", value) as CollaborationObjectIdByKind[TKind];
+    case "document-revision":
+      return parseDigestId("document-revision", value) as CollaborationObjectIdByKind[TKind];
+    case "semantic-payload":
+      return parseDigestId("semantic-payload", value) as CollaborationObjectIdByKind[TKind];
+    case "control-action":
+      return parseDigestId("control-action", value) as CollaborationObjectIdByKind[TKind];
+    case "semantic-event":
+      return parseDigestId("semantic-event", value) as CollaborationObjectIdByKind[TKind];
+    case "control-event":
+      return parseDigestId("control-event", value) as CollaborationObjectIdByKind[TKind];
+    case "attestation":
+      return parseDigestId("attestation", value) as CollaborationObjectIdByKind[TKind];
+  }
+}
+
+function digestSuffix(value: string): string {
+  return value.slice(value.lastIndexOf(":") + 1);
+}
+
+function entitySuffix(value: string): string {
+  return value.slice(value.lastIndexOf(":") + 1);
 }
 
 function asAddress(value: string): CollaborationStorageAddress {

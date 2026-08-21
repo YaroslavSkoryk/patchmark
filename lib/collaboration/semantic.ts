@@ -378,9 +378,13 @@ export function parseSemanticPayloadRecord(
   });
 }
 
-export function parseSemanticEventCore(
-  value: unknown,
-  payload: SemanticPayloadRecord
+/**
+ * Parses only the immutable semantic-event core shape. Dependency-aware
+ * callers must use parseSemanticEventCore so payload ownership and kind are
+ * checked before the event is accepted.
+ */
+export function parseSemanticEventCoreStructure(
+  value: unknown
 ): SemanticEventCore {
   const record = expectExactRecord(
     value,
@@ -507,6 +511,14 @@ export function parseSemanticEventCore(
     });
   }
 
+  return core;
+}
+
+export function parseSemanticEventCore(
+  value: unknown,
+  payload: SemanticPayloadRecord
+): SemanticEventCore {
+  const core = parseSemanticEventCoreStructure(value);
   assertEventPayloadMatch(core, payload);
   return core;
 }
@@ -514,6 +526,14 @@ export function parseSemanticEventCore(
 export function parseSemanticEventRecord(
   value: unknown,
   payload: SemanticPayloadRecord
+): SemanticEventRecord {
+  const parsed = parseSemanticEventRecordStructure(value);
+  assertEventPayloadMatch(parsed.core, payload);
+  return parsed;
+}
+
+export function parseSemanticEventRecordStructure(
+  value: unknown
 ): SemanticEventRecord {
   const record = expectExactRecord(value, "semantic event record", [
     "record_version",
@@ -533,7 +553,7 @@ export function parseSemanticEventRecord(
     "semantic event record kind"
   );
   const eventId = parseDigestId("semantic-event", record.event_id);
-  const core = parseSemanticEventCore(record.core, payload);
+  const core = parseSemanticEventCoreStructure(record.core);
   if (
     core.previous_device_event_id === eventId ||
     core.causal_parent_event_ids.includes(eventId)

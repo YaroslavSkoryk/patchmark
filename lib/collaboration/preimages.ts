@@ -17,6 +17,7 @@ import {
 import {
   parseControlActionCore,
   parseControlEventCore,
+  parseControlEventCoreStructure,
   type ControlActionCore,
   type ControlEventCore,
   type DeviceSequenceCutoff,
@@ -43,6 +44,7 @@ import {
 } from "./derived.ts";
 import {
   parseSemanticEventCore,
+  parseSemanticEventCoreStructure,
   parseSemanticPayloadCore,
   type SemanticEventCore,
   type SemanticPayloadCore,
@@ -148,6 +150,16 @@ export function buildSemanticEventPreimage(
   payload: SemanticPayloadRecord
 ): CanonicalValue {
   const core = parseSemanticEventCore(value, payload);
+  return semanticEventCorePreimage(core);
+}
+
+export function buildSemanticEventCorePreimage(
+  value: SemanticEventCore
+): CanonicalValue {
+  return semanticEventCorePreimage(parseSemanticEventCoreStructure(value));
+}
+
+function semanticEventCorePreimage(core: SemanticEventCore): CanonicalValue {
   return separated(
     collaborationHashDomains.semanticEventCore,
     canonicalMap([
@@ -181,6 +193,16 @@ export function buildControlEventPreimage(
   } = {}
 ): CanonicalValue {
   const core = parseControlEventCore(value, options);
+  return controlEventCorePreimage(core);
+}
+
+export function buildControlEventCorePreimage(
+  value: ControlEventCore
+): CanonicalValue {
+  return controlEventCorePreimage(parseControlEventCoreStructure(value));
+}
+
+function controlEventCorePreimage(core: ControlEventCore): CanonicalValue {
   return separated(
     collaborationHashDomains.controlEventCore,
     controlEventMap(core)
@@ -338,6 +360,13 @@ export async function deriveSemanticEventIdentity(
   return derive("semantic-event", buildSemanticEventPreimage(core, payload), provider);
 }
 
+export async function deriveSemanticEventCoreIdentity(
+  core: SemanticEventCore,
+  provider?: Sha256Provider
+): Promise<DerivedCollaborationIdentity<SemanticEventId>> {
+  return derive("semantic-event", buildSemanticEventCorePreimage(core), provider);
+}
+
 export async function deriveControlEventIdentity(
   core: ControlEventCore,
   options: {
@@ -347,6 +376,13 @@ export async function deriveControlEventIdentity(
   provider?: Sha256Provider
 ): Promise<DerivedCollaborationIdentity<ControlEventId>> {
   return derive("control-event", buildControlEventPreimage(core, options), provider);
+}
+
+export async function deriveControlEventCoreIdentity(
+  core: ControlEventCore,
+  provider?: Sha256Provider
+): Promise<DerivedCollaborationIdentity<ControlEventId>> {
+  return derive("control-event", buildControlEventCorePreimage(core), provider);
 }
 
 export async function deriveMergeKeyIdentity(

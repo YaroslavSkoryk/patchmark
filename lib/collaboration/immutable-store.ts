@@ -408,6 +408,12 @@ export class ImmutableCollaborationStore {
         invalidAddresses.push(address);
         continue;
       }
+      if (
+        addressed.kind !== "markdown-blob" &&
+        addressed.kind !== "document-revision"
+      ) {
+        continue;
+      }
       const stored = await this.#readStoredObject(addressed.kind, addressed.id as never);
       if (stored.status !== "valid") {
         if (stored.status === "incomplete" || stored.status === "missing") {
@@ -444,6 +450,12 @@ export class ImmutableCollaborationStore {
         invalidAddresses.push(address);
         continue;
       }
+      if (
+        addressed.kind !== "markdown-blob" &&
+        addressed.kind !== "document-revision"
+      ) {
+        continue;
+      }
       const expectedCommit = addressed.kind === "markdown-blob"
         ? collaborationObjectAddresses("markdown-blob", addressed.id as MarkdownBlobId).commit
         : collaborationObjectAddresses(
@@ -463,6 +475,14 @@ export class ImmutableCollaborationStore {
         }
       } catch {
         invalidAddresses.push(address);
+        continue;
+      }
+      const addressed = objectIdFromStorageAddress(parsed);
+      if (
+        !addressed ||
+        (addressed.kind !== "markdown-blob" &&
+          addressed.kind !== "document-revision")
+      ) {
         continue;
       }
       incomplete.push(parsed);

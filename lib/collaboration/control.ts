@@ -484,7 +484,12 @@ export function parseControlActionRecord(value: unknown): ControlActionRecord {
   });
 }
 
-export function parseControlEventCore(
+/**
+ * Parses the immutable control-event core without assuming that its action or
+ * predecessor-derived authority context has arrived. Acceptance paths must use
+ * parseControlEventCore, which retains the dependency-aware requirements.
+ */
+export function parseControlEventCoreStructure(
   value: unknown,
   options: {
     action?: ControlActionRecord;
@@ -662,12 +667,9 @@ export function parseControlEventCore(
       ),
       ...(displayTimestamp ? { display_timestamp: displayTimestamp } : {})
     });
-    if (!options.ordinary_context) {
-      throw new Error(
-        "Ordinary control events require designated active-control-device context."
-      );
+    if (options.ordinary_context) {
+      assertOrdinaryControlContext(ordinary, options.ordinary_context);
     }
-    assertOrdinaryControlContext(ordinary, options.ordinary_context);
     if (options.action) {
       assertControlActionMatch(ordinary, options.action, false);
     }
@@ -716,11 +718,29 @@ export function parseControlEventCore(
     ),
     ...(displayTimestamp ? { display_timestamp: displayTimestamp } : {})
   });
-  if (!options.action) {
+  if (options.action) {
+    assertControlActionMatch(recovery, options.action, true);
+  }
+  return recovery;
+}
+
+export function parseControlEventCore(
+  value: unknown,
+  options: {
+    action?: ControlActionRecord;
+    ordinary_context?: OrdinaryControlValidationContext;
+  } = {}
+): ControlEventCore {
+  const core = parseControlEventCoreStructure(value, options);
+  if (core.control_kind === "ordinary" && !options.ordinary_context) {
+    throw new Error(
+      "Ordinary control events require designated active-control-device context."
+    );
+  }
+  if (core.control_kind === "root_recovery" && !options.action) {
     throw new Error("Root recovery events require their root-recovery action.");
   }
-  assertControlActionMatch(recovery, options.action, true);
-  return recovery;
+  return core;
 }
 
 export function parseControlEventRecord(
@@ -729,6 +749,14 @@ export function parseControlEventRecord(
     action?: ControlActionRecord;
     ordinary_context?: OrdinaryControlValidationContext;
   } = {}
+): ControlEventRecord {
+  const parsed = parseControlEventRecordStructure(value);
+  parseControlEventCore(parsed.core, options);
+  return parsed;
+}
+
+export function parseControlEventRecordStructure(
+  value: unknown
 ): ControlEventRecord {
   const record = expectExactRecord(value, "control event record", [
     "record_version",
@@ -744,7 +772,7 @@ export function parseControlEventRecord(
   );
   expectLiteral(record.object_kind, "control_event", "control event object kind");
   const eventId = parseDigestId("control-event", record.control_event_id);
-  const core = parseControlEventCore(record.core, options);
+  const core = parseControlEventCoreStructure(record.core);
   if (
     core.previous_control_id === eventId ||
     (core.control_kind !== "ordinary" &&
