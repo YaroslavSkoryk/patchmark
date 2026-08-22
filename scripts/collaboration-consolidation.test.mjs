@@ -278,7 +278,7 @@ process.stdout.write(`${JSON.stringify({
   checkpoint_outcomes: 3,
   boundary_full_history_claim: false,
   acknowledgement_stream_separate: true,
-  storage_failure_stages: 11,
+  storage_failure_stages: 12,
   purity_writers_touched: 0
 }, null, 2)}\n`);
 
@@ -935,6 +935,27 @@ async function testAcknowledgementsAndStorage(artifacts) {
   );
   const second = bindAcknowledgementAttestation(secondDraft, secondAttestation.attestation_id);
   check(second.core.acknowledgement_sequence, BigInt(1));
+  const thirdDraft = await prepareAcknowledgementDraft({
+    project_id: fixture.project,
+    person_id: fixture.personForDevice(ownerDevice),
+    device_id: ownerDevice,
+    observed_control_head_id: fixture.controlHead,
+    acknowledged_checkpoint_id: historical.checkpoint_id,
+    projection_root: historical.prepared.payload.data.projection_root,
+    history,
+    previous: second
+  });
+  const thirdAttestation = await fixture.attest(
+    "acknowledgement",
+    thirdDraft.acknowledgement_id,
+    ownerDevice,
+    82
+  );
+  const third = bindAcknowledgementAttestation(
+    thirdDraft,
+    thirdAttestation.attestation_id
+  );
+  check(third.core.acknowledgement_sequence, BigInt(2));
   const altCheckpoint = digest("semantic-event", "z");
   const altProjection = digest("projection-root", "z");
   const altDraft = await prepareAcknowledgementDraft({
@@ -1062,13 +1083,151 @@ async function testAcknowledgementsAndStorage(artifacts) {
   check((await store.reserveAcknowledgement(firstDraft)).status, "already_reserved");
   check((await store.commitAcknowledgement(first)).status, "stored");
   check((await store.commitAcknowledgement(first)).status, "already_present");
+  check((await store.reserveAcknowledgement(secondDraft)).status, "reserved");
+  check((await store.reserveAcknowledgement(secondDraft)).status, "already_reserved");
+  check((await store.commitAcknowledgement(second)).status, "stored");
+  check((await store.commitAcknowledgement(second)).status, "already_present");
+  check((await store.reserveAcknowledgement(thirdDraft)).status, "reserved");
+  check((await store.reserveAcknowledgement(thirdDraft)).status, "already_reserved");
+  check((await store.commitAcknowledgement(third)).status, "stored");
+  check((await store.commitAcknowledgement(third)).status, "already_present");
+  await assert.rejects(
+    () => store.reserveAcknowledgement(secondDraft),
+    /exact contiguous successor/
+  );
+  assertions += 1;
+  const skippedDraft = Object.freeze({
+    ...thirdDraft,
+    core: Object.freeze({
+      ...thirdDraft.core,
+      acknowledgement_sequence: BigInt(4)
+    })
+  });
+  await assert.rejects(
+    () => store.reserveAcknowledgement(skippedDraft),
+    /exact contiguous successor/
+  );
+  assertions += 1;
+  const wrongPreviousDraft = Object.freeze({
+    ...thirdDraft,
+    core: Object.freeze({
+      ...thirdDraft.core,
+      acknowledgement_sequence: BigInt(3),
+      previous_acknowledgement_id: first.acknowledgement_id
+    })
+  });
+  await assert.rejects(
+    () => store.reserveAcknowledgement(wrongPreviousDraft),
+    /exact contiguous successor/
+  );
+  assertions += 1;
   check((await store.getStateBlob(stateBlob.state_blob_id)).status, "valid");
   check((await store.getSnapshot(snapshot.snapshot_id)).status, "valid");
   check((await store.getAcknowledgement(first.acknowledgement_id)).status, "valid");
   const recovery = await store.recover();
   check(recovery.valid_state_blob_ids, [stateBlob.state_blob_id]);
   check(recovery.valid_snapshot_ids, [snapshot.snapshot_id]);
-  check(recovery.valid_acknowledgement_ids, [first.acknowledgement_id]);
+  check(recovery.valid_acknowledgement_ids, [
+    first.acknowledgement_id,
+    second.acknowledgement_id,
+    third.acknowledgement_id
+  ].sort());
+
+  const competitionBackend = new MemoryBackend();
+  const competitionStore = new ConsolidationCollaborationStore({
+    backend: competitionBackend
+  });
+  await competitionStore.reserveAcknowledgement(firstDraft);
+  await competitionStore.commitAcknowledgement(first);
+  await competitionStore.reserveAcknowledgement(secondDraft);
+  await assert.rejects(
+    () => competitionStore.reserveAcknowledgement(altDraft),
+    /conflicts with another pending draft/
+  );
+  assertions += 1;
+  const pendingCompetition = await new ConsolidationCollaborationStore({
+    backend: competitionBackend
+  }).recover();
+  check(pendingCompetition.pending_acknowledgement_reservations.length, 1);
+  check((await new ConsolidationCollaborationStore({
+    backend: competitionBackend
+  }).reserveAcknowledgement(secondDraft)).status, "already_reserved");
+  await competitionStore.commitAcknowledgement(second);
+  await assert.rejects(
+    () => competitionStore.reserveAcknowledgement(altDraft),
+    /exact contiguous successor/
+  );
+  assertions += 1;
+
+  const raceBackend = new MemoryBackend();
+  const raceStoreA = new ConsolidationCollaborationStore({ backend: raceBackend });
+  const raceStoreB = new ConsolidationCollaborationStore({ backend: raceBackend });
+  await raceStoreA.reserveAcknowledgement(firstDraft);
+  await raceStoreA.commitAcknowledgement(first);
+  const competingReservations = await Promise.allSettled([
+    raceStoreA.reserveAcknowledgement(secondDraft),
+    raceStoreB.reserveAcknowledgement(altDraft)
+  ]);
+  check(
+    competingReservations.filter((result) => result.status === "fulfilled").length,
+    1,
+    "backend-scoped reservation locking must permit exactly one sequence-1 winner"
+  );
+  check(
+    competingReservations.filter((result) => result.status === "rejected").length,
+    1,
+    "the competing sequence-1 draft must remain explicit rejected evidence"
+  );
+  check(
+    (await new ConsolidationCollaborationStore({ backend: raceBackend }).recover())
+      .pending_acknowledgement_reservations.length,
+    1,
+    "reopening a reservation race must retain only its exact pending winner"
+  );
+
+  const isolationBackend = new MemoryBackend();
+  const isolationStore = new ConsolidationCollaborationStore({
+    backend: isolationBackend
+  });
+  const foreignProjectDraft = await prepareAcknowledgementDraft({
+    project_id: entity("project", "b"),
+    person_id: fixture.personForDevice(ownerDevice),
+    device_id: ownerDevice,
+    observed_control_head_id: fixture.controlHead,
+    acknowledged_checkpoint_id: historical.checkpoint_id,
+    projection_root: historical.prepared.payload.data.projection_root,
+    history,
+    previous: null
+  });
+  const otherDevice = entity("device", "b");
+  const foreignDeviceDraft = await prepareAcknowledgementDraft({
+    project_id: fixture.project,
+    person_id: entity("person", "b"),
+    device_id: otherDevice,
+    observed_control_head_id: fixture.controlHead,
+    acknowledged_checkpoint_id: historical.checkpoint_id,
+    projection_root: historical.prepared.payload.data.projection_root,
+    history,
+    previous: null
+  });
+  check((await isolationStore.reserveAcknowledgement(firstDraft)).status, "reserved");
+  check((await isolationStore.reserveAcknowledgement(foreignProjectDraft)).status, "reserved");
+  check((await isolationStore.reserveAcknowledgement(foreignDeviceDraft)).status, "reserved");
+  const sourceAddress = collaborationAcknowledgementReservationAddress(
+    firstDraft.core.project_id,
+    firstDraft.core.device_id
+  );
+  const substitutedAddress = collaborationAcknowledgementReservationAddress(
+    foreignProjectDraft.core.project_id,
+    foreignDeviceDraft.core.device_id
+  );
+  isolationBackend.values.set(
+    substitutedAddress,
+    isolationBackend.values.get(sourceAddress)
+  );
+  ok((await isolationStore.recover()).corrupted_addresses.includes(
+    substitutedAddress
+  ));
 
   await testInjectedStorageFailures({
     historical,
@@ -1119,8 +1278,15 @@ async function testInjectedStorageFailures({ historical, stateBlob, snapshot, fi
     backend: reservationBackend
   }).recover();
   check(reservationRecovery.pending_acknowledgement_reservations.length, 1);
+  check((await new ConsolidationCollaborationStore({
+    backend: reservationBackend
+  }).reserveAcknowledgement(firstDraft)).status, "already_reserved");
 
-  for (const stage of ["acknowledgement_data", "acknowledgement_commit"]) {
+  for (const stage of [
+    "acknowledgement_data",
+    "acknowledgement_commit",
+    "acknowledgement_journal_advancement"
+  ]) {
     const backend = new MemoryBackend();
     const store = injectedStore(backend, stage);
     await store.reserveAcknowledgement(firstDraft);
@@ -1186,7 +1352,28 @@ async function testInjectedStorageFailures({ historical, stateBlob, snapshot, fi
     firstDraft.core.device_id
   );
   corruptReservationBackend.values.set(reservationAddress, Uint8Array.of(0xff));
-  ok((await corruptReservationStore.recover()).corrupted_addresses.includes(reservationAddress));
+  const corruptReservationRecovery = await corruptReservationStore.recover();
+  ok(corruptReservationRecovery.corrupted_addresses.includes(reservationAddress));
+
+  const corruptAcknowledgementCommitBackend = new MemoryBackend();
+  const corruptAcknowledgementCommitStore = new ConsolidationCollaborationStore({
+    backend: corruptAcknowledgementCommitBackend
+  });
+  await corruptAcknowledgementCommitStore.reserveAcknowledgement(firstDraft);
+  await corruptAcknowledgementCommitStore.commitAcknowledgement(first);
+  const acknowledgementAddresses = collaborationObjectAddresses(
+    "acknowledgement",
+    first.acknowledgement_id
+  );
+  corruptAcknowledgementCommitBackend.values.set(
+    acknowledgementAddresses.commit,
+    Uint8Array.of(0xff)
+  );
+  const corruptAcknowledgementRecovery = await corruptAcknowledgementCommitStore.recover();
+  ok(corruptAcknowledgementRecovery.corrupted_addresses.includes(
+    acknowledgementAddresses.commit
+  ));
+  check(corruptAcknowledgementRecovery.valid_acknowledgement_ids, []);
 }
 
 function injectedStore(backend, injectedStage) {

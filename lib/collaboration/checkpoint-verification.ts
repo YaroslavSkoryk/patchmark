@@ -397,7 +397,13 @@ function findConflictRegister(
   if (core.subject_kind === "review_batch") {
     const batch = projection.review_batches.find((entry) => entry.review_batch_id === core.subject_id);
     if (!batch) return null;
-    return field === "lifecycle" ? batch.lifecycle : field === "response" ? batch.responses : null;
+    return field === "lifecycle"
+      ? batch.lifecycle
+      : field === "response-evidence-commitment"
+        ? batch.response_evidence_commitment
+        : field === "response-import-id"
+          ? batch.response_import_id
+          : null;
   }
   if (core.subject_kind === "rewrite_session") {
     const session = projection.rewrite_sessions.find((entry) => entry.rewrite_session_id === core.subject_id);

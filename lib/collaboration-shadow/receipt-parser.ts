@@ -18,6 +18,7 @@ import {
   freezeRecord,
   parseUniqueArray
 } from "../collaboration/validation.ts";
+import { parseReviewResponseImportId } from "../collaboration/review-response-evidence.ts";
 
 export function parseCollaborationShadowMutationReceipt(
   value: unknown
@@ -190,11 +191,15 @@ function parseDocumentContent(value: unknown): ShadowLegacyDocumentContent {
           const reply = expectExactRecord(replyValue, "normalized legacy reply", [
             "source_reply_id",
             "body",
+            "source_import_id",
             "tombstone"
           ]);
           return freezeRecord({
             source_reply_id: expectNonEmptyString(reply.source_reply_id, "source reply ID"),
             body: expectString(reply.body, "source reply body"),
+            source_import_id: reply.source_import_id === null
+              ? null
+              : parseReviewResponseImportId(reply.source_import_id),
             tombstone: expectBoolean(reply.tombstone, "source reply tombstone")
           });
         },
@@ -228,6 +233,7 @@ function parseDocumentContent(value: unknown): ShadowLegacyDocumentContent {
         "version_fingerprint",
         "dependency_source_patch_ids",
         "target_provenance",
+        "source_import_id",
         "status"
       ]);
       return freezeRecord({
@@ -244,6 +250,9 @@ function parseDocumentContent(value: unknown): ShadowLegacyDocumentContent {
         target_provenance: patch.target_provenance === null
           ? null
           : expectString(patch.target_provenance, "source patch target provenance"),
+        source_import_id: patch.source_import_id === null
+          ? null
+          : parseReviewResponseImportId(patch.source_import_id),
         status: expectEnum(
           patch.status,
           ["pending", "accepted", "rejected", "stale"] as const,
@@ -261,30 +270,80 @@ function parseDocumentContent(value: unknown): ShadowLegacyDocumentContent {
       const batch = expectExactRecord(candidate, "normalized legacy review batch", [
         "source_review_batch_id",
         "lifecycle",
-        "response_hash"
+        "response_import_id",
+        "contribution_source_refs"
       ]);
-      const responseHash = batch.response_hash === null
+      const responseImportId = batch.response_import_id === null
         ? null
-        : expectString(batch.response_hash, "source review response hash");
-      if (responseHash !== null && !/^[0-9a-f]{64}$/.test(responseHash)) {
-        throw new Error("Source review response hash must be lowercase SHA-256.");
+        : parseReviewResponseImportId(batch.response_import_id);
+      const contributionSourceRefs = parseStringArray(
+        batch.contribution_source_refs,
+        "source review contribution references",
+        true
+      );
+      const lifecycle = expectEnum(
+        batch.lifecycle,
+        ["active", "responded", "cancelled"] as const,
+        "source review lifecycle"
+      );
+      if (
+        (lifecycle === "responded") !== (responseImportId !== null) ||
+        (lifecycle !== "responded" && contributionSourceRefs.length !== 0)
+      ) {
+        throw new Error(
+          "Only a responded source review may carry an import ID and contribution references."
+        );
       }
       return freezeRecord({
         source_review_batch_id: expectNonEmptyString(
           batch.source_review_batch_id,
           "source review batch ID"
         ),
-        lifecycle: expectEnum(
-          batch.lifecycle,
-          ["active", "responded", "cancelled"] as const,
-          "source review lifecycle"
-        ),
-        response_hash: responseHash
+        lifecycle,
+        response_import_id: responseImportId,
+        contribution_source_refs: contributionSourceRefs
       });
     },
     (batch) => batch.source_review_batch_id,
     { allowEmpty: true, requireSorted: true }
   );
+  const contributionImports = new Map<string, string>();
+  for (const comment of comments) {
+    for (const reply of comment.replies) {
+      if (reply.source_import_id !== null) {
+        contributionImports.set(
+          `reply:${comment.source_comment_id}:${reply.source_reply_id}`,
+          reply.source_import_id
+        );
+      }
+    }
+  }
+  for (const patch of patches) {
+    if (patch.source_import_id !== null) {
+      contributionImports.set(`patch:${patch.source_patch_id}`, patch.source_import_id);
+    }
+  }
+  for (const batch of reviewBatches) {
+    if (batch.response_import_id === null) continue;
+    const expected = [...contributionImports]
+      .filter(([, importId]) => importId === batch.response_import_id)
+      .map(([reference]) => reference)
+      .sort();
+    if (
+      expected.some((reference) =>
+        !batch.contribution_source_refs.includes(reference)
+      ) ||
+      batch.contribution_source_refs.some((reference) => {
+        const currentImportId = contributionImports.get(reference);
+        return currentImportId !== undefined &&
+          currentImportId !== batch.response_import_id;
+      })
+    ) {
+      throw new Error(
+        "Source review contribution references must include every present same-import reply and patch without cross-import aliases."
+      );
+    }
+  }
   const rewrites = parseUniqueArray(
     record.rewrite_sessions,
     "normalized legacy rewrite sessions",

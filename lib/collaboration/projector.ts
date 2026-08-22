@@ -138,7 +138,8 @@ type MutableGroup = {
 type MutableReviewBatch = {
   review_batch_id: ReviewBatchId;
   lifecycle: MutableRegister;
-  responses: MutableRegister;
+  response_evidence_commitment: MutableRegister;
+  response_import_id: MutableRegister;
   contribution_payload_ids: Set<SemanticPayloadId>;
   creation_event_ids: Set<SemanticEventId>;
 };
@@ -472,6 +473,11 @@ function reduceBootstrapImport(
       applyRegister(state, comment.body, loaded, commentData.body);
       applyRegister(state, comment.anchor, loaded, commentData.anchor);
       applyRegister(state, comment.status, loaded, commentData.status);
+      comment.trash_status ??= register(
+        state.registers,
+        `comment|${comment.comment_id}|trash-status`
+      );
+      applyRegister(state, comment.trash_status, loaded, commentData.trash_status);
       for (const replyData of commentData.replies) {
         const reply = comment.replies.get(replyData.reply_id);
         if (!reply) continue;
@@ -519,8 +525,17 @@ function reduceBootstrapImport(
     const batch = state.review_batches.get(batchData.review_batch_id);
     if (!batch) continue;
     applyRegister(state, batch.lifecycle, loaded, batchData.lifecycle);
-    if (batchData.response_hash !== null) {
-      applyRegister(state, batch.responses, loaded, batchData.response_hash);
+    if (batchData.response_evidence_commitment !== null) {
+      applyRegister(
+        state,
+        batch.response_evidence_commitment,
+        loaded,
+        batchData.response_evidence_commitment
+      );
+      applyRegister(state, batch.response_import_id, loaded, batchData.response_import_id!);
+      for (const id of batchData.contribution_payload_ids) {
+        batch.contribution_payload_ids.add(id);
+      }
     }
   }
   for (const sessionData of core.data.rewrite_sessions) {
@@ -773,7 +788,13 @@ function reduceReviewBatch(state: ProjectorState, loaded: LoadedProjectionEvent)
   if (core.data.operation === "create") {
     applyRegister(state, batch.lifecycle, loaded, "active");
   } else if (core.data.operation === "respond") {
-    applyRegister(state, batch.responses, loaded, core.data.response_hash);
+    applyRegister(
+      state,
+      batch.response_evidence_commitment,
+      loaded,
+      core.data.response_evidence_commitment
+    );
+    applyRegister(state, batch.response_import_id, loaded, core.data.response_import_id);
     applyRegister(state, batch.lifecycle, loaded, "responded");
     for (const id of core.data.contribution_payload_ids) {
       batch.contribution_payload_ids.add(id);
@@ -1569,7 +1590,10 @@ async function freezeReviewBatch(batch: MutableReviewBatch): Promise<ProjectedRe
   return Object.freeze({
     review_batch_id: batch.review_batch_id,
     lifecycle: await freezeRegister(batch.lifecycle),
-    responses: await freezeRegister(batch.responses),
+    response_evidence_commitment: await freezeRegister(
+      batch.response_evidence_commitment
+    ),
+    response_import_id: await freezeRegister(batch.response_import_id),
     contribution_payload_ids: Object.freeze([...batch.contribution_payload_ids].sort()),
     creation_event_ids: Object.freeze([...batch.creation_event_ids].sort())
   });
@@ -1743,7 +1767,14 @@ function ensureReviewBatch(state: ProjectorState, id: ReviewBatchId): MutableRev
   const value: MutableReviewBatch = {
     review_batch_id: id,
     lifecycle: register(state.registers, `review_batch|${id}|lifecycle`),
-    responses: register(state.registers, `review_batch|${id}|response`),
+    response_evidence_commitment: register(
+      state.registers,
+      `review_batch|${id}|response-evidence-commitment`
+    ),
+    response_import_id: register(
+      state.registers,
+      `review_batch|${id}|response-import-id`
+    ),
     contribution_payload_ids: new Set(),
     creation_event_ids: new Set()
   };

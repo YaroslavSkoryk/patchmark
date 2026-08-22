@@ -607,6 +607,14 @@ export function verifyBootstrapProjectionEquivalence(
       requireResolved(comment.body, expectedComment.body, "comment body");
       requireResolved(comment.anchor, expectedComment.anchor, "comment anchor");
       requireResolved(comment.status, expectedComment.status, "comment status");
+      if (comment.trash_status === undefined) {
+        throw new BootstrapVerificationError("Projected comment trash status is missing.");
+      }
+      requireResolved(
+        comment.trash_status,
+        expectedComment.trash_status,
+        "comment trash status"
+      );
       if ((comment.tombstone !== null) !== expectedComment.tombstone) {
         throw new BootstrapVerificationError("Comment tombstone differs from the plan.");
       }
@@ -665,8 +673,32 @@ export function verifyBootstrapProjectionEquivalence(
     );
     if (!review) throw new BootstrapVerificationError("Projected review batch is missing.");
     requireResolved(review.lifecycle, expectedReview.lifecycle, "review lifecycle");
-    if (expectedReview.response_hash === null) requireUnset(review.responses, "review response");
-    else requireResolved(review.responses, expectedReview.response_hash, "review response");
+    if (expectedReview.response_evidence_commitment === null) {
+      requireUnset(
+        review.response_evidence_commitment,
+        "review response evidence commitment"
+      );
+      requireUnset(review.response_import_id, "review response import id");
+    } else {
+      requireResolved(
+        review.response_evidence_commitment,
+        expectedReview.response_evidence_commitment,
+        "review response evidence commitment"
+      );
+      requireResolved(
+        review.response_import_id,
+        expectedReview.response_import_id!,
+        "review response import id"
+      );
+    }
+    if (!sameStrings(
+      review.contribution_payload_ids,
+      expectedReview.contribution_payload_ids
+    )) {
+      throw new BootstrapVerificationError(
+        "Projected review contributions differ from the plan."
+      );
+    }
   }
   for (const expectedRewrite of expected.rewrite_sessions) {
     const rewrite = projection.rewrite_sessions.find(

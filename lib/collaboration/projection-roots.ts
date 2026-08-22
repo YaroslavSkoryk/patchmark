@@ -157,7 +157,10 @@ export async function deriveSemanticStateRoot(
     entries.push(semanticEntry("review_batch", batch.review_batch_id, {
       review_batch_id: batch.review_batch_id,
       lifecycle: semanticRegister(batch.lifecycle),
-      responses: semanticRegister(batch.responses),
+      response_evidence_commitment: semanticRegister(
+        batch.response_evidence_commitment
+      ),
+      response_import_id: semanticRegister(batch.response_import_id),
       contribution_payload_ids: [...batch.contribution_payload_ids]
     }));
   }

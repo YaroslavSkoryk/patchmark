@@ -15,6 +15,7 @@ import {
   deriveControlEventCoreIdentity,
   deriveSemanticEventCoreIdentity,
   deriveSemanticPayloadIdentity,
+  deriveReviewResponseEvidence,
   encodeCanonicalCbor,
   parseAttestationRecord,
   parseControlEventRecordStructure,
@@ -476,6 +477,26 @@ async function setupSemanticBase() {
   return { harness, event0, event1 };
 }
 
+async function setupReviewEvidenceBase() {
+  const base = await setupSemanticBase();
+  const reviewBatchId = entity("review-batch", "a");
+  const createPayload = await base.harness.store.putSemanticPayload({
+    schema_version: 1,
+    project_id: ids.project,
+    semantic_kind: "review_batch_operation",
+    data: { operation: "create", review_batch_id: reviewBatchId }
+  });
+  const createEvent = await makeSemanticEvent(base.harness, {
+    payload: createPayload,
+    sequence: 2n,
+    previousEventId: base.event1.identity.id,
+    parents: [base.event1.identity.id]
+  });
+  await base.harness.store.putAttestationRecord(createEvent.attestation);
+  await base.harness.store.ingestSemanticEvent(createEvent.record);
+  return { ...base, reviewBatchId, createEvent };
+}
+
 function authorityState(options) {
   return Object.freeze({
     schema_version: 1,
@@ -693,6 +714,25 @@ assert.throws(
   }),
   /sorted and unique/
 );
+assert.throws(
+  () => parseSemanticEventRecordStructure({
+    ...missingAttEvent.record,
+    author_attestation_ids: []
+  }),
+  /must not be empty|exactly one mandatory author attestation/
+);
+assertions += 1;
+assert.throws(
+  () => parseSemanticEventRecordStructure({
+    ...missingAttEvent.record,
+    author_attestation_ids: [
+      missingAttEvent.attestation.attestation_id,
+      digest("attestation", "z")
+    ].sort()
+  }),
+  /exactly one mandatory author attestation/
+);
+assertions += 1;
 await assert.rejects(
   attestationCases.harness.store.putAttestationCore({
     ...missingAttEvent.attestation.core,
@@ -703,6 +743,226 @@ await assert.rejects(
 const verificationCount = attestationCases.harness.getAttestationVerificationCount();
 await attestationCases.harness.store.reopenProject(ids.project);
 check(attestationCases.harness.getAttestationVerificationCount() > verificationCount, "reopening should reverify stored attestations");
+
+// Review-response evidence is verified during reconstruction, including its
+// exact same-project/review contribution relationship.
+const validReview = await setupReviewEvidenceBase();
+const responseImportId = "review-import-1";
+const contributionPayload = await validReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.project,
+  semantic_kind: "reply_operation",
+  data: {
+    operation: "create",
+    document_id: ids.document,
+    comment_id: entity("comment", "a"),
+    reply_id: entity("reply", "a"),
+    content: "Shared response contribution",
+    review_batch_id: validReview.reviewBatchId,
+    response_import_id: responseImportId
+  }
+});
+const contributionEvent = await makeSemanticEvent(validReview.harness, {
+  payload: contributionPayload,
+  sequence: 3n,
+  previousEventId: validReview.createEvent.identity.id,
+  parents: [validReview.createEvent.identity.id]
+});
+await validReview.harness.store.putAttestationRecord(contributionEvent.attestation);
+await validReview.harness.store.ingestSemanticEvent(contributionEvent.record);
+const validEvidence = await deriveReviewResponseEvidence({
+  schema_version: 1,
+  project_id: ids.project,
+  review_batch_id: validReview.reviewBatchId,
+  response_import_id: responseImportId,
+  contribution_payload_ids: [contributionPayload.id]
+});
+const validResponsePayload = await validReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.project,
+  semantic_kind: "review_batch_operation",
+  data: {
+    operation: "respond",
+    review_batch_id: validReview.reviewBatchId,
+    response_evidence_commitment: validEvidence.commitment,
+    response_import_id: responseImportId,
+    contribution_payload_ids: [contributionPayload.id]
+  }
+});
+const validResponseEvent = await makeSemanticEvent(validReview.harness, {
+  payload: validResponsePayload,
+  sequence: 4n,
+  previousEventId: contributionEvent.identity.id,
+  parents: [contributionEvent.identity.id]
+});
+await validReview.harness.store.putAttestationRecord(validResponseEvent.attestation);
+state = (await validReview.harness.store.ingestSemanticEvent(
+  validResponseEvent.record
+)).state;
+check(
+  classification(state, validResponseEvent.identity.id).reason === "accepted",
+  "a response with an exact causally prior contribution must be accepted"
+);
+state = await validReview.harness.store.reopenProject(ids.project);
+check(
+  classification(state, validResponseEvent.identity.id).reason === "accepted",
+  "reopening must reproduce the same accepted review evidence"
+);
+
+const missingReview = await setupReviewEvidenceBase();
+const missingContributionId = digest("semantic-payload", "z");
+const missingEvidence = await deriveReviewResponseEvidence({
+  schema_version: 1,
+  project_id: ids.project,
+  review_batch_id: missingReview.reviewBatchId,
+  response_import_id: responseImportId,
+  contribution_payload_ids: [missingContributionId]
+});
+const missingResponsePayload = await missingReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.project,
+  semantic_kind: "review_batch_operation",
+  data: {
+    operation: "respond",
+    review_batch_id: missingReview.reviewBatchId,
+    response_evidence_commitment: missingEvidence.commitment,
+    response_import_id: responseImportId,
+    contribution_payload_ids: [missingContributionId]
+  }
+});
+const missingResponseEvent = await makeSemanticEvent(missingReview.harness, {
+  payload: missingResponsePayload,
+  sequence: 3n,
+  previousEventId: missingReview.createEvent.identity.id,
+  parents: [missingReview.createEvent.identity.id]
+});
+await missingReview.harness.store.putAttestationRecord(missingResponseEvent.attestation);
+state = (await missingReview.harness.store.ingestSemanticEvent(
+  missingResponseEvent.record
+)).state;
+check(
+  classification(state, missingResponseEvent.identity.id).reason === "missing_payload",
+  "a nonexistent review contribution must remain fail-closed and pending"
+);
+
+const unrelatedReview = await setupReviewEvidenceBase();
+const unrelatedContribution = await unrelatedReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.project,
+  semantic_kind: "reply_operation",
+  data: {
+    operation: "create",
+    document_id: ids.document,
+    comment_id: entity("comment", "b"),
+    reply_id: entity("reply", "b"),
+    content: "Unrelated response contribution",
+    review_batch_id: entity("review-batch", "b"),
+    response_import_id: responseImportId
+  }
+});
+const unrelatedContributionEvent = await makeSemanticEvent(
+  unrelatedReview.harness,
+  {
+    payload: unrelatedContribution,
+    sequence: 3n,
+    previousEventId: unrelatedReview.createEvent.identity.id,
+    parents: [unrelatedReview.createEvent.identity.id]
+  }
+);
+await unrelatedReview.harness.store.putAttestationRecord(
+  unrelatedContributionEvent.attestation
+);
+await unrelatedReview.harness.store.ingestSemanticEvent(
+  unrelatedContributionEvent.record
+);
+const unrelatedEvidence = await deriveReviewResponseEvidence({
+  schema_version: 1,
+  project_id: ids.project,
+  review_batch_id: unrelatedReview.reviewBatchId,
+  response_import_id: responseImportId,
+  contribution_payload_ids: [unrelatedContribution.id]
+});
+const unrelatedResponsePayload = await unrelatedReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.project,
+  semantic_kind: "review_batch_operation",
+  data: {
+    operation: "respond",
+    review_batch_id: unrelatedReview.reviewBatchId,
+    response_evidence_commitment: unrelatedEvidence.commitment,
+    response_import_id: responseImportId,
+    contribution_payload_ids: [unrelatedContribution.id]
+  }
+});
+const unrelatedResponseEvent = await makeSemanticEvent(unrelatedReview.harness, {
+  payload: unrelatedResponsePayload,
+  sequence: 4n,
+  previousEventId: unrelatedContributionEvent.identity.id,
+  parents: [unrelatedContributionEvent.identity.id]
+});
+await unrelatedReview.harness.store.putAttestationRecord(
+  unrelatedResponseEvent.attestation
+);
+state = (await unrelatedReview.harness.store.ingestSemanticEvent(
+  unrelatedResponseEvent.record
+)).state;
+check(
+  classification(state, unrelatedResponseEvent.identity.id).reason ===
+    "forbidden_or_circular_reference",
+  "an unrelated-review contribution must be permanently invalid"
+);
+
+const foreignReview = await setupReviewEvidenceBase();
+const foreignContribution = await foreignReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.projectB,
+  semantic_kind: "reply_operation",
+  data: {
+    operation: "create",
+    document_id: ids.document,
+    comment_id: entity("comment", "c"),
+    reply_id: entity("reply", "c"),
+    content: "Foreign response contribution",
+    review_batch_id: foreignReview.reviewBatchId,
+    response_import_id: responseImportId
+  }
+});
+const foreignEvidence = await deriveReviewResponseEvidence({
+  schema_version: 1,
+  project_id: ids.project,
+  review_batch_id: foreignReview.reviewBatchId,
+  response_import_id: responseImportId,
+  contribution_payload_ids: [foreignContribution.id]
+});
+const foreignResponsePayload = await foreignReview.harness.store.putSemanticPayload({
+  schema_version: 1,
+  project_id: ids.project,
+  semantic_kind: "review_batch_operation",
+  data: {
+    operation: "respond",
+    review_batch_id: foreignReview.reviewBatchId,
+    response_evidence_commitment: foreignEvidence.commitment,
+    response_import_id: responseImportId,
+    contribution_payload_ids: [foreignContribution.id]
+  }
+});
+const foreignResponseEvent = await makeSemanticEvent(foreignReview.harness, {
+  payload: foreignResponsePayload,
+  sequence: 3n,
+  previousEventId: foreignReview.createEvent.identity.id,
+  parents: [foreignReview.createEvent.identity.id]
+});
+await foreignReview.harness.store.putAttestationRecord(
+  foreignResponseEvent.attestation
+);
+state = (await foreignReview.harness.store.ingestSemanticEvent(
+  foreignResponseEvent.record
+)).state;
+check(
+  classification(state, foreignResponseEvent.identity.id).reason ===
+    "cross_project_reference",
+  "a foreign-project contribution must be permanently invalid"
+);
 
 // Same-device forks are authority-free, demote provisional acceptance, and quarantine descendants.
 async function buildForkState(order) {
@@ -970,6 +1230,27 @@ let reservation = await local.store.getSequenceReservation(ids.project, ids.devi
 check(reservation.status === "valid" && reservation.value.reservation_state === "committed", "sequence commits only with its bound event");
 const localReopened = await local.store.reopenProject(ids.project);
 check(localReopened.accepted_semantic_event_ids.includes(concurrentResults[0].event.event_id), "reopening should reconstruct committed local event");
+
+const ambiguousLocal = await createHarness();
+const ambiguousLocalPayload = await putProjectGenesisPayload(ambiguousLocal);
+const ambiguousLocalRequest = {
+  ...localRequest(ambiguousLocal, ambiguousLocalPayload),
+  async create_attestations(request) {
+    return Promise.all([91, 92].map((signature) => makeAttestation({
+      projectId: request.project_id,
+      subjectKind: "semantic_event",
+      subjectId: request.event_id,
+      signerKeyId: request.expected_signing_key_id,
+      signature: bytes(signature),
+      acceptedSignatures: ambiguousLocal.acceptedSignatures
+    })));
+  }
+};
+await assert.rejects(
+  () => ambiguousLocal.store.appendLocalSemanticEvent(ambiguousLocalRequest),
+  /exactly one mandatory author attestation/
+);
+assertions += 1;
 
 for (const failureStage of [
   "before_reservation_write",

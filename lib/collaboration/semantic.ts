@@ -46,6 +46,13 @@ import {
   freezeRecord,
   parseSortedUniqueArray
 } from "./validation.ts";
+import {
+  parseReviewContributionPayloadIds,
+  parseReviewResponseEvidenceCommitment,
+  parseReviewResponseImportId,
+  type ReviewResponseEvidenceCommitment,
+  type ReviewResponseImportId
+} from "./review-response-evidence.ts";
 
 export const semanticKinds = [
   "project_genesis",
@@ -156,6 +163,8 @@ export type ReplyOperationPayload = SemanticPayloadBase<
       comment_id: CommentId;
       reply_id: ReplyId;
       content: string;
+      review_batch_id?: ReviewBatchId;
+      response_import_id?: ReviewResponseImportId;
     }
   | {
       operation: "delete";
@@ -175,6 +184,8 @@ export type PatchOperationPayload = SemanticPayloadBase<
       revision_id?: DocumentRevisionId;
       dependency_patch_version_ids?: readonly PatchVersionId[];
       target_provenance?: string;
+      review_batch_id?: ReviewBatchId;
+      response_import_id?: ReviewResponseImportId;
     }
   | {
       operation: "decide";
@@ -245,7 +256,8 @@ export type ReviewBatchOperationPayload = SemanticPayloadBase<
   | {
       operation: "respond";
       review_batch_id: ReviewBatchId;
-      response_hash: string;
+      response_evidence_commitment: ReviewResponseEvidenceCommitment;
+      response_import_id: ReviewResponseImportId;
       contribution_payload_ids: readonly SemanticPayloadId[];
     }
   | {
@@ -699,16 +711,20 @@ export function parseSemanticEventRecordStructure(
   ) {
     throw new Error("A semantic event cannot reference itself.");
   }
+  const authorAttestationIds = parseSortedUniqueArray(
+    record.author_attestation_ids,
+    "semantic event author attestations",
+    (candidate) => parseDigestId("attestation", candidate)
+  );
+  if (authorAttestationIds.length !== 1) {
+    throw new Error("A semantic event record must contain exactly one mandatory author attestation.");
+  }
   return freezeRecord({
     record_version: SEMANTIC_EVENT_RECORD_VERSION,
     object_kind: "semantic_event" as const,
     event_id: eventId,
     core,
-    author_attestation_ids: parseSortedUniqueArray(
-      record.author_attestation_ids,
-      "semantic event author attestations",
-      (candidate) => parseDigestId("attestation", candidate)
-    )
+    author_attestation_ids: authorAttestationIds
   });
 }
 
@@ -794,7 +810,7 @@ function parseReplyPayload(
     value,
     "reply operation payload",
     ["operation", "document_id", "comment_id", "reply_id"],
-    ["content"]
+    ["content", "review_batch_id", "response_import_id"]
   );
   const operation = expectEnum(
     body.operation,
@@ -808,6 +824,10 @@ function parseReplyPayload(
   };
   if (operation === "create" || operation === "edit") {
     requirePresent(body, "content", "reply operation");
+    const reviewProvenance = parseReviewContributionProvenance(
+      body,
+      "reply operation"
+    );
     return freezeRecord({
       schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
       project_id: projectId,
@@ -815,11 +835,14 @@ function parseReplyPayload(
       data: freezeRecord({
         ...common,
         operation,
-        content: expectString(body.content, "reply content")
+        content: expectString(body.content, "reply content"),
+        ...reviewProvenance
       })
     });
   }
   requireAbsent(body, "content", "reply operation");
+  requireAbsent(body, "review_batch_id", "reply deletion");
+  requireAbsent(body, "response_import_id", "reply deletion");
   return freezeRecord({
     schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
     project_id: projectId,
@@ -840,7 +863,9 @@ function parsePatchPayload(
       "decision",
       "revision_id",
       "dependency_patch_version_ids",
-      "target_provenance"
+      "target_provenance",
+      "review_batch_id",
+      "response_import_id"
     ]
   );
   const operation = expectEnum(
@@ -858,6 +883,8 @@ function parsePatchPayload(
     requireAbsent(body, "revision_id", "patch decision");
     requireAbsent(body, "dependency_patch_version_ids", "patch decision");
     requireAbsent(body, "target_provenance", "patch decision");
+    requireAbsent(body, "review_batch_id", "patch decision");
+    requireAbsent(body, "response_import_id", "patch decision");
     return freezeRecord({
       schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
       project_id: projectId,
@@ -874,6 +901,10 @@ function parsePatchPayload(
     });
   }
   requireAbsent(body, "decision", "patch proposal or edit");
+  const reviewProvenance = parseReviewContributionProvenance(
+    body,
+    "patch proposal or edit"
+  );
   return freezeRecord({
     schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
     project_id: projectId,
@@ -881,6 +912,7 @@ function parsePatchPayload(
     data: freezeRecord({
       ...common,
       operation,
+      ...reviewProvenance,
       ...(body.revision_id === undefined
         ? {}
         : {
@@ -1007,7 +1039,11 @@ function parseReviewBatchPayload(
     value,
     "review batch operation payload",
     ["operation", "review_batch_id"],
-    ["response_hash", "contribution_payload_ids"]
+    [
+      "response_evidence_commitment",
+      "response_import_id",
+      "contribution_payload_ids"
+    ]
   );
   const operation = expectEnum(
     body.operation,
@@ -1016,7 +1052,12 @@ function parseReviewBatchPayload(
   );
   const reviewBatchId = parseEntityId("review-batch", body.review_batch_id);
   if (operation === "respond") {
-    requirePresent(body, "response_hash", "review batch response");
+    requirePresent(
+      body,
+      "response_evidence_commitment",
+      "review batch response"
+    );
+    requirePresent(body, "response_import_id", "review batch response");
     requirePresent(
       body,
       "contribution_payload_ids",
@@ -1029,20 +1070,25 @@ function parseReviewBatchPayload(
       data: freezeRecord({
         operation,
         review_batch_id: reviewBatchId,
-        response_hash: parseLowercaseSha256(
-          body.response_hash,
-          "review response hash"
+        response_evidence_commitment:
+          parseReviewResponseEvidenceCommitment(
+            body.response_evidence_commitment
+          ),
+        response_import_id: parseReviewResponseImportId(
+          body.response_import_id
         ),
-        contribution_payload_ids: parseSortedUniqueArray(
-          body.contribution_payload_ids,
-          "review contribution payload IDs",
-          (candidate) => parseDigestId("semantic-payload", candidate),
-          { allowEmpty: true }
+        contribution_payload_ids: parseReviewContributionPayloadIds(
+          body.contribution_payload_ids
         )
       })
     });
   }
-  requireAbsent(body, "response_hash", "review batch lifecycle operation");
+  requireAbsent(
+    body,
+    "response_evidence_commitment",
+    "review batch lifecycle operation"
+  );
+  requireAbsent(body, "response_import_id", "review batch lifecycle operation");
   requireAbsent(
     body,
     "contribution_payload_ids",
@@ -1054,6 +1100,30 @@ function parseReviewBatchPayload(
     semantic_kind: "review_batch_operation" as const,
     data: freezeRecord({ operation, review_batch_id: reviewBatchId })
   });
+}
+
+function parseReviewContributionProvenance(
+  body: Readonly<Record<string, unknown>>,
+  label: string
+): Readonly<{
+  review_batch_id?: ReviewBatchId;
+  response_import_id?: ReviewResponseImportId;
+}> {
+  const hasReview = body.review_batch_id !== undefined;
+  const hasImport = body.response_import_id !== undefined;
+  if (hasReview !== hasImport) {
+    throw new Error(
+      `${label} review_batch_id and response_import_id must appear together.`
+    );
+  }
+  return hasReview
+    ? freezeRecord({
+        review_batch_id: parseEntityId("review-batch", body.review_batch_id),
+        response_import_id: parseReviewResponseImportId(
+          body.response_import_id
+        )
+      })
+    : freezeRecord({});
 }
 
 function parseRewritePayload(
@@ -1124,14 +1194,6 @@ function parseSharedCommentAnchor(value: unknown): SharedCommentAnchor {
     throw new Error("A scoped comment anchor key must not be empty.");
   }
   return freezeRecord({ anchor_kind: anchorKind, anchor_key: anchorKey });
-}
-
-function parseLowercaseSha256(value: unknown, label: string): string {
-  const text = expectString(value, label);
-  if (!/^[0-9a-f]{64}$/.test(text)) {
-    throw new Error(`${label} must be a lowercase SHA-256 hex digest.`);
-  }
-  return text;
 }
 
 function metadataPayload<TData extends MetadataOperationPayload["data"]>(

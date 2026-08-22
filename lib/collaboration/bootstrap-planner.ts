@@ -105,6 +105,12 @@ import {
   parseUniqueArray,
   type UInt64
 } from "./validation.ts";
+import {
+  deriveReviewResponseEvidence,
+  parseReviewResponseImportId,
+  verifyReviewResponseEvidenceCommitment,
+  type ReviewResponseImportId
+} from "./review-response-evidence.ts";
 
 export const privateImportFieldNames = [
   "filesystem_handles",
@@ -142,6 +148,7 @@ export type SourceComment = SourceIdentity & Readonly<{
   body: string;
   anchor: string;
   status: "open" | "resolved";
+  trash_status: "active" | "trashed";
   tombstone: boolean;
   imported_provenance: string | null;
   imported_history: BootstrapSharedComment["imported_history"];
@@ -192,7 +199,7 @@ export type NormalizedDuplicationSourceInventory = Readonly<{
   review_batches: readonly (SourceIdentity & Readonly<{
     document_source_key: string;
     lifecycle: "active" | "responded" | "cancelled";
-    response_hash: string | null;
+    response_import_id: ReviewResponseImportId | null;
     imported_provenance: string | null;
   }>)[];
   rewrite_sessions: readonly (SourceIdentity & Readonly<{
@@ -270,6 +277,13 @@ export type NativeBootstrapDocumentInput = Readonly<{
   reference_document_ids: readonly DocumentId[];
 }>;
 
+export type NativeBootstrapReviewInput = Readonly<{
+  review_batch_id: ReviewBatchId;
+  lifecycle: "active" | "responded" | "cancelled";
+  response_import_id: ReviewResponseImportId | null;
+  imported_provenance: null;
+}>;
+
 export type NativeCollaborationBootstrapInput = Readonly<{
   schema_version: typeof NATIVE_BOOTSTRAP_INPUT_SCHEMA_VERSION;
   object_kind: "native_collaboration_bootstrap_input";
@@ -292,7 +306,7 @@ export type NativeCollaborationBootstrapInput = Readonly<{
   groups: readonly BootstrapSharedGroup[];
   document_order: readonly DocumentId[];
   documents: readonly NativeBootstrapDocumentInput[];
-  initial_review_batches: readonly BootstrapSharedReviewBatch[];
+  initial_review_batches: readonly NativeBootstrapReviewInput[];
   initial_rewrite_sessions: readonly Readonly<{
     rewrite_session_id: RewriteSessionId;
     document_id: DocumentId;
@@ -448,6 +462,16 @@ export async function planNativeCollaborationBootstrap(
   const input = parseNativeCollaborationBootstrapInput(inputValue);
   const authority = bootstrapAuthority(input.project_id, input);
   const currentObjects = await planNativeCurrentObjects(input);
+  const reviewBatches = await Promise.all(
+    input.initial_review_batches.map((review) => buildBootstrapReviewBatch(
+      input.project_id,
+      review.review_batch_id,
+      review.lifecycle,
+      review.response_import_id,
+      review.imported_provenance,
+      Object.freeze([])
+    ))
+  );
   const identityMappings = Object.freeze([
     nativeMapping("project", "project", input.project_id),
     ...input.groups.map((group) => nativeMapping(group.group_id, "group", group.group_id)),
@@ -475,7 +499,10 @@ export async function planNativeCollaborationBootstrap(
     groups: input.groups,
     document_order: input.document_order,
     documents: currentObjects.documents,
-    review_batches: input.initial_review_batches,
+    review_batches: Object.freeze(reviewBatches.sort((a, b) => compare(
+      a.review_batch_id,
+      b.review_batch_id
+    ))),
     rewrite_sessions: input.initial_rewrite_sessions.map((session) => ({
       rewrite_session_id: session.rewrite_session_id,
       document_id: session.document_id,
@@ -524,7 +551,7 @@ export async function planDuplicateAsCollaborationProject(
     inventory,
     allocations
   );
-  const sharedState = duplicationSharedState(
+  const sharedState = await duplicationSharedState(
     input.destination_project_id,
     inventory,
     allocations,
@@ -981,6 +1008,22 @@ export async function verifyCollaborationBootstrapPlan(
       throw new Error("Bootstrap revision object identity mismatch.");
     }
   }
+  for (const review of plan.expected_shared_state.review_batches) {
+    if (review.lifecycle !== "responded") continue;
+    if (
+      review.response_evidence_commitment === null ||
+      review.response_import_id === null ||
+      !(await verifyReviewResponseEvidenceCommitment({
+        schema_version: 1,
+        project_id: plan.destination_project_id,
+        review_batch_id: review.review_batch_id,
+        response_import_id: review.response_import_id,
+        contribution_payload_ids: review.contribution_payload_ids
+      }, review.response_evidence_commitment))
+    ) {
+      throw new Error("Bootstrap review response evidence commitment mismatch.");
+    }
+  }
   const identityCommitment = await contentCommitment("identity-map", plan.identity_mappings);
   if (identityCommitment !== plan.identity_map_commitment) {
     throw new Error("Bootstrap identity-map commitment mismatch.");
@@ -1218,6 +1261,49 @@ async function planNativeCurrentObjects(
   });
 }
 
+async function buildBootstrapReviewBatch(
+  projectId: ProjectId,
+  reviewBatchId: ReviewBatchId,
+  lifecycle: "active" | "responded" | "cancelled",
+  responseImportId: ReviewResponseImportId | null,
+  importedProvenance: string | null,
+  contributionPayloadIds: readonly SemanticPayloadId[]
+): Promise<BootstrapSharedReviewBatch> {
+  if (lifecycle !== "responded") {
+    if (responseImportId !== null || contributionPayloadIds.length > 0) {
+      throw new Error(
+        "Only a responded bootstrap review may carry response evidence."
+      );
+    }
+    return freezeRecord({
+      review_batch_id: reviewBatchId,
+      lifecycle,
+      response_evidence_commitment: null,
+      response_import_id: null,
+      contribution_payload_ids: Object.freeze([]),
+      imported_provenance: importedProvenance
+    });
+  }
+  if (responseImportId === null) {
+    throw new Error("A responded bootstrap review requires an explicit response import ID.");
+  }
+  const evidence = await deriveReviewResponseEvidence({
+    schema_version: 1,
+    project_id: projectId,
+    review_batch_id: reviewBatchId,
+    response_import_id: responseImportId,
+    contribution_payload_ids: contributionPayloadIds
+  });
+  return freezeRecord({
+    review_batch_id: reviewBatchId,
+    lifecycle,
+    response_evidence_commitment: evidence.commitment,
+    response_import_id: responseImportId,
+    contribution_payload_ids: evidence.core.contribution_payload_ids,
+    imported_provenance: importedProvenance
+  });
+}
+
 async function planDuplicationObjects(
   projectId: ProjectId,
   inventory: NormalizedDuplicationSourceInventory,
@@ -1292,7 +1378,7 @@ async function planDuplicationObjects(
   });
 }
 
-function duplicationSharedState(
+async function duplicationSharedState(
   projectId: ProjectId,
   inventory: NormalizedDuplicationSourceInventory,
   allocations: ReadonlyMap<string, DestinationIdentityAllocation>,
@@ -1301,7 +1387,7 @@ function duplicationSharedState(
   migrationPlan: IdentityMigrationPlan,
   identityMappings: readonly PlannedIdentityMapping[],
   aliases: readonly LegacyIdentityAlias[]
-): CollaborationBootstrapImportData {
+): Promise<CollaborationBootstrapImportData> {
   const groups = inventory.groups.map((source): BootstrapSharedGroup => freezeRecord({
     group_id: allocationId(allocations, source.source_key, "group") as GroupId,
     title: source.title,
@@ -1328,6 +1414,7 @@ function duplicationSharedState(
         body: comment.body,
         anchor: comment.anchor,
         status: comment.status,
+        trash_status: comment.trash_status,
         tombstone: comment.tombstone,
         imported_provenance: comment.imported_provenance,
         imported_history: comment.imported_history,
@@ -1367,16 +1454,20 @@ function duplicationSharedState(
       )
     });
   }).sort((a, b) => compare(a.document_id, b.document_id));
-  const reviewBatches = inventory.review_batches.map((source): BootstrapSharedReviewBatch => freezeRecord({
-    review_batch_id: allocationId(
-      allocations,
-      source.source_key,
-      "review-batch"
-    ) as ReviewBatchId,
-    lifecycle: source.lifecycle,
-    response_hash: source.response_hash,
-    imported_provenance: source.imported_provenance
-  })).sort((a, b) => compare(a.review_batch_id, b.review_batch_id));
+  const reviewBatches = (await Promise.all(inventory.review_batches.map((source) =>
+    buildBootstrapReviewBatch(
+      projectId,
+      allocationId(
+        allocations,
+        source.source_key,
+        "review-batch"
+      ) as ReviewBatchId,
+      source.lifecycle,
+      source.response_import_id,
+      source.imported_provenance,
+      Object.freeze([])
+    )
+  ))).sort((a, b) => compare(a.review_batch_id, b.review_batch_id));
   const rewrites = inventory.rewrite_sessions.map((source): BootstrapSharedRewriteSession => {
     const baseline = objects.baselineBySourceDocument.get(source.document_source_key);
     if (!baseline) throw new Error("Rewrite source document mapping is unavailable.");
@@ -1920,6 +2011,7 @@ function parseNativeComments(
         "body",
         "anchor",
         "status",
+        "trash_status",
         "tombstone",
         "imported_provenance",
         "imported_history",
@@ -1953,12 +2045,22 @@ function parseNativeComments(
         (reply) => reply.reply_id,
         { allowEmpty: true, requireSorted: true }
       );
+      const trashStatus = expectEnum(
+        record.trash_status,
+        ["active", "trashed"] as const,
+        "native comment trash status"
+      );
+      const tombstone = expectBoolean(record.tombstone, "native comment tombstone");
+      if (tombstone && trashStatus !== "active") {
+        throw new Error("A permanently tombstoned native comment cannot remain reversibly trashed.");
+      }
       return freezeRecord({
         comment_id: parseEntityId("comment", record.comment_id),
         body: expectString(record.body, "native comment body"),
         anchor: expectString(record.anchor, "native comment anchor"),
         status: expectEnum(record.status, ["open", "resolved"] as const, "native comment status"),
-        tombstone: expectBoolean(record.tombstone, "native comment tombstone"),
+        trash_status: trashStatus,
+        tombstone,
         imported_provenance: null,
         imported_history: Object.freeze([]),
         replies
@@ -2008,21 +2110,25 @@ function parseNativePatch(value: unknown): NativeBootstrapDocumentInput["patches
   });
 }
 
-function parseNativeReview(value: unknown): BootstrapSharedReviewBatch {
+function parseNativeReview(value: unknown): NativeBootstrapReviewInput {
   const record = expectExactRecord(value, "native review batch", [
     "review_batch_id",
     "lifecycle",
-    "response_hash",
+    "response_import_id",
     "imported_provenance"
   ]);
   expectLiteral(record.imported_provenance, null, "native review imported provenance");
   const lifecycle = expectEnum(record.lifecycle, ["active", "responded", "cancelled"] as const, "native review lifecycle");
-  const response = record.response_hash === null ? null : expectString(record.response_hash, "native response hash");
-  if ((lifecycle === "responded") !== (response !== null)) throw new Error("Native responded review requires a response hash.");
+  const responseImportId = record.response_import_id === null
+    ? null
+    : parseReviewResponseImportId(record.response_import_id);
+  if ((lifecycle === "responded") !== (responseImportId !== null)) {
+    throw new Error("Native responded review requires an explicit response import ID.");
+  }
   return freezeRecord({
     review_batch_id: parseEntityId("review-batch", record.review_batch_id),
     lifecycle,
-    response_hash: response,
+    response_import_id: responseImportId,
     imported_provenance: null
   });
 }
@@ -2113,17 +2219,28 @@ function parseSourceComment(value: unknown): SourceComment {
     "body",
     "anchor",
     "status",
+    "trash_status",
     "tombstone",
     "imported_provenance",
     "imported_history",
     "replies"
   ]);
+  const trashStatus = expectEnum(
+    record.trash_status,
+    ["active", "trashed"] as const,
+    "source comment trash status"
+  );
+  const tombstone = expectBoolean(record.tombstone, "source comment tombstone");
+  if (tombstone && trashStatus !== "active") {
+    throw new Error("A permanently tombstoned source comment cannot remain reversibly trashed.");
+  }
   return freezeRecord({
     ...parseSourceIdentity(record, "source comment"),
     body: expectString(record.body, "source comment body"),
     anchor: expectString(record.anchor, "source comment anchor"),
     status: expectEnum(record.status, ["open", "resolved"] as const, "source comment status"),
-    tombstone: expectBoolean(record.tombstone, "source comment tombstone"),
+    trash_status: trashStatus,
+    tombstone,
     imported_provenance: nullableString(record.imported_provenance, "source comment provenance"),
     imported_history: parseImportedHistory(record.imported_history),
     replies: parseUniqueArray(record.replies, "source replies", parseSourceReply, (entry) => entry.source_key, { allowEmpty: true, requireSorted: true })
@@ -2207,17 +2324,21 @@ function parseSourceReview(value: unknown): NormalizedDuplicationSourceInventory
     "legacy_id",
     "document_source_key",
     "lifecycle",
-    "response_hash",
+    "response_import_id",
     "imported_provenance"
   ]);
   const lifecycle = expectEnum(record.lifecycle, ["active", "responded", "cancelled"] as const, "source review lifecycle");
-  const response = nullableString(record.response_hash, "source review response hash");
-  if ((lifecycle === "responded") !== (response !== null)) throw new Error("Responded source review requires a response hash.");
+  const responseImportId = record.response_import_id === null
+    ? null
+    : parseReviewResponseImportId(record.response_import_id);
+  if ((lifecycle === "responded") !== (responseImportId !== null)) {
+    throw new Error("Responded source review requires an explicit response import ID.");
+  }
   return freezeRecord({
     ...parseSourceIdentity(record, "source review"),
     document_source_key: expectNonEmptyString(record.document_source_key, "source review document key"),
     lifecycle,
-    response_hash: response,
+    response_import_id: responseImportId,
     imported_provenance: nullableString(record.imported_provenance, "source review provenance")
   });
 }

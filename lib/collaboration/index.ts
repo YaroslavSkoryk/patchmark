@@ -14,6 +14,7 @@ export * from "./capabilities.ts";
 export * from "./checkpoints.ts";
 export * from "./derived.ts";
 export * from "./private-state.ts";
+export * from "./review-response-evidence.ts";
 export * from "./boundaries.ts";
 export * from "./protocol.ts";
 export * from "./preimages.ts";

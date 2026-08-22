@@ -3373,6 +3373,7 @@ async function createLegacyDocumentContent(
     replies: Object.freeze(comment.thread.map((reply) => Object.freeze({
       source_reply_id: reply.id,
       body: reply.content,
+      source_import_id: reply.source_import_id ?? null,
       tombstone: false
     })).sort((left, right) => left.source_reply_id.localeCompare(right.source_reply_id)))
   })).sort((left, right) => left.source_comment_id.localeCompare(right.source_comment_id));
@@ -3392,14 +3393,35 @@ async function createLegacyDocumentContent(
       }),
       dependency_source_patch_ids: dependencies,
       target_provenance: targetProvenance,
+      source_import_id: patch.source_import_id ?? null,
       status: patch.status
     });
   }).sort((left, right) => left.source_patch_id.localeCompare(right.source_patch_id));
-  const reviewBatches = (await Promise.all(sourceReviewBatches.map(async (batch) => Object.freeze({
-    source_review_batch_id: batch.batch_id,
-    lifecycle: normalizeReviewLifecycle(batch.status),
-    response_hash: await createReviewResponseIdentityCommitment(batch)
-  })))).sort((left, right) =>
+  const reviewBatches = sourceReviewBatches.map((batch) => {
+    const lifecycle = normalizeReviewLifecycle(batch.status);
+    const responseImportId = lifecycle === "responded" ? batch.import_id : null;
+    const contributionSourceRefs = responseImportId === null
+      ? []
+      : [
+          ...comments.flatMap((comment) => comment.replies
+            .filter((reply) => reply.source_import_id === responseImportId)
+            .map((reply) =>
+              `reply:${comment.source_comment_id}:${reply.source_reply_id}`
+            )),
+          ...patches
+            .filter((patch) => patch.source_import_id === responseImportId)
+            .map((patch) => `patch:${patch.source_patch_id}`)
+        ].sort();
+    if (lifecycle === "responded" && responseImportId === null) {
+      throw new Error("A responded review batch must retain its response import ID.");
+    }
+    return Object.freeze({
+      source_review_batch_id: batch.batch_id,
+      lifecycle,
+      response_import_id: responseImportId,
+      contribution_source_refs: Object.freeze(contributionSourceRefs)
+    });
+  }).sort((left, right) =>
     left.source_review_batch_id.localeCompare(right.source_review_batch_id)
   );
   const rewriteSessions = sourceRewriteSessions.map((session) => Object.freeze({
@@ -3415,27 +3437,6 @@ async function createLegacyDocumentContent(
     review_batches: Object.freeze(reviewBatches),
     rewrite_sessions: Object.freeze(rewriteSessions)
   });
-}
-
-async function createReviewResponseIdentityCommitment(
-  batch: PatchmarkReviewBatch
-): Promise<string | null> {
-  if (
-    batch.status === "exported" ||
-    batch.status === "cancelled" ||
-    batch.import_id === null
-  ) {
-    return null;
-  }
-  const commitment = await createMarkdownHash(JSON.stringify({
-    schema_version: 1,
-    review_batch_id: batch.batch_id,
-    response_import_id: batch.import_id
-  }));
-  if (!commitment) {
-    throw new Error("Development collaboration shadow response commitments require WebCrypto.");
-  }
-  return commitment;
 }
 
 function normalizeShadowAnchor(anchor: PatchmarkCommentAnchor): ShadowLegacyAnchor {

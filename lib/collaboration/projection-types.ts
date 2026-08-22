@@ -177,7 +177,8 @@ export type ProjectedPatch = Readonly<{
 export type ProjectedReviewBatch = Readonly<{
   review_batch_id: ReviewBatchId;
   lifecycle: ProjectedValueRegister;
-  responses: ProjectedValueRegister;
+  response_evidence_commitment: ProjectedValueRegister;
+  response_import_id: ProjectedValueRegister;
   contribution_payload_ids: readonly SemanticPayloadId[];
   creation_event_ids: readonly SemanticEventId[];
 }>;
@@ -534,13 +535,15 @@ function validateReviewBatch(value: unknown): void {
   const record = expectExactRecord(value, "projected review batch", [
     "review_batch_id",
     "lifecycle",
-    "responses",
+    "response_evidence_commitment",
+    "response_import_id",
     "contribution_payload_ids",
     "creation_event_ids"
   ]);
   parseEntityId("review-batch", record.review_batch_id);
   validateRegister(record.lifecycle, "review lifecycle");
-  validateRegister(record.responses, "review responses");
+  validateRegister(record.response_evidence_commitment, "review response evidence commitment");
+  validateRegister(record.response_import_id, "review response import id");
   validateSortedIds(record.contribution_payload_ids, "semantic-payload", "review contributions");
   validateSortedIds(record.creation_event_ids, "semantic-event", "review creation events");
 }
@@ -630,6 +633,9 @@ function validateEventProvenance(value: unknown): void {
   parseEntityId("device", record.author_device_id);
   expectEnum(record.author_role, ["owner", "editor", "reviewer"] as const, "event author role");
   validateSortedIds(record.author_attestation_ids, "attestation", "event attestations");
+  if ((record.author_attestation_ids as readonly unknown[]).length !== 1) {
+    throw new Error("Projected event provenance must contain exactly one mandatory author attestation.");
+  }
   parseDigestId("control-event", record.control_head_id);
 }
 

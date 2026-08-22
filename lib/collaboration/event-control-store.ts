@@ -403,12 +403,10 @@ export class EventControlStore {
           expected_signing_key_id: author.signing_key_id,
           signature_preimage: Uint8Array.from(signaturePreimage)
         }));
-        if (!Array.isArray(factoryRecords) || factoryRecords.length === 0) {
-          throw new Error("Local semantic attestation factory must return at least one record.");
+        if (!Array.isArray(factoryRecords) || factoryRecords.length !== 1) {
+          throw new Error("Local semantic attestation factory must return exactly one mandatory author attestation.");
         }
-        const attestations = [...factoryRecords].sort(
-          (left, right) => left.attestation_id < right.attestation_id ? -1 : 1
-        );
+        const attestations = [...factoryRecords];
         for (const attestation of attestations) {
           if (
             attestation.core.project_id !== request.project_id ||

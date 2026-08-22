@@ -23,6 +23,7 @@ export type ShadowLegacyAnchor = Readonly<{
 export type ShadowLegacyReply = Readonly<{
   source_reply_id: string;
   body: string;
+  source_import_id: string | null;
   tombstone: boolean;
 }>;
 
@@ -42,13 +43,15 @@ export type ShadowLegacyPatch = Readonly<{
   version_fingerprint: string;
   dependency_source_patch_ids: readonly string[];
   target_provenance: string | null;
+  source_import_id: string | null;
   status: "pending" | "accepted" | "rejected" | "stale";
 }>;
 
 export type ShadowLegacyReviewBatch = Readonly<{
   source_review_batch_id: string;
   lifecycle: "active" | "responded" | "cancelled";
-  response_hash: string | null;
+  response_import_id: string | null;
+  contribution_source_refs: readonly string[];
 }>;
 
 export type ShadowLegacyRewrite = Readonly<{

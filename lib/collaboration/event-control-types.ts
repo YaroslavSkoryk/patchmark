@@ -242,6 +242,12 @@ export type SemanticAttestationFactory = (
   request: SemanticAttestationFactoryRequest
 ) => Promise<readonly AttestationRecord[]>;
 
+/**
+ * HC-1 v1 consumes exactly one returned record as the event's mandatory author
+ * attestation. Additional valid attestations are stored separately and are
+ * discoverable only through the rebuildable attestation index.
+ */
+
 export type LocalSemanticAppendRequest = Readonly<{
   project_id: ProjectId;
   author_device_id: DeviceId;

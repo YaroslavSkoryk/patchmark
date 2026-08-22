@@ -51,6 +51,9 @@ import {
   type SemanticEventRecord,
   type SemanticPayloadRecord
 } from "./semantic.ts";
+import {
+  verifyReviewResponseEvidenceCommitment
+} from "./review-response-evidence.ts";
 import { encodeCanonicalCbor } from "./canonical-cbor.ts";
 import {
   expectUInt64,
@@ -754,8 +757,11 @@ async function validateSemanticBase(
         `Semantic payload requires ${requiredCapability}.`
       );
     }
-    if (record.author_attestation_ids.length === 0) {
-      return pending("missing_attestation", "Semantic event has no author attestation.");
+    if (record.author_attestation_ids.length !== 1) {
+      return invalid(
+        "malformed_encoding",
+        "Semantic event must contain exactly one mandatory author attestation."
+      );
     }
     for (const id of record.author_attestation_ids) {
       const attestation = await verifySingleAttestation(
@@ -827,10 +833,140 @@ async function validateSemanticBase(
       input.revision_store
     );
     if (contentDependency) return contentDependency;
+    const reviewEvidence = await validateReviewResponseEvidence(
+      project,
+      record,
+      payload,
+      events,
+      input.payloads
+    );
+    if (reviewEvidence) return reviewEvidence;
     return Object.freeze({ ok: true });
   } catch (error) {
     return invalid("malformed_encoding", errorMessage(error));
   }
+}
+
+async function validateReviewResponseEvidence(
+  project: ProjectId,
+  record: SemanticEventRecord,
+  payload: SemanticPayloadRecord,
+  events: ReadonlyMap<SemanticEventId, SemanticEventRecord>,
+  payloads: ReadonlyMap<string, SemanticPayloadRecord>
+): Promise<SemanticBaseResult | null> {
+  const responses = payload.core.semantic_kind === "review_batch_operation" &&
+      payload.core.data.operation === "respond"
+    ? [payload.core.data]
+    : payload.core.semantic_kind === "collaboration_bootstrap_import"
+      ? payload.core.data.review_batches.filter(
+          (batch) => batch.response_evidence_commitment !== null
+        )
+      : [];
+
+  for (const response of responses) {
+    if (
+      response.response_evidence_commitment === null ||
+      response.response_import_id === null
+    ) {
+      return invalid(
+        "malformed_encoding",
+        "A responded review batch must carry its evidence commitment and import ID."
+      );
+    }
+    const validCommitment = await verifyReviewResponseEvidenceCommitment({
+      schema_version: 1,
+      project_id: project,
+      review_batch_id: response.review_batch_id,
+      response_import_id: response.response_import_id,
+      contribution_payload_ids: response.contribution_payload_ids
+    }, response.response_evidence_commitment);
+    if (!validCommitment) {
+      return invalid(
+        "digest_id_mismatch",
+        "Review response evidence commitment does not match its exact canonical preimage."
+      );
+    }
+    for (const contributionId of response.contribution_payload_ids) {
+      const contribution = payloads.get(contributionId);
+      if (!contribution) {
+        return pending(
+          "missing_payload",
+          `Review contribution payload ${contributionId} has not arrived.`
+        );
+      }
+      if (contribution.core.project_id !== project) {
+        return invalid(
+          "cross_project_reference",
+          "Review contribution payload belongs to another project."
+        );
+      }
+      if (!isMatchingReviewContribution(
+        contribution,
+        response.review_batch_id,
+        response.response_import_id
+      )) {
+        return invalid(
+          "forbidden_or_circular_reference",
+          "Review contribution payload is not a supporting reply or patch bound to the same response."
+        );
+      }
+      if (
+        payload.core.semantic_kind === "review_batch_operation" &&
+        ![...events.values()].some(
+          (candidate) =>
+            candidate.core.project_id === project &&
+            candidate.core.semantic_payload_id === contributionId &&
+            isCausalAncestor(candidate.event_id, record, events)
+        )
+      ) {
+        return invalid(
+          "forbidden_or_circular_reference",
+          "A live review response may reference only causally prior contribution payloads."
+        );
+      }
+    }
+  }
+  return null;
+}
+
+function isMatchingReviewContribution(
+  payload: SemanticPayloadRecord,
+  reviewBatchId: import("./identities.ts").ReviewBatchId,
+  responseImportId: import("./review-response-evidence.ts").ReviewResponseImportId
+): boolean {
+  if (
+    payload.core.semantic_kind === "reply_operation" &&
+    (payload.core.data.operation === "create" || payload.core.data.operation === "edit")
+  ) {
+    return payload.core.data.review_batch_id === reviewBatchId &&
+      payload.core.data.response_import_id === responseImportId;
+  }
+  if (
+    payload.core.semantic_kind === "patch_operation" &&
+    (payload.core.data.operation === "propose" || payload.core.data.operation === "edit")
+  ) {
+    return payload.core.data.review_batch_id === reviewBatchId &&
+      payload.core.data.response_import_id === responseImportId;
+  }
+  return false;
+}
+
+function isCausalAncestor(
+  candidateId: SemanticEventId,
+  descendant: SemanticEventRecord,
+  events: ReadonlyMap<SemanticEventId, SemanticEventRecord>
+): boolean {
+  const pendingIds = [...descendant.core.causal_parent_event_ids];
+  const visited = new Set<SemanticEventId>();
+  while (pendingIds.length > 0) {
+    const id = pendingIds.pop()!;
+    if (id === candidateId) return true;
+    if (visited.has(id)) continue;
+    visited.add(id);
+    const event = events.get(id);
+    if (event) pendingIds.push(...event.core.causal_parent_event_ids);
+  }
+  return false;
 }
 
 async function validatePayloadContentDependencies(

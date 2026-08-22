@@ -493,6 +493,12 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
       ];
       if (core.data.operation === "create" || core.data.operation === "edit") {
         entries.push(["content", text(core.data.content)]);
+        if (core.data.review_batch_id !== undefined) {
+          entries.push(
+            ["review_batch_id", text(core.data.review_batch_id)],
+            ["response_import_id", text(core.data.response_import_id!)]
+          );
+        }
       }
       return canonicalMap(entries);
     }
@@ -517,6 +523,12 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
         }
         if (core.data.target_provenance !== undefined) {
           entries.push(["target_provenance", text(core.data.target_provenance)]);
+        }
+        if (core.data.review_batch_id !== undefined) {
+          entries.push(
+            ["review_batch_id", text(core.data.review_batch_id)],
+            ["response_import_id", text(core.data.response_import_id!)]
+          );
         }
       }
       return canonicalMap(entries);
@@ -544,7 +556,11 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
       ];
       if (core.data.operation === "respond") {
         entries.push(
-          ["response_hash", text(core.data.response_hash)],
+          [
+            "response_evidence_commitment",
+            text(core.data.response_evidence_commitment)
+          ],
+          ["response_import_id", text(core.data.response_import_id)],
           [
             "contribution_payload_ids",
             textArray(core.data.contribution_payload_ids)

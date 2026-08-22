@@ -16,6 +16,7 @@ export const collaborationHashDomains = Object.freeze({
   merkleSetLeaf: "patchmark/merkle-set-leaf/v1",
   mergeKey: "patchmark/merge-key/v1",
   projectionRoot: "patchmark/projection-root/v1",
+  reviewResponseEvidence: "patchmark/review-response-evidence/v1",
   resolutionOperations: "patchmark/resolution-operations/v1",
   revisionCore: "patchmark/revision-core/v1",
   revisionHeadsRoot: "patchmark/revision-heads-root/v1",

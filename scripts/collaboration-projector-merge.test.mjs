@@ -11,6 +11,7 @@ import {
   deriveMarkdownBlobIdentity,
   deriveMergeAuthorizationEligibility,
   deriveMergeKeyIdentity,
+  deriveReviewResponseEvidence,
   deriveSemanticEventCoreIdentity,
   deriveSemanticPayloadIdentity,
   loadProjectionHistory,
@@ -737,11 +738,45 @@ async function testPatchReviewRewriteAndRevisionHeads() {
     data: { operation: "create", review_batch_id: reviewId },
     parents: [eventId]
   });
+  const responseOne = await deriveReviewResponseEvidence({
+    schema_version: 1,
+    project_id: fixture.project,
+    review_batch_id: reviewId,
+    response_import_id: "review-import-a",
+    contribution_payload_ids: []
+  });
   await fixture.addEvent({
     device: fixture.device("i"),
     semanticKind: "review_batch_operation",
-    data: { operation: "respond", review_batch_id: reviewId, response_hash: "a".repeat(64), contribution_payload_ids: [] },
+    data: {
+      operation: "respond",
+      review_batch_id: reviewId,
+      response_evidence_commitment: responseOne.commitment,
+      response_import_id: "review-import-a",
+      contribution_payload_ids: []
+    },
     parents: [reviewCreate.event_id]
+  });
+  const reviewContributionVersion = entity("patch-version", "d");
+  const reviewContribution = await fixture.addEvent({
+    device: fixture.device("v"),
+    semanticKind: "patch_operation",
+    data: {
+      operation: "edit",
+      document_id: documentId,
+      patch_id: patchId,
+      patch_version_id: reviewContributionVersion,
+      review_batch_id: reviewId,
+      response_import_id: "review-import-b"
+    },
+    parents: [reviewCreate.event_id, propose.event_id]
+  });
+  const responseTwo = await deriveReviewResponseEvidence({
+    schema_version: 1,
+    project_id: fixture.project,
+    review_batch_id: reviewId,
+    response_import_id: "review-import-b",
+    contribution_payload_ids: [reviewContribution.core.semantic_payload_id]
   });
   await fixture.addEvent({
     device: fixture.device("q"),
@@ -749,15 +784,22 @@ async function testPatchReviewRewriteAndRevisionHeads() {
     data: {
       operation: "respond",
       review_batch_id: reviewId,
-      response_hash: "b".repeat(64),
-      contribution_payload_ids: [propose.core.semantic_payload_id]
+      response_evidence_commitment: responseTwo.commitment,
+      response_import_id: "review-import-b",
+      contribution_payload_ids: [reviewContribution.core.semantic_payload_id]
     },
-    parents: [reviewCreate.event_id]
+    parents: [reviewContribution.event_id]
   });
   await fixture.addEvent({
     device: fixture.device("r"),
     semanticKind: "review_batch_operation",
-    data: { operation: "respond", review_batch_id: reviewId, response_hash: "a".repeat(64), contribution_payload_ids: [] },
+    data: {
+      operation: "respond",
+      review_batch_id: reviewId,
+      response_evidence_commitment: responseOne.commitment,
+      response_import_id: "review-import-a",
+      contribution_payload_ids: []
+    },
     parents: [reviewCreate.event_id]
   });
   await fixture.addEvent({
@@ -843,13 +885,17 @@ async function testPatchReviewRewriteAndRevisionHeads() {
   check(patch.versions.find((entry) => entry.patch_version_id === editedVersion).decision.state, "unset");
   check(projection.review_batches[0].lifecycle.state, "conflicted");
   check(projection.review_batches.length, 2, "concurrent review-batch creation must be a union");
-  check(projection.review_batches[0].responses.state, "conflicted");
+  check(projection.review_batches[0].response_evidence_commitment.state, "conflicted");
   check(
-    projection.review_batches[0].responses.contenders.find((entry) => entry.value === "a".repeat(64)).event_ids.length,
+    projection.review_batches[0].response_evidence_commitment.contenders.find(
+      (entry) => entry.value === responseOne.commitment
+    ).event_ids.length,
     2,
-    "identical response hashes must deduplicate with provenance"
+    "identical response evidence commitments must deduplicate with provenance"
   );
-  ok(projection.review_batches[0].contribution_payload_ids.includes(propose.core.semantic_payload_id));
+  ok(projection.review_batches[0].contribution_payload_ids.includes(
+    reviewContribution.core.semantic_payload_id
+  ));
   check(projection.documents[0].patches.length, 2, "concurrent logical patch proposals must be a union");
   check(projection.rewrite_sessions[0].outcome.state, "conflicted");
   check(projection.rewrite_sessions.length, 2, "distinct rewrite sessions must be a union");

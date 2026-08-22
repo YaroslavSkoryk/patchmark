@@ -21,6 +21,10 @@ import {
   type ProjectedEventProvenance,
   type ProjectionOnboardingBoundary
 } from "./projection-types.ts";
+import {
+  verifyReviewResponseEvidenceCommitment,
+  type ReviewResponseImportId
+} from "./review-response-evidence.ts";
 
 export type CausalComparison =
   | "identical"
@@ -172,6 +176,7 @@ export async function loadProjectionHistory(
   validateCausalDependencies(loadedById, acceptedSet, boundaries);
   const topologicalIds = topologicalOrder(loadedById, boundaries);
   const ancestry = buildAncestry(topologicalIds, loadedById, boundaries);
+  await validateReviewResponseEvidence(input, loadedById, ancestry);
   const frontier = deriveFrontier(acceptedIds, loadedById);
   const declaredFrontier = sortedUnique(input.accepted_semantic_frontier);
   if (!sameStrings(frontier, declaredFrontier)) {
@@ -188,6 +193,113 @@ export async function loadProjectionHistory(
     accepted_frontier: Object.freeze(frontier),
     ancestry
   });
+}
+
+async function validateReviewResponseEvidence(
+  input: CollaborationProjectorInput,
+  loadedById: ReadonlyMap<SemanticEventId, LoadedProjectionEvent>,
+  ancestry: CausalAncestryIndex
+): Promise<void> {
+  for (const loaded of loadedById.values()) {
+    const payload = loaded.payload;
+    const responses = payload.core.semantic_kind === "review_batch_operation" &&
+        payload.core.data.operation === "respond"
+      ? [payload.core.data]
+      : payload.core.semantic_kind === "collaboration_bootstrap_import"
+        ? payload.core.data.review_batches.filter(
+            (batch) => batch.response_evidence_commitment !== null
+          )
+        : [];
+    for (const response of responses) {
+      if (
+        response.response_evidence_commitment === null ||
+        response.response_import_id === null ||
+        !await verifyReviewResponseEvidenceCommitment({
+          schema_version: 1,
+          project_id: input.project_id,
+          review_batch_id: response.review_batch_id,
+          response_import_id: response.response_import_id,
+          contribution_payload_ids: response.contribution_payload_ids
+        }, response.response_evidence_commitment)
+      ) {
+        throw new CollaborationProjectionError(
+          "corrupted_dependency",
+          "A review response evidence commitment does not match its canonical preimage.",
+          loaded.event.event_id
+        );
+      }
+      for (const contributionId of response.contribution_payload_ids) {
+        const result = await input.read_payload(contributionId);
+        if (result.status !== "valid") {
+          throw readError(
+            contributionId,
+            "review contribution payload",
+            result.status,
+            result.reason
+          );
+        }
+        const contribution = parseSemanticPayloadRecord(result.value);
+        const identity = await deriveSemanticPayloadIdentity(contribution.core);
+        if (
+          identity.id !== contributionId ||
+          contribution.core.project_id !== input.project_id ||
+          !isMatchingReviewContribution(
+            contribution,
+            response.review_batch_id,
+            response.response_import_id
+          )
+        ) {
+          throw new CollaborationProjectionError(
+            contribution.core.project_id === input.project_id
+              ? "corrupted_dependency"
+              : "cross_project_dependency",
+            "A review contribution payload is not bound to the same project, batch, and response import.",
+            contributionId
+          );
+        }
+        if (
+          payload.core.semantic_kind === "review_batch_operation" &&
+          ![...loadedById.values()].some(
+            (candidate) =>
+              candidate.payload.payload_id === contributionId &&
+              compareSemanticEventCausality(
+                ancestry,
+                candidate.event.event_id,
+                loaded.event.event_id
+              ) === "causally_before"
+          )
+        ) {
+          throw new CollaborationProjectionError(
+            "inconsistent_dependency",
+            "A live review response references a contribution outside its causal past.",
+            contributionId
+          );
+        }
+      }
+    }
+  }
+}
+
+function isMatchingReviewContribution(
+  payload: SemanticPayloadRecord,
+  reviewBatchId: import("./identities.ts").ReviewBatchId,
+  responseImportId: ReviewResponseImportId
+): boolean {
+  if (
+    payload.core.semantic_kind === "reply_operation" &&
+    (payload.core.data.operation === "create" || payload.core.data.operation === "edit")
+  ) {
+    return payload.core.data.review_batch_id === reviewBatchId &&
+      payload.core.data.response_import_id === responseImportId;
+  }
+  if (
+    payload.core.semantic_kind === "patch_operation" &&
+    (payload.core.data.operation === "propose" || payload.core.data.operation === "edit")
+  ) {
+    return payload.core.data.review_batch_id === reviewBatchId &&
+      payload.core.data.response_import_id === responseImportId;
+  }
+  return false;
 }
 
 export function compareSemanticEventCausality(

@@ -53,6 +53,7 @@ export type Slice6StorageFailureStage =
   | "snapshot_data"
   | "snapshot_commit"
   | "acknowledgement_reservation"
+  | "acknowledgement_journal_advancement"
   | "acknowledgement_data"
   | "acknowledgement_commit"
   | "after_checkpoint_verification_before_state_blob"
@@ -99,6 +100,11 @@ type RawSlice6Read =
       status: "missing" | "incomplete" | "corrupted" | "mismatched";
       reason: string;
     }>;
+
+const acknowledgementReservationLocks = new WeakMap<
+  object,
+  Map<string, Promise<void>>
+>();
 
 export class ConsolidationCollaborationStore {
   readonly #backend: CollaborationByteStorageBackend;
@@ -195,25 +201,38 @@ export class ConsolidationCollaborationStore {
       previous_acknowledgement_id: draft.core.previous_acknowledgement_id,
       canonical_core_bytes: draft.canonical_core_bytes
     });
-    const existing = await this.#backend.read(address);
-    if (existing !== null) {
-      const parsed = decodeReservation(existing);
-      if (
-        parsed.acknowledgement_id !== reservation.acknowledgement_id ||
-        !bytesEqual(parsed.canonical_core_bytes, reservation.canonical_core_bytes)
-      ) {
-        throw new Error("Acknowledgement sequence reservation conflicts with another draft.");
+    return this.#withAcknowledgementReservationLock(address, async () => {
+      const existing = await this.#backend.read(address);
+      if (existing !== null) {
+        let parsed = decodeReservation(existing);
+        requireReservationStream(parsed, reservation.project_id, reservation.device_id);
+        if (sameReservation(parsed, reservation)) {
+          return Object.freeze({ status: "already_reserved" as const, reservation: parsed });
+        }
+        if (parsed.reservation_state === "pending") {
+          const committedRecord = await this.getAcknowledgement(parsed.acknowledgement_id);
+          if (
+            committedRecord.status !== "valid" ||
+            !(await reservationMatchesRecord(parsed, committedRecord.value))
+          ) {
+            throw new Error("Acknowledgement sequence reservation conflicts with another pending draft.");
+          }
+          parsed = Object.freeze({ ...parsed, reservation_state: "committed" as const });
+          await this.#backend.write(address, encodeRecord(parsed), { stage: "derived_index" });
+        }
+        requireExactAcknowledgementSuccessor(parsed, reservation);
+      } else {
+        requireAcknowledgementGenesis(reservation);
       }
-      return Object.freeze({ status: "already_reserved" as const, reservation: parsed });
-    }
-    await this.#backend.write(address, encodeRecord(reservation), { stage: "sequence_reservation" });
-    await this.#fail({
-      stage: "acknowledgement_reservation",
-      object_id: reservation.acknowledgement_id,
-      project_id: reservation.project_id,
-      device_id: reservation.device_id
+      await this.#backend.write(address, encodeRecord(reservation), { stage: "sequence_reservation" });
+      await this.#fail({
+        stage: "acknowledgement_reservation",
+        object_id: reservation.acknowledgement_id,
+        project_id: reservation.project_id,
+        device_id: reservation.device_id
+      });
+      return Object.freeze({ status: "reserved" as const, reservation });
     });
-    return Object.freeze({ status: "reserved" as const, reservation });
   }
 
   async commitAcknowledgement(
@@ -227,28 +246,55 @@ export class ConsolidationCollaborationStore {
       record.core.project_id,
       record.core.device_id
     );
-    const rawReservation = await this.#backend.read(address);
-    if (rawReservation === null) throw new Error("Acknowledgement commit requires a durable sequence reservation.");
-    const reservation = decodeReservation(rawReservation);
-    if (
-      reservation.acknowledgement_id !== record.acknowledgement_id ||
-      reservation.acknowledgement_sequence !== record.core.acknowledgement_sequence
-    ) {
-      throw new Error("Acknowledgement record does not match its sequence reservation.");
-    }
-    const status = await this.#put(
-      "acknowledgement",
-      record.acknowledgement_id,
-      encodeRecord(record),
-      async (candidate) => {
-        const decoded = decodeAcknowledgementRecord(candidate);
-        const derived = await deriveAcknowledgementIdentity(decoded.core);
-        if (derived.id !== decoded.acknowledgement_id) throw new Error("Stored acknowledgement identity mismatch.");
+    return this.#withAcknowledgementReservationLock(address, async () => {
+      const rawReservation = await this.#backend.read(address);
+      const existingObject = await this.getAcknowledgement(record.acknowledgement_id);
+      if (existingObject.status === "valid") {
+        if (!bytesEqual(encodeRecord(existingObject.value), encodeRecord(record))) {
+          throw new Error("Immutable acknowledgement ID collision.");
+        }
+        if (rawReservation !== null) {
+          const current = decodeReservation(rawReservation);
+          requireReservationStream(current, record.core.project_id, record.core.device_id);
+          if (
+            sameReservationRecordIdentity(current, record) &&
+            current.reservation_state === "pending"
+          ) {
+            const committed = Object.freeze({ ...current, reservation_state: "committed" as const });
+            await this.#backend.write(address, encodeRecord(committed), { stage: "derived_index" });
+          }
+        }
+        return Object.freeze({
+          status: "already_present" as const,
+          id: record.acknowledgement_id
+        });
       }
-    );
-    const committed = Object.freeze({ ...reservation, reservation_state: "committed" as const });
-    await this.#backend.write(address, encodeRecord(committed), { stage: "derived_index" });
-    return Object.freeze({ status, id: record.acknowledgement_id });
+      if (rawReservation === null) throw new Error("Acknowledgement commit requires a durable sequence reservation.");
+      const reservation = decodeReservation(rawReservation);
+      requireReservationStream(reservation, record.core.project_id, record.core.device_id);
+      if (!(await reservationMatchesRecord(reservation, record))) {
+        throw new Error("Acknowledgement record does not match its exact sequence reservation.");
+      }
+      const status = await this.#put(
+        "acknowledgement",
+        record.acknowledgement_id,
+        encodeRecord(record),
+        async (candidate) => {
+          const decoded = decodeAcknowledgementRecord(candidate);
+          const derived = await deriveAcknowledgementIdentity(decoded.core);
+          if (derived.id !== decoded.acknowledgement_id) throw new Error("Stored acknowledgement identity mismatch.");
+        }
+      );
+      const committed = Object.freeze({ ...reservation, reservation_state: "committed" as const });
+      await this.#fail({
+        stage: "acknowledgement_journal_advancement",
+        object_id: record.acknowledgement_id,
+        project_id: record.core.project_id,
+        device_id: record.core.device_id
+      });
+      await this.#backend.write(address, encodeRecord(committed), { stage: "derived_index" });
+      return Object.freeze({ status, id: record.acknowledgement_id });
+    });
   }
 
   async getAcknowledgement(
@@ -335,12 +381,23 @@ export class ConsolidationCollaborationStore {
       if (bytes === null) continue;
       try {
         const reservation = decodeReservation(bytes);
-        if (reservation.reservation_state === "committed") continue;
+        if (address !== collaborationAcknowledgementReservationAddress(
+          reservation.project_id,
+          reservation.device_id
+        )) {
+          throw new Error("Acknowledgement reservation is stored under the wrong stream address.");
+        }
         const record = await this.getAcknowledgement(reservation.acknowledgement_id);
-        if (record.status === "valid") {
+        if (
+          record.status === "valid" &&
+          await reservationMatchesRecord(reservation, record.value)
+        ) {
+          if (reservation.reservation_state === "committed") continue;
           const committed = Object.freeze({ ...reservation, reservation_state: "committed" as const });
           await this.#backend.write(address, encodeRecord(committed), { stage: "derived_index" });
           resumed.push(committed);
+        } else if (reservation.reservation_state === "committed") {
+          throw new Error("Committed acknowledgement journal is not backed by its exact immutable object.");
         } else {
           pending.push(reservation);
         }
@@ -434,6 +491,38 @@ export class ConsolidationCollaborationStore {
   async #fail(context: Parameters<NonNullable<Slice6StorageFailureInjector>>[0]): Promise<void> {
     await this.#inject?.(context);
   }
+
+  /**
+   * The backend API has no compare-and-swap primitive. This process-wide,
+   * backend-scoped queue serializes the one advancing project/device journal
+   * across all store instances sharing that backend. Immutable records and
+   * commit markers remain authoritative across crashes and reopening.
+   */
+  async #withAcknowledgementReservationLock<T>(
+    address: CollaborationStorageAddress,
+    operation: () => Promise<T>
+  ): Promise<T> {
+    let locks = acknowledgementReservationLocks.get(this.#backend as object);
+    if (!locks) {
+      locks = new Map();
+      acknowledgementReservationLocks.set(this.#backend as object, locks);
+    }
+    const key = String(address);
+    const previous = locks.get(key) ?? Promise.resolve();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const queued = previous.then(() => gate);
+    locks.set(key, queued);
+    await previous;
+    try {
+      return await operation();
+    } finally {
+      release();
+      if (locks.get(key) === queued) locks.delete(key);
+    }
+  }
 }
 
 function encodeRecord(value: unknown): Uint8Array {
@@ -516,6 +605,75 @@ function parseReservation(value: unknown): AcknowledgementSequenceReservation {
 
 function decodeReservation(bytes: Uint8Array): AcknowledgementSequenceReservation {
   return parseReservation(decodeRecord(bytes));
+}
+
+function sameReservation(
+  left: AcknowledgementSequenceReservation,
+  right: AcknowledgementSequenceReservation
+): boolean {
+  return left.acknowledgement_id === right.acknowledgement_id &&
+    left.acknowledgement_sequence === right.acknowledgement_sequence &&
+    left.previous_acknowledgement_id === right.previous_acknowledgement_id &&
+    bytesEqual(left.canonical_core_bytes, right.canonical_core_bytes);
+}
+
+function requireReservationStream(
+  reservation: AcknowledgementSequenceReservation,
+  projectId: ProjectId,
+  deviceId: DeviceId
+): void {
+  if (reservation.project_id !== projectId || reservation.device_id !== deviceId) {
+    throw new Error("Acknowledgement reservation belongs to another project or device stream.");
+  }
+}
+
+function requireAcknowledgementGenesis(
+  reservation: AcknowledgementSequenceReservation
+): void {
+  if (
+    reservation.acknowledgement_sequence !== BigInt(0) ||
+    reservation.previous_acknowledgement_id !== null
+  ) {
+    throw new Error("The first acknowledgement reservation must use sequence zero and no previous link.");
+  }
+}
+
+function requireExactAcknowledgementSuccessor(
+  previous: AcknowledgementSequenceReservation,
+  successor: AcknowledgementSequenceReservation
+): void {
+  if (previous.reservation_state !== "committed") {
+    throw new Error("Acknowledgement successor requires a committed previous reservation.");
+  }
+  if (
+    successor.acknowledgement_sequence !== previous.acknowledgement_sequence + BigInt(1) ||
+    successor.previous_acknowledgement_id !== previous.acknowledgement_id
+  ) {
+    throw new Error("Acknowledgement reservation must be the exact contiguous successor.");
+  }
+}
+
+async function reservationMatchesRecord(
+  reservation: AcknowledgementSequenceReservation,
+  record: AcknowledgementRecord
+): Promise<boolean> {
+  const identity = await deriveAcknowledgementIdentity(record.core);
+  return identity.id === reservation.acknowledgement_id &&
+    record.acknowledgement_id === reservation.acknowledgement_id &&
+    record.core.project_id === reservation.project_id &&
+    record.core.device_id === reservation.device_id &&
+    record.core.acknowledgement_sequence === reservation.acknowledgement_sequence &&
+    record.core.previous_acknowledgement_id === reservation.previous_acknowledgement_id &&
+    bytesEqual(identity.canonical_bytes, reservation.canonical_core_bytes);
+}
+
+function sameReservationRecordIdentity(
+  reservation: AcknowledgementSequenceReservation,
+  record: AcknowledgementRecord
+): boolean {
+  return reservation.acknowledgement_id === record.acknowledgement_id &&
+    reservation.acknowledgement_sequence === record.core.acknowledgement_sequence &&
+    reservation.previous_acknowledgement_id === record.core.previous_acknowledgement_id;
 }
 
 async function encodeCommitMarker(kind: Slice6Kind, id: Slice6Id, bytes: Uint8Array): Promise<Uint8Array> {

@@ -32,6 +32,10 @@ import type { EventControlProjectState } from "../collaboration/event-control-ty
 import { ImmutableCollaborationStore } from "../collaboration/immutable-store.ts";
 import { parseSemanticPayloadCore } from "../collaboration/semantic.ts";
 import { projectCollaborationHistory } from "../collaboration/projector.ts";
+import {
+  deriveReviewResponseEvidence,
+  parseReviewResponseImportId
+} from "../collaboration/review-response-evidence.ts";
 import type {
   CollaborationProjection,
   CollaborationProjectorInput,
@@ -50,6 +54,7 @@ import {
   type PatchId,
   type PatchVersionId,
   type ProjectId,
+  type ReviewBatchId,
   type SemanticPayloadId
 } from "../collaboration/identities.ts";
 
@@ -163,6 +168,7 @@ type Runtime = {
   identityAllocator: DevelopmentShadowIdentityAllocator;
   mappings: Map<string, ShadowIdentityMapping>;
   patchVersions: Map<string, PatchVersionId>;
+  contributionPayloads: Map<string, SemanticPayloadId>;
   metadata: ShadowMetadata;
   sourceState: ShadowLegacySharedState;
 };
@@ -227,6 +233,7 @@ export async function initializeDevelopmentCollaborationShadow(
       identityAllocator: input.identity_allocator,
       mappings,
       patchVersions: new Map(),
+      contributionPayloads: new Map(),
       metadata: createInitialMetadata(
         input,
         plan,
@@ -545,7 +552,44 @@ function mergeLegacySourceState(
     ...next,
     documents: next.documents.map((document) => ({
       ...document,
-      content: document.content ?? previousDocuments.get(document.source_document_id)?.content ?? null
+      content: mergeLegacyDocumentContent(
+        previousDocuments.get(document.source_document_id)?.content ?? null,
+        document.content
+      )
+    }))
+  });
+}
+
+function mergeLegacyDocumentContent(
+  previous: ShadowLegacyDocumentContent | null,
+  next: ShadowLegacyDocumentContent | null
+): ShadowLegacyDocumentContent | null {
+  if (next === null) return previous;
+  if (previous === null) return next;
+  const previousReviews = new Map(
+    previous.review_batches.map((batch) => [batch.source_review_batch_id, batch])
+  );
+  return Object.freeze({
+    ...next,
+    review_batches: Object.freeze(next.review_batches.map((batch) => {
+      const prior = previousReviews.get(batch.source_review_batch_id);
+      if (!prior || prior.lifecycle !== "responded") return batch;
+      if (
+        batch.lifecycle !== "responded" ||
+        batch.response_import_id !== prior.response_import_id ||
+        batch.contribution_source_refs.some((reference) =>
+          !prior.contribution_source_refs.includes(reference)
+        )
+      ) {
+        throw new ShadowProcessingError(
+          "projection_mismatch",
+          "A committed source review response attempted to change immutable evidence."
+        );
+      }
+      return Object.freeze({
+        ...batch,
+        contribution_source_refs: prior.contribution_source_refs
+      });
     }))
   });
 }
@@ -700,9 +744,16 @@ async function applyDocumentContentDifference(
   if (!previous || !bytesEqual(previous.exact_markdown_bytes, next.exact_markdown_bytes)) {
     newRevisionId = await storeAndAdoptRevision(runtime, documentId, next.exact_markdown_bytes);
   }
-  await applyCommentDifference(runtime, document.source_document_id, documentId, previous?.comments ?? [], next.comments);
-  await applyPatchDifference(runtime, document.source_document_id, documentId, previous?.patches ?? [], next.patches, newRevisionId, receipt);
-  await applyReviewDifference(runtime, document.source_document_id, previous?.review_batches ?? [], next.review_batches);
+  await applyReviewCreations(
+    runtime,
+    document.source_document_id,
+    previous?.review_batches ?? [],
+    next.review_batches
+  );
+  const responseBatches = reviewResponseBatchMap(runtime, next.review_batches);
+  await applyCommentDifference(runtime, document.source_document_id, documentId, previous?.comments ?? [], next.comments, responseBatches);
+  await applyPatchDifference(runtime, document.source_document_id, documentId, previous?.patches ?? [], next.patches, newRevisionId, receipt, responseBatches);
+  await applyReviewTerminals(runtime, previous?.review_batches ?? [], next.review_batches);
   await applyRewriteDifference(runtime, document.source_document_id, documentId, previous?.rewrite_sessions ?? [], next.rewrite_sessions, newRevisionId);
 }
 
@@ -750,7 +801,8 @@ async function applyCommentDifference(
   sourceDocumentId: string,
   documentId: DocumentId,
   previous: readonly ShadowLegacyComment[],
-  next: readonly ShadowLegacyComment[]
+  next: readonly ShadowLegacyComment[],
+  responseBatches: ReadonlyMap<string, ReviewBatchId>
 ): Promise<void> {
   const previousById = new Map(previous.map((comment) => [comment.source_comment_id, comment]));
   for (const comment of next) {
@@ -804,7 +856,16 @@ async function applyCommentDifference(
         "The source attempted to resurrect a collaboration tombstone."
       );
     }
-    await applyReplyDifference(runtime, sourceDocumentId, documentId, commentId as CommentId, prior?.replies ?? [], comment.replies);
+    await applyReplyDifference(
+      runtime,
+      sourceDocumentId,
+      comment.source_comment_id,
+      documentId,
+      commentId as CommentId,
+      prior?.replies ?? [],
+      comment.replies,
+      responseBatches
+    );
   }
   for (const removed of previous.filter(
     (comment) => !next.some((candidate) => candidate.source_comment_id === comment.source_comment_id)
@@ -823,10 +884,12 @@ async function applyCommentDifference(
 async function applyReplyDifference(
   runtime: Runtime,
   sourceDocumentId: string,
+  sourceCommentId: string,
   documentId: DocumentId,
   commentId: CommentId,
   previous: ShadowLegacyComment["replies"],
-  next: ShadowLegacyComment["replies"]
+  next: ShadowLegacyComment["replies"],
+  responseBatches: ReadonlyMap<string, ReviewBatchId>
 ): Promise<void> {
   const previousById = new Map(previous.map((reply) => [reply.source_reply_id, reply]));
   for (const reply of next) {
@@ -834,8 +897,16 @@ async function applyReplyDifference(
     const replyId = prior
       ? resolveIdentity(runtime, "reply", reply.source_reply_id)
       : await resolveOrAllocate(runtime, "reply", reply.source_reply_id, sourceDocumentId);
-    if (!prior || prior.body !== reply.body) {
-      await appendPayload(runtime, {
+    if (
+      !prior ||
+      prior.body !== reply.body ||
+      prior.source_import_id !== reply.source_import_id
+    ) {
+      const reviewProvenance = reviewContributionProvenance(
+        responseBatches,
+        reply.source_import_id
+      );
+      const payloadId = await appendPayload(runtime, {
         schema_version: 1,
         project_id: runtime.plan.destination_project_id,
         semantic_kind: "reply_operation",
@@ -844,9 +915,16 @@ async function applyReplyDifference(
           document_id: documentId,
           comment_id: commentId,
           reply_id: replyId,
-          content: reply.body
+          content: reply.body,
+          ...reviewProvenance
         }
       });
+      if (reply.source_import_id !== null) {
+        runtime.contributionPayloads.set(
+          `reply:${sourceCommentId}:${reply.source_reply_id}`,
+          payloadId
+        );
+      }
     }
     if ((!prior && reply.tombstone) || (prior && !prior.tombstone && reply.tombstone)) {
       await appendPayload(runtime, {
@@ -883,7 +961,8 @@ async function applyPatchDifference(
   previous: readonly ShadowLegacyPatch[],
   next: readonly ShadowLegacyPatch[],
   newRevisionId: DocumentRevisionId | null,
-  receipt: CollaborationShadowMutationReceipt
+  receipt: CollaborationShadowMutationReceipt,
+  responseBatches: ReadonlyMap<string, ReviewBatchId>
 ): Promise<void> {
   const previousById = new Map(previous.map((patch) => [patch.source_patch_id, patch]));
   for (const patch of next) {
@@ -893,7 +972,9 @@ async function applyPatchDifference(
       : await resolveOrAllocate(runtime, "patch", patch.source_patch_id, sourceDocumentId) as PatchId;
     const versionKey = patchVersionKey(sourceDocumentId, patch.source_patch_id);
     let patchVersionId = runtime.patchVersions.get(versionKey);
-    const versionChanged = !prior || prior.version_fingerprint !== patch.version_fingerprint ||
+    const versionChanged = !prior ||
+      prior.version_fingerprint !== patch.version_fingerprint ||
+      prior.source_import_id !== patch.source_import_id ||
       (newRevisionId !== null && receipt.mutation_key.startsWith("accept_patch:"));
     if (versionChanged) {
       patchVersionId = await resolveOrAllocate(
@@ -912,7 +993,11 @@ async function applyPatchDifference(
         }
         return version;
       }).sort();
-      await appendPayload(runtime, {
+      const reviewProvenance = reviewContributionProvenance(
+        responseBatches,
+        patch.source_import_id
+      );
+      const payloadId = await appendPayload(runtime, {
         schema_version: 1,
         project_id: runtime.plan.destination_project_id,
         semantic_kind: "patch_operation",
@@ -925,9 +1010,16 @@ async function applyPatchDifference(
             ? { revision_id: newRevisionId }
             : {}),
           dependency_patch_version_ids: dependencies,
-          ...(patch.target_provenance === null ? {} : { target_provenance: patch.target_provenance })
+          ...(patch.target_provenance === null ? {} : { target_provenance: patch.target_provenance }),
+          ...reviewProvenance
         }
       });
+      if (patch.source_import_id !== null) {
+        runtime.contributionPayloads.set(
+          `patch:${patch.source_patch_id}`,
+          payloadId
+        );
+      }
       runtime.patchVersions.set(versionKey, patchVersionId);
     }
     if (!patchVersionId) {
@@ -959,7 +1051,7 @@ async function applyPatchDifference(
   }
 }
 
-async function applyReviewDifference(
+async function applyReviewCreations(
   runtime: Runtime,
   sourceDocumentId: string,
   previous: ShadowLegacyDocumentContent["review_batches"],
@@ -974,20 +1066,124 @@ async function applyReviewDifference(
     if (!prior) {
       await appendPayload(runtime, reviewPayload(runtime, { operation: "create", review_batch_id: id }));
     }
-    if (batch.lifecycle !== prior?.lifecycle) {
-      if (batch.lifecycle === "responded") {
-        if (!batch.response_hash) {
-          throw new ShadowProcessingError("projection_mismatch", "A responded review batch lacks a source response hash.");
-        }
-        await appendPayload(runtime, reviewPayload(runtime, {
-          operation: "respond",
-          review_batch_id: id,
-          response_hash: batch.response_hash,
-          contribution_payload_ids: []
-        }));
-      } else if (batch.lifecycle === "cancelled") {
-        await appendPayload(runtime, reviewPayload(runtime, { operation: "cancel", review_batch_id: id }));
+  }
+}
+
+function reviewResponseBatchMap(
+  runtime: Runtime,
+  batches: ShadowLegacyDocumentContent["review_batches"]
+): ReadonlyMap<string, ReviewBatchId> {
+  const output = new Map<string, ReviewBatchId>();
+  for (const batch of batches) {
+    if (batch.response_import_id === null) continue;
+    const id = resolveIdentity(
+      runtime,
+      "review-batch",
+      batch.source_review_batch_id
+    ) as ReviewBatchId;
+    if (output.has(batch.response_import_id)) {
+      throw new ShadowProcessingError(
+        "projection_mismatch",
+        "A source response import ID is ambiguously shared by review batches."
+      );
+    }
+    output.set(batch.response_import_id, id);
+  }
+  return output;
+}
+
+function reviewContributionProvenance(
+  batches: ReadonlyMap<string, ReviewBatchId>,
+  sourceImportId: string | null
+): Readonly<Record<string, string>> {
+  if (sourceImportId === null) return Object.freeze({});
+  const reviewBatchId = batches.get(sourceImportId);
+  if (!reviewBatchId) {
+    throw new ShadowProcessingError(
+      "projection_mismatch",
+      "A source contribution import ID has no unique review batch."
+    );
+  }
+  return Object.freeze({
+    review_batch_id: reviewBatchId,
+    response_import_id: sourceImportId
+  });
+}
+
+async function applyReviewTerminals(
+  runtime: Runtime,
+  previous: ShadowLegacyDocumentContent["review_batches"],
+  next: ShadowLegacyDocumentContent["review_batches"]
+): Promise<void> {
+  const previousById = new Map(
+    previous.map((batch) => [batch.source_review_batch_id, batch])
+  );
+  for (const batch of next) {
+    const prior = previousById.get(batch.source_review_batch_id);
+    const id = resolveIdentity(
+      runtime,
+      "review-batch",
+      batch.source_review_batch_id
+    ) as ReviewBatchId;
+    if (
+      prior?.lifecycle === "responded" &&
+      (batch.lifecycle !== "responded" ||
+        batch.response_import_id !== prior.response_import_id ||
+        !sameStringArray(
+          batch.contribution_source_refs,
+          prior.contribution_source_refs
+        ))
+    ) {
+      throw new ShadowProcessingError(
+        "projection_mismatch",
+        "A committed review response cannot be rewritten or reopened."
+      );
+    }
+    if (batch.lifecycle === prior?.lifecycle) continue;
+    if (batch.lifecycle === "responded") {
+      if (batch.response_import_id === null) {
+        throw new ShadowProcessingError(
+          "projection_mismatch",
+          "A responded review batch lacks a source response import ID."
+        );
       }
+      const contributionPayloadIds = batch.contribution_source_refs.map(
+        (reference) => {
+          const payloadId = runtime.contributionPayloads.get(reference);
+          if (!payloadId) {
+            throw new ShadowProcessingError(
+              "shadow_dependency_missing",
+              `Review contribution ${reference} was not materialized as an immutable payload.`
+            );
+          }
+          return payloadId;
+        }
+      ).sort();
+      if (new Set(contributionPayloadIds).size !== contributionPayloadIds.length) {
+        throw new ShadowProcessingError(
+          "projection_mismatch",
+          "Distinct source contributions cannot collapse to one payload identity."
+        );
+      }
+      const evidence = await deriveReviewResponseEvidence({
+        schema_version: 1,
+        project_id: runtime.plan.destination_project_id,
+        review_batch_id: id,
+        response_import_id: parseReviewResponseImportId(batch.response_import_id),
+        contribution_payload_ids: contributionPayloadIds
+      });
+      await appendPayload(runtime, reviewPayload(runtime, {
+        operation: "respond",
+        review_batch_id: id,
+        response_evidence_commitment: evidence.commitment,
+        response_import_id: parseReviewResponseImportId(batch.response_import_id),
+        contribution_payload_ids: contributionPayloadIds
+      }));
+    } else if (batch.lifecycle === "cancelled") {
+      await appendPayload(
+        runtime,
+        reviewPayload(runtime, { operation: "cancel", review_batch_id: id })
+      );
     }
   }
 }
@@ -1246,7 +1442,58 @@ async function assertDocumentContentEquivalent(
     const id = resolveIdentity(runtime, "review-batch", batch.source_review_batch_id);
     const actual = projectedReview(runtime, id);
     requireRegister(actual.lifecycle, batch.lifecycle, "review lifecycle");
-    if (batch.response_hash !== null) requireRegister(actual.responses, batch.response_hash, "review response");
+    if (batch.response_import_id === null) {
+      requireUnsetRegister(
+        actual.response_evidence_commitment,
+        "review response evidence commitment"
+      );
+      requireUnsetRegister(actual.response_import_id, "review response import ID");
+      requireStringArray(
+        actual.contribution_payload_ids,
+        [],
+        "review contribution payload IDs"
+      );
+    } else {
+      const mapped = batch.contribution_source_refs.map((reference) =>
+        runtime.contributionPayloads.get(reference)
+      );
+      const contributionPayloadIds = mapped.every(
+        (payloadId): payloadId is SemanticPayloadId => payloadId !== undefined
+      )
+        ? [...mapped].sort()
+        : actual.contribution_payload_ids.length === 0
+          ? []
+          : (() => {
+              throw new ShadowProcessingError(
+                "projection_mismatch",
+                "Review contribution mappings are incomplete for a nonempty projection."
+              );
+            })();
+      const evidence = await deriveReviewResponseEvidence({
+        schema_version: 1,
+        project_id: runtime.plan.destination_project_id,
+        review_batch_id: id as ReviewBatchId,
+        response_import_id: parseReviewResponseImportId(
+          batch.response_import_id
+        ),
+        contribution_payload_ids: contributionPayloadIds
+      });
+      requireRegister(
+        actual.response_evidence_commitment,
+        evidence.commitment,
+        "review response evidence commitment"
+      );
+      requireRegister(
+        actual.response_import_id,
+        batch.response_import_id,
+        "review response import ID"
+      );
+      requireStringArray(
+        actual.contribution_payload_ids,
+        contributionPayloadIds,
+        "review contribution payload IDs"
+      );
+    }
   }
   for (const rewrite of content.rewrite_sessions) {
     const id = resolveIdentity(runtime, "rewrite-session", rewrite.source_rewrite_session_id);
@@ -1404,10 +1651,24 @@ function requireRegister(register: ProjectedValueRegister, expected: string | nu
   }
 }
 
+function requireUnsetRegister(register: ProjectedValueRegister, label: string): void {
+  if (register.state !== "unset") {
+    throw new ShadowProcessingError(
+      "projection_mismatch",
+      `Shadow ${label} is unexpectedly set.`
+    );
+  }
+}
+
 function requireStringArray(actual: readonly string[], expected: readonly string[], label: string): void {
   if (actual.length !== expected.length || actual.some((value, index) => value !== expected[index])) {
     throw new ShadowProcessingError("projection_mismatch", `Shadow ${label} differs from normalized source state.`);
   }
+}
+
+function sameStringArray(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length &&
+    left.every((value, index) => value === right[index]);
 }
 
 function sameRoots(left: ShadowRoots, right: ShadowRoots): boolean {

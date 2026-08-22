@@ -323,7 +323,12 @@ next = withDocumentContent(sourceState, (content) => ({
     body: "Reviewed and resolved.",
     anchor: { kind: "section", key: "Plan" },
     status: "resolved",
-    replies: [{ source_reply_id: "reply-1", body: "Done.", tombstone: false }]
+    replies: [{
+      source_reply_id: "reply-1",
+      body: "Done.",
+      source_import_id: null,
+      tombstone: false
+    }]
   }]
 }));
 check((await mutate(next, "comment_mutation", "human_reanchor:comment-1")).outcome === "equivalent", "comment edit, resolve, reanchor, and reply create must remain equivalent");
@@ -358,6 +363,7 @@ next = withDocumentContent(sourceState, (content) => ({
     version_fingerprint: "patch-v1",
     dependency_source_patch_ids: [],
     target_provenance: "fixture-target",
+    source_import_id: null,
     status: "pending"
   }]
 }));
@@ -388,6 +394,7 @@ next = withDocumentContent(sourceState, (content) => ({
     version_fingerprint: "patch-2-v1",
     dependency_source_patch_ids: ["patch-1"],
     target_provenance: "fixture-dependent-target",
+    source_import_id: null,
     status: "pending"
   }]
 }));
@@ -406,27 +413,45 @@ next = withDocumentContent(sourceState, (content) => ({
   review_batches: [{
     source_review_batch_id: "review-1",
     lifecycle: "active",
-    response_hash: null
+    response_import_id: null,
+    contribution_source_refs: []
   }]
 }));
 check((await mutate(next, "review_batch_mutation", "create_review_batch:review-1")).outcome === "equivalent", "review creation must shadow after commit");
 
 next = withDocumentContent(sourceState, (content) => ({
   ...content,
+  comments: content.comments.map((comment) => ({
+    ...comment,
+    replies: comment.replies.map((reply) => ({
+      ...reply,
+      source_import_id: "import-review-1"
+    }))
+  })),
+  patches: content.patches.map((patch) =>
+    patch.source_patch_id === "patch-2"
+      ? { ...patch, source_import_id: "import-review-1" }
+      : patch
+  ),
   review_batches: [{
     ...content.review_batches[0],
     lifecycle: "responded",
-    response_hash: "a".repeat(64)
+    response_import_id: "import-review-1",
+    contribution_source_refs: [
+      "patch:patch-2",
+      "reply:comment-1:reply-1"
+    ]
   }]
 }));
-check((await mutate(next, "review_batch_mutation", "record_review_batch_response:review-1")).outcome === "equivalent", "review response must shadow exact response hash");
+check((await mutate(next, "review_batch_mutation", "record_review_batch_response:review-1")).outcome === "equivalent", "review response must shadow its exact evidence commitment");
 
 next = withDocumentContent(sourceState, (content) => ({
   ...content,
   review_batches: [...content.review_batches, {
     source_review_batch_id: "review-2",
     lifecycle: "active",
-    response_hash: null
+    response_import_id: null,
+    contribution_source_refs: []
   }]
 }));
 check((await mutate(next, "review_batch_mutation", "create_review_batch:review-2")).outcome === "equivalent", "a second review lifecycle must start with its own mapped identity");
@@ -592,6 +617,7 @@ const missingDependencyState = withDuplicateDocumentContent(duplicate.sourceStat
     version_fingerprint: "dependent-patch-v1",
     dependency_source_patch_ids: ["absent-parent-patch"],
     target_provenance: "fixture-missing-parent",
+    source_import_id: null,
     status: "pending"
   }]
 }));

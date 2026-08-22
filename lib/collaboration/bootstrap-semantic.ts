@@ -34,6 +34,13 @@ import {
   parseUniqueArray,
   type UInt64
 } from "./validation.ts";
+import {
+  parseReviewContributionPayloadIds,
+  parseReviewResponseEvidenceCommitment,
+  parseReviewResponseImportId,
+  type ReviewResponseEvidenceCommitment,
+  type ReviewResponseImportId
+} from "./review-response-evidence.ts";
 
 export type BootstrapCommitment = string & {
   readonly __bootstrapCommitmentBrand: unique symbol;
@@ -58,6 +65,7 @@ export type BootstrapSharedComment = Readonly<{
   body: string;
   anchor: string;
   status: "open" | "resolved";
+  trash_status: "active" | "trashed";
   tombstone: boolean;
   imported_provenance: string | null;
   imported_history: readonly ImportedFieldHistoryEntry[];
@@ -136,7 +144,9 @@ export type BootstrapIdentityMapping = Readonly<{
 export type BootstrapSharedReviewBatch = Readonly<{
   review_batch_id: ReviewBatchId;
   lifecycle: "active" | "responded" | "cancelled";
-  response_hash: string | null;
+  response_evidence_commitment: ReviewResponseEvidenceCommitment | null;
+  response_import_id: ReviewResponseImportId | null;
+  contribution_payload_ids: readonly import("./identities.ts").SemanticPayloadId[];
   imported_provenance: string | null;
 }>;
 
@@ -559,11 +569,21 @@ function parseComment(value: unknown): BootstrapSharedComment {
     "body",
     "anchor",
     "status",
+    "trash_status",
     "tombstone",
     "imported_provenance",
     "imported_history",
     "replies"
   ]);
+  const trashStatus = expectEnum(
+    record.trash_status,
+    ["active", "trashed"] as const,
+    "bootstrap comment trash status"
+  );
+  const tombstone = parseBoolean(record.tombstone, "bootstrap comment tombstone");
+  if (tombstone && trashStatus !== "active") {
+    throw new Error("A permanently tombstoned bootstrap comment cannot remain reversibly trashed.");
+  }
   return freezeRecord({
     comment_id: parseEntityId("comment", record.comment_id),
     body: expectString(record.body, "bootstrap comment body"),
@@ -573,7 +593,8 @@ function parseComment(value: unknown): BootstrapSharedComment {
       ["open", "resolved"] as const,
       "bootstrap comment status"
     ),
-    tombstone: parseBoolean(record.tombstone, "bootstrap comment tombstone"),
+    trash_status: trashStatus,
+    tombstone,
     imported_provenance: parseNullableString(
       record.imported_provenance,
       "bootstrap comment provenance"
@@ -692,7 +713,9 @@ function parseReviewBatch(value: unknown): BootstrapSharedReviewBatch {
   const record = expectExactRecord(value, "bootstrap review batch", [
     "review_batch_id",
     "lifecycle",
-    "response_hash",
+    "response_evidence_commitment",
+    "response_import_id",
+    "contribution_payload_ids",
     "imported_provenance"
   ]);
   const lifecycle = expectEnum(
@@ -700,17 +723,32 @@ function parseReviewBatch(value: unknown): BootstrapSharedReviewBatch {
     ["active", "responded", "cancelled"] as const,
     "bootstrap review lifecycle"
   );
-  const response = parseNullableString(
-    record.response_hash,
-    "bootstrap review response hash"
+  const commitment = record.response_evidence_commitment === null
+    ? null
+    : parseReviewResponseEvidenceCommitment(
+        record.response_evidence_commitment
+      );
+  const responseImportId = record.response_import_id === null
+    ? null
+    : parseReviewResponseImportId(record.response_import_id);
+  const contributions = parseReviewContributionPayloadIds(
+    record.contribution_payload_ids
   );
-  if ((lifecycle === "responded") !== (response !== null)) {
-    throw new Error("A responded bootstrap review requires exactly one current response hash.");
+  if (
+    lifecycle === "responded"
+      ? commitment === null || responseImportId === null
+      : commitment !== null || responseImportId !== null || contributions.length > 0
+  ) {
+    throw new Error(
+      "Only a responded bootstrap review may carry exact response evidence and contributions."
+    );
   }
   return freezeRecord({
     review_batch_id: parseEntityId("review-batch", record.review_batch_id),
     lifecycle,
-    response_hash: response,
+    response_evidence_commitment: commitment,
+    response_import_id: responseImportId,
+    contribution_payload_ids: contributions,
     imported_provenance: parseNullableString(
       record.imported_provenance,
       "bootstrap review provenance"

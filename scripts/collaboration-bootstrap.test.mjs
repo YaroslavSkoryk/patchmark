@@ -102,6 +102,10 @@ const ids = Object.freeze({
   nativeGroup: entity("group", "k"),
   nativeDocument: entity("document", "l"),
   nativeComment: entity("comment", "m"),
+  nativeActiveComment: entity("comment", "x"),
+  nativeRestoredComment: entity("comment", "y"),
+  nativeDeletedComment: entity("comment", "z"),
+  nativeDeletedReply: entity("reply", "z"),
   nativeReply: entity("reply", "n"),
   nativePatch: entity("patch", "o"),
   nativePatchVersion: entity("patch-version", "p"),
@@ -149,6 +153,7 @@ const nativeInput = Object.freeze({
       body: "Current comment",
       anchor: "document:document",
       status: "resolved",
+      trash_status: "trashed",
       tombstone: false,
       imported_provenance: null,
       imported_history: [],
@@ -156,6 +161,42 @@ const nativeInput = Object.freeze({
         reply_id: ids.nativeReply,
         body: "Current reply",
         tombstone: false,
+        imported_provenance: null,
+        imported_history: []
+      }]
+    }, {
+      comment_id: ids.nativeActiveComment,
+      body: "Active comment",
+      anchor: "document:document",
+      status: "open",
+      trash_status: "active",
+      tombstone: false,
+      imported_provenance: null,
+      imported_history: [],
+      replies: []
+    }, {
+      comment_id: ids.nativeRestoredComment,
+      body: "Restored comment",
+      anchor: "document:document",
+      status: "open",
+      trash_status: "active",
+      tombstone: false,
+      imported_provenance: null,
+      imported_history: [],
+      replies: []
+    }, {
+      comment_id: ids.nativeDeletedComment,
+      body: "Permanently deleted comment evidence",
+      anchor: "document:document",
+      status: "resolved",
+      trash_status: "active",
+      tombstone: true,
+      imported_provenance: null,
+      imported_history: [],
+      replies: [{
+        reply_id: ids.nativeDeletedReply,
+        body: "Deleted dependent reply evidence",
+        tombstone: true,
         imported_provenance: null,
         imported_history: []
       }]
@@ -176,7 +217,7 @@ const nativeInput = Object.freeze({
   initial_review_batches: [{
     review_batch_id: ids.nativeReview,
     lifecycle: "responded",
-    response_hash: "sha256:fixture-response",
+    response_import_id: "fixture-response-import",
     imported_provenance: null
   }],
   initial_rewrite_sessions: [{
@@ -201,6 +242,85 @@ check(nativePlan.authority === "none", "dry-run plan must remain authority-free"
 check(nativePlan.expected_shared_state.legacy_aliases.length === 0, "native plan must not contain aliases");
 check(nativePlan.semantic_event_core.device_sequence === 0n, "bootstrap event sequence must be exactly zero");
 await verifyCollaborationBootstrapPlan(nativePlan);
+check(
+  nativePlan.expected_shared_state.documents[0].comments[0].trash_status === "trashed",
+  "native bootstrap must preserve reversible comment trash state"
+);
+const nativeComments = new Map(
+  nativePlan.expected_shared_state.documents[0].comments.map((comment) => [
+    comment.comment_id,
+    comment
+  ])
+);
+check(
+  nativeComments.get(ids.nativeActiveComment).trash_status === "active" &&
+    nativeComments.get(ids.nativeActiveComment).tombstone === false,
+  "active bootstrap comments must remain active"
+);
+check(
+  nativeComments.get(ids.nativeRestoredComment).trash_status === "active" &&
+    nativeComments.get(ids.nativeRestoredComment).tombstone === false,
+  "restored bootstrap comments must remain active rather than tombstoned"
+);
+check(
+  nativeComments.get(ids.nativeDeletedComment).trash_status === "active" &&
+    nativeComments.get(ids.nativeDeletedComment).tombstone === true &&
+    nativeComments.get(ids.nativeDeletedComment).replies[0].tombstone === true,
+  "permanent deletion must remain an irreversible tombstone with dependent evidence"
+);
+await assert.rejects(
+  () => planNativeCollaborationBootstrap({
+    ...nativeInput,
+    documents: nativeInput.documents.map((document) => ({
+      ...document,
+      comments: document.comments.map((comment) => Object.fromEntries(
+        Object.entries(comment).filter(([key]) => key !== "trash_status")
+      ))
+    }))
+  }),
+  /trash_status/
+);
+assertions += 1;
+await assert.rejects(
+  () => planNativeCollaborationBootstrap({
+    ...nativeInput,
+    documents: nativeInput.documents.map((document) => ({
+      ...document,
+      comments: document.comments.map((comment) => ({
+        ...comment,
+        trash_status: "unknown"
+      }))
+    }))
+  }),
+  /trash status/
+);
+assertions += 1;
+await assert.rejects(
+  () => planNativeCollaborationBootstrap({
+    ...nativeInput,
+    documents: nativeInput.documents.map((document) => ({
+      ...document,
+      comments: document.comments.map((comment) => ({
+        ...comment,
+        trash_status: "trashed",
+        tombstone: true
+      }))
+    }))
+  }),
+  /tombstoned native comment cannot remain reversibly trashed/
+);
+assertions += 1;
+assert.throws(
+  () => parseCollaborationBootstrapImportData({
+    ...nativePlan.expected_shared_state,
+    review_batches: nativePlan.expected_shared_state.review_batches.map((batch) => ({
+      ...batch,
+      response_evidence_commitment: "sha256:not-a-canonical-response-commitment"
+    }))
+  }, ids.nativeProject),
+  /lowercase SHA-256/
+);
+assertions += 1;
 await assert.rejects(
   () => planNativeCollaborationBootstrap({ ...nativeInput, protocol_version: 2 }),
   /protocol version/
@@ -834,6 +954,7 @@ function makeLegacyInventory(markdownBytes) {
         body: "Imported current body",
         anchor: "selected_text:clockwork observatory",
         status: "resolved",
+        trash_status: "trashed",
         tombstone: false,
         imported_provenance: "legacy label: Alice",
         imported_history: [
@@ -880,7 +1001,7 @@ function makeLegacyInventory(markdownBytes) {
       legacy_id: "review-1",
       document_source_key: "document:atlas",
       lifecycle: "responded",
-      response_hash: "sha256:legacy-review",
+      response_import_id: "legacy-review-import",
       imported_provenance: "legacy review label"
     }],
     rewrite_sessions: [{
