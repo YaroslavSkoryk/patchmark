@@ -57,6 +57,8 @@
     "test:collaboration-projector-browser": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-projector-merge-browser.test.mjs",
     "test:collaboration-consolidation": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-consolidation.test.mjs",
     "test:collaboration-bootstrap": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-bootstrap.test.mjs",
+    "test:collaboration-shadow": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-shadow.test.mjs",
+    "test:collaboration-shadow-production": "NODE_ENV=production NEXT_PUBLIC_PATCHMARK_COLLABORATION_SHADOW=development_shadow node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-shadow-production.test.mjs",
     "test:collaboration-roots": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-root-vectors.test.mjs",
     "test:collaboration-roots-independent": "python3 scripts/collaboration-root-vectors-independent.py",
     "test:collaboration-roots-browser": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-root-vectors-browser.test.mjs",

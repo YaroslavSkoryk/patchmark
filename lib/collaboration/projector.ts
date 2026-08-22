@@ -92,6 +92,7 @@ type MutableComment = {
   body: MutableRegister;
   anchor: MutableRegister;
   status: MutableRegister;
+  trash_status: MutableRegister | null;
   replies: Map<ReplyId, MutableReply>;
   tombstone: MutableTombstone | null;
   creation_event_ids: Set<SemanticEventId>;
@@ -579,6 +580,19 @@ function reduceComment(state: ProjectorState, loaded: LoadedProjectionEvent): vo
     return;
   }
   if (blockedByDeletion(state, comment.tombstone, loaded)) return;
+  if (operation === "trash" || operation === "restore") {
+    comment.trash_status ??= register(
+      state.registers,
+      `comment|${comment.comment_id}|trash-status`
+    );
+    applyRegister(
+      state,
+      comment.trash_status,
+      loaded,
+      operation === "trash" ? "trashed" : "active"
+    );
+    return;
+  }
   if (operation === "edit") {
     applyRegister(state, comment.body, loaded, data.data.content);
   } else if (operation === "reanchor") {
@@ -1019,6 +1033,9 @@ function subjectCandidateEventIds(subject: {
   }
   if ("status" in subject && isMutableRegister(subject.status)) {
     registers.push(subject.status);
+  }
+  if ("trash_status" in subject && isMutableRegister(subject.trash_status)) {
+    registers.push(subject.trash_status);
   }
   if ("title" in subject && isMutableRegister(subject.title)) {
     registers.push(subject.title);
@@ -1496,6 +1513,9 @@ async function freezeComment(comment: MutableComment): Promise<ProjectedComment>
     body: await freezeRegister(comment.body),
     anchor: await freezeRegister(comment.anchor),
     status: await freezeRegister(comment.status),
+    ...(comment.trash_status === null
+      ? {}
+      : { trash_status: await freezeRegister(comment.trash_status) }),
     replies: Object.freeze(
       await Promise.all(
         [...comment.replies.values()]
@@ -1654,6 +1674,7 @@ function ensureComment(
     body: register(registers, `comment|${id}|body`),
     anchor: register(registers, `comment|${id}|anchor`),
     status: register(registers, `comment|${id}|status`),
+    trash_status: null,
     replies: new Map(),
     tombstone: null,
     creation_event_ids: new Set()

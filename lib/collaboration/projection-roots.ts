@@ -123,6 +123,9 @@ export async function deriveSemanticStateRoot(
         body: semanticRegister(comment.body),
         anchor: semanticRegister(comment.anchor),
         status: semanticRegister(comment.status),
+        ...(comment.trash_status === undefined
+          ? {}
+          : { trash_status: semanticRegister(comment.trash_status) }),
         tombstone: semanticTombstone(comment.tombstone),
         replies: comment.replies.map((reply) => ({
           reply_id: reply.reply_id,

@@ -93,6 +93,15 @@ import {
   serializeRewriteProjectSessionStore
 } from "../rewrite-workspace/rewrite-project-session-schema.ts";
 import type { RewriteProjectSessionRecord } from "../rewrite-workspace/rewrite-session-types.ts";
+import {
+  isCollaborationShadowDisabled,
+  runCollaborationShadowAfterLegacyCommit,
+  type CollaborationShadowMutationKind,
+  type CollaborationShadowMutationReceipt,
+  type ShadowLegacyAnchor,
+  type ShadowLegacyDocument,
+  type ShadowLegacySharedState
+} from "../collaboration-shadow/entrypoint.ts";
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
@@ -886,7 +895,11 @@ export async function updateProjectDocumentMetadata({
     }
   );
   if (next !== project.projectManifest) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(
+      project,
+      next,
+      displayTitle === undefined ? null : `document_metadata:${documentId}`
+    );
   }
   return next;
 }
@@ -903,7 +916,7 @@ export async function moveProjectDocument({
   const current = requireProjectManifest(project);
   const next = reorderRegisteredDocument(current, documentId, direction);
   if (next !== current) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(project, next, `document_position:${documentId}`);
   }
   return next;
 }
@@ -917,7 +930,7 @@ export async function createProjectDocumentGroup({
 }): Promise<PatchmarkProjectManifestV1> {
   const current = requireProjectManifest(project);
   const next = createDocumentGroup(current, title);
-  await commitProjectRegistry(project, next);
+  await commitProjectRegistry(project, next, `group_create:${next.groups?.at(-1)?.group_id ?? "unknown"}`);
   return next;
 }
 
@@ -933,7 +946,7 @@ export async function renameProjectDocumentGroup({
   const current = requireProjectManifest(project);
   const next = renameDocumentGroup(current, groupId, title);
   if (next !== current) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(project, next, `group_rename:${groupId}`);
   }
   return next;
 }
@@ -950,7 +963,7 @@ export async function moveProjectDocumentGroup({
   const current = requireProjectManifest(project);
   const next = reorderDocumentGroup(current, groupId, direction);
   if (next !== current) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(project, next, `group_position:${groupId}`);
   }
   return next;
 }
@@ -967,7 +980,11 @@ export async function moveProjectDocumentToGroup({
   const current = requireProjectManifest(project);
   const next = assignDocumentToGroup(current, documentId, groupId);
   if (next !== current) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(
+      project,
+      next,
+      groupId === null ? null : `document_group:${documentId}`
+    );
   }
   return next;
 }
@@ -981,7 +998,7 @@ export async function deleteProjectDocumentGroup({
 }): Promise<PatchmarkProjectManifestV1> {
   const current = requireProjectManifest(project);
   const next = removeDocumentGroup(current, groupId);
-  await commitProjectRegistry(project, next);
+  await commitProjectRegistry(project, next, null);
   return next;
 }
 
@@ -1004,7 +1021,7 @@ export async function archiveProjectDocument({
   const current = requireProjectManifest(project);
   const next = archiveRegisteredDocument(current, documentId);
   if (next !== current) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(project, next, `document_archive:${documentId}`);
   }
   return next;
 }
@@ -1019,7 +1036,7 @@ export async function restoreProjectDocument({
   const current = requireProjectManifest(project);
   const next = restoreRegisteredDocument(current, documentId);
   if (next !== current) {
-    await commitProjectRegistry(project, next);
+    await commitProjectRegistry(project, next, `document_restore:${documentId}`);
   }
   return next;
 }
@@ -2732,6 +2749,7 @@ async function executeProjectCommit({
   };
   debug.committedGenerations += 1;
   debug.lastResult = result;
+  await dispatchCommittedProjectShadow(project, reason, result);
   return result;
 }
 
@@ -3139,13 +3157,353 @@ function createObjectIdentitySignature(values: Array<{ id: string }>): string {
 
 async function commitProjectRegistry(
   project: PatchmarkProjectHandle,
-  manifest: PatchmarkProjectManifestV1
+  manifest: PatchmarkProjectManifestV1,
+  reason: string | null
 ): Promise<void> {
   await writeProjectManifestAtomic(
     getAuthoritativeProjectDirectory(project) as ProjectDirectoryHandle,
     manifest
   );
   updateProjectRegistryContext(project, manifest);
+  if (reason !== null) {
+    await dispatchCommittedRegistryShadow(project, reason, manifest);
+  }
+}
+
+async function dispatchCommittedProjectShadow(
+  project: PatchmarkProjectHandle,
+  reason: string,
+  result: PatchmarkProjectCommitResult
+): Promise<void> {
+  const mutationKind = classifyShadowMutation(reason);
+  if (mutationKind === null || result.status !== "committed" || !result.commitId) {
+    return;
+  }
+  const dispatch = runCollaborationShadowAfterLegacyCommit(() =>
+    createCollaborationShadowReceipt({
+      project,
+      mutationKind,
+      mutationKey: reason,
+      legacyCommit: {
+        commit_kind: "project_save",
+        status: "committed",
+        generation: result.generation,
+        commit_id: result.commitId!,
+        changed_files: Object.freeze([...result.changedFiles].sort()),
+        source_state_commitment: createSaveStateCommitment(project, result)
+      },
+      includeContent: true
+    })
+  );
+  if (!isCollaborationShadowDisabled(dispatch)) await dispatch;
+}
+
+async function dispatchCommittedRegistryShadow(
+  project: PatchmarkProjectHandle,
+  reason: string,
+  manifest: PatchmarkProjectManifestV1
+): Promise<void> {
+  const dispatch = runCollaborationShadowAfterLegacyCommit(() =>
+    createCollaborationShadowReceipt({
+      project,
+      mutationKind: "shared_metadata_mutation",
+      mutationKey: reason,
+      legacyCommit: {
+        commit_kind: "project_registry",
+        status: "committed",
+        manifest_revision: manifest.manifest_revision,
+        source_state_commitment: createRegistryStateCommitment(manifest)
+      },
+      includeContent: false
+    })
+  );
+  if (!isCollaborationShadowDisabled(dispatch)) await dispatch;
+}
+
+function classifyShadowMutation(reason: string): CollaborationShadowMutationKind | null {
+  if (reason === "explicit_save" || reason === "save_document") return "document_save";
+  if (reason === "import_chatgpt_response") return "patch_import";
+  if (reason.startsWith("accept_patch:")) return "patch_decision";
+  if (reason.startsWith("reject_patch:") || reason.startsWith("reject_patch_group:")) {
+    return "patch_decision";
+  }
+  if (reason.startsWith("update_patch_anchor:")) return "patch_edit";
+  if (
+    reason === "update_comment_state" ||
+    reason.startsWith("comment_") ||
+    reason.startsWith("human_reanchor:")
+  ) {
+    return "comment_mutation";
+  }
+  if (
+    reason.startsWith("create_review_batch:") ||
+    reason.startsWith("cancel_review_batch:") ||
+    reason.startsWith("record_review_batch_response:") ||
+    reason.startsWith("acknowledge_review_batch_response:") ||
+    reason.startsWith("analyze_legacy_review_batch_response:")
+  ) {
+    return "review_batch_mutation";
+  }
+  if (reason.startsWith("human_rewrite:") || reason.startsWith("discard_human_rewrite:")) {
+    return "rewrite_terminal";
+  }
+  return null;
+}
+
+async function createCollaborationShadowReceipt(options: Readonly<{
+  project: PatchmarkProjectHandle;
+  mutationKind: CollaborationShadowMutationKind;
+  mutationKey: string;
+  legacyCommit: CollaborationShadowMutationReceipt["legacy_commit"];
+  includeContent: boolean;
+}>): Promise<CollaborationShadowMutationReceipt> {
+  const identity = getProjectDocumentIdentity(options.project);
+  return Object.freeze({
+    schema_version: 1,
+    object_kind: "collaboration_shadow_mutation_receipt" as const,
+    source_project_instance_commitment:
+      getCollaborationShadowSourceProjectInstanceCommitment(options.project),
+    source_project_id: identity.projectId,
+    source_document_id: identity.documentId,
+    mutation_kind: options.mutationKind,
+    mutation_key: options.mutationKey,
+    legacy_commit: options.legacyCommit,
+    committed_shared_state: await createLegacySharedStateSnapshot(
+      options.project,
+      options.includeContent
+    )
+  });
+}
+
+export function getCollaborationShadowSourceProjectInstanceCommitment(
+  project: PatchmarkProjectHandle
+): string {
+  const identity = getProjectDocumentIdentity(project);
+  const createdAt = project.projectManifest?.created_at ?? project.manifest.created_at;
+  return `${identity.projectId}:${createdAt}`.replaceAll(/[^A-Za-z0-9._:-]/g, "_");
+}
+
+async function createLegacySharedStateSnapshot(
+  project: PatchmarkProjectHandle,
+  includeContent: boolean
+): Promise<ShadowLegacySharedState> {
+  const identity = getProjectDocumentIdentity(project);
+  const registry = project.projectManifest;
+  const groups = (registry?.groups ?? []).map((group) => Object.freeze({
+    source_group_id: group.group_id,
+    title: group.title,
+    position: group.position.toString()
+  })).sort((left, right) => left.source_group_id.localeCompare(right.source_group_id));
+  const currentContent = includeContent
+    ? await createLegacyDocumentContent(project)
+    : null;
+  const documents: ShadowLegacyDocument[] = registry
+    ? registry.documents.map((document) => Object.freeze({
+        source_document_id: document.document_id,
+        title: document.display_title,
+        logical_path: document.path,
+        position: document.position.toString(),
+        source_group_id: document.group_id ?? null,
+        archive_status: document.status,
+        tombstone: false,
+        content: document.document_id === identity.documentId ? currentContent : null
+      }))
+    : [Object.freeze({
+        source_document_id: identity.documentId,
+        title: project.manifest.project_name,
+        logical_path: project.manifest.document_file,
+        position: "0",
+        source_group_id: null,
+        archive_status: "active" as const,
+        tombstone: false,
+        content: currentContent
+      })];
+  documents.sort((left, right) =>
+    left.source_document_id.localeCompare(right.source_document_id)
+  );
+  return Object.freeze({
+    project_title: getProjectTitle(project),
+    group_order: Object.freeze(
+      [...groups].sort(compareLegacyPosition).map((group) => group.source_group_id)
+    ),
+    groups: Object.freeze(groups),
+    document_order: Object.freeze(
+      documents
+        .filter((document) => !document.tombstone)
+        .sort(compareLegacyPosition)
+        .map((document) => document.source_document_id)
+    ),
+    documents: Object.freeze(documents)
+  });
+}
+
+async function createLegacyDocumentContent(
+  project: PatchmarkProjectHandle
+): Promise<ShadowLegacyDocument["content"]> {
+  const persistence = project.persistence;
+  const identity = getProjectDocumentIdentity(project);
+  const sourceComments = persistence.commentsReference ??
+    (persistence.commentsRaw
+      ? (JSON.parse(persistence.commentsRaw) as unknown[]).map(normalizeComment)
+      : []);
+  const sourcePatches = persistence.patchesReference ??
+    (persistence.patchesRaw
+      ? (JSON.parse(persistence.patchesRaw) as unknown[]).map(normalizePatch)
+      : []);
+  const sourceReviewBatches = persistence.reviewBatchesReference ??
+    parseReviewBatchRecords({
+      identity,
+      text: persistence.reviewBatchesRaw ?? "[]\n"
+    });
+  const sourceRewriteSessions = persistence.rewriteSessionsReference ??
+    parseRewriteProjectSessionStore({
+      identity,
+      text: persistence.rewriteSessionsRaw ?? serializeRewriteProjectSessionStore({
+        identity,
+        sessions: []
+      })
+    }).sessions;
+  const comments = sourceComments.map((comment) => Object.freeze({
+    source_comment_id: comment.id,
+    body: comment.comment,
+    anchor: normalizeShadowAnchor(comment.anchor),
+    status: comment.status,
+    trash_status: comment.trashed_at ? "trashed" as const : "active" as const,
+    tombstone: false,
+    replies: Object.freeze(comment.thread.map((reply) => Object.freeze({
+      source_reply_id: reply.id,
+      body: reply.content,
+      tombstone: false
+    })).sort((left, right) => left.source_reply_id.localeCompare(right.source_reply_id)))
+  })).sort((left, right) => left.source_comment_id.localeCompare(right.source_comment_id));
+  const patches = sourcePatches.map((patch) => {
+    const dependencies = Object.freeze([...(patch.depends_on_patch_ids ?? [])].sort());
+    const targetProvenance = patch.target_provenance
+      ? JSON.stringify(patch.target_provenance)
+      : null;
+    return Object.freeze({
+      source_patch_id: patch.id,
+      source_comment_id: patch.comment_id ?? null,
+      version_fingerprint: JSON.stringify({
+        original_text: patch.original_text,
+        suggested_text: patch.suggested_text,
+        dependencies,
+        target_provenance: targetProvenance
+      }),
+      dependency_source_patch_ids: dependencies,
+      target_provenance: targetProvenance,
+      status: patch.status
+    });
+  }).sort((left, right) => left.source_patch_id.localeCompare(right.source_patch_id));
+  const reviewBatches = (await Promise.all(sourceReviewBatches.map(async (batch) => Object.freeze({
+    source_review_batch_id: batch.batch_id,
+    lifecycle: normalizeReviewLifecycle(batch.status),
+    response_hash: await createReviewResponseIdentityCommitment(batch)
+  })))).sort((left, right) =>
+    left.source_review_batch_id.localeCompare(right.source_review_batch_id)
+  );
+  const rewriteSessions = sourceRewriteSessions.map((session) => Object.freeze({
+    source_rewrite_session_id: session.rewrite_session_id,
+    outcome: session.status === "draft" ? "active" as const : session.status
+  })).sort((left, right) =>
+    left.source_rewrite_session_id.localeCompare(right.source_rewrite_session_id)
+  );
+  return Object.freeze({
+    exact_markdown_bytes: new TextEncoder().encode(persistence.documentText),
+    comments: Object.freeze(comments),
+    patches: Object.freeze(patches),
+    review_batches: Object.freeze(reviewBatches),
+    rewrite_sessions: Object.freeze(rewriteSessions)
+  });
+}
+
+async function createReviewResponseIdentityCommitment(
+  batch: PatchmarkReviewBatch
+): Promise<string | null> {
+  if (
+    batch.status === "exported" ||
+    batch.status === "cancelled" ||
+    batch.import_id === null
+  ) {
+    return null;
+  }
+  const commitment = await createMarkdownHash(JSON.stringify({
+    schema_version: 1,
+    review_batch_id: batch.batch_id,
+    response_import_id: batch.import_id
+  }));
+  if (!commitment) {
+    throw new Error("Development collaboration shadow response commitments require WebCrypto.");
+  }
+  return commitment;
+}
+
+function normalizeShadowAnchor(anchor: PatchmarkCommentAnchor): ShadowLegacyAnchor {
+  if (anchor.kind === "document") {
+    return Object.freeze({ kind: "document" as const, key: "document" });
+  }
+  if (anchor.kind === "section") {
+    return Object.freeze({
+      kind: "section" as const,
+      key: JSON.stringify({ heading: anchor.heading, path: anchor.heading_path ?? [] })
+    });
+  }
+  return Object.freeze({
+    kind: "selected_text" as const,
+    key: anchor.selected_text_hash ?? anchor.anchor_text_hash ?? anchor.selected_text
+  });
+}
+
+function normalizeReviewLifecycle(
+  status: PatchmarkReviewBatch["status"]
+): "active" | "responded" | "cancelled" {
+  if (status === "exported") return "active";
+  if (status === "cancelled") return "cancelled";
+  return "responded";
+}
+
+function createSaveStateCommitment(
+  project: PatchmarkProjectHandle,
+  result: PatchmarkProjectCommitResult
+): string {
+  const files = project.persistence.commit?.files;
+  return JSON.stringify({
+    generation: result.generation,
+    commit_id: result.commitId,
+    files: files
+      ? Object.entries(files).sort(([left], [right]) => left.localeCompare(right)).map(
+          ([key, descriptor]) => [key, descriptor.sha256]
+        )
+      : []
+  });
+}
+
+function createRegistryStateCommitment(manifest: PatchmarkProjectManifestV1): string {
+  return JSON.stringify({
+    project_id: manifest.project_id,
+    manifest_revision: manifest.manifest_revision,
+    groups: (manifest.groups ?? []).map((group) => [
+      group.group_id,
+      group.title,
+      group.position
+    ]),
+    documents: manifest.documents.map((document) => [
+      document.document_id,
+      document.path,
+      document.display_title,
+      document.group_id ?? null,
+      document.status,
+      document.position
+    ])
+  });
+}
+
+function compareLegacyPosition(
+  left: { position: string },
+  right: { position: string }
+): number {
+  return Number(left.position) - Number(right.position) ||
+    left.position.localeCompare(right.position);
 }
 
 function updateProjectRegistryContext(

@@ -136,7 +136,7 @@ export type CommentOperationPayload = SemanticPayloadBase<
       content: string;
     }
   | {
-      operation: "resolve" | "reopen" | "delete";
+      operation: "resolve" | "reopen" | "trash" | "restore" | "delete";
       document_id: DocumentId;
       comment_id: CommentId;
     }
@@ -739,7 +739,7 @@ function parseCommentPayload(
   );
   const operation = expectEnum(
     body.operation,
-    ["create", "edit", "resolve", "reopen", "reanchor", "delete"] as const,
+    ["create", "edit", "resolve", "reopen", "reanchor", "trash", "restore", "delete"] as const,
     "comment operation"
   );
   const common = {

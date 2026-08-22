@@ -152,6 +152,7 @@ export type ProjectedComment = Readonly<{
   body: ProjectedValueRegister;
   anchor: ProjectedValueRegister;
   status: ProjectedValueRegister;
+  trash_status?: ProjectedValueRegister;
   replies: readonly ProjectedReply[];
   tombstone: ProjectedTombstone | null;
   creation_event_ids: readonly SemanticEventId[];
@@ -470,12 +471,15 @@ function validateComment(value: unknown): void {
     "replies",
     "tombstone",
     "creation_event_ids"
-  ]);
+  ], ["trash_status"]);
   parseEntityId("comment", record.comment_id);
   parseEntityId("document", record.document_id);
   validateRegister(record.body, "comment body");
   validateRegister(record.anchor, "comment anchor");
   validateRegister(record.status, "comment status");
+  if (record.trash_status !== undefined) {
+    validateRegister(record.trash_status, "comment trash status");
+  }
   validateSortedRecords(record.replies, "projected replies", "reply_id", validateReply);
   validateTombstone(record.tombstone, "comment tombstone");
   validateSortedIds(record.creation_event_ids, "semantic-event", "comment creation events");
