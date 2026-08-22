@@ -303,7 +303,9 @@ function canonicalToPlain(value: CanonicalValue, key?: string): unknown {
     case "bytes":
       return Uint8Array.from(view.value);
     case "uint":
-      return key === "schema_version" ? Number(view.value) : view.value;
+      return key === "schema_version" || key === "import_policy_version"
+        ? Number(view.value)
+        : view.value;
     case "array":
       return view.values.map((child) => canonicalToPlain(child));
     case "map": {

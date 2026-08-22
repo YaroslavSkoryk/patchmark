@@ -28,6 +28,10 @@ import {
   type SemanticPayloadId
 } from "./identities.ts";
 import type { SemanticEventRecord, SemanticPayloadRecord } from "./semantic.ts";
+import {
+  parseCollaborationBootstrapImportData,
+  type CollaborationBootstrapImportData
+} from "./bootstrap-semantic.ts";
 import type { CollaborationReadResult } from "./storage.ts";
 import {
   INITIAL_REDUCER_VERSION,
@@ -262,6 +266,13 @@ export type ProjectedEventProvenance = Readonly<{
   control_head_id: ControlEventId;
 }>;
 
+export type ProjectedBootstrapImportBoundary = Readonly<{
+  boundary_version: 1;
+  boundary_event_id: SemanticEventId;
+  boundary_payload_id: SemanticPayloadId;
+  data: CollaborationBootstrapImportData;
+}>;
+
 export type CollaborationProjection = Readonly<{
   schema_version: typeof PROJECTION_SCHEMA_VERSION;
   object_kind: "collaboration_projection";
@@ -280,6 +291,7 @@ export type CollaborationProjection = Readonly<{
   replayed_event_ids: readonly SemanticEventId[];
   accepted_frontier: readonly SemanticEventId[];
   event_provenance: readonly ProjectedEventProvenance[];
+  bootstrap_import?: ProjectedBootstrapImportBoundary;
 }>;
 
 export type ProjectionReplayResult = Readonly<{
@@ -308,7 +320,7 @@ export function parseCollaborationProjection(
     "replayed_event_ids",
     "accepted_frontier",
     "event_provenance"
-  ]);
+  ], ["bootstrap_import"]);
   expectLiteral(
     record.schema_version,
     PROJECTION_SCHEMA_VERSION,
@@ -375,7 +387,26 @@ export function parseCollaborationProjection(
     "event_id",
     validateEventProvenance
   );
+  if (record.bootstrap_import !== undefined) {
+    validateBootstrapImportBoundary(record.bootstrap_import, record.project_id as ProjectId);
+  }
   return value as CollaborationProjection;
+}
+
+function validateBootstrapImportBoundary(
+  value: unknown,
+  projectId: ProjectId
+): void {
+  const record = expectExactRecord(value, "projected bootstrap import boundary", [
+    "boundary_version",
+    "boundary_event_id",
+    "boundary_payload_id",
+    "data"
+  ]);
+  expectLiteral(record.boundary_version, 1, "projected bootstrap boundary version");
+  parseDigestId("semantic-event", record.boundary_event_id);
+  parseDigestId("semantic-payload", record.boundary_payload_id);
+  parseCollaborationBootstrapImportData(record.data, projectId);
 }
 
 function validateGroup(value: unknown): void {

@@ -175,6 +175,11 @@ type ProjectorState = {
   adoptions: AdoptionIntent[];
   rejections: ProjectionReductionRejection[];
   loaded_by_id: Map<SemanticEventId, LoadedProjectionEvent>;
+  bootstrap_import: Readonly<{
+    event_id: SemanticEventId;
+    payload_id: SemanticPayloadId;
+    data: import("./bootstrap-semantic.ts").CollaborationBootstrapImportData;
+  }> | null;
 };
 
 type ConflictLocator = Readonly<{
@@ -234,7 +239,8 @@ function createState(history: LoadedProjectionHistory): ProjectorState {
     rejections: [],
     loaded_by_id: new Map(
       history.events.map((loaded) => [loaded.event.event_id, loaded])
-    )
+    ),
+    bootstrap_import: null
   };
 }
 
@@ -250,6 +256,57 @@ async function predeclareSubjects(
     if (core.semantic_kind === "project_genesis") {
       for (const revisionId of core.data.genesis_revision_ids) {
         genesisIntents.push(adoptionIntent(loaded, revisionId, null, "genesis"));
+      }
+      continue;
+    }
+    if (core.semantic_kind === "collaboration_bootstrap_import") {
+      for (const group of core.data.groups) {
+        ensureGroup(state, group.group_id).creation_event_ids.add(eventId);
+      }
+      for (const documentData of core.data.documents) {
+        const document = ensureDocument(state, documentData.document_id);
+        document.creation_event_ids.add(eventId);
+        genesisIntents.push(
+          adoptionIntent(
+            loaded,
+            documentData.baseline_revision_id,
+            documentData.document_id,
+            "genesis"
+          )
+        );
+        for (const commentData of documentData.comments) {
+          const comment = ensureComment(
+            document,
+            state.registers,
+            commentData.comment_id
+          );
+          comment.creation_event_ids.add(eventId);
+          for (const replyData of commentData.replies) {
+            ensureReply(comment, state.registers, replyData.reply_id)
+              .creation_event_ids.add(eventId);
+          }
+        }
+        for (const patchData of documentData.patches) {
+          const patch = ensurePatch(document, patchData.patch_id);
+          for (const versionData of patchData.versions) {
+            ensurePatchVersion(
+              patch,
+              state.registers,
+              versionData.patch_version_id
+            );
+          }
+        }
+      }
+      for (const batchData of core.data.review_batches) {
+        ensureReviewBatch(state, batchData.review_batch_id)
+          .creation_event_ids.add(eventId);
+      }
+      for (const sessionData of core.data.rewrite_sessions) {
+        ensureRewriteSession(
+          state,
+          sessionData.rewrite_session_id,
+          sessionData.document_id
+        ).creation_event_ids.add(eventId);
       }
       continue;
     }
@@ -323,6 +380,9 @@ function reduceEvent(state: ProjectorState, loaded: LoadedProjectionEvent): void
   switch (core.semantic_kind) {
     case "project_genesis":
       return;
+    case "collaboration_bootstrap_import":
+      reduceBootstrapImport(state, loaded);
+      return;
     case "revision_adoption":
       reduceRevisionAdoption(
         state,
@@ -360,6 +420,130 @@ function reduceEvent(state: ProjectorState, loaded: LoadedProjectionEvent): void
       return;
     case "conflict_resolution":
       return;
+  }
+}
+
+function reduceBootstrapImport(
+  state: ProjectorState,
+  loaded: LoadedProjectionEvent
+): void {
+  const core = loaded.payload.core;
+  if (core.semantic_kind !== "collaboration_bootstrap_import") return;
+  if (state.bootstrap_import !== null) {
+    reject(
+      state,
+      loaded,
+      "duplicate_identity",
+      "A project may have only one collaboration bootstrap import boundary."
+    );
+    return;
+  }
+  state.bootstrap_import = Object.freeze({
+    event_id: loaded.event.event_id,
+    payload_id: loaded.payload.payload_id,
+    data: core.data
+  });
+  applyRegister(state, state.project_title, loaded, core.data.project_title);
+  for (const groupData of core.data.groups) {
+    const group = state.groups.get(groupData.group_id);
+    if (!group) continue;
+    applyRegister(state, group.title, loaded, groupData.title);
+    applyRegister(state, group.position, loaded, groupData.position);
+  }
+  for (const documentData of core.data.documents) {
+    const document = state.documents.get(documentData.document_id);
+    if (!document) continue;
+    applyRegister(state, document.title, loaded, documentData.title);
+    applyRegister(state, document.logical_path, loaded, documentData.logical_path);
+    applyRegister(state, document.position, loaded, documentData.position);
+    if (documentData.group_id !== null) {
+      applyRegister(state, document.group, loaded, documentData.group_id);
+    }
+    applyRegister(
+      state,
+      document.archive_status,
+      loaded,
+      documentData.archive_status
+    );
+    for (const commentData of documentData.comments) {
+      const comment = document.comments.get(commentData.comment_id);
+      if (!comment) continue;
+      applyRegister(state, comment.body, loaded, commentData.body);
+      applyRegister(state, comment.anchor, loaded, commentData.anchor);
+      applyRegister(state, comment.status, loaded, commentData.status);
+      for (const replyData of commentData.replies) {
+        const reply = comment.replies.get(replyData.reply_id);
+        if (!reply) continue;
+        applyRegister(state, reply.body, loaded, replyData.body);
+        if (replyData.tombstone) applyDeletion(state, reply, loaded);
+      }
+      if (commentData.tombstone) applyDeletion(state, comment, loaded);
+    }
+    for (const patchData of documentData.patches) {
+      const patch = document.patches.get(patchData.patch_id);
+      if (!patch) continue;
+      for (const versionData of patchData.versions) {
+        const version = patch.versions.get(versionData.patch_version_id);
+        if (!version) continue;
+        version.revision_id = versionData.revision_id;
+        version.dependency_patch_version_ids =
+          versionData.dependency_patch_version_ids;
+        version.target_provenance = versionData.target_provenance;
+        version.proposal_event_ids.add(loaded.event.event_id);
+        version.proposal_payload_ids.add(loaded.payload.payload_id);
+        if (versionData.decision !== "pending") {
+          applyRegister(state, version.decision, loaded, versionData.decision);
+          if (
+            versionData.decision === "accepted" &&
+            versionData.revision_id !== null
+          ) {
+            state.adoptions.push(
+              adoptionIntent(
+                loaded,
+                versionData.revision_id,
+                documentData.document_id,
+                "patch_acceptance"
+              )
+            );
+          }
+        }
+      }
+    }
+    for (const referenceId of documentData.reference_document_ids) {
+      document.references.set(referenceId, new Set([loaded.event.event_id]));
+    }
+    if (documentData.tombstone) applyDeletion(state, document, loaded);
+  }
+  for (const batchData of core.data.review_batches) {
+    const batch = state.review_batches.get(batchData.review_batch_id);
+    if (!batch) continue;
+    applyRegister(state, batch.lifecycle, loaded, batchData.lifecycle);
+    if (batchData.response_hash !== null) {
+      applyRegister(state, batch.responses, loaded, batchData.response_hash);
+    }
+  }
+  for (const sessionData of core.data.rewrite_sessions) {
+    const session = state.rewrite_sessions.get(sessionData.rewrite_session_id);
+    if (!session) continue;
+    applyRegister(
+      state,
+      session.outcome,
+      loaded,
+      sessionData.outcome === "applied"
+        ? `applied:${sessionData.applied_revision_ids.join(",")}`
+        : sessionData.outcome
+    );
+    for (const revisionId of sessionData.applied_revision_ids) {
+      session.applied_revision_ids.add(revisionId);
+      state.adoptions.push(
+        adoptionIntent(
+          loaded,
+          revisionId,
+          sessionData.document_id,
+          "rewrite_apply"
+        )
+      );
+    }
   }
 }
 
@@ -1241,7 +1425,17 @@ async function freezeProjection(
     accepted_frontier: state.history.accepted_frontier,
     event_provenance: Object.freeze(
       state.history.events.map((loaded) => loaded.provenance).sort((left, right) => compareStrings(left.event_id, right.event_id))
-    )
+    ),
+    ...(state.bootstrap_import === null
+      ? {}
+      : {
+          bootstrap_import: Object.freeze({
+            boundary_version: 1 as const,
+            boundary_event_id: state.bootstrap_import.event_id,
+            boundary_payload_id: state.bootstrap_import.payload_id,
+            data: state.bootstrap_import.data
+          })
+        })
   });
 }
 

@@ -94,6 +94,13 @@ export async function deriveSemanticStateRoot(
       document_order: [...projection.document_order]
     })
   ];
+  if (projection.bootstrap_import !== undefined) {
+    entries.push(semanticEntry("bootstrap_import", projection.project_id, {
+      boundary_event_id: projection.bootstrap_import.boundary_event_id,
+      boundary_payload_id: projection.bootstrap_import.boundary_payload_id,
+      data: projection.bootstrap_import.data
+    }));
+  }
   for (const group of projection.groups) {
     entries.push(semanticEntry("group", group.group_id, {
       group_id: group.group_id,

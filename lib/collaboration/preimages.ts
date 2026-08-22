@@ -51,6 +51,7 @@ import {
   type SemanticPayloadRecord
 } from "./semantic.ts";
 import { collaborationHashDomains, collaborationSignatureDomains } from "./domains.ts";
+import { canonicalProtocolValue } from "./canonical-protocol.ts";
 import { digestBytesFromId, formatDigestId } from "./digest-ids.ts";
 import {
   parseEntityId,
@@ -440,6 +441,8 @@ function semanticPayloadData(core: SemanticPayloadCore): CanonicalMap {
       return canonicalMap([
         ["genesis_revision_ids", textArray(core.data.genesis_revision_ids)]
       ]);
+    case "collaboration_bootstrap_import":
+      return canonicalProtocolValue(core.data) as CanonicalMap;
     case "revision_adoption":
       return canonicalMap([
         ["document_id", text(core.data.document_id)],

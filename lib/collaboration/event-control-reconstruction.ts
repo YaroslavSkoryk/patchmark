@@ -842,6 +842,41 @@ async function validatePayloadContentDependencies(
     case "project_genesis":
       revisions.push(...payload.core.data.genesis_revision_ids.map((id) => ({ id })));
       break;
+    case "collaboration_bootstrap_import":
+      for (const document of payload.core.data.documents) {
+        revisions.push({
+          id: document.baseline_revision_id,
+          document_id: document.document_id
+        });
+        for (const patch of document.patches) {
+          for (const version of patch.versions) {
+            if (version.revision_id !== null) {
+              revisions.push({
+                id: version.revision_id,
+                document_id: document.document_id
+              });
+            }
+          }
+        }
+      }
+      for (const session of payload.core.data.rewrite_sessions) {
+        for (const revisionId of session.applied_revision_ids) {
+          revisions.push({ id: revisionId, document_id: session.document_id });
+        }
+      }
+      for (const evidence of payload.core.data.imported_legacy_versions) {
+        const blob = await revisionStore.getMarkdownBlob(
+          payload.core.project_id,
+          evidence.markdown_blob_id
+        );
+        if (blob.status === "missing" || blob.status === "incomplete") {
+          return pending("missing_payload", "Imported legacy Markdown evidence has not arrived.");
+        }
+        if (blob.status !== "valid") {
+          return invalid("corrupted_dependency", `Imported legacy Markdown evidence is ${blob.status}.`);
+        }
+      }
+      break;
     case "revision_adoption":
     case "merge_revision_adoption":
       revisions.push({
@@ -1204,6 +1239,8 @@ function authorityFact(
 function capabilityForPayload(payload: SemanticPayloadRecord): CollaborationCapability {
   switch (payload.core.semantic_kind) {
     case "project_genesis":
+      return "create_revision";
+    case "collaboration_bootstrap_import":
       return "create_revision";
     case "revision_adoption":
       return "adopt_revision";

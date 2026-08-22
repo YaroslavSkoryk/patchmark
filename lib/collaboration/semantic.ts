@@ -5,6 +5,10 @@ import {
 } from "./versions.ts";
 import type { ConsolidationCheckpointPayload } from "./checkpoints.ts";
 import { parseConsolidationCheckpointPayload } from "./checkpoints.ts";
+import {
+  parseCollaborationBootstrapImportData,
+  type CollaborationBootstrapImportData
+} from "./bootstrap-semantic.ts";
 import type { MergeAuthorization } from "./derived.ts";
 import { parseMergeAuthorization } from "./derived.ts";
 import {
@@ -45,6 +49,7 @@ import {
 
 export const semanticKinds = [
   "project_genesis",
+  "collaboration_bootstrap_import",
   "revision_adoption",
   "merge_revision_adoption",
   "external_revision_import",
@@ -72,6 +77,11 @@ export type ProjectGenesisPayload = SemanticPayloadBase<
   {
     genesis_revision_ids: readonly DocumentRevisionId[];
   }
+>;
+
+export type CollaborationBootstrapImportPayload = SemanticPayloadBase<
+  "collaboration_bootstrap_import",
+  CollaborationBootstrapImportData
 >;
 
 export type RevisionAdoptionPayload = SemanticPayloadBase<
@@ -271,6 +281,7 @@ export type ConflictResolutionPayload = SemanticPayloadBase<
 
 export type SemanticPayloadCore =
   | ProjectGenesisPayload
+  | CollaborationBootstrapImportPayload
   | RevisionAdoptionPayload
   | MergeRevisionAdoptionPayload
   | ExternalRevisionImportPayload
@@ -366,6 +377,14 @@ export function parseSemanticPayloadCore(value: unknown): SemanticPayloadCore {
             (candidate) => parseDigestId("document-revision", candidate)
           )
         })
+      });
+    }
+    case "collaboration_bootstrap_import": {
+      return freezeRecord({
+        schema_version: SEMANTIC_PAYLOAD_SCHEMA_VERSION,
+        project_id: projectId,
+        semantic_kind: "collaboration_bootstrap_import" as const,
+        data: parseCollaborationBootstrapImportData(data, projectId)
       });
     }
     case "revision_adoption": {
@@ -584,10 +603,13 @@ export function parseSemanticEventCoreStructure(
       null,
       "first semantic event previous-device ID"
     );
-    if (semanticKind === "project_genesis" && parents.length !== 0) {
-      throw new Error("Project genesis cannot have causal parents.");
+    const isGenesisBoundary =
+      semanticKind === "project_genesis" ||
+      semanticKind === "collaboration_bootstrap_import";
+    if (isGenesisBoundary && parents.length !== 0) {
+      throw new Error("A semantic genesis boundary cannot have causal parents.");
     }
-    if (semanticKind !== "project_genesis" && parents.length === 0) {
+    if (!isGenesisBoundary && parents.length === 0) {
       throw new Error(
         "A new device's first non-genesis event must declare its known frontier."
       );
@@ -611,8 +633,11 @@ export function parseSemanticEventCoreStructure(
         "A subsequent semantic event must include its previous device event among its causal parents."
       );
     }
-    if (semanticKind === "project_genesis") {
-      throw new Error("Project genesis must be a first device event.");
+    if (
+      semanticKind === "project_genesis" ||
+      semanticKind === "collaboration_bootstrap_import"
+    ) {
+      throw new Error("A semantic genesis boundary must be a first device event.");
     }
     core = freezeRecord({
       ...common,

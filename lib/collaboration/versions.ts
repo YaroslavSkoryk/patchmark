@@ -32,6 +32,15 @@ export const STATE_BLOB_SCHEMA_VERSION = 1 as const;
 export const STATE_BLOB_RECORD_VERSION = 1 as const;
 export const SLICE6_ACKNOWLEDGEMENT_CORE_SCHEMA_VERSION = 2 as const;
 export const ACKNOWLEDGEMENT_SEQUENCE_RESERVATION_VERSION = 1 as const;
+export const BOOTSTRAP_SEMANTIC_DATA_SCHEMA_VERSION = 1 as const;
+export const BOOTSTRAP_IMPORT_POLICY_VERSION = 1 as const;
+export const NATIVE_BOOTSTRAP_INPUT_SCHEMA_VERSION = 1 as const;
+export const DUPLICATION_SOURCE_INVENTORY_SCHEMA_VERSION = 1 as const;
+export const DESTINATION_COLLISION_SNAPSHOT_SCHEMA_VERSION = 1 as const;
+export const BOOTSTRAP_PLAN_SCHEMA_VERSION = 1 as const;
+export const BOOTSTRAP_JOURNAL_SCHEMA_VERSION = 1 as const;
+export const BOOTSTRAP_COMPLETE_MARKER_SCHEMA_VERSION = 1 as const;
+export const ADMISSION_PLAN_SCHEMA_VERSION = 1 as const;
 
 export const INITIAL_REDUCER_VERSION = "patchmark-hc-reducer-v1" as const;
 export const INITIAL_MERGE_ALGORITHM_ID = "patchmark-line-merge" as const;
