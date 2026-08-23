@@ -228,13 +228,13 @@ function encodeValue(value: CanonicalValue, output: number[]): void {
     case "bytes": {
       const bytes = readPayload(payload, "bytes");
       encodeHead(2, BigInt(bytes.length), output);
-      output.push(...bytes);
+      appendBytes(output, bytes);
       return;
     }
     case "text": {
       const bytes = new TextEncoder().encode(readPayload(payload, "text"));
       encodeHead(3, BigInt(bytes.length), output);
-      output.push(...bytes);
+      appendBytes(output, bytes);
       return;
     }
     case "array": {
@@ -255,7 +255,7 @@ function encodeValue(value: CanonicalValue, output: number[]): void {
         .sort((left, right) => compareBytes(left.keyBytes, right.keyBytes));
       encodeHead(5, BigInt(entries.length), output);
       for (const entry of entries) {
-        output.push(...entry.keyBytes);
+        appendBytes(output, entry.keyBytes);
         encodeValue(entry.child, output);
       }
       return;
@@ -267,6 +267,12 @@ function encodeValue(value: CanonicalValue, output: number[]): void {
       output.push(0xf6);
       return;
   }
+}
+
+function appendBytes(output: number[], bytes: ArrayLike<number>): void {
+  // Function-call argument limits are far below HC-2's bounded 16 MiB object
+  // size, so byte arrays must never be expanded through push(...bytes).
+  for (let index = 0; index < bytes.length; index += 1) output.push(bytes[index]);
 }
 
 function encodeHead(major: number, value: bigint, output: number[]): void {

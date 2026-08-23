@@ -1,0 +1,155 @@
+{
+  "profile": "patchmark-hc2-slice1-v1",
+  "ids": {
+    "project": "pm:project:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "person": "pm:person:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "device": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "recipient_device": "pm:device:v1:aaaaaaaaaaaaaaaaaaaaaaaaba",
+    "signing_key": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "recipient_key": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaba",
+    "recovery_key": "pm:public-key:v1:aaaaaaaaaaaaaaaaaaaaaaaaca",
+    "access_scope": "pm:access-scope:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "key_epoch": "pm:key-epoch:v1:aaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "control_head": "pm:control-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "projection_root": "pm:projection-root:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "checkpoint": "pm:semantic-event:v1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaada"
+  },
+  "operation_id": "bbbbbbbbbbbbbbbbbbbbbbbbba",
+  "envelope_id": "ccccccccccccccccccccccccca",
+  "markdown_utf8_hex": "68656c6c6f0a",
+  "fixed_bytes": {
+    "writer_signature_hex": "44444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444444",
+    "envelope_signature_hex": "77777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777777",
+    "hpke_enc_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+    "recipient_tag_hex": "6666666666666666666666666666666666666666666666666666666666666666",
+    "ciphertext_hex": "8888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888888",
+    "recovery_envelope_hex": "999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999"
+  },
+  "expected": {
+    "domains": {
+      "hpke_info": "patchmark/hc2/hpke-info/v1",
+      "signature": "patchmark/hc2/signature/envelope-chunk/v1"
+    },
+    "canonical_cores": {
+      "replica": { "byte_length": 426, "sha256_hex": "35ecc0cd2b84731fd38e158861cce27d97c9aede124c36ed337e9832767ca1d9" },
+      "object_commit_marker": { "byte_length": 286, "sha256_hex": "189d4fec1c4b0ed62c37a98f03e1fd94fd7768a657e2b32f576b8af265b20750" },
+      "writer_continuity": { "byte_length": 535, "sha256_hex": "52de666d1295690b641e1a731afd55fa8ef7d3e7958a194e6e3162aeebc2139a" },
+      "portable_batch": { "byte_length": 671, "sha256_hex": "9ba4229169390cc353f8908cbb30ecf1709bc214c2f2059042dcc96c8acc9716" },
+      "transaction_intent": { "byte_length": 592, "sha256_hex": "4e6c1257b2dcf8ff51c0ceb97d31d298a0cdc09c93667ffc4b0a07078a478b0a" },
+      "recovery_envelope": { "byte_length": 422, "sha256_hex": "4777e1bf9091dbbf00b730c70d9c11b09df6b4f7f80df5f95308a096dc445702" },
+      "materialization_status": { "byte_length": 419, "sha256_hex": "998d9aee88fa24e976784fdbb61098043a696cc0930f8cb283cc739c47a35e16" },
+      "chunk_payload": { "byte_length": 989, "sha256_hex": "3f2d5bfafa8df34a020bd5b015bee9bb7fd413bbefbc57ee55eec2e89a9ebfd6" },
+      "bundle_root": { "byte_length": 145, "sha256_hex": "a2848904a9ec85f835f5700abb64150307869f75251d14d082c54fef52041913" },
+      "signed_plaintext_core": { "byte_length": 1168, "sha256_hex": "185fd584f7539a44225be740e512d91856751de114984e7bf26de7e98faa75a4" },
+      "signed_plaintext_record": { "byte_length": 1468, "sha256_hex": "288012e09b206b18cb0c010b4e825d715739ea745e67e4b06c2d521ad76d0ef3" },
+      "public_header": { "byte_length": 288, "sha256_hex": "1af5de1e9103f18a6cf1d0490216fe63d95b3a78c6a0577ac9ef071036409aa4" },
+      "encrypted_container_core": { "byte_length": 1858, "sha256_hex": "81d7babf38fc65d772abdf5aeffd780c97e8571bcc96c994e99471657d360f73" }
+    },
+    "identities": {
+      "markdown_blob_id": "pm:markdown-blob:v1:svulrmigxekrtmkqqivlklh24m6owzos54cq6lpc4nhdeso5aeta",
+      "object_commit_marker": {
+        "id": "pm:object-commit-marker:v1:2thdjjjqmvvgcuwbwr2rmptrymiabfykskzer3y43szah2whmvsa",
+        "canonical_preimage": { "byte_length": 326, "sha256_hex": "d4ce34a530656a6152c1b475163e71c31000970a92b248ef1cdcb203eac76564" }
+      },
+      "portable_batch": {
+        "id": "pm:portable-batch:v1:qt6vuokww6hqofuwst2ulzbqs5qgob3bjic3fceswsd34csxipgq",
+        "canonical_preimage": { "byte_length": 705, "sha256_hex": "84fd5a3956b78f07169694f545e43097606707614a05b28892b487be0a5743cd" }
+      },
+      "writer_continuity": {
+        "id": "pm:writer-continuity:v1:g4nay6l45bicoqmepfzqwc4skfxzs6vploalf2o3mukvfquezjka",
+        "canonical_preimage": { "byte_length": 572, "sha256_hex": "371a0c797ce85027418479730b0b92516f997aaf5b80b2e9db651552c284ca54" }
+      },
+      "recovery_envelope": {
+        "id": "pm:recovery-envelope:v1:csbfehwm5oiavxbl5dqblbvpyqhlanqswyppop527bw52c6bxw7q",
+        "canonical_preimage": { "byte_length": 459, "sha256_hex": "1482521ecceb900adc2be8e01586afc40eb03612b61ef73fbaf86ddd0bc1bdbf" }
+      },
+      "transaction_intent": {
+        "id": "pm:transaction-intent:v1:tw5l63gg7ntlr7k3hcsvzi3v3qz5bvswipqhtfkr56qxwt26ljcq",
+        "canonical_preimage": { "byte_length": 630, "sha256_hex": "9dbabf6cc6fb66b8fd5b38a55ca375dc33d0d65643e0799551efa17b4f5e5a45" }
+      },
+      "chunk_commitment": {
+        "id": "pm:chunk-commitment:v1:ezjebztkege7nzmkytmlsyy2pusojqw7mf5hxg6ujqturxd3kn4q",
+        "canonical_preimage": { "byte_length": 1025, "sha256_hex": "265240e66a2189f6e58ac4d8b9631a7d24e4c2df617a7b9bd44c2748dc7b5379" }
+      },
+      "bundle_root": {
+        "id": "pm:bundle-root:v1:kbnadcag2xijgknqsmcatjeggi6kzgidk267xjcrblymltbnraea",
+        "canonical_preimage": { "byte_length": 176, "sha256_hex": "505a018806d5d09329b0930409a486323cac990356bdfba4510af0c5cc2d8808" }
+      },
+      "encrypted_container": {
+        "id": "pm:encrypted-container:v1:tuu5umorpifqkrf2rzlh47lpli3vtupel4m63x6faidfdygxmcaa",
+        "canonical_preimage": { "byte_length": 1897, "sha256_hex": "9d29da31d17a0b0544ba8e567e7d6f5a3759d1e45f19eddfc5020651e0d76080" }
+      }
+    },
+    "preimages": {
+      "writer_signature": { "byte_length": 408, "sha256_hex": "16395182ac4da5e1011fbd0360a724767960ed5dcc30587b0f2d4d72f1bcccee" },
+      "hpke_info_hex": "87781a70617463686d61726b2f6863322f68706b652d696e666f2f763101781d70617463686d61726b2f6863322f63727970746f2d73756974652f7631781a6363636363636363636363636363636363636363636363636361582066666666666666666666666666666666666666666666666666666666666666660001",
+      "envelope_aad_hex": "a9656d616769637450415443484d41524b2d4843322d42554e444c456873756974655f6964781d70617463686d61726b2f6863322f63727970746f2d73756974652f76316b6368756e6b5f636f756e74016b656e76656c6f70655f6964781a63636363636363636363636363636363636363636363636363616d6368756e6b5f6f7264696e616c0070656e76656c6f70655f76657273696f6e0171636970686572746578745f6c656e6774681905cc75726563697069656e745f726f7574696e675f7461675820666666666666666666666666666666666666666666666666666666666666666676656e63617073756c617465645f6b65795f627974657358205555555555555555555555555555555555555555555555555555555555555555",
+      "envelope_aad_sha256_hex": "1af5de1e9103f18a6cf1d0490216fe63d95b3a78c6a0577ac9ef071036409aa4",
+      "sender_signature_preimage": { "byte_length": 1246, "sha256_hex": "6b859979b51db7c1fe7fb608b65b01c58667ac4e84630aaa7212082c15b7778a" }
+    },
+    "authority": {
+      "classes": [
+        "portable_authoritative",
+        "device_private_authoritative",
+        "device_private_operational",
+        "local_transactional",
+        "rebuildable",
+        "staging",
+        "materialized_projection",
+        "encrypted_recovery"
+      ],
+      "authoritative_device_examples": [
+        "device_private_authoritative",
+        "device_private_authoritative",
+        "device_private_authoritative",
+        "device_private_authoritative",
+        "device_private_authoritative",
+        "device_private_authoritative",
+        "device_private_authoritative",
+        "device_private_authoritative"
+      ],
+      "operational_device_examples": [
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational",
+        "device_private_operational"
+      ]
+    },
+    "limits": {
+      "profile_id": "patchmark/hc2/limits/v1",
+      "profile_version": 1,
+      "object_count": 1,
+      "object_bytes": 6,
+      "ciphertext_bytes": 1484,
+      "maximum_canonical_object_bytes": 16777216,
+      "maximum_total_object_bytes_per_chunk": 16777216,
+      "maximum_manifest_canonical_bytes": 1048576,
+      "maximum_chunk_payload_core_structural_overhead_bytes": 917504,
+      "maximum_chunk_payload_core_canonical_bytes": 18743296,
+      "maximum_signed_plaintext_core_structural_overhead_bytes": 65536,
+      "maximum_signed_plaintext_core_canonical_bytes": 18808832,
+      "maximum_signed_plaintext_record_structural_overhead_bytes": 65536,
+      "maximum_signed_plaintext_record_canonical_bytes": 18874368,
+      "aes_256_gcm_authentication_tag_bytes": 16,
+      "maximum_aead_ciphertext_bytes": 18874384,
+      "maximum_public_header_canonical_bytes": 4096,
+      "maximum_encrypted_container_framing_bytes": 61424,
+      "maximum_encrypted_container_canonical_bytes": 18939904,
+      "maximum_portable_bundle_canonical_bytes": 268435456,
+      "maximum_objects_per_chunk": 1024,
+      "maximum_chunks_per_bundle": 4096,
+      "maximum_dependency_depth": 256,
+      "fixed_recovery_headroom_bytes": 67108864,
+      "maximum_supported_byte_count": 9007199254740991,
+      "maximum_bundle_array_fixture_count": 15,
+      "maximum_bundle_array_fixture_bytes": 268435456,
+      "maximum_required_quota_bytes": 603979776,
+      "compression": "none"
+    }
+  }
+}
