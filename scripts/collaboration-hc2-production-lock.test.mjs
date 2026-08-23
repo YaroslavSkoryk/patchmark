@@ -8,9 +8,13 @@ const productionRoots = ["app", "components", "lib"];
 const violations = [];
 for (const productionRoot of productionRoots) {
   for (const file of await sourceFiles(join(root, productionRoot))) {
-    if (file.includes(`${join("lib", "collaboration", "hc2")}/`) || file.includes(`${join("lib", "collaboration", "hc2")}\\`)) continue;
     const source = await readFile(file, "utf8");
-    if (/from\s+["'][^"']*collaboration\/hc2|import\s*\(\s*["'][^"']*collaboration\/hc2/.test(source)) {
+    const isHc2Implementation = file.includes(`${join("lib", "collaboration", "hc2")}/`) || file.includes(`${join("lib", "collaboration", "hc2")}\\`);
+    if (!isHc2Implementation && /from\s+["'][^"']*collaboration\/hc2|import\s*\(\s*["'][^"']*collaboration\/hc2/.test(source)) {
+      violations.push(relative(root, file));
+    }
+    if (!file.includes(`${join("lib", "collaboration", "hc2", "providers")}/`) &&
+        /from\s+["'][^"']*hc2\/providers|import\s*\(\s*["'][^"']*hc2\/providers/.test(source)) {
       violations.push(relative(root, file));
     }
   }
@@ -19,6 +23,8 @@ assert.deepEqual(violations, [], "HC-2 modules entered a production import path"
 
 const collaborationIndex = await readFile(join(root, "lib", "collaboration", "index.ts"), "utf8");
 assert(!collaborationIndex.includes("./hc2/"));
+const hc2Index = await readFile(join(root, "lib", "collaboration", "hc2", "index.ts"), "utf8");
+assert(!hc2Index.includes("./providers/"), "Slice 3 providers entered the HC-2 production barrel");
 
 const forbiddenImportTimeOperations = [
   /indexedDB\.open\s*\(/,
@@ -32,6 +38,7 @@ const forbiddenImportTimeOperations = [
 ];
 const hc2Files = await sourceFiles(join(root, "lib", "collaboration", "hc2"));
 for (const file of hc2Files) {
+  if (file.includes(`${join("hc2", "providers")}/`)) continue;
   const source = await readFile(file, "utf8");
   for (const pattern of forbiddenImportTimeOperations) {
     assert(!pattern.test(source), `${relative(root, file)} contains forbidden Slice 1 activity ${pattern}`);

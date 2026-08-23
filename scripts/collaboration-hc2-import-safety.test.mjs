@@ -30,8 +30,21 @@ for (const name of timerNames) {
   };
 }
 
-await import(`../lib/collaboration/hc2/index.ts?import-safety=${Date.now()}`);
+const importTargets = [
+  "../lib/collaboration/hc2/index.ts",
+  "../lib/collaboration/hc2/providers/provider-errors.ts",
+  "../lib/collaboration/hc2/providers/secure-random.ts",
+  "../lib/collaboration/hc2/providers/public-key-codec.ts",
+  "../lib/collaboration/hc2/providers/native-key-handles.ts",
+  "../lib/collaboration/hc2/providers/ed25519-provider.ts",
+  "../lib/collaboration/hc2/providers/hpke-provider.ts",
+  "../lib/collaboration/hc2/providers/suite-negotiator.ts",
+  "../lib/collaboration/hc2/providers/recovery-format.ts",
+  "../lib/collaboration/hc2/providers/recovery-worker-protocol.ts",
+  "../lib/collaboration/hc2/providers/recovery-provider.ts"
+];
+for (const target of importTargets) await import(`${target}?import-safety=${Date.now()}`);
 Math.random = originalRandom;
 for (const [name, implementation] of originalTimers) globalThis[name] = implementation;
 assert.deepEqual(touched, []);
-process.stdout.write(`${JSON.stringify({ side_effect_free_import: true, touched_browser_globals: touched }, null, 2)}\n`);
+process.stdout.write(`${JSON.stringify({ side_effect_free_import: true, imported_modules: importTargets.length, touched_browser_globals: touched }, null, 2)}\n`);

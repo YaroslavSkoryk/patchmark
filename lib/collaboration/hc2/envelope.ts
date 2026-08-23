@@ -2,9 +2,13 @@ import {
   canonicalArray,
   canonicalBytes,
   canonicalText,
+  decodeCanonicalCbor,
   encodeCanonicalCbor
 } from "../canonical-cbor.ts";
-import { canonicalProtocolValue } from "../canonical-protocol.ts";
+import {
+  canonicalProtocolValue,
+  protocolValueFromCanonical
+} from "../canonical-protocol.ts";
 import {
   parseDigestId,
   parseEntityId,
@@ -32,6 +36,7 @@ import {
   freezeRecord
 } from "../validation.ts";
 import type {
+  BoundHpkeAadBytes,
   EnvelopeAadBytes,
   HpkeInfoBytes,
   SenderSignaturePreimageBytes
@@ -64,6 +69,8 @@ import {
   HC2_LIMIT_PROFILE_ID,
   hc2SignatureDomains
 } from "./versions.ts";
+
+const strictlyConstructedBoundHpkeAad = new WeakSet<Uint8Array>();
 
 export type ChunkManifestEntry = Readonly<{
   object_kind: CollaborationObjectKind;
@@ -326,17 +333,94 @@ export function buildEnvelopeAad(value: PublicEnvelopeHeader): EnvelopeAadBytes 
   ) as EnvelopeAadBytes;
 }
 
-export function buildHpkeInfo(value: PublicEnvelopeHeader): HpkeInfoBytes {
+export function buildBoundHpkeAad(value: PublicEnvelopeHeader): BoundHpkeAadBytes {
   const header = parsePublicEnvelopeHeader(value);
+  if (header.encapsulated_key_bytes.length !== 32) {
+    throw new Error("The bound HPKE header must contain the exact 32-byte v1 encapsulated key.");
+  }
+  const aad = buildEnvelopeAad(header) as BoundHpkeAadBytes;
+  strictlyConstructedBoundHpkeAad.add(aad);
+  return aad;
+}
+
+export function isStrictlyConstructedBoundHpkeAad(value: unknown): value is BoundHpkeAadBytes {
+  return value instanceof Uint8Array && strictlyConstructedBoundHpkeAad.has(value);
+}
+
+export type HpkeInfoBinding = Readonly<{
+  envelope_version: typeof HC2_ENVELOPE_VERSION;
+  suite_id: typeof HC2_CRYPTO_SUITE_ID;
+  envelope_id: EnvelopeId;
+  recipient_routing_tag: Uint8Array;
+  chunk_ordinal: number;
+  chunk_count: number;
+}>;
+
+export function parseHpkeInfoBinding(value: unknown): HpkeInfoBinding {
+  const record = expectExactRecord(value, "HPKE info binding", [
+    "envelope_version", "suite_id", "envelope_id", "recipient_routing_tag", "chunk_ordinal", "chunk_count"
+  ]);
+  const count = parsePositiveCount(record.chunk_count, hc2ProtocolLimits.maximum_chunks_per_bundle, "HPKE info chunk count");
+  const ordinal = parseSafeCount(record.chunk_ordinal, count - 1, "HPKE info chunk ordinal");
+  const routingTag = expectBytes(record.recipient_routing_tag, "HPKE info recipient routing tag");
+  if (routingTag.length !== 32) throw new Error("HPKE info recipient routing tag must contain exactly 32 bytes.");
+  return freezeRecord({
+    envelope_version: expectLiteral(record.envelope_version, HC2_ENVELOPE_VERSION, "HPKE info envelope version"),
+    suite_id: parseHc2CryptoSuiteId(record.suite_id),
+    envelope_id: parseEnvelopeId(record.envelope_id),
+    recipient_routing_tag: Uint8Array.from(routingTag),
+    chunk_ordinal: ordinal,
+    chunk_count: count
+  });
+}
+
+export function buildHpkeInfo(value: PublicEnvelopeHeader | HpkeInfoBinding): HpkeInfoBytes {
+  const binding = "encapsulated_key_bytes" in value
+    ? hpkeInfoBindingFromHeader(parsePublicEnvelopeHeader(value))
+    : parseHpkeInfoBinding(value);
   return Uint8Array.from(encodeCanonicalCbor(canonicalArray([
     canonicalText(HC2_HPKE_INFO_PROTOCOL_DOMAIN),
-    canonicalProtocolValue(header.envelope_version),
-    canonicalText(header.suite_id),
-    canonicalText(header.envelope_id),
-    canonicalBytes(header.recipient_routing_tag),
-    canonicalProtocolValue(header.chunk_ordinal),
-    canonicalProtocolValue(header.chunk_count)
+    canonicalProtocolValue(binding.envelope_version),
+    canonicalText(binding.suite_id),
+    canonicalText(binding.envelope_id),
+    canonicalBytes(binding.recipient_routing_tag),
+    canonicalProtocolValue(binding.chunk_ordinal),
+    canonicalProtocolValue(binding.chunk_count)
   ]))) as HpkeInfoBytes;
+}
+
+export function parseHpkeInfoBytes(value: HpkeInfoBytes): HpkeInfoBinding {
+  if (!(value instanceof Uint8Array) || value.length === 0 || value.length > 4096) {
+    throw new Error("HPKE info bytes have an invalid length.");
+  }
+  const bytes = Uint8Array.from(value);
+  const decoded = decodeCanonicalCbor(bytes);
+  if (!equalBytes(bytes, encodeCanonicalCbor(decoded))) throw new Error("HPKE info bytes are not canonical.");
+  const protocol = protocolValueFromCanonical(decoded);
+  if (!Array.isArray(protocol) || protocol.length !== 7 || protocol[0] !== HC2_HPKE_INFO_PROTOCOL_DOMAIN) {
+    throw new Error("HPKE info bytes have an invalid protocol domain or shape.");
+  }
+  const binding = parseHpkeInfoBinding({
+    envelope_version: protocol[1],
+    suite_id: protocol[2],
+    envelope_id: protocol[3],
+    recipient_routing_tag: protocol[4],
+    chunk_ordinal: protocol[5],
+    chunk_count: protocol[6]
+  });
+  if (!equalBytes(bytes, buildHpkeInfo(binding))) throw new Error("HPKE info bytes do not match the exact v1 encoding.");
+  return binding;
+}
+
+function hpkeInfoBindingFromHeader(header: PublicEnvelopeHeader): HpkeInfoBinding {
+  return parseHpkeInfoBinding({
+    envelope_version: header.envelope_version,
+    suite_id: header.suite_id,
+    envelope_id: header.envelope_id,
+    recipient_routing_tag: header.recipient_routing_tag,
+    chunk_ordinal: header.chunk_ordinal,
+    chunk_count: header.chunk_count
+  });
 }
 
 export async function buildEnvelopeSignaturePreimage(

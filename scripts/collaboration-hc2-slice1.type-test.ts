@@ -5,8 +5,9 @@ import type {
   DeviceStreamState,
   DeviceStreamCoordinationStore,
   DeviceStreamObjectId,
-  EnvelopeAadBytes,
+  HpkeCiphertextBytes,
   HpkeInfoBytes,
+  PublicEnvelopeHeader,
   RecipientEnvelopeProvider,
   SenderSignaturePreimageBytes,
   SignatureProvider,
@@ -42,7 +43,8 @@ declare const recipientPairHandle: X25519RecipientKeyPairHandle;
 declare const acceptedSigner: AcceptedSignerPublicKey;
 declare const signaturePreimage: SenderSignaturePreimageBytes;
 declare const hpkeInfo: HpkeInfoBytes;
-declare const aad: EnvelopeAadBytes;
+declare const publicHeader: PublicEnvelopeHeader;
+declare const hpkeCiphertext: HpkeCiphertextBytes;
 declare const signatureProvider: SignatureProvider;
 declare const recipientProvider: RecipientEnvelopeProvider;
 declare const resolver: AcceptedControlStateSignerKeyResolver;
@@ -56,12 +58,11 @@ void hc2ObjectAddresses("document-revision", revisionId);
 assertPortableRecordKind("markdown_blob");
 void signatureProvider.sign({ key: signingHandle, preimage: signaturePreimage });
 void signatureProvider.verify({ signer: acceptedSigner, preimage: signaturePreimage, signature_bytes: new Uint8Array(64) });
-void recipientProvider.open({
+void recipientProvider.openBound({
   recipient_key_pair: recipientPairHandle,
   info: hpkeInfo,
-  aad,
-  encapsulated_key_bytes: new Uint8Array(32),
-  ciphertext: new Uint8Array(32)
+  public_header: publicHeader,
+  ciphertext_bytes: hpkeCiphertext
 });
 void resolver.resolve({
   project_id: projectId,
@@ -103,6 +104,6 @@ signatureProvider.sign({ key: recipientHandle, preimage: signaturePreimage });
 // @ts-expect-error Signature verification requires accepted-control resolution, not an inline key ID.
 signatureProvider.verify({ signer: publicKeyId, preimage: signaturePreimage, signature_bytes: new Uint8Array(64) });
 // @ts-expect-error HPKE info cannot be replaced by generic bytes.
-recipientProvider.open({ recipient_key_pair: recipientPairHandle, info: new Uint8Array(), aad, encapsulated_key_bytes: new Uint8Array(), ciphertext: new Uint8Array() });
-// @ts-expect-error AAD cannot be replaced by HPKE info.
-recipientProvider.open({ recipient_key_pair: recipientPairHandle, info: hpkeInfo, aad: hpkeInfo, encapsulated_key_bytes: new Uint8Array(), ciphertext: new Uint8Array() });
+recipientProvider.openBound({ recipient_key_pair: recipientPairHandle, info: new Uint8Array(), public_header: publicHeader, ciphertext_bytes: hpkeCiphertext });
+// @ts-expect-error Encapsulation cannot be supplied separately from the complete final header.
+recipientProvider.openBound({ recipient_key_pair: recipientPairHandle, info: hpkeInfo, public_header: publicHeader, ciphertext_bytes: hpkeCiphertext, encapsulated_key_bytes: new Uint8Array() });

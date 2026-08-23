@@ -1,0 +1,81 @@
+{
+  "fixture_version": 1,
+  "fixture_domain": "patchmark/hc2/slice3-vectors/v1",
+  "ed25519": {
+    "source": "RFC 8032 section 7.1, TEST 1",
+    "source_url": "https://www.rfc-editor.org/rfc/rfc8032.html#section-7.1",
+    "secret_seed_hex": "9d61b19deffd5a60ba844af492ec2cc44449c5697b326919703bac031cae7f60",
+    "public_key_hex": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+    "message_hex": "",
+    "signature_hex": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b"
+  },
+  "x25519": {
+    "source": "RFC 7748 section 6.1",
+    "source_url": "https://www.rfc-editor.org/rfc/rfc7748.html#section-6.1",
+    "alice_private_hex": "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a",
+    "alice_public_hex": "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a",
+    "bob_private_hex": "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb",
+    "bob_public_hex": "de9edb7d7b7dc1b4d35b61c2ece435373f8343c85b78674dadfc7e146f882b4f",
+    "shared_secret_hex": "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742"
+  },
+  "hpke": {
+    "source": "RFC 9180 official test-vectors.json, mode 0, kem_id 32, kdf_id 1, aead_id 2, encryption 0",
+    "source_url": "https://github.com/cfrg/draft-irtf-cfrg-hpke/blob/5f503c564da00b0687b3de75f1dfbdfc4079ad31/test-vectors.json",
+    "upstream_commit": "5f503c564da00b0687b3de75f1dfbdfc4079ad31",
+    "upstream_artifact_sha256": "61fc662f01996cd06d713dacf5e133167bd309a1f329442d53f1e21a47b3ede6",
+    "mode": 0,
+    "kem_id": 32,
+    "kdf_id": 1,
+    "aead_id": 2,
+    "info_hex": "4f6465206f6e2061204772656369616e2055726e",
+    "recipient_ikm_hex": "dac33b0e9db1b59dbbea58d59a14e7b5896e9bdf98fad6891e99d1686492b9ee",
+    "recipient_private_hex": "497b4502664cfea5d5af0b39934dac72242a74f8480451e1aee7d6a53320333d",
+    "recipient_public_hex": "430f4b9859665145a6b1ba274024487bd66f03a2dd577d7753c68d7d7d00c00c",
+    "ephemeral_ikm_hex": "2cd7c601cefb3d42a62b04b7a9041494c06c7843818e0ce28a8f704ae7ab20f9",
+    "ephemeral_private_hex": "179d4b53b6365c45b600c4163b61d95cbc2f4d9e36f1695558dce265ab8bab11",
+    "encapsulated_key_hex": "6c93e09869df3402d7bf231bf540fadd35cd56be14f97178f0954db94b7fc256",
+    "aad_hex": "436f756e742d30",
+    "plaintext_hex": "4265617574792069732074727574682c20747275746820626561757479",
+    "nonce_hex": "151d9929e2449747889bc923",
+    "ciphertext_hex": "e5d84cd531cfb583096e7cfa9641bd3079cf3a91cda813c52deb5f512be9931980a41de125a925cdad859d5b7a"
+  },
+  "argon2id": {
+    "source": "RFC 9106 section 5.3 Argon2id version 19",
+    "source_url": "https://www.rfc-editor.org/rfc/rfc9106.html#section-5.3",
+    "memory_kib": 32,
+    "iterations": 3,
+    "parallelism": 4,
+    "tag_length": 32,
+    "password_hex": "0101010101010101010101010101010101010101010101010101010101010101",
+    "salt_hex": "02020202020202020202020202020202",
+    "secret_hex": "0303030303030303",
+    "associated_data_hex": "040404040404040404040404",
+    "tag_hex": "0d640df58d78766c08c037a34a8b53c9d01ef0452d75b65eb52520e96b01e659"
+  },
+  "xchacha20_poly1305": {
+    "source": "draft-irtf-cfrg-xchacha-03 appendix A.3.1",
+    "source_url": "https://datatracker.ietf.org/doc/html/draft-irtf-cfrg-xchacha-03#appendix-A.3.1",
+    "key_hex": "808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9f",
+    "nonce_hex": "404142434445464748494a4b4c4d4e4f5051525354555657",
+    "aad_hex": "50515253c0c1c2c3c4c5c6c7",
+    "plaintext_hex": "4c616469657320616e642047656e746c656d656e206f662074686520636c617373206f66202739393a204966204920636f756c64206f6666657220796f75206f6e6c79206f6e652074697020666f7220746865206675747572652c2073756e73637265656e20776f756c642062652069742e",
+    "ciphertext_hex": "bd6d179d3e83d43b9576579493c0e939572a1700252bfaccbed2902c21396cbb731c7f1b0b4aa6440bf3a82f4eda7e39ae64c6708c54c216cb96b72e1213b4522f8c9ba40db5d945b11b69b982c1bb9e3f3fac2bc369488f76b2383565d3fff921f9664c97637da9768812f615c68b13b52e",
+    "tag_hex": "c0875924c1c7987947deafd8780acf49"
+  },
+  "patchmark_recovery": {
+    "source": "Frozen Slice 3 interoperability case produced independently with libsodium 1.0.22 primitives",
+    "parameter_version": 1,
+    "argon2_version": 19,
+    "opslimit": 3,
+    "memlimit_bytes": 67108864,
+    "parallelism": "provider_managed_not_configurable",
+    "derived_key_bytes": 32,
+    "password_hex": "70617463686d61726b2d6863322d736c696365332d70617373776f7264",
+    "salt_hex": "000102030405060708090a0b0c0d0e0f",
+    "nonce_hex": "202122232425262728292a2b2c2d2e2f3031323334353637",
+    "aad_hex": "70617463686d61726b2f6863322f7265636f766572792d766563746f722f7631",
+    "plaintext_hex": "736563726574207265636f7665727920636572656d6f6e79207061796c6f6164",
+    "derived_key_hex": "fb27b8ccb6706bf89c8eb52a1fde210e4fc625d1d82d3b3f2e3cdfd077dbe90a",
+    "ciphertext_and_tag_hex": "1b88e1489a5ae37e447f9bf1be0eb4fa4c090cce5786377050899b6383dcd79725e03501d52a0bbcf1327e4c7e93387a"
+  }
+}

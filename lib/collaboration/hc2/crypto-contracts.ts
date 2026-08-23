@@ -5,6 +5,7 @@ import type {
   ProjectId,
   PublicKeyId
 } from "../identities.ts";
+import type { PublicEnvelopeHeader } from "./envelope.ts";
 import { HC2_CRYPTO_SUITE_ID, HC2_CRYPTO_SUITE_VERSION } from "./versions.ts";
 
 export const hc2CryptoSuite = Object.freeze({
@@ -30,7 +31,10 @@ export type Hc2CryptoSuite = typeof hc2CryptoSuite;
 declare const randomBytesBrand: unique symbol;
 declare const signaturePreimageBrand: unique symbol;
 declare const envelopeAadBrand: unique symbol;
+declare const boundEnvelopeAadBrand: unique symbol;
 declare const hpkeInfoBrand: unique symbol;
+declare const hpkeEncapsulatedKeyBrand: unique symbol;
+declare const hpkeCiphertextBrand: unique symbol;
 declare const publicKeyEncodingBrand: unique symbol;
 declare const privateKeyHandleBrand: unique symbol;
 declare const keyPairHandleBrand: unique symbol;
@@ -41,7 +45,10 @@ declare const recoveryCeremonyBrand: unique symbol;
 export type RandomBytes = Uint8Array & { readonly [randomBytesBrand]: "random" };
 export type SenderSignaturePreimageBytes = Uint8Array & { readonly [signaturePreimageBrand]: "hc2-envelope-signature-preimage" };
 export type EnvelopeAadBytes = Uint8Array & { readonly [envelopeAadBrand]: "hc2-envelope-aad" };
+export type BoundHpkeAadBytes = EnvelopeAadBytes & { readonly [boundEnvelopeAadBrand]: "hc2-bound-hpke-aad" };
 export type HpkeInfoBytes = Uint8Array & { readonly [hpkeInfoBrand]: "hc2-hpke-info" };
+export type HpkeEncapsulatedKeyBytes = Uint8Array & { readonly [hpkeEncapsulatedKeyBrand]: "hc2-hpke-enc" };
+export type HpkeCiphertextBytes = Uint8Array & { readonly [hpkeCiphertextBrand]: "hc2-hpke-ciphertext" };
 export type AlgorithmTaggedPublicKeyBytes = Uint8Array & { readonly [publicKeyEncodingBrand]: "algorithm-tagged-public-key" };
 
 export type DeviceSigningPrivateKeyHandle = Readonly<{
@@ -132,18 +139,20 @@ export interface SignatureProvider {
 
 export interface RecipientEnvelopeProvider {
   readonly suite_id: typeof HC2_CRYPTO_SUITE_ID;
-  seal(input: Readonly<{
+  sealBound(input: Readonly<{
     recipient_public_key: AlgorithmTaggedPublicKeyBytes;
     info: HpkeInfoBytes;
-    aad: EnvelopeAadBytes;
     plaintext: Uint8Array;
-  }>): Promise<Readonly<{ encapsulated_key_bytes: Uint8Array; ciphertext: Uint8Array }>>;
-  open(input: Readonly<{
+    finalize_aad: (encapsulatedKeyBytes: HpkeEncapsulatedKeyBytes) => BoundHpkeAadBytes;
+  }>): Promise<Readonly<{
+    encapsulated_key_bytes: HpkeEncapsulatedKeyBytes;
+    ciphertext_bytes: HpkeCiphertextBytes;
+  }>>;
+  openBound(input: Readonly<{
     recipient_key_pair: X25519RecipientKeyPairHandle;
     info: HpkeInfoBytes;
-    aad: EnvelopeAadBytes;
-    encapsulated_key_bytes: Uint8Array;
-    ciphertext: Uint8Array;
+    public_header: PublicEnvelopeHeader;
+    ciphertext_bytes: HpkeCiphertextBytes;
   }>): Promise<
     | Readonly<{ status: "opened"; plaintext: Uint8Array }>
     | Readonly<{ status: "rejected"; reason: "authentication_failed" | "malformed" | "unsupported_suite" }>

@@ -137,16 +137,18 @@ Scope: production-facing decisions that must be frozen before durable collaborat
 - **Deferred work:** Independent source review, advisory/provenance review, pinned versions, RFC vectors, and browser matrix.
 - **Tests/later gates:** Slice 3 cannot exit until every provider/custody requirement passes.
 
-## ADR-012 — Non-circular encrypted-envelope model
+Slice 3 selected exact `@hpke/core@1.9.0` and `@hpke/common@1.10.1` artifacts after source, provenance, advisory, vector, and browser review. The public contract remains provider-independent: the selected implementation and its operation context are private implementation details. “Single-shot” describes one public call and one-message context lifetime; it does not require AAD to exist before HPKE sender setup.
+
+## ADR-012 — Non-circular encrypted-envelope model and bound HPKE ordering
 
 - **Context:** Signatures, ciphertext, bundle roots, and container IDs can become circular if their cores include values derived later.
-- **Decision:** Derive chunk commitments, then the ordered bundle root, then the signed plaintext core. Build the public header as AAD, sign its digest plus the plaintext core, encrypt the signed record, and derive the container ID last outside its core.
-- **Security rationale:** The signature never includes itself; HPKE `info` excludes ciphertext/container ID; every derivation has a one-way dependency.
+- **Decision:** Derive chunk commitments, then the ordered bundle root and signed plaintext core. HPKE `info` is deterministic, versioned, suite-specific, and independent of `enc`. For each encryption, perform RFC 9180 sender setup once to obtain the exact `enc` and a private operation-local context; synchronously construct the exact-field final header containing that `enc`; canonically encode the complete final header as AAD; seal exactly once; discard the context; and derive the container ID last outside its core. Sender signatures continue to bind the digest of the same final canonical header plus the plaintext core.
+- **Security rationale:** The signature never includes itself; HPKE `info` excludes `enc`, ciphertext, and container ID; setup is never repeated; no placeholder `enc` exists; and the final header, including the setup-produced `enc`, is authenticated as AAD.
 - **Product consequences:** Re-encryption creates a new container ID without changing HC-1 identities. Headers expose only minimal routing and cryptographic fields.
-- **Rejected alternatives:** Signature inside its preimage; container ID inside its core; plaintext project/object identifiers in the public header; best-effort unknown-version parsing.
+- **Rejected alternatives:** Signature inside its preimage; container ID inside its core; plaintext project/object identifiers in the public header; best-effort unknown-version parsing; placeholder or hashed-placeholder encapsulations; two sender setups; caller-supplied independent AAD/`enc`; or an exposed reusable HPKE context.
 - **Failure behavior:** Mutation, substitution, deletion, duplication, reordering, and cross-bundle movement are rejected before local batch visibility.
-- **Deferred work:** Real signing, HPKE, export/import, and ingestion.
-- **Tests/later gates:** Frozen Node/Python/Chrome vectors in Slice 1; real cryptographic and import vectors in Slices 3 and 6.
+- **Deferred work:** Higher-level enrollment, export/import, and ingestion orchestration.
+- **Tests/later gates:** Frozen Node/Python/Chrome vectors in Slice 1; real cryptographic, exact-`enc` binding, single-use, and import vectors in Slice 3; complete exchange vectors in Slice 6.
 
 ## ADR-013 — Project-wide current-state onboarding
 
