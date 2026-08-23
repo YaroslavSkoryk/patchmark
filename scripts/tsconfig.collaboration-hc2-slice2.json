@@ -1,0 +1,13 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "incremental": false,
+    "plugins": []
+  },
+  "include": [
+    "collaboration-hc2-slice2-types.test.ts",
+    "collaboration-hc2-slice2-browser-runtime.ts",
+    "../lib/collaboration/**/*.ts"
+  ],
+  "exclude": ["../node_modules"]
+}
