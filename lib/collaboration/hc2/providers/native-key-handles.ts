@@ -1,10 +1,8 @@
 import {
   parseEntityId,
-  type PersonId,
   type PublicKeyId
 } from "../../identities.ts";
 import type {
-  ActiveRootKeyHandle,
   AlgorithmTaggedPublicKeyBytes,
   DeviceSigningPrivateKeyHandle,
   X25519RecipientKeyPairHandle,
@@ -15,8 +13,6 @@ import {
   exportAndEncodePublicKey
 } from "./public-key-codec.ts";
 import { cryptoFailure } from "./provider-errors.ts";
-
-type Ed25519Handle = DeviceSigningPrivateKeyHandle | ActiveRootKeyHandle;
 
 type X25519Binding = Readonly<{
   key_pair: CryptoKeyPair;
@@ -71,21 +67,7 @@ export class Hc2NativeKeyRegistry {
     return Object.freeze({ handle, public_key: Uint8Array.from(publicKey) as AlgorithmTaggedPublicKeyBytes });
   }
 
-  async adoptActiveRootKeyPair(personId: PersonId, pair: CryptoKeyPair): Promise<ActiveRootKeyHandle> {
-    const parsedPersonId = parseEntityId("person", personId);
-    validateEd25519Pair(pair);
-    const handle = Object.freeze({
-      handle_kind: "active_person_root_key",
-      algorithm: "ed25519",
-      extractability: "non_extractable",
-      custody: "native_webcrypto",
-      person_id: parsedPersonId
-    }) as ActiveRootKeyHandle;
-    this.#ed25519.set(handle, pair);
-    return handle;
-  }
-
-  resolveSigningKey(handle: Ed25519Handle): CryptoKey {
+  resolveSigningKey(handle: DeviceSigningPrivateKeyHandle): CryptoKey {
     const pair = this.#ed25519.get(handle);
     if (!pair) throw cryptoFailure("invalid_key");
     validateEd25519Pair(pair);

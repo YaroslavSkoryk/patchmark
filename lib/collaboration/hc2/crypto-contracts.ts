@@ -86,15 +86,6 @@ export type DeviceKekHandle = Readonly<{
   readonly [privateKeyHandleBrand]: "device-kek";
 }>;
 
-export type ActiveRootKeyHandle = Readonly<{
-  handle_kind: "active_person_root_key";
-  algorithm: "ed25519";
-  extractability: "non_extractable";
-  custody: "native_webcrypto";
-  person_id: PersonId;
-  readonly [privateKeyHandleBrand]: "active-root";
-}>;
-
 export type RootCeremonyCapability = Readonly<{
   scope: "root_ceremony_only";
   person_id: PersonId;
@@ -124,7 +115,7 @@ export interface RandomSource {
 
 export interface SignatureProvider {
   sign(input: Readonly<{
-    key: DeviceSigningPrivateKeyHandle | ActiveRootKeyHandle;
+    key: DeviceSigningPrivateKeyHandle;
     preimage: SenderSignaturePreimageBytes;
   }>): Promise<Readonly<{ algorithm: "ed25519"; signature_bytes: Uint8Array }>>;
   verify(input: Readonly<{
@@ -179,7 +170,6 @@ export interface KeyVault {
   loadDeviceSigningKey(projectId: ProjectId, deviceId: DeviceId): Promise<DeviceSigningPrivateKeyHandle | null>;
   loadRecipientKeyPair(projectId: ProjectId, deviceId: DeviceId): Promise<X25519RecipientKeyPairHandle | null>;
   loadDeviceKek(projectId: ProjectId, deviceId: DeviceId): Promise<DeviceKekHandle | null>;
-  loadActiveRootKey(projectId: ProjectId, personId: PersonId, capability: RootCeremonyCapability): Promise<ActiveRootKeyHandle | null>;
 }
 
 export interface PublicKeyCodec {

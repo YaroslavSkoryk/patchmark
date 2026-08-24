@@ -3,45 +3,49 @@ import { encodeCanonicalCbor } from "../lib/collaboration/canonical-cbor.ts";
 import { canonicalProtocolValue } from "../lib/collaboration/canonical-protocol.ts";
 import { deriveMarkdownBlobIdentity } from "../lib/collaboration/preimages.ts";
 import { sha256 } from "../lib/collaboration/sha256.ts";
+import { classifyHc2Record, hc2AuthorityClasses, type Hc2RecordKind } from "../lib/collaboration/hc2/authority.ts";
+import {
+  buildEnvelopeAad,
+  buildEnvelopeSignaturePreimage,
+  buildHpkeInfo,
+  createChunkPayloadCore,
+  createEncryptedContainerRecord,
+  deriveBundleRoot,
+  deriveChunkCommitment,
+  parseEncryptedContainerCore,
+  parseSignedPlaintextCore,
+  parseSignedPlaintextRecord,
+  validateSignedPlaintextRecordCiphertextLength,
+  type PublicEnvelopeHeader
+} from "../lib/collaboration/hc2/envelope.ts";
+import { deriveHc2Identity } from "../lib/collaboration/hc2/identities.ts";
+import {
+  calculateEncryptedContainerBudgetBytes,
+  calculateHc2AesGcmCiphertextLength,
+  calculatePortableBundleEncodedLength,
+  calculateRequiredQuotaBytes,
+  hc2ProtocolLimits
+} from "../lib/collaboration/hc2/limits.ts";
+import {
+  buildWriterContinuitySignaturePreimage,
+  createObjectCommitMarker,
+  createPortableBatchMarker,
+  deriveRecoveryRecipientEpochEnvelope,
+  deriveTransactionIntentCommitment,
+  deriveWriterContinuityIdentity,
+  encodeMaterializationStatus,
+  encodeReplicaMetadataCore,
+  parseMaterializationStatus,
+  parseReplicaMetadataCore
+} from "../lib/collaboration/hc2/records.ts";
 import {
   HC2_ENVELOPE_VERSION,
   HC2_HPKE_INFO_PROTOCOL_DOMAIN,
   HC2_MATERIALIZATION_SCHEMA_VERSION,
   HC2_REPLICA_SCHEMA_VERSION,
   HC2_TRANSACTION_INTENT_SCHEMA_VERSION,
-  HC2_WRITER_CONTINUITY_SCHEMA_VERSION,
-  buildEnvelopeAad,
-  buildEnvelopeSignaturePreimage,
-  buildHpkeInfo,
-  buildWriterContinuitySignaturePreimage,
-  calculateEncryptedContainerBudgetBytes,
-  calculateHc2AesGcmCiphertextLength,
-  calculatePortableBundleEncodedLength,
-  calculateRequiredQuotaBytes,
-  classifyHc2Record,
-  createChunkPayloadCore,
-  createEncryptedContainerRecord,
-  createObjectCommitMarker,
-  createPortableBatchMarker,
-  deriveBundleRoot,
-  deriveChunkCommitment,
-  deriveHc2Identity,
-  deriveRecoveryRecipientEpochEnvelope,
-  deriveTransactionIntentCommitment,
-  deriveWriterContinuityIdentity,
-  encodeMaterializationStatus,
-  encodeReplicaMetadataCore,
-  hc2AuthorityClasses,
-  hc2ProtocolLimits,
-  parseEncryptedContainerCore,
-  parseMaterializationStatus,
-  parseReplicaMetadataCore,
-  parseSignedPlaintextCore,
-  parseSignedPlaintextRecord,
-  validateSignedPlaintextRecordCiphertextLength,
-  type Hc2RecordKind,
-  type PublicEnvelopeHeader
-} from "../lib/collaboration/hc2/index.ts";
+  HC2_WRITER_CONTINUITY_SCHEMA_VERSION
+} from "../lib/collaboration/hc2/versions.ts";
 
 type VectorInput = Readonly<{
   profile: "patchmark-hc2-slice1-v1";

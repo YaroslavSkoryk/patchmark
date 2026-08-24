@@ -76,7 +76,9 @@ for (const file of providerFiles) {
 }
 
 const hc2Barrel = await readFile(join(root, "lib", "collaboration", "hc2", "index.ts"), "utf8");
-check(!hc2Barrel.includes("./providers/"), "provider modules are absent from the HC-2 barrel");
+const boundedProviderExports = Array.from(hc2Barrel.matchAll(/export\s+\*\s+from\s+["'](\.\/providers\/[^"']+)["']/g), (match) => match[1]);
+equal(boundedProviderExports, ["./providers/root-recovery-provider.ts"], "HC-2 exports only the bounded Slice 4 root-ceremony provider");
+check(!/root-recovery-(?:worker|payload)|native-key-handles/.test(hc2Barrel), "worker-private and generic native-key internals remain absent from the HC-2 barrel");
 const collaborationBarrel = await readFile(join(root, "lib", "collaboration", "index.ts"), "utf8");
 check(!collaborationBarrel.includes("./hc2/"), "HC-2 remains absent from the production collaboration barrel");
 
@@ -93,7 +95,7 @@ const productionSources = [
   ...await sourceFiles(join(root, "app")),
   ...await sourceFiles(join(root, "components")),
   ...await sourceFiles(join(root, "lib"))
-].filter((file) => !file.startsWith(`${providerRoot}/`));
+].filter((file) => !file.startsWith(`${join(root, "lib", "collaboration", "hc2")}/`));
 const providerImporters = [];
 for (const file of productionSources) {
   const source = await readFile(file, "utf8");
@@ -124,6 +126,7 @@ process.stdout.write(`${JSON.stringify({
   approved_packages: Object.fromEntries(Object.entries(approved).map(([name, value]) => [name, value.version])),
   lockfile_additions: Object.keys(approved),
   provider_modules_scanned: providerFiles.length,
+  bounded_hc2_provider_exports: boundedProviderExports,
   production_provider_importers: providerImporters,
   installed_artifact_bytes: artifactSizes,
   client_chunks_scanned: clientChunkCount,

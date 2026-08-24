@@ -1,10 +1,7 @@
-import {
-  Hc2IndexedDbCoordinationStore,
-  deriveHc2MutationLockName,
-  runHc2CapabilityProbes,
-  type CompareAndAdvanceStreamInput,
-  type DeviceStreamReservation
-} from "../lib/collaboration/hc2/index.ts";
+import { runHc2CapabilityProbes } from "../lib/collaboration/hc2/capability-probes.ts";
+import { Hc2IndexedDbCoordinationStore } from "../lib/collaboration/hc2/coordination-store.ts";
+import type { CompareAndAdvanceStreamInput, DeviceStreamReservation } from "../lib/collaboration/hc2/coordination.ts";
+import { deriveHc2MutationLockName } from "../lib/collaboration/hc2/web-locks.ts";
 import type { DeviceId, ProjectId } from "../lib/collaboration/identities.ts";
 
 let heldRelease: (() => void) | null = null;

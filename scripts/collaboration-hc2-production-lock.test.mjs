@@ -24,7 +24,9 @@ assert.deepEqual(violations, [], "HC-2 modules entered a production import path"
 const collaborationIndex = await readFile(join(root, "lib", "collaboration", "index.ts"), "utf8");
 assert(!collaborationIndex.includes("./hc2/"));
 const hc2Index = await readFile(join(root, "lib", "collaboration", "hc2", "index.ts"), "utf8");
-assert(!hc2Index.includes("./providers/"), "Slice 3 providers entered the HC-2 production barrel");
+const providerBarrelExports = Array.from(hc2Index.matchAll(/export\s+\*\s+from\s+["'](\.\/providers\/[^"']+)["']/g), (match) => match[1]);
+assert.deepEqual(providerBarrelExports, ["./providers/root-recovery-provider.ts"], "HC-2 barrel must expose only the bounded root-ceremony provider");
+assert(!/root-recovery-(?:worker|payload)|native-key-handles/.test(hc2Index), "Secret-bearing or generic native-key internals entered the HC-2 barrel");
 
 const forbiddenImportTimeOperations = [
   /indexedDB\.open\s*\(/,
@@ -45,6 +47,34 @@ for (const file of hc2Files) {
   }
 }
 
+const portableAuthorityFiles = [
+  "lib/collaboration/hc2/portable-folder.ts",
+  "lib/collaboration/hc2/records.ts",
+  "lib/collaboration/hc2/opfs-cache.ts",
+  "lib/collaboration/hc2/storage-observations.ts"
+];
+for (const path of portableAuthorityFiles) {
+  const source = await readFile(join(root, path), "utf8");
+  assert(!/recovery_kit_bytes|project_root_recovery_kit|root_seed|password_material|custody_completion_marker/.test(source), `${path} can carry custody/recovery secret state`);
+}
+const rootSeedImplementationFiles = [];
+for (const file of hc2Files) {
+  const source = await readFile(file, "utf8");
+  if (/\broot_seed\b/.test(source)) rootSeedImplementationFiles.push(relative(root, file));
+}
+assert.deepEqual(rootSeedImplementationFiles.sort(), [
+  "lib/collaboration/hc2/providers/root-recovery-payload.ts",
+  "lib/collaboration/hc2/providers/root-recovery-worker.ts"
+], "Offline root seed handling escaped the worker-private payload boundary");
+for (const path of [
+  "lib/collaboration/hc2/device-vault.ts",
+  "lib/collaboration/hc2/providers/root-recovery-provider.ts",
+  "lib/collaboration/hc2/providers/root-recovery-worker.ts"
+]) {
+  const source = await readFile(join(root, path), "utf8");
+  assert(!/console\.|telemetry|diagnostic|logger\.|JSON\.stringify/.test(source), `${path} contains a secret-boundary logging or diagnostic path`);
+}
+
 const frozenFixtureHashes = {
   "scripts/fixtures/collaboration-canonical-v1.json": "f178eb0510471ef9a9ed6835840b75c1bf9b21a22b445c3ce00275582182726b",
   "scripts/fixtures/collaboration-roots-v1.json": "42189802cee24766e73e974fd09b6e1bd9f612c90da184399a82bea91a1e211e",
@@ -59,6 +89,9 @@ for (const [path, expected] of Object.entries(frozenFixtureHashes)) {
 process.stdout.write(`${JSON.stringify({
   production_hc2_imports: violations,
   hc2_contract_modules_scanned: hc2Files.length,
+  hc2_bounded_provider_exports: providerBarrelExports,
+  root_seed_worker_private_files: rootSeedImplementationFiles,
+  portable_secret_exclusion_files: portableAuthorityFiles.length,
   existing_frozen_fixtures_unchanged: Object.keys(frozenFixtureHashes).length,
   production_collaboration_state: "disabled"
 }, null, 2)}\n`);

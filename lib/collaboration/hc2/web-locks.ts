@@ -20,6 +20,12 @@ export function deriveHc2MutationLockName(projectId: ProjectId, deviceId: Device
   return `${lockDomain}:${suffix(project)}:${suffix(device)}`;
 }
 
+/** All custody plans for one project contend even when they propose different new devices. */
+export function deriveHc2CustodyCeremonyLockName(projectId: ProjectId): string {
+  const project = parseEntityId("project", projectId);
+  return `${lockDomain}:${suffix(project)}:custody-ceremony`;
+}
+
 /** Web Locks is advisory; callers must still perform the IndexedDB CAS. */
 export class Hc2WebLocksAdapter {
   readonly #locks: Hc2LockManager;
@@ -37,9 +43,25 @@ export class Hc2WebLocksAdapter {
     signal?: AbortSignal;
     operation: () => Promise<T>;
   }>): Promise<Hc2LockResult<T>> {
+    const name = deriveHc2MutationLockName(input.project_id, input.device_id);
+    return this.#runNamed(name, input);
+  }
+
+  async runCustodyCeremonyExclusive<T>(input: Readonly<{
+    project_id: ProjectId;
+    signal?: AbortSignal;
+    operation: () => Promise<T>;
+  }>): Promise<Hc2LockResult<T>> {
+    const name = deriveHc2CustodyCeremonyLockName(input.project_id);
+    return this.#runNamed(name, input);
+  }
+
+  async #runNamed<T>(name: string, input: Readonly<{
+    signal?: AbortSignal;
+    operation: () => Promise<T>;
+  }>): Promise<Hc2LockResult<T>> {
     if (typeof input.operation !== "function") throw new Error("Lock operations must be callable.");
     if (input.signal?.aborted) return Object.freeze({ status: "aborted", reason: "caller_aborted" });
-    const name = deriveHc2MutationLockName(input.project_id, input.device_id);
     try {
       return await this.#locks.request(name, { mode: "exclusive", signal: input.signal }, async () => {
         if (input.signal?.aborted) return Object.freeze({ status: "aborted", reason: "caller_aborted" });
