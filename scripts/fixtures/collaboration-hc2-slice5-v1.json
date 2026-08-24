@@ -1,0 +1,109 @@
+{
+  "fixture_version": 1,
+  "fixture_domain": "patchmark/hc2/slice5-vectors/v1",
+  "notice": "Deterministic published/test-only material; never production secrets.",
+  "inputs": {
+    "candidate_ed25519_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "candidate_ed25519_public_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "owner_ed25519_public_hex": "29acbae141bccaf0b22e1a94d34d0bc7361e526d0bfe12c89794bc9322966dd7",
+    "candidate_x25519_ikm_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    "owner_x25519_ikm_hex": "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+    "challenge_ephemeral_ikm_hex": "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f",
+    "candidate_delivery_ephemeral_ikm_hex": "707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f",
+    "owner_delivery_ephemeral_ikm_hex": "909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeaf",
+    "challenge_plaintext_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+    "epoch1_secret_hex": "1111111111111111111111111111111111111111111111111111111111111111",
+    "epoch2_secret_hex": "2222222222222222222222222222222222222222222222222222222222222222",
+    "epoch3_secret_hex": "3333333333333333333333333333333333333333333333333333333333333333"
+  },
+  "expected": {
+    "invitation": {
+      "action_id": "pm:control-action:v1:nhjuclcpqqpxcsphfr7xgyftictqpvas4z6dxmu3gwsarq3qjp7a",
+      "action_canonical_sha256": "d40fac9ed719b1a31870249c30f9946c786d1a766c904a3e7cb2b4fc51ee5ffd",
+      "evidence_id": "pm:invitation-evidence:v1:fma75oraqclno3kc47j5ravvp53sprnisoawqakmtlbhozm376dq"
+    },
+    "enrollment_request": {
+      "request_id": "pm:enrollment-request:v1:k5conmitgmnfdlhkdav5zys7nidn4i5t32dqom4cuhgsydjs7x7q",
+      "canonical_sha256": "5744e6b113331a51acea182bdce25f6a06de23b3de87073382a1cd2c0d32fdff",
+      "signature_preimage_hex": "83782d70617463686d61726b2f6863322f7369676e61747572652f656e726f6c6c6d656e742d726571756573742f76317828706d3a70726f6a6563743a76313a6161616161616161616161616161616161616161616161616161784d706d3a656e726f6c6c6d656e742d726571756573743a76313a6b35636f6e6d6974676d6e66646c686b646176357a7973376e69646e34693574333264716f6d34637568677379646a7337783771",
+      "signature_hex": "805886b7d59f9b40a8ddfe0e70786217e4f42d55f8b2d6aa859a58cf8c7a0f4a6fcd58496df6ae888a3e8a3ac6c2da2db79f64d24896705bdfaeb1f045123e01"
+    },
+    "challenge": {
+      "challenge_id": "pm:possession-challenge:v1:pgur3wauscjnsw6lwuwlpfvyq6ghfk26kaaxlok3y2hzwukcsqta",
+      "header_sha256": "f0c343aca3bb081d1aea68acd3147ac9572df8b4a560ae88107c90d30c3ae3a8",
+      "encapsulated_key_hex": "73005b459c8959620de9c0ca67a19f06f947f43f467c50b1e0ef6902720d4f59",
+      "ciphertext_hex": "6c4a0971eed60719ec62e6c6ca4485674b7394ed5f4f452394f298d3148ec9021f65e9f9110fb4fd8b96b738e296de8f",
+      "proof_id": "pm:possession-proof:v1:ni65ybxpi2goflqov5h4gso4enlfezcxczehw6s3mrecukzq23gq",
+      "response_preimage_hex": "83782e70617463686d61726b2f6863322f7369676e61747572652f706f7373657373696f6e2d726573706f6e73652f76317828706d3a70726f6a6563743a76313a6161616161616161616161616161616161616161616161616161784b706d3a706f7373657373696f6e2d70726f6f663a76313a6e693635796278706932676f666c716f7635683467736f34656e6c66657a6378637a6568773673336d726563756b7a7132336771",
+      "response_signature_hex": "df1e6a4d590ff1c351a2006e422cdc95d71e50f875f92c9c23c118f47e0e3dce5907fe01f809eebb9965c1b084a769a6cfe5197b064dbc3d24003ffccd9d8b0f"
+    },
+    "transition": {
+      "transition_id": "pm:membership-transition:v1:22tbalpznxizs3thf4jlxovvtocymn3v7ftmfyx7o3jautp72zpa",
+      "control_action_id": "pm:control-action:v1:rhcur7tbjdo3dzzaqciu7d2q6bj7fmko7nfespb3znnpi3l4acya",
+      "control_event_id": "pm:control-event:v1:baiejvlxmkouifvf7x2746gmhlo7xiweyo5nivakqdl4wdz3w6la",
+      "resulting_control_state_root": "pm:control-state-root:v1:q47ihzq6f4j74xto5hnns2xflkztlhceddq2obd6wnwq5wotf3ha",
+      "recipient_manifest_id": "pm:recipient-manifest:v1:nrbezjdr26c5z44dfkhx5skwexihkyh7e3z2jkqguwgjilzfq2dq",
+      "delivery_set_id": "pm:delivery-set:v1:3nhvro4gixzfyq5me4ll6yvhupi7ikyvtffsz7tonpu6o5ruoh6q",
+      "recipient_device_ids": [
+        "pm:device:v1:eeeeeeeeeeeeeeeeeeeeeeeeea",
+        "pm:device:v1:mmmmmmmmmmmmmmmmmmmmmmmmma"
+      ],
+      "epoch_commitment_id": "pm:key-epoch-commitment:v1:r4feq4mpxe7siouzgzc77xtme3qlxkvdk4phbqxsvcppaun3bgqa",
+      "epoch_public_commitment_hex": "8eb7528ed1390fdd7d303770e6db4ff907c2e5526a7a32f10b1bb960122fde9a"
+    },
+    "deliveries": [
+      {
+        "delivery_id": "pm:epoch-delivery:v1:jbimm5fiql7wmbnvg7ayotapx5baucdwrq4xmv4gbus5bnb6yzna",
+        "recipient_device_id": "pm:device:v1:eeeeeeeeeeeeeeeeeeeeeeeeea",
+        "recipient_key_id": "pm:public-key:v1:ggggggggggggggggggggggggga",
+        "header_sha256": "770b48e6f23779fb97fcecde02b81b425e4a1bf18afeefe98bbf430aed4e36a4",
+        "encapsulated_key_hex": "1b826c89257be5222fc5eeeadf7afca7b4bcf0e3e2d0ef1e4f99d86ad196486e",
+        "ciphertext_bytes": 618,
+        "ciphertext_sha256": "3ccf658d16819bd33fd21b84fa43776c5bdcdc63af0de56f0fd9eb28db955629"
+      },
+      {
+        "delivery_id": "pm:epoch-delivery:v1:q7xvi2vyfpgfghgpuh6xijzao4busbi3k6whzgn3uttgdpfk72ca",
+        "recipient_device_id": "pm:device:v1:mmmmmmmmmmmmmmmmmmmmmmmmma",
+        "recipient_key_id": "pm:public-key:v1:pppppppppppppppppppppppppa",
+        "header_sha256": "db85791878f58ba478128b66627782c2482e9ef4c8a4529c6619346cb2a78969",
+        "encapsulated_key_hex": "9e1e855b21e05a429ba515e8a1eff218ac2444c9d9fc32fffc7a40f4e752eb44",
+        "ciphertext_bytes": 618,
+        "ciphertext_sha256": "599a5cbbff6addf33a9aaf91f4bb4442393da742b2156b69add50427293d90fe"
+      }
+    ],
+    "admission": {
+      "admission_package_id": "pm:admission-package:v1:piptn7qzh74uagmdrm2owklqvrusvvddprqpo7p53eoy4tifajgq",
+      "projection_root": "pm:projection-root:v1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbba",
+      "admission_boundary_sha256_hex": "8181818181818181818181818181818181818181818181818181818181818181",
+      "full_history_verified": false
+    },
+    "receipt": {
+      "receipt_id": "pm:epoch-receipt:v1:42kidy6nu3yqzuyyjgds4eq64fkx5r5u6kxycebbrcsud6pee47a",
+      "signature_preimage_hex": "83782870617463686d61726b2f6863322f7369676e61747572652f65706f63682d726563656970742f76317828706d3a70726f6a6563743a76313a61616161616161616161616161616161616161616161616161617848706d3a65706f63682d726563656970743a76313a34326b696479366e753379717a7579796a6764733465713634666b7835723575366b787963656262726373756436706565343761",
+      "signature_hex": "5d36ce77240def95180b51fc516bc2aa0f60baf457a1576f95119876d795de7f10b2479208283fadc2cb8c9973c971f452ef371f8347b2b8874332ad326cd601"
+    },
+    "revocation": {
+      "transition_id": "pm:membership-transition:v1:mwbaz76uqradfnjdbliw7augakyjasmkwr6wzq76k65a7x4u6oma",
+      "resulting_control_state_root": "pm:control-state-root:v1:wqutdxx6ztrlv42cmdyqjiqnuepjmkrkpvpdb75h63zgwfzt7pka",
+      "recipient_manifest_id": "pm:recipient-manifest:v1:ddeu3g5jvxlijlo34lbw3mzcdfal2blwi7ibgvsipmlrz5lxjvta",
+      "recipient_device_ids": [
+        "pm:device:v1:eeeeeeeeeeeeeeeeeeeeeeeeea"
+      ],
+      "replacement_epoch_commitment_id": "pm:key-epoch-commitment:v1:tepvx7o2o6kwf3gdighp5um7x3f63pnpuvihrifqh3eyhnll535a"
+    },
+    "rejections": [
+      "invitation_reuse",
+      "stale_control_head",
+      "wrong_ed25519",
+      "wrong_x25519",
+      "missing_delivery",
+      "duplicate_delivery",
+      "extra_delivery",
+      "revoked_recipient",
+      "same_epoch",
+      "final_owner_removal",
+      "selective_scope",
+      "self_authorization"
+    ]
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": { "noEmit": true, "allowImportingTsExtensions": true },
+  "files": [
+    "../lib/collaboration/hc2/enrollment-contracts.ts",
+    "../lib/collaboration/hc2/invitation-authority.ts",
+    "../lib/collaboration/hc2/membership-authority.ts",
+    "../lib/collaboration/hc2/epoch-delivery.ts",
+    "../lib/collaboration/hc2/epoch-receipt.ts",
+    "../lib/collaboration/hc2/admission-package.ts",
+    "../lib/collaboration/hc2/enrollment-store.ts",
+    "../lib/collaboration/hc2/receipt-store.ts",
+    "../lib/collaboration/hc2/enrollment-custody.ts",
+    "../lib/collaboration/hc2/candidate-admission.ts",
+    "../lib/collaboration/hc2/enrollment-ceremony.ts",
+    "collaboration-hc2-slice5-vector-runtime.ts"
+  ]
+}

@@ -20,12 +20,12 @@ import {
   HC2_CUSTODY_SCHEMA_VERSION
 } from "./versions.ts";
 
-export type CustodyCeremonyPhase = "planned" | "kit_verified" | "keys_installed" | "portable_visible" | "complete" | "abandoned";
+export type CustodyCeremonyPhase = "planned" | "kit_verified" | "admission_verified" | "keys_installed" | "portable_visible" | "complete" | "abandoned";
 
 export type CustodyCeremonyJournal = Readonly<{
   schema_version: typeof HC2_CEREMONY_JOURNAL_VERSION;
   record_kind: "custody_ceremony_journal";
-  ceremony_kind: "initial_foundation" | "profile_loss_recovery";
+  ceremony_kind: "initial_foundation" | "profile_loss_recovery" | "device_enrollment";
   ceremony_id: string;
   plan_sha256: Uint8Array;
   project_id: ProjectId;
@@ -62,7 +62,7 @@ export type StoredDeviceVaultRecord = Readonly<{
   current_epoch_id: KeyEpochId;
   current_epoch_commitment: KeyEpochCommitmentId;
   current_epoch_public_commitment_bytes: Uint8Array;
-  recovery_kit_sha256: Uint8Array;
+  recovery_kit_sha256: Uint8Array | null;
   status: "active" | "retired";
 }>;
 
@@ -75,7 +75,7 @@ export type CustodyCompletionMarker = Readonly<{
   device_id: DeviceId;
   root_key_id: PublicKeyId;
   key_epoch_id: KeyEpochId;
-  recovery_kit_sha256: Uint8Array;
+  recovery_kit_sha256: Uint8Array | null;
   accepted_control_head_id: ControlEventId;
   completion: "verified_local_ceremony";
 }>;
@@ -89,6 +89,14 @@ export interface Hc2CustodyStore {
     vault: StoredDeviceVaultRecord;
     wrapped_epoch: WrappedLocalEpochRecord;
   }>): Promise<Readonly<{ status: "installed" | "exact_retry" }>>;
+  rotateCustodyEpoch(input: Readonly<{
+    project_id: ProjectId;
+    device_id: DeviceId;
+    expected_control_head_id: ControlEventId;
+    replacement_control_head_id: ControlEventId;
+    wrapped_epoch: WrappedLocalEpochRecord;
+  }>): Promise<Readonly<{ status: "rotated" | "exact_retry"; vault: StoredDeviceVaultRecord }>>;
+  advanceCustodyControlHead(input: Readonly<{ project_id: ProjectId; device_id: DeviceId; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId }>): Promise<Readonly<{ status: "advanced" | "exact_retry"; vault: StoredDeviceVaultRecord }>>;
   readVault(projectId: ProjectId, deviceId: DeviceId): Promise<StoredDeviceVaultRecord | null>;
   readWrappedEpoch(projectId: ProjectId, deviceId: DeviceId, epochId: KeyEpochId): Promise<WrappedLocalEpochRecord | null>;
   hasWrappingNonce(projectId: ProjectId, deviceId: DeviceId, generation: bigint, nonce: Uint8Array): Promise<boolean>;
@@ -141,8 +149,7 @@ export class Hc2InMemoryCustodyStore implements Hc2CustodyStore {
     const key = vaultKey(vault.project_id, vault.device_id);
     const existing = this.#vaults.get(key);
     if (current?.phase === "keys_installed" && existing && sameJournalPlan(current, journal) &&
-        current.recovery_kit_sha256 !== null && journal.recovery_kit_sha256 !== null &&
-        sameBytes(current.recovery_kit_sha256, journal.recovery_kit_sha256) &&
+        sameOptionalBytes(current.recovery_kit_sha256, journal.recovery_kit_sha256) &&
         current.accepted_control_head_id === journal.accepted_control_head_id && sameVaultPublicBinding(existing, vault)) {
       const installedEpoch = this.#epochs.get(epochKey(epoch.project_id, epoch.device_id, epoch.key_epoch_id));
       if (!installedEpoch || !sameWrappedEpoch(installedEpoch, epoch)) throw new Error("Installed epoch differs from the exact custody retry.");
@@ -165,6 +172,19 @@ export class Hc2InMemoryCustodyStore implements Hc2CustodyStore {
   async readVault(projectId: ProjectId, deviceId: DeviceId): Promise<StoredDeviceVaultRecord | null> {
     const value = this.#vaults.get(vaultKey(projectId, deviceId));
     return value ? copyVault(value) : null;
+  }
+
+  async rotateCustodyEpoch(input: Readonly<{ project_id: ProjectId; device_id: DeviceId; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId; wrapped_epoch: WrappedLocalEpochRecord }>): Promise<Readonly<{ status: "rotated" | "exact_retry"; vault: StoredDeviceVaultRecord }>> {
+    const key = vaultKey(input.project_id, input.device_id); const current = this.#vaults.get(key); if (!current) throw new Error("Epoch rotation requires an installed device vault."); const epoch = parseWrappedLocalEpochRecord(input.wrapped_epoch); const expected = parseDigestId("control-event", input.expected_control_head_id); const replacement = parseDigestId("control-event", input.replacement_control_head_id);
+    if (current.accepted_control_head_id === replacement && current.current_epoch_id === epoch.key_epoch_id && current.current_epoch_commitment === epoch.key_epoch_commitment) { const stored = this.#epochs.get(epochKey(epoch.project_id, epoch.device_id, epoch.key_epoch_id)); if (!stored || !sameWrappedEpoch(stored, epoch)) throw new Error("Exact epoch retry differs from stored custody."); return Object.freeze({ status: "exact_retry", vault: copyVault(current) }); }
+    assertRotationBinding(current, expected, replacement, epoch); const nonceKey = wrappingNonceKey(epoch.project_id, epoch.device_id, epoch.wrapping_key_generation, epoch.nonce); if (this.#nonces.has(nonceKey)) throw new Error("AES-GCM wrapping nonce collision detected."); const next = rotatedVault(current, replacement, epoch); this.#epochs.set(epochKey(epoch.project_id, epoch.device_id, epoch.key_epoch_id), epoch); this.#nonces.add(nonceKey); this.#vaults.set(key, next); return Object.freeze({ status: "rotated", vault: copyVault(next) });
+  }
+
+  async advanceCustodyControlHead(input: Readonly<{ project_id: ProjectId; device_id: DeviceId; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId }>): Promise<Readonly<{ status: "advanced" | "exact_retry"; vault: StoredDeviceVaultRecord }>> {
+    const key = vaultKey(input.project_id, input.device_id); const current = this.#vaults.get(key); if (!current) throw new Error("Control-head advance requires installed custody."); const expected = parseDigestId("control-event", input.expected_control_head_id); const replacement = parseDigestId("control-event", input.replacement_control_head_id);
+    if (current.accepted_control_head_id === replacement) return Object.freeze({ status: "exact_retry", vault: copyVault(current) });
+    if (expected === replacement || current.status !== "active" || current.accepted_control_head_id !== expected) throw new Error("Control-head advance does not extend exact installed custody.");
+    const next = parseStoredDeviceVaultRecord({ ...current, accepted_control_head_id: replacement }); this.#vaults.set(key, next); return Object.freeze({ status: "advanced", vault: copyVault(next) });
   }
 
   async readWrappedEpoch(projectId: ProjectId, deviceId: DeviceId, epochId: KeyEpochId): Promise<WrappedLocalEpochRecord | null> {
@@ -301,8 +321,7 @@ export class Hc2IndexedDbCustodyStore implements Hc2CustodyStore {
     const vaultStore = transaction.objectStore(storeNames.vaults);
     const existing = await requestValue<StoredDeviceVaultRecord | undefined>(vaultStore.get(key));
     if (current?.phase === "keys_installed" && existing && sameJournalPlan(current, journal) &&
-        current.recovery_kit_sha256 !== null && journal.recovery_kit_sha256 !== null &&
-        sameBytes(current.recovery_kit_sha256, journal.recovery_kit_sha256) &&
+        sameOptionalBytes(current.recovery_kit_sha256, journal.recovery_kit_sha256) &&
         current.accepted_control_head_id === journal.accepted_control_head_id &&
         sameVaultPublicBinding(parseStoredDeviceVaultRecord(existing), vault)) {
       const installedEpoch = await requestValue<WrappedLocalEpochRecord | undefined>(transaction.objectStore(storeNames.epochs).get(epochKey(epoch.project_id, epoch.device_id, epoch.key_epoch_id)));
@@ -344,6 +363,19 @@ export class Hc2IndexedDbCustodyStore implements Hc2CustodyStore {
 
   async readVault(projectId: ProjectId, deviceId: DeviceId): Promise<StoredDeviceVaultRecord | null> {
     return this.#read(storeNames.vaults, vaultKey(projectId, deviceId), parseStoredDeviceVaultRecord);
+  }
+
+  async rotateCustodyEpoch(input: Readonly<{ project_id: ProjectId; device_id: DeviceId; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId; wrapped_epoch: WrappedLocalEpochRecord }>): Promise<Readonly<{ status: "rotated" | "exact_retry"; vault: StoredDeviceVaultRecord }>> {
+    const epoch = parseWrappedLocalEpochRecord(input.wrapped_epoch); const expected = parseDigestId("control-event", input.expected_control_head_id); const replacement = parseDigestId("control-event", input.replacement_control_head_id); const key = vaultKey(input.project_id, input.device_id); const transaction = strictTransaction(this.#requireOpen(), [storeNames.vaults, storeNames.epochs, storeNames.nonces], "readwrite"); const vaultStore = transaction.objectStore(storeNames.vaults); const raw = await requestValue<StoredDeviceVaultRecord | undefined>(vaultStore.get(key)); if (!raw) { transaction.abort(); throw new Error("Epoch rotation requires an installed device vault."); } const current = parseStoredDeviceVaultRecord(raw);
+    if (current.accepted_control_head_id === replacement && current.current_epoch_id === epoch.key_epoch_id && current.current_epoch_commitment === epoch.key_epoch_commitment) { const stored = await requestValue<WrappedLocalEpochRecord | undefined>(transaction.objectStore(storeNames.epochs).get(epochKey(epoch.project_id, epoch.device_id, epoch.key_epoch_id))); if (!stored || !sameWrappedEpoch(parseWrappedLocalEpochRecord(stored), epoch)) { transaction.abort(); throw new Error("Exact epoch retry differs from stored custody."); } await transactionDone(transaction); return Object.freeze({ status: "exact_retry", vault: current }); }
+    assertRotationBinding(current, expected, replacement, epoch); const nonceKey = wrappingNonceKey(epoch.project_id, epoch.device_id, epoch.wrapping_key_generation, epoch.nonce); const nonceStore = transaction.objectStore(storeNames.nonces); if (await requestValue<unknown>(nonceStore.get(nonceKey)) !== undefined) { transaction.abort(); throw new Error("AES-GCM wrapping nonce collision detected."); } const next = rotatedVault(current, replacement, epoch); transaction.objectStore(storeNames.epochs).add(epoch, epochKey(epoch.project_id, epoch.device_id, epoch.key_epoch_id)); nonceStore.add(true, nonceKey); vaultStore.put(next, key); await transactionDone(transaction); return Object.freeze({ status: "rotated", vault: next });
+  }
+
+  async advanceCustodyControlHead(input: Readonly<{ project_id: ProjectId; device_id: DeviceId; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId }>): Promise<Readonly<{ status: "advanced" | "exact_retry"; vault: StoredDeviceVaultRecord }>> {
+    const key = vaultKey(input.project_id, input.device_id); const expected = parseDigestId("control-event", input.expected_control_head_id); const replacement = parseDigestId("control-event", input.replacement_control_head_id); const transaction = strictTransaction(this.#requireOpen(), [storeNames.vaults], "readwrite"); const store = transaction.objectStore(storeNames.vaults); const raw = await requestValue<unknown>(store.get(key)); if (raw === undefined) { transaction.abort(); throw new Error("Control-head advance requires installed custody."); } const current = parseStoredDeviceVaultRecord(raw);
+    if (current.accepted_control_head_id === replacement) { await transactionDone(transaction); return Object.freeze({ status: "exact_retry", vault: current }); }
+    if (expected === replacement || current.status !== "active" || current.accepted_control_head_id !== expected) { transaction.abort(); throw new Error("Control-head advance does not extend exact installed custody."); }
+    const next = parseStoredDeviceVaultRecord({ ...current, accepted_control_head_id: replacement }); store.put(next, key); await transactionDone(transaction); return Object.freeze({ status: "advanced", vault: next });
   }
 
   async readWrappedEpoch(projectId: ProjectId, deviceId: DeviceId, epochId: KeyEpochId): Promise<WrappedLocalEpochRecord | null> {
@@ -394,13 +426,13 @@ export function parseCustodyCeremonyJournal(value: unknown): CustodyCeremonyJour
     "device_id", "lost_device_id", "root_key_id", "key_epoch_id", "recovery_kit_sha256", "accepted_control_head_id", "phase"
   ]);
   const ceremonyKind = record.ceremony_kind;
-  if (ceremonyKind !== "initial_foundation" && ceremonyKind !== "profile_loss_recovery") throw new Error("Custody ceremony kind is invalid.");
+  if (ceremonyKind !== "initial_foundation" && ceremonyKind !== "profile_loss_recovery" && ceremonyKind !== "device_enrollment") throw new Error("Custody ceremony kind is invalid.");
   const phase = record.phase;
   if (!isPhase(phase)) throw new Error("Custody ceremony phase is invalid.");
   const planDigest = exactDigest(record.plan_sha256, "ceremony plan digest");
   const kitDigest = record.recovery_kit_sha256 === null ? null : exactDigest(record.recovery_kit_sha256, "recovery-kit digest");
   const lost = record.lost_device_id === null ? null : parseEntityId("device", record.lost_device_id);
-  if ((ceremonyKind === "initial_foundation") !== (lost === null)) throw new Error("Only profile-loss recovery may name a lost device.");
+  if ((ceremonyKind === "profile_loss_recovery") !== (lost !== null)) throw new Error("Only profile-loss recovery may name a lost device.");
   return freezeRecord({
     schema_version: expectLiteral(record.schema_version, HC2_CEREMONY_JOURNAL_VERSION, "ceremony journal version"),
     record_kind: expectLiteral(record.record_kind, "custody_ceremony_journal", "ceremony journal kind"),
@@ -460,7 +492,7 @@ export function parseStoredDeviceVaultRecord(value: unknown): StoredDeviceVaultR
     current_epoch_id: parseEntityId("key-epoch", record.current_epoch_id),
     current_epoch_commitment: parseDigestId("key-epoch-commitment", record.current_epoch_commitment),
     current_epoch_public_commitment_bytes: exactDigest(record.current_epoch_public_commitment_bytes, "epoch public commitment"),
-    recovery_kit_sha256: exactDigest(record.recovery_kit_sha256, "vault recovery-kit digest"),
+    recovery_kit_sha256: record.recovery_kit_sha256 === null ? null : exactDigest(record.recovery_kit_sha256, "vault recovery-kit digest"),
     status
   });
 }
@@ -471,7 +503,7 @@ export function parseCustodyCompletionMarker(value: unknown): CustodyCompletionM
     "key_epoch_id", "recovery_kit_sha256", "accepted_control_head_id", "completion"
   ]);
   const kind = record.ceremony_kind;
-  if (kind !== "initial_foundation" && kind !== "profile_loss_recovery") throw new Error("Completion ceremony kind is invalid.");
+  if (kind !== "initial_foundation" && kind !== "profile_loss_recovery" && kind !== "device_enrollment") throw new Error("Completion ceremony kind is invalid.");
   return freezeRecord({
     schema_version: expectLiteral(record.schema_version, HC2_CEREMONY_JOURNAL_VERSION, "completion version"),
     record_kind: expectLiteral(record.record_kind, "custody_completion_marker", "completion kind"),
@@ -481,17 +513,21 @@ export function parseCustodyCompletionMarker(value: unknown): CustodyCompletionM
     device_id: parseEntityId("device", record.device_id),
     root_key_id: parseEntityId("public-key", record.root_key_id),
     key_epoch_id: parseEntityId("key-epoch", record.key_epoch_id),
-    recovery_kit_sha256: exactDigest(record.recovery_kit_sha256, "completion kit digest"),
+    recovery_kit_sha256: record.recovery_kit_sha256 === null ? null : exactDigest(record.recovery_kit_sha256, "completion kit digest"),
     accepted_control_head_id: parseDigestId("control-event", record.accepted_control_head_id),
     completion: expectLiteral(record.completion, "verified_local_ceremony", "completion state")
   });
 }
 
 function assertInstallBinding(journal: CustodyCeremonyJournal, vault: StoredDeviceVaultRecord, epoch: WrappedLocalEpochRecord): void {
-  if (journal.phase !== "kit_verified" || !journal.recovery_kit_sha256 || !journal.accepted_control_head_id ||
+  const verifiedPhase = journal.ceremony_kind === "device_enrollment" ? "admission_verified" : "kit_verified";
+  const recoveryBinding = journal.ceremony_kind === "device_enrollment"
+    ? journal.recovery_kit_sha256 === null && vault.recovery_kit_sha256 === null
+    : journal.recovery_kit_sha256 !== null && vault.recovery_kit_sha256 !== null && sameBytes(journal.recovery_kit_sha256, vault.recovery_kit_sha256);
+  if (journal.phase !== verifiedPhase || !journal.accepted_control_head_id || !recoveryBinding ||
       journal.project_id !== vault.project_id || journal.person_id !== vault.person_id || journal.device_id !== vault.device_id ||
       journal.root_key_id !== vault.offline_root_key_id || journal.key_epoch_id !== vault.current_epoch_id ||
-      journal.accepted_control_head_id !== vault.accepted_control_head_id || !sameBytes(journal.recovery_kit_sha256, vault.recovery_kit_sha256) ||
+      journal.accepted_control_head_id !== vault.accepted_control_head_id ||
       epoch.project_id !== vault.project_id || epoch.device_id !== vault.device_id || epoch.key_epoch_id !== vault.current_epoch_id ||
       epoch.key_epoch_commitment !== vault.current_epoch_commitment || !sameBytes(epoch.public_commitment_bytes, vault.current_epoch_public_commitment_bytes) ||
       epoch.wrapping_key_generation !== vault.generation) {
@@ -499,21 +535,31 @@ function assertInstallBinding(journal: CustodyCeremonyJournal, vault: StoredDevi
   }
 }
 
+function assertRotationBinding(vault: StoredDeviceVaultRecord, expected: ControlEventId, replacement: ControlEventId, epoch: WrappedLocalEpochRecord): void {
+  if (expected === replacement || vault.status !== "active" || vault.accepted_control_head_id !== expected || vault.project_id !== epoch.project_id || vault.device_id !== epoch.device_id || vault.generation !== epoch.wrapping_key_generation || vault.current_epoch_id === epoch.key_epoch_id) throw new Error("Epoch rotation does not extend the exact installed custody head.");
+}
+
+function rotatedVault(current: StoredDeviceVaultRecord, replacement: ControlEventId, epoch: WrappedLocalEpochRecord): StoredDeviceVaultRecord {
+  return parseStoredDeviceVaultRecord({ ...current, accepted_control_head_id: replacement, current_epoch_id: epoch.key_epoch_id, current_epoch_commitment: epoch.key_epoch_commitment, current_epoch_public_commitment_bytes: Uint8Array.from(epoch.public_commitment_bytes) });
+}
+
 function markerMatchesJournal(marker: CustodyCompletionMarker, journal: CustodyCeremonyJournal): boolean {
   return marker.ceremony_kind === journal.ceremony_kind && marker.project_id === journal.project_id && marker.device_id === journal.device_id &&
     marker.root_key_id === journal.root_key_id && marker.key_epoch_id === journal.key_epoch_id && marker.accepted_control_head_id === journal.accepted_control_head_id &&
-    journal.recovery_kit_sha256 !== null && sameBytes(marker.recovery_kit_sha256, journal.recovery_kit_sha256);
+    sameOptionalBytes(marker.recovery_kit_sha256, journal.recovery_kit_sha256);
 }
 
 function validPhaseAdvance(from: CustodyCeremonyPhase, to: CustodyCeremonyPhase): boolean {
   return (from === "planned" && (to === "kit_verified" || to === "abandoned")) ||
+    (from === "planned" && (to === "admission_verified" || to === "abandoned")) ||
     (from === "kit_verified" && to === "abandoned") ||
+    (from === "admission_verified" && to === "abandoned") ||
     (from === "keys_installed" && to === "portable_visible") ||
     from === to;
 }
 
 function isPhase(value: unknown): value is CustodyCeremonyPhase {
-  return value === "planned" || value === "kit_verified" || value === "keys_installed" || value === "portable_visible" || value === "complete" || value === "abandoned";
+  return value === "planned" || value === "kit_verified" || value === "admission_verified" || value === "keys_installed" || value === "portable_visible" || value === "complete" || value === "abandoned";
 }
 
 function sameJournalPlan(left: CustodyCeremonyJournal, right: CustodyCeremonyJournal): boolean {
@@ -523,10 +569,15 @@ function sameJournalPlan(left: CustodyCeremonyJournal, right: CustodyCeremonyJou
 }
 
 function plannedJournalCanInstall(current: CustodyCeremonyJournal, verified: CustodyCeremonyJournal): boolean {
-  if (verified.phase !== "kit_verified" || !sameJournalPlan(current, verified) || verified.recovery_kit_sha256 === null || verified.accepted_control_head_id === null) return false;
+  const expectedPhase = verified.ceremony_kind === "device_enrollment" ? "admission_verified" : "kit_verified";
+  if (verified.phase !== expectedPhase || !sameJournalPlan(current, verified) || verified.accepted_control_head_id === null) return false;
+  if (verified.ceremony_kind === "device_enrollment") {
+    return verified.recovery_kit_sha256 === null && current.recovery_kit_sha256 === null && current.accepted_control_head_id === null &&
+      (current.phase === "planned" || current.phase === "admission_verified");
+  }
+  if (verified.recovery_kit_sha256 === null) return false;
   if (current.phase === "planned") return current.recovery_kit_sha256 === null && current.accepted_control_head_id === null;
-  return current.phase === "kit_verified" && current.recovery_kit_sha256 !== null && current.accepted_control_head_id === null &&
-    sameBytes(current.recovery_kit_sha256, verified.recovery_kit_sha256);
+  return current.phase === "kit_verified" && current.recovery_kit_sha256 !== null && current.accepted_control_head_id === null && sameBytes(current.recovery_kit_sha256, verified.recovery_kit_sha256);
 }
 
 function sameVaultPublicBinding(left: StoredDeviceVaultRecord, right: StoredDeviceVaultRecord): boolean {
@@ -536,7 +587,7 @@ function sameVaultPublicBinding(left: StoredDeviceVaultRecord, right: StoredDevi
     left.accepted_control_head_id === right.accepted_control_head_id && left.offline_root_key_id === right.offline_root_key_id &&
     left.current_epoch_id === right.current_epoch_id && left.current_epoch_commitment === right.current_epoch_commitment &&
     sameBytes(left.current_epoch_public_commitment_bytes, right.current_epoch_public_commitment_bytes) &&
-    sameBytes(left.recovery_kit_sha256, right.recovery_kit_sha256);
+    sameOptionalBytes(left.recovery_kit_sha256, right.recovery_kit_sha256);
 }
 
 function sameWrappedEpoch(left: WrappedLocalEpochRecord, right: WrappedLocalEpochRecord): boolean {
@@ -549,7 +600,7 @@ function sameWrappedEpoch(left: WrappedLocalEpochRecord, right: WrappedLocalEpoc
 function sameCompletion(left: CustodyCompletionMarker, right: CustodyCompletionMarker): boolean {
   return left.ceremony_id === right.ceremony_id && left.ceremony_kind === right.ceremony_kind && left.project_id === right.project_id && left.device_id === right.device_id &&
     left.root_key_id === right.root_key_id && left.key_epoch_id === right.key_epoch_id && left.accepted_control_head_id === right.accepted_control_head_id &&
-    sameBytes(left.recovery_kit_sha256, right.recovery_kit_sha256);
+    sameOptionalBytes(left.recovery_kit_sha256, right.recovery_kit_sha256);
 }
 
 function copyJournal(value: CustodyCeremonyJournal): CustodyCeremonyJournal { return parseCustodyCeremonyJournal(value); }
@@ -573,6 +624,7 @@ function requirePair(value: unknown): CryptoKeyPair { if (!value || typeof value
 function requireCryptoKey(value: unknown): CryptoKey { if (!(value instanceof CryptoKey)) throw new Error("Vault key handle is invalid."); return value; }
 function hex(bytes: Uint8Array): string { let result = ""; for (const byte of bytes) result += byte.toString(16).padStart(2, "0"); return result; }
 function sameBytes(left: Uint8Array, right: Uint8Array): boolean { if (left.length !== right.length) return false; let difference = 0; for (let index = 0; index < left.length; index += 1) difference |= left[index] ^ right[index]; return difference === 0; }
+function sameOptionalBytes(left: Uint8Array | null, right: Uint8Array | null): boolean { return left === null || right === null ? left === right : sameBytes(left, right); }
 function strictTransaction(database: IDBDatabase, names: readonly string[], mode: IDBTransactionMode): IDBTransaction { return database.transaction([...names], mode, { durability: "strict" }); }
 function requestValue<T>(request: IDBRequest<T>): Promise<T> { return new Promise((resolve, reject) => { request.onsuccess = () => resolve(request.result); request.onerror = () => reject(request.error ?? new Error("IndexedDB request failed.")); }); }
 function transactionDone(transaction: IDBTransaction): Promise<void> { return new Promise((resolve, reject) => { transaction.oncomplete = () => resolve(); transaction.onabort = transaction.onerror = () => reject(transaction.error ?? new Error("IndexedDB transaction failed.")); }); }

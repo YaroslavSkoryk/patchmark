@@ -15,7 +15,20 @@ export const hc2DigestIdKinds = [
   "object-commit-marker",
   "recovery-envelope",
   "transaction-intent",
-  "writer-continuity"
+  "writer-continuity",
+  "invitation-evidence",
+  "invitation-handoff",
+  "enrollment-request",
+  "possession-challenge",
+  "possession-proof",
+  "membership-transition",
+  "recipient-manifest",
+  "delivery-set",
+  "epoch-delivery",
+  "admission-package",
+  "epoch-receipt",
+  "enrollment-ceremony",
+  "enrollment-batch"
 ] as const;
 
 export type Hc2DigestIdKind = (typeof hc2DigestIdKinds)[number];
@@ -31,6 +44,19 @@ export type ObjectCommitMarkerId = Hc2DigestId<"object-commit-marker">;
 export type RecoveryEnvelopeId = Hc2DigestId<"recovery-envelope">;
 export type TransactionIntentCommitmentId = Hc2DigestId<"transaction-intent">;
 export type WriterContinuityId = Hc2DigestId<"writer-continuity">;
+export type InvitationEvidenceId = Hc2DigestId<"invitation-evidence">;
+export type InvitationHandoffId = Hc2DigestId<"invitation-handoff">;
+export type EnrollmentRequestId = Hc2DigestId<"enrollment-request">;
+export type PossessionChallengeId = Hc2DigestId<"possession-challenge">;
+export type PossessionProofId = Hc2DigestId<"possession-proof">;
+export type MembershipTransitionId = Hc2DigestId<"membership-transition">;
+export type RecipientManifestId = Hc2DigestId<"recipient-manifest">;
+export type DeliverySetId = Hc2DigestId<"delivery-set">;
+export type EpochDeliveryId = Hc2DigestId<"epoch-delivery">;
+export type AdmissionPackageId = Hc2DigestId<"admission-package">;
+export type EpochReceiptId = Hc2DigestId<"epoch-receipt">;
+export type EnrollmentCeremonyId = Hc2DigestId<"enrollment-ceremony">;
+export type EnrollmentBatchId = Hc2DigestId<"enrollment-batch">;
 
 export type OperationId = string & { readonly [operationIdBrand]: "operation" };
 export type EnvelopeId = string & { readonly [envelopeIdBrand]: "envelope" };
@@ -45,7 +71,20 @@ const domainByKind = Object.freeze({
   "object-commit-marker": hc2HashDomains.objectCommitMarker,
   "recovery-envelope": hc2HashDomains.recoveryEnvelope,
   "transaction-intent": hc2HashDomains.transactionIntent,
-  "writer-continuity": hc2HashDomains.writerContinuity
+  "writer-continuity": hc2HashDomains.writerContinuity,
+  "invitation-evidence": hc2HashDomains.invitationEvidence,
+  "invitation-handoff": hc2HashDomains.invitationHandoff,
+  "enrollment-request": hc2HashDomains.enrollmentRequest,
+  "possession-challenge": hc2HashDomains.possessionChallenge,
+  "possession-proof": hc2HashDomains.possessionProof,
+  "membership-transition": hc2HashDomains.membershipTransition,
+  "recipient-manifest": hc2HashDomains.recipientManifest,
+  "delivery-set": hc2HashDomains.deliverySet,
+  "epoch-delivery": hc2HashDomains.epochDelivery,
+  "admission-package": hc2HashDomains.admissionPackage,
+  "epoch-receipt": hc2HashDomains.epochReceipt,
+  "enrollment-ceremony": hc2HashDomains.enrollmentCeremony,
+  "enrollment-batch": hc2HashDomains.enrollmentBatch
 } as const satisfies Readonly<Record<Hc2DigestIdKind, string>>);
 
 export type DerivedHc2Identity<TKind extends Hc2DigestIdKind> = Readonly<{

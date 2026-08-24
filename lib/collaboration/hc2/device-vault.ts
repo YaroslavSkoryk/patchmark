@@ -31,6 +31,7 @@ import {
 import {
   HC2_EPOCH_SECRET_BYTES,
   HC2_EPOCH_WRAP_NONCE_BYTES,
+  parseWrappedLocalEpochRecord,
   validateWrappingKey,
   withUnwrappedEpoch,
   wrapEpochSecret,
@@ -258,6 +259,46 @@ export class Hc2DeviceVaultService {
       subtle: this.#subtle,
       use: input.use
     });
+  }
+
+  async openRecipientEnvelope(input: Readonly<{ custody: LoadedDeviceCustody; info: Parameters<SingleShotHpkeProvider["openBound"]>[0]["info"]; public_header: Parameters<SingleShotHpkeProvider["openBound"]>[0]["public_header"]; ciphertext_bytes: Parameters<SingleShotHpkeProvider["openBound"]>[0]["ciphertext_bytes"] }>): Promise<Awaited<ReturnType<SingleShotHpkeProvider["openBound"]>>> {
+    const loaded = this.#loaded.get(input.custody);
+    if (!loaded || this.#keks.get(input.custody.local_kek) !== loaded.vault.local_kek) throw new Error("Loaded custody handle is unknown.");
+    return new SingleShotHpkeProvider({ keys: loaded.registry }).openBound({ recipient_key_pair: input.custody.recipient_key_pair, info: input.info, public_header: input.public_header, ciphertext_bytes: input.ciphertext_bytes });
+  }
+
+  async wrapEpochForRotation(input: Readonly<{ custody: LoadedDeviceCustody; key_epoch_id: KeyEpochId; epoch_secret: Uint8Array; nonce: Uint8Array }>): Promise<WrappedLocalEpochRecord> {
+    const loaded = this.#loaded.get(input.custody);
+    if (!loaded || this.#keks.get(input.custody.local_kek) !== loaded.vault.local_kek) throw new Error("Loaded custody handle is unknown.");
+    if (input.key_epoch_id === loaded.vault.current_epoch_id) throw new Error("Epoch rotation requires a new epoch identity.");
+    if (await this.#store.hasWrappingNonce(loaded.vault.project_id, loaded.vault.device_id, loaded.vault.generation, input.nonce)) throw new Error("AES-GCM wrapping nonce collision detected; the operation will not retry.");
+    return wrapEpochSecret({ key: loaded.vault.local_kek, project_id: loaded.vault.project_id, device_id: loaded.vault.device_id, key_epoch_id: input.key_epoch_id, wrapping_key_generation: loaded.vault.generation, epoch_secret: input.epoch_secret, nonce: input.nonce, subtle: this.#subtle });
+  }
+
+  async withPendingEpoch<T>(input: Readonly<{ custody: LoadedDeviceCustody; wrapped_epoch: WrappedLocalEpochRecord; use: (epochSecret: Uint8Array) => T | Promise<T> }>): Promise<T> {
+    const loaded = this.#loaded.get(input.custody);
+    if (!loaded || this.#keks.get(input.custody.local_kek) !== loaded.vault.local_kek) throw new Error("Loaded custody handle is unknown.");
+    if (input.wrapped_epoch.key_epoch_id === loaded.vault.current_epoch_id) throw new Error("Pending epoch must differ from the installed current epoch.");
+    return withUnwrappedEpoch({ key: loaded.vault.local_kek, record: input.wrapped_epoch, expected_project_id: loaded.vault.project_id, expected_device_id: loaded.vault.device_id, subtle: this.#subtle, use: input.use });
+  }
+
+  async commitEpochRotation(input: Readonly<{ custody: LoadedDeviceCustody; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId; wrapped_epoch: WrappedLocalEpochRecord }>): Promise<Readonly<{ status: "rotated" | "exact_retry"; custody: LoadedDeviceCustody }>> {
+    const loaded = this.#loaded.get(input.custody);
+    if (!loaded || this.#keks.get(input.custody.local_kek) !== loaded.vault.local_kek) throw new Error("Loaded custody handle is unknown.");
+    const outcome = await this.#store.rotateCustodyEpoch({ project_id: loaded.vault.project_id, device_id: loaded.vault.device_id, expected_control_head_id: input.expected_control_head_id, replacement_control_head_id: input.replacement_control_head_id, wrapped_epoch: input.wrapped_epoch });
+    const next = Object.freeze({ public_binding: publicBinding(outcome.vault), signing_key: input.custody.signing_key, recipient_key_pair: input.custody.recipient_key_pair, local_kek: input.custody.local_kek });
+    this.#loaded.set(next, Object.freeze({ vault: outcome.vault, wrapped_epoch: parseWrappedLocalEpochRecord(input.wrapped_epoch), registry: loaded.registry }));
+    this.#loaded.delete(input.custody);
+    return Object.freeze({ status: outcome.status, custody: next });
+  }
+
+  async commitControlHeadAdvance(input: Readonly<{ custody: LoadedDeviceCustody; expected_control_head_id: ControlEventId; replacement_control_head_id: ControlEventId }>): Promise<Readonly<{ status: "advanced" | "exact_retry"; custody: LoadedDeviceCustody }>> {
+    const loaded = this.#loaded.get(input.custody);
+    if (!loaded || this.#keks.get(input.custody.local_kek) !== loaded.vault.local_kek) throw new Error("Loaded custody handle is unknown.");
+    const outcome = await this.#store.advanceCustodyControlHead({ project_id: loaded.vault.project_id, device_id: loaded.vault.device_id, expected_control_head_id: input.expected_control_head_id, replacement_control_head_id: input.replacement_control_head_id });
+    const next = Object.freeze({ public_binding: publicBinding(outcome.vault), signing_key: input.custody.signing_key, recipient_key_pair: input.custody.recipient_key_pair, local_kek: input.custody.local_kek });
+    this.#loaded.set(next, Object.freeze({ vault: outcome.vault, wrapped_epoch: loaded.wrapped_epoch, registry: loaded.registry })); this.#loaded.delete(input.custody);
+    return Object.freeze({ status: outcome.status, custody: next });
   }
 }
 

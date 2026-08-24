@@ -1,5 +1,6 @@
 import type { CollaborationRole } from "./capabilities.ts";
 import { collaborationRoles } from "./capabilities.ts";
+import { decodeSha256Base32 } from "./base32.ts";
 import {
   CONTROL_ACTION_SCHEMA_VERSION,
   CONTROL_EVENT_CORE_SCHEMA_VERSION,
@@ -114,6 +115,43 @@ export type KeyEpochTransitionAction =
       reason: "membership_change" | "device_revocation" | "periodic_rotation";
     }>;
 
+export type Hc2InvitationCreateAction =
+  ControlActionBase<"hc2_invitation_create"> &
+    Readonly<{
+      invitation_id: import("./identities.ts").InvitationId;
+      inviting_membership_id: MembershipId;
+      inviting_person_id: PersonId;
+      inviting_device_id: DeviceId;
+      intended_role: CollaborationRole;
+      access_scope: "project_wide";
+      access_scope_id: AccessScopeId;
+      creation_control_head_id: ControlEventId;
+      valid_through_control_sequence: UInt64;
+      suite_id: "patchmark/hc2/crypto-suite/v1";
+    }>;
+
+export type Hc2InvitationCancelAction =
+  ControlActionBase<"hc2_invitation_cancel"> &
+    Readonly<{
+      invitation_id: import("./identities.ts").InvitationId;
+      invitation_control_event_id: ControlEventId;
+      suite_id: "patchmark/hc2/crypto-suite/v1";
+    }>;
+
+export type Hc2MembershipEpochTransitionAction =
+  ControlActionBase<"hc2_membership_epoch_transition"> &
+    Readonly<{
+      transition_id: string;
+      transition_kind: "new_membership" | "additional_device" | "role_change" | "device_revocation" | "membership_revocation";
+      recipient_manifest_id: string;
+      delivery_set_id: string;
+      previous_key_epoch_id: KeyEpochId;
+      replacement_key_epoch_id: KeyEpochId;
+      replacement_key_epoch_commitment: KeyEpochCommitmentId;
+      replacement_active_control_device_id: DeviceId;
+      suite_id: "patchmark/hc2/crypto-suite/v1";
+    }>;
+
 export type DeviceSequenceCutoff = Readonly<{
   device_id: DeviceId;
   maximum_accepted_semantic_sequence: UInt64;
@@ -139,6 +177,9 @@ export type ControlActionCore =
   | DeviceRevocationAction
   | ActiveControlDeviceTransferAction
   | KeyEpochTransitionAction
+  | Hc2InvitationCreateAction
+  | Hc2InvitationCancelAction
+  | Hc2MembershipEpochTransitionAction
   | RootRecoveryAction;
 
 export type ControlActionRecord = Readonly<{
@@ -252,6 +293,20 @@ export function parseControlActionCore(value: unknown): ControlActionCore {
       "replacement_key_epoch_id",
       "replacement_key_epoch_commitment",
       "reason",
+      "invitation_id",
+      "inviting_membership_id",
+      "inviting_person_id",
+      "inviting_device_id",
+      "intended_role",
+      "access_scope",
+      "creation_control_head_id",
+      "valid_through_control_sequence",
+      "invitation_control_event_id",
+      "transition_id",
+      "transition_kind",
+      "recipient_manifest_id",
+      "delivery_set_id",
+      "suite_id",
       "last_uncontested_control_id",
       "selected_membership_device_state_root",
       "revocation_sequence_cutoffs",
@@ -275,6 +330,9 @@ export function parseControlActionCore(value: unknown): ControlActionCore {
       "device_revocation",
       "active_control_device_transfer",
       "key_epoch_transition",
+      "hc2_invitation_create",
+      "hc2_invitation_cancel",
+      "hc2_membership_epoch_transition",
       "root_recovery"
     ] as const,
     "control action kind"
@@ -407,6 +465,70 @@ export function parseControlActionCore(value: unknown): ControlActionCore {
           ["membership_change", "device_revocation", "periodic_rotation"] as const,
           "key epoch transition reason"
         )
+      });
+    case "hc2_invitation_create":
+      requireVariantKeys(discriminator, [
+        "invitation_id",
+        "inviting_membership_id",
+        "inviting_person_id",
+        "inviting_device_id",
+        "intended_role",
+        "access_scope",
+        "access_scope_id",
+        "creation_control_head_id",
+        "valid_through_control_sequence",
+        "suite_id"
+      ]);
+      return freezeRecord({
+        schema_version: CONTROL_ACTION_SCHEMA_VERSION,
+        project_id: projectId,
+        action_kind: kind,
+        invitation_id: parseEntityId("invitation", discriminator.invitation_id),
+        inviting_membership_id: parseEntityId("membership", discriminator.inviting_membership_id),
+        inviting_person_id: parseEntityId("person", discriminator.inviting_person_id),
+        inviting_device_id: parseEntityId("device", discriminator.inviting_device_id),
+        intended_role: parseRole(discriminator.intended_role),
+        access_scope: expectLiteral(discriminator.access_scope, "project_wide", "HC-2 invitation access scope"),
+        access_scope_id: parseEntityId("access-scope", discriminator.access_scope_id),
+        creation_control_head_id: parseDigestId("control-event", discriminator.creation_control_head_id),
+        valid_through_control_sequence: expectUInt64(discriminator.valid_through_control_sequence, "invitation validity control sequence"),
+        suite_id: expectLiteral(discriminator.suite_id, "patchmark/hc2/crypto-suite/v1", "HC-2 invitation suite")
+      });
+    case "hc2_invitation_cancel":
+      requireVariantKeys(discriminator, ["invitation_id", "invitation_control_event_id", "suite_id"]);
+      return freezeRecord({
+        schema_version: CONTROL_ACTION_SCHEMA_VERSION,
+        project_id: projectId,
+        action_kind: kind,
+        invitation_id: parseEntityId("invitation", discriminator.invitation_id),
+        invitation_control_event_id: parseDigestId("control-event", discriminator.invitation_control_event_id),
+        suite_id: expectLiteral(discriminator.suite_id, "patchmark/hc2/crypto-suite/v1", "HC-2 invitation suite")
+      });
+    case "hc2_membership_epoch_transition":
+      requireVariantKeys(discriminator, [
+        "transition_id",
+        "transition_kind",
+        "recipient_manifest_id",
+        "delivery_set_id",
+        "previous_key_epoch_id",
+        "replacement_key_epoch_id",
+        "replacement_key_epoch_commitment",
+        "replacement_active_control_device_id",
+        "suite_id"
+      ]);
+      return freezeRecord({
+        schema_version: CONTROL_ACTION_SCHEMA_VERSION,
+        project_id: projectId,
+        action_kind: kind,
+        transition_id: parseHc2ControlDigestReference("membership-transition", discriminator.transition_id),
+        transition_kind: expectEnum(discriminator.transition_kind, ["new_membership", "additional_device", "role_change", "device_revocation", "membership_revocation"] as const, "HC-2 transition kind"),
+        recipient_manifest_id: parseHc2ControlDigestReference("recipient-manifest", discriminator.recipient_manifest_id),
+        delivery_set_id: parseHc2ControlDigestReference("delivery-set", discriminator.delivery_set_id),
+        previous_key_epoch_id: parseEntityId("key-epoch", discriminator.previous_key_epoch_id),
+        replacement_key_epoch_id: parseEntityId("key-epoch", discriminator.replacement_key_epoch_id),
+        replacement_key_epoch_commitment: parseDigestId("key-epoch-commitment", discriminator.replacement_key_epoch_commitment),
+        replacement_active_control_device_id: parseEntityId("device", discriminator.replacement_active_control_device_id),
+        suite_id: expectLiteral(discriminator.suite_id, "patchmark/hc2/crypto-suite/v1", "HC-2 transition suite")
       });
     case "root_recovery":
       requireVariantKeys(discriminator, [
@@ -987,6 +1109,15 @@ function requireVariantKeys(
       throw new Error(`Control action ${record.action_kind} requires ${key}.`);
     }
   }
+}
+
+function parseHc2ControlDigestReference(kind: "membership-transition" | "recipient-manifest" | "delivery-set", value: unknown): string {
+  if (typeof value !== "string") throw new Error(`${kind} reference must be a string.`);
+  const prefix = `pm:${kind}:v1:`;
+  if (!value.startsWith(prefix)) throw new Error(`${kind} reference uses the wrong namespace.`);
+  try { decodeSha256Base32(value.slice(prefix.length)); }
+  catch { throw new Error(`${kind} reference must use canonical lowercase SHA-256 Base32.`); }
+  return value;
 }
 
 const eventBaseKeys = new Set([

@@ -679,6 +679,40 @@ function controlActionMap(core: ControlActionCore): CanonicalMap {
         ["reason", text(core.reason)]
       );
       break;
+    case "hc2_invitation_create":
+      entries.push(
+        ["invitation_id", text(core.invitation_id)],
+        ["inviting_membership_id", text(core.inviting_membership_id)],
+        ["inviting_person_id", text(core.inviting_person_id)],
+        ["inviting_device_id", text(core.inviting_device_id)],
+        ["intended_role", text(core.intended_role)],
+        ["access_scope", text(core.access_scope)],
+        ["access_scope_id", text(core.access_scope_id)],
+        ["creation_control_head_id", text(core.creation_control_head_id)],
+        ["valid_through_control_sequence", canonicalUint(core.valid_through_control_sequence)],
+        ["suite_id", text(core.suite_id)]
+      );
+      break;
+    case "hc2_invitation_cancel":
+      entries.push(
+        ["invitation_id", text(core.invitation_id)],
+        ["invitation_control_event_id", text(core.invitation_control_event_id)],
+        ["suite_id", text(core.suite_id)]
+      );
+      break;
+    case "hc2_membership_epoch_transition":
+      entries.push(
+        ["transition_id", text(core.transition_id)],
+        ["transition_kind", text(core.transition_kind)],
+        ["recipient_manifest_id", text(core.recipient_manifest_id)],
+        ["delivery_set_id", text(core.delivery_set_id)],
+        ["previous_key_epoch_id", text(core.previous_key_epoch_id)],
+        ["replacement_key_epoch_id", text(core.replacement_key_epoch_id)],
+        ["replacement_key_epoch_commitment", text(core.replacement_key_epoch_commitment)],
+        ["replacement_active_control_device_id", text(core.replacement_active_control_device_id)],
+        ["suite_id", text(core.suite_id)]
+      );
+      break;
     case "root_recovery":
       entries.push(
         ["last_uncontested_control_id", text(core.last_uncontested_control_id)],

@@ -27,7 +27,12 @@ export const hc2RecordKinds = [
   "private_review_override", "project_folder_binding", "projector_cache", "reading_bookmark", "recovery_recipient_epoch_envelope",
   "replica_metadata", "revision_index", "semantic_event", "semantic_index", "semantic_payload", "snapshot",
   "staging_object", "state_blob", "storage_estimate_observation", "transaction_intent", "ui_state",
-  "unsaved_recovery_draft", "wrapped_local_epoch_secret", "writer_lock_state"
+  "unsaved_recovery_draft", "wrapped_local_epoch_secret", "writer_lock_state",
+  "invitation_evidence", "invitation_handoff", "enrollment_request", "possession_proof",
+  "membership_transition", "epoch_recipient_manifest", "epoch_delivery_set", "epoch_delivery_envelope",
+  "current_state_admission_package", "epoch_delivery_receipt", "enrollment_batch_marker",
+  "possession_challenge", "enrollment_transition_journal", "enrollment_completion_marker",
+  "pending_enrollment_device_vault", "enrollment_admission_completion_marker"
 ] as const;
 
 export type Hc2RecordKind = (typeof hc2RecordKinds)[number];
@@ -96,7 +101,23 @@ export const hc2AuthorityByRecordKind = Object.freeze({
   ui_state: "device_private_operational",
   unsaved_recovery_draft: "device_private_operational",
   wrapped_local_epoch_secret: "device_private_authoritative",
-  writer_lock_state: "local_transactional"
+  writer_lock_state: "local_transactional",
+  invitation_evidence: "portable_authoritative",
+  invitation_handoff: "portable_authoritative",
+  enrollment_request: "portable_authoritative",
+  possession_proof: "portable_authoritative",
+  membership_transition: "portable_authoritative",
+  epoch_recipient_manifest: "portable_authoritative",
+  epoch_delivery_set: "portable_authoritative",
+  epoch_delivery_envelope: "portable_authoritative",
+  current_state_admission_package: "portable_authoritative",
+  epoch_delivery_receipt: "portable_authoritative",
+  enrollment_batch_marker: "portable_authoritative",
+  possession_challenge: "local_transactional",
+  enrollment_transition_journal: "local_transactional",
+  enrollment_completion_marker: "local_transactional",
+  pending_enrollment_device_vault: "device_private_authoritative",
+  enrollment_admission_completion_marker: "local_transactional"
 } as const satisfies Readonly<Record<Hc2RecordKind, Hc2AuthorityClass>>);
 
 export type Hc2ClassifiedRecord<TKind extends Hc2RecordKind = Hc2RecordKind> = Readonly<{

@@ -30,6 +30,10 @@ export const hc2ProtocolLimits = Object.freeze({
   maximum_objects_per_chunk: 1024,
   maximum_chunks_per_bundle: 4096,
   maximum_dependency_depth: 256,
+  maximum_active_devices_per_project: 1024,
+  maximum_invitation_handoff_canonical_bytes: BigInt(16) * KIB,
+  maximum_enrollment_record_canonical_bytes: BigInt(64) * KIB,
+  maximum_admission_package_canonical_bytes: BigInt(2) * MIB,
   fixed_recovery_headroom_bytes: BigInt(64) * MIB,
   maximum_supported_byte_count: MAX_SUPPORTED_BYTE_COUNT,
   compression: "none" as const

@@ -15,6 +15,7 @@ export const HC2_CUSTODY_SCHEMA_VERSION = 1 as const;
 export const HC2_RECOVERY_KIT_VERSION = 1 as const;
 export const HC2_EPOCH_WRAP_VERSION = 1 as const;
 export const HC2_CEREMONY_JOURNAL_VERSION = 1 as const;
+export const HC2_ENROLLMENT_SCHEMA_VERSION = 1 as const;
 
 export const HC2_ABSOLUTE_CHROMIUM_FLOOR = 137 as const;
 
@@ -28,6 +29,8 @@ export const HC2_RECOVERY_KIT_PROFILE_ID =
   "patchmark/hc2/recovery-kit/v1" as const;
 export const HC2_LOCAL_EPOCH_WRAP_PROFILE_ID =
   "patchmark/hc2/local-epoch-wrap/v1" as const;
+export const HC2_PROJECT_WIDE_ACCESS_SCOPE =
+  "project_wide" as const;
 
 export const hc2HashDomains = Object.freeze({
   batchObjectRoot: "patchmark/hc2/batch-object-root/v1",
@@ -43,10 +46,28 @@ export const hc2HashDomains = Object.freeze({
   epochSecretCommitment: "patchmark/hc2/epoch-secret-commitment/v1",
   recoveryKit: "patchmark/hc2/recovery-kit/v1",
   recoveryKitPayload: "patchmark/hc2/recovery-kit-payload/v1",
-  recoveryConfirmation: "patchmark/hc2/recovery-confirmation/v1"
+  recoveryConfirmation: "patchmark/hc2/recovery-confirmation/v1",
+  invitationEvidence: "patchmark/hc2/invitation-evidence/v1",
+  invitationHandoff: "patchmark/hc2/invitation-handoff/v1",
+  enrollmentRequest: "patchmark/hc2/enrollment-request/v1",
+  possessionChallenge: "patchmark/hc2/possession-challenge/v1",
+  possessionProof: "patchmark/hc2/possession-proof/v1",
+  membershipTransition: "patchmark/hc2/membership-transition/v1",
+  recipientManifest: "patchmark/hc2/recipient-manifest/v1",
+  deliverySet: "patchmark/hc2/delivery-set/v1",
+  epochDelivery: "patchmark/hc2/epoch-delivery/v1",
+  admissionPackage: "patchmark/hc2/admission-package/v1",
+  epochReceipt: "patchmark/hc2/epoch-receipt/v1",
+  enrollmentCeremony: "patchmark/hc2/enrollment-ceremony/v1",
+  enrollmentBatch: "patchmark/hc2/enrollment-batch/v1"
 } as const);
 
 export const hc2SignatureDomains = Object.freeze({
   envelopeChunk: "patchmark/hc2/signature/envelope-chunk/v1",
-  writerContinuity: "patchmark/hc2/signature/writer-continuity/v1"
+  writerContinuity: "patchmark/hc2/signature/writer-continuity/v1",
+  enrollmentRequest: "patchmark/hc2/signature/enrollment-request/v1",
+  possessionResponse: "patchmark/hc2/signature/possession-response/v1",
+  invitationHandoff: "patchmark/hc2/signature/invitation-handoff/v1",
+  admissionPackage: "patchmark/hc2/signature/admission-package/v1",
+  epochReceipt: "patchmark/hc2/signature/epoch-receipt/v1"
 } as const);
