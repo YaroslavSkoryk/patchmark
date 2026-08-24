@@ -38,10 +38,18 @@ const importTargets = [
   "../lib/collaboration/hc2/providers/native-key-handles.ts",
   "../lib/collaboration/hc2/providers/ed25519-provider.ts",
   "../lib/collaboration/hc2/providers/hpke-provider.ts",
+  "../lib/collaboration/hc2/providers/hpke-v2-provider.ts",
   "../lib/collaboration/hc2/providers/suite-negotiator.ts",
   "../lib/collaboration/hc2/providers/recovery-format.ts",
   "../lib/collaboration/hc2/providers/recovery-worker-protocol.ts",
-  "../lib/collaboration/hc2/providers/recovery-provider.ts"
+  "../lib/collaboration/hc2/providers/recovery-provider.ts",
+  "../lib/collaboration/hc2/transport-v2-contracts.ts",
+  "../lib/collaboration/hc2/transport-v2-crypto.ts",
+  "../lib/collaboration/hc2/transport-bundle-framing.ts",
+  "../lib/collaboration/hc2/transport-stream-store.ts",
+  "../lib/collaboration/hc2/transport-attachment-store.ts",
+  "../lib/collaboration/hc2/transport-export.ts",
+  "../lib/collaboration/hc2/transport-import.ts"
 ];
 for (const target of importTargets) await import(`${target}?import-safety=${Date.now()}`);
 Math.random = originalRandom;

@@ -46,7 +46,7 @@ export class Hc1CanonicalPortableObjectVerifier implements Hc2PortableObjectVeri
       object_kind: kind,
       object_id: id,
       project_id: this.#project,
-      dependency_ids: Object.freeze(collectStoredDependencies(decoded.value, id))
+      dependency_ids: Object.freeze(collectStoredDependencies(kind, decoded.value, id))
     });
   }
 }
@@ -106,10 +106,19 @@ async function decodeAndDerive(kind: CollaborationObjectKind, bytes: Uint8Array,
   }
 }
 
-function collectStoredDependencies(value: unknown, ownId: CollaborationObjectId): CollaborationObjectId[] {
+function collectStoredDependencies(
+  kind: CollaborationObjectKind,
+  value: unknown,
+  ownId: CollaborationObjectId
+): CollaborationObjectId[] {
   const ids = new Set<CollaborationObjectId>();
-  const visit = (candidate: unknown): void => {
+  const visit = (candidate: unknown, field: string | null = null): void => {
     if (typeof candidate === "string") {
+      // The attestation core binds its subject cryptographically, but the
+      // attestation record is independently content-addressed and verifiable.
+      // Treating subject_id as a storage dependency would manufacture a cycle:
+      // signed object -> attestation -> signed object.
+      if (kind === "attestation" && field === "subject_id") return;
       const match = /^pm:(markdown-blob|document-revision|semantic-payload|control-action|semantic-event|control-event|attestation|state-blob|snapshot|acknowledgement):v1:/.exec(candidate);
       if (match && candidate !== ownId) {
         const kind = parseCollaborationObjectKind(match[1]);
@@ -119,7 +128,7 @@ function collectStoredDependencies(value: unknown, ownId: CollaborationObjectId)
     }
     if (Array.isArray(candidate)) { for (const child of candidate) visit(child); return; }
     if (candidate && typeof candidate === "object" && !(candidate instanceof Uint8Array)) {
-      for (const child of Object.values(candidate as Readonly<Record<string, unknown>>)) visit(child);
+      for (const [key, child] of Object.entries(candidate as Readonly<Record<string, unknown>>)) visit(child, key);
     }
   };
   visit(value);
