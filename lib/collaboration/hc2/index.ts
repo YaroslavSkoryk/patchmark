@@ -60,4 +60,5 @@ export * from "./transport-v3-crypto.ts";
 export * from "./transport-v3-framing.ts";
 export * from "./sync-stream-store.ts";
 export * from "./sync-manual-adapter.ts";
+export * from "./qualification-workflow.ts";
 export * from "./providers/root-recovery-provider.ts";

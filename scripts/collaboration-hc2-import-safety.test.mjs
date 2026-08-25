@@ -40,6 +40,7 @@ const importTargets = [
   "../lib/collaboration/hc2/providers/hpke-provider.ts",
   "../lib/collaboration/hc2/providers/hpke-v2-provider.ts",
   "../lib/collaboration/hc2/providers/hpke-v3-provider.ts",
+  "../lib/collaboration/hc2/qualification-workflow.ts",
   "../lib/collaboration/hc2/providers/suite-negotiator.ts",
   "../lib/collaboration/hc2/providers/recovery-format.ts",
   "../lib/collaboration/hc2/providers/recovery-worker-protocol.ts",

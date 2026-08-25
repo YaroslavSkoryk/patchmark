@@ -12,3 +12,7 @@ These records describe contracts, disabled implementation evidence, and exit gat
   synchronization architecture and exact V3 boundary.
 - `slice7-security-review-v3.md` records the Slice 7 threat review and
   production-isolation evidence.
+- `slice8-disabled-qualification.md` records the disabled integration facade,
+  two-profile qualification, and manual runbook.
+- `slice8-security-review.md` records the integrated Slice 8 threat model and
+  production-isolation boundary.

@@ -20,6 +20,7 @@ let profileB = await openProfile("b", server.url);
 const directoryA = profileA.profile;
 const directoryB = profileB.profile;
 let assertions = 0;
+let slice8Qualification = null;
 const check = (value, message) => { assert.ok(value, message); assertions += 1; };
 const equal = (actual, expected, message) => { assert.deepEqual(actual, expected, message); assertions += 1; };
 
@@ -43,6 +44,10 @@ try {
   equal(mutationA.observed_parent_ids, [genesis.genesis_event_id], "A mutation observes only genesis");
   equal(mutationB.observed_parent_ids, [genesis.genesis_event_id], "B mutation observes only genesis");
   check(!mutationA.observed_parent_ids.includes(mutationB.event_id) && !mutationB.observed_parent_ids.includes(mutationA.event_id), "semantic mutations are genuinely concurrent");
+  const offlineA = await invoke(profileA, "hc2s6", "createSlice8RepresentativeOfflineWork");
+  const offlineB = await invoke(profileB, "hc2s6", "createSlice8RepresentativeOfflineWork");
+  equal(offlineA.families, ["comment", "review_batch"], "A creates accepted offline comment and review evidence");
+  equal(offlineB.families, ["comment", "reply", "patch"], "B creates accepted offline comment, reply, and patch evidence");
   const receipt = await invoke(profileB, "hc2s6", "createConvergenceReceipt");
   check(receipt.receipt_id.startsWith("pm:epoch-receipt:"), "B has receipt evidence missing from A");
 
@@ -157,6 +162,53 @@ try {
   check(sessionA.resumed_bundle_count > 0 && sessionB.resumed_bundle_count > 0, "final profile reopening retains device-private session continuity");
   check(evidenceA.no_timer_or_background_work && evidenceB.no_timer_or_background_work, "synchronization remains explicit with no timer, watcher, or background action");
 
+  if (process.env.PATCHMARK_HC2_SLICE8_QUALIFICATION === "1") {
+    equal((await invoke(profileA, "hc2s8", "initializeSlice8FacadeAtConflict")).guidance, "conflict_resolution_required", "disabled facade derives conflict guidance from durable evidence");
+    const reviewer = await invoke(profileB, "hc2s6", "reviewerConflictResolutionCapability");
+    equal(reviewer.can_resolve_content_conflict, false, "reviewer authority remains insufficient for explicit conflict resolution");
+    const resolutionOutcome = await invoke(profileA, "hc2s8", "resolveSlice8Conflict", [mutationA.event_id]);
+    const resolution = resolutionOutcome.operation.evidence;
+    equal(resolutionOutcome.status.guidance, "more_sync_required", "facade requires explicit synchronization after accepted resolution");
+    equal(resolution.observed_contender_event_ids, [mutationA.event_id, mutationB.event_id].sort(), "resolution names the exact observed contender set");
+    equal(resolution.adopted_event_id, mutationA.event_id, "eligible owner explicitly selects one observed contender");
+    const resolutionConvergence = await converge(profileA, profileB, round + 1, 12);
+    round = resolutionConvergence.nextRound;
+
+    await invoke(profileA, "hc2s7", "closeSlice7Synchronization");
+    await invoke(profileB, "hc2s7", "closeSlice7Synchronization");
+    const resolvedSnapshotA = await invoke(profileA, "hc2s6", "snapshotAndCloseConvergenceReplica");
+    const resolvedSnapshotB = await invoke(profileB, "hc2s6", "snapshotAndCloseConvergenceReplica");
+    await profileA.close({ remove: false }); await profileB.close({ remove: false });
+    profileA = await openProfile("a-resolved", server.url, directoryA);
+    profileB = await openProfile("b-resolved", server.url, directoryB);
+    await invoke(profileA, "hc2s6", "initializeConvergenceReplica", ["A", resolvedSnapshotA]);
+    await invoke(profileB, "hc2s6", "initializeConvergenceReplica", ["B", resolvedSnapshotB]);
+    await invoke(profileA, "hc2s6", "configureConvergencePeer", [publicB]);
+    await invoke(profileB, "hc2s6", "configureConvergencePeer", [publicA]);
+    const resolvedA = await invoke(profileA, "hc2s6", "reopenConvergenceEvidence", [legacyBToA.encoded]);
+    const resolvedB = await invoke(profileB, "hc2s6", "reopenConvergenceEvidence", [legacyAToB.encoded]);
+    for (const category of categories) equal(resolvedA[category], resolvedB[category], `resolved reopened category differs: ${category}`);
+    equal(resolvedA.project_title.state, "resolved", "explicit HC-1 resolution survives portable reopen");
+    equal(resolvedA.project_title.resolved_value, mutationA.title, "resolved value is the explicitly adopted contender");
+    equal(resolvedA.conflicts.length, 0, "resolved conflict is removed identically without discarding unseen work");
+    await invoke(profileA, "hc2s8", "initializeSlice8FacadeAtConflict", ["resolved"]);
+    equal((await invoke(profileA, "hc2s8", "confirmSlice8ResolvedConvergence")).status.guidance, "revocation_required", "facade requires explicit revocation qualification");
+
+    await invoke(profileA, "hc2s7", "initializeSlice7Synchronization");
+    await invoke(profileB, "hc2s7", "initializeSlice7Synchronization");
+    equal((await invoke(profileA, "hc2s8", "revokeSlice8Peer")).operation.evidence.peer_status, "revoked", "facade delegates revocation to the accepted-state boundary");
+    await invoke(profileB, "hc2s6", "slice7SetPeerRevoked", [true]);
+    const postCutoff = await invoke(profileB, "hc2s6", "slice8PostCutoffMutationRejected");
+    equal(postCutoff.status, "rejected", "revoked device cannot create accepted post-cutoff work");
+    equal(postCutoff.cryptographic_calls, 0, "post-cutoff rejection performs no cryptographic operation");
+    const postRevocationExport = await invoke(profileA, "hc2s7", "attemptSlice7ExportAfterRevocation", [Math.min(round + 1, 32)]);
+    equal(postRevocationExport.status, "revoked", "accepted revocation prevents fresh V3 export");
+    equal((await invoke(profileA, "hc2s8", "reopenSlice8Verified")).operation.evidence.portable_reconstruction, "verified", "facade records explicit durable reopen verification");
+    slice8Qualification = { resolution_event_id: resolution.event_id, observed_contender_count: resolution.observed_contender_event_ids.length,
+      resolution_rounds: resolutionConvergence.rounds, resolved_reopens: 2, reviewer_rejected: true,
+      post_cutoff_event_rejected: true, post_revocation_export_rejected: true, final_conflict_count: resolvedA.conflicts.length };
+  }
+
   await invoke(profileA, "hc2s7", "deleteSlice7SynchronizationDatabase");
   await invoke(profileB, "hc2s7", "deleteSlice7SynchronizationDatabase");
   await invoke(profileA, "hc2s6", "deleteConvergenceDatabases");
@@ -168,6 +220,7 @@ try {
     isolated_profiles: 2,
     node_chrome_v3_vector_equivalence: true,
     concurrent_mutations: [mutationA.title, mutationB.title],
+    offline_families: [...new Set([...offlineA.families, ...offlineB.families])].sort(),
     forced_page_limit: 2,
     multi_rounds: firstConvergence.rounds + checkpointConvergence.rounds + closureConvergence.rounds,
     final_state_categories: categories,
@@ -178,7 +231,8 @@ try {
     zero_transfer_already_converged: true,
     revocation_pre_crypto_rejection: true,
     old_ciphertext_limitation_verified: true,
-    temporary_profiles_removed: true
+    temporary_profiles_removed: true,
+    ...(slice8Qualification ? { slice8_qualification: slice8Qualification } : {})
   }, null, 2)}\n`);
 } finally {
   await profileA?.close(); await profileB?.close();
@@ -249,7 +303,7 @@ async function startServer() {
       const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
       if (pathname === "/") {
         response.writeHead(200, { "Cache-Control": "no-store", "Content-Security-Policy": "default-src 'none'; script-src 'self' 'unsafe-inline'; connect-src 'none'", "Content-Type": "text/html" });
-        response.end(`<!doctype html><meta charset="utf-8"><script type="importmap">{"imports":{"@hpke/core":"/node_modules/@hpke/core/esm/mod.js","@hpke/common":"/node_modules/@hpke/common/esm/mod.js"}}</script><script type="module">globalThis.__ready=false;globalThis.clean=(value)=>JSON.parse(JSON.stringify(value,(_,child)=>typeof child==='bigint'?child.toString():child));try{globalThis.hc2s6=await import('/scripts/collaboration-hc2-slice6-convergence-runtime.ts');globalThis.hc2s7=await import('/scripts/collaboration-hc2-slice7-browser-runtime.ts');globalThis.hc2vec=await import('/scripts/collaboration-hc2-slice7-vector-runtime.ts');globalThis.__ready=true}catch(error){globalThis.__error=error?.stack??String(error)}</script>`); return;
+        response.end(`<!doctype html><meta charset="utf-8"><script type="importmap">{"imports":{"@hpke/core":"/node_modules/@hpke/core/esm/mod.js","@hpke/common":"/node_modules/@hpke/common/esm/mod.js"}}</script><script type="module">globalThis.__ready=false;globalThis.clean=(value)=>JSON.parse(JSON.stringify(value,(_,child)=>typeof child==='bigint'?child.toString():child));try{globalThis.hc2s6=await import('/scripts/collaboration-hc2-slice6-convergence-runtime.ts');globalThis.hc2s7=await import('/scripts/collaboration-hc2-slice7-browser-runtime.ts');globalThis.hc2s8=await import('/scripts/collaboration-hc2-slice8-browser-runtime.ts');globalThis.hc2vec=await import('/scripts/collaboration-hc2-slice7-vector-runtime.ts');globalThis.__ready=true}catch(error){globalThis.__error=error?.stack??String(error)}</script>`); return;
       }
       if ((pathname.startsWith("/lib/collaboration/") || pathname.startsWith("/scripts/collaboration-hc2-slice")) && pathname.endsWith(".ts")) {
         const sourcePath = safePath(pathname); const transpiled = ts.transpileModule(readFileSync(sourcePath, "utf8"), { compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }, fileName: sourcePath, reportDiagnostics: true });

@@ -84,6 +84,8 @@
     "test:collaboration-hc2-slice7": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-slice7.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-slice7-vector.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-import-safety.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-production-lock.test.mjs",
     "test:collaboration-hc2-slice7-independent": "python3 scripts/collaboration-hc2-slice7-independent.py",
     "test:collaboration-hc2-slice7-browser": "node scripts/collaboration-hc2-slice7-browser.test.mjs",
+    "test:collaboration-hc2-slice8": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-slice8.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-import-safety.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-production-lock.test.mjs",
+    "test:collaboration-hc2-slice8-browser": "node scripts/collaboration-hc2-slice8-browser.test.mjs",
     "test:collaboration-review-evidence-independent": "python3 scripts/collaboration-review-response-evidence-independent.py",
     "test:collaboration-roots": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-root-vectors.test.mjs",
     "test:collaboration-roots-independent": "python3 scripts/collaboration-root-vectors-independent.py",

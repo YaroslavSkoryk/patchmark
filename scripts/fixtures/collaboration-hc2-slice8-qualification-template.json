@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "record_kind": "hc2_disabled_qualification_summary_template",
+  "authority": "none",
+  "protocol_versions": [1, 2, 3],
+  "scenario_phases": [
+    "foundation",
+    "enrollment",
+    "offline_work",
+    "multi_round_synchronization",
+    "explicit_conflict_resolution",
+    "revocation",
+    "profile_loss_recovery",
+    "final_reopen"
+  ],
+  "evidence_fields": [
+    "browser_runtime",
+    "assertion_count",
+    "reopen_count",
+    "retry_count",
+    "object_commitments",
+    "root_commitments",
+    "checkpoint_commitment",
+    "fixture_hashes",
+    "zero_activity_counters",
+    "production_isolation",
+    "compatibility_limitations"
+  ],
+  "forbidden_fields": [
+    "password",
+    "private_key",
+    "epoch_secret",
+    "decrypted_payload",
+    "source_content",
+    "random_identity"
+  ],
+  "production_enabled": false
+}

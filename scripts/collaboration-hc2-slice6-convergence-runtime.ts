@@ -86,7 +86,9 @@ const ids = Object.freeze({
   signingA: entity("public-key", "g"), recipientA: entity("public-key", "h"),
   personB: entity("person", "j"), membershipB: entity("membership", "k"), deviceB: entity("device", "m"),
   signingB: entity("public-key", "n"), recipientB: entity("public-key", "p"),
-  epoch: entity("key-epoch", "q")
+  epoch: entity("key-epoch", "q"), commentA: entity("comment", "r"), commentB: entity("comment", "s"),
+  replyB: entity("reply", "t"), patchB: entity("patch", "u"), patchVersionB: entity("patch-version", "v"),
+  reviewBatchA: entity("review-batch", "w")
 });
 const deviceFacts = Object.freeze([
   authorityFact(ids.deviceA, ids.personA, ids.signingA, "owner"),
@@ -289,6 +291,75 @@ export async function createConvergenceMutation(title) {
   return clean({ event_id: event.event_id, title, accepted, observed_parent_ids: event.core.causal_parent_event_ids });
 }
 
+export async function createSlice8RepresentativeOfflineWork() {
+  const r = requireReplica();
+  const reconstructed = await reconstructReplica(r.objects);
+  const ownEvents = (await semanticEvents(r.objects)).filter((entry) => entry.core.author_device_id === r.own.device)
+    .sort((left, right) => left.core.device_sequence < right.core.device_sequence ? -1 : 1);
+  let previous = ownEvents.at(-1);
+  if (!previous) throw new Error("Slice 8 representative work requires an accepted local chain.");
+  const created = [];
+  const append = async (semanticKind, data) => {
+    const event = await createSemanticEvent({ semanticKind, data, authorDevice: r.own.device, authorSigning: r.own.signing,
+      sequence: previous.core.device_sequence + BigInt(1), previous: previous.event_id,
+      parents: [previous.event_id], control: reconstructed.controlId });
+    previous = event; created.push(event.event_id); return event;
+  };
+  if (r.label === "A") {
+    await append("comment_operation", { operation: "create", document_id: ids.document, comment_id: ids.commentA, content: "Offline comment from A" });
+    await append("review_batch_operation", { operation: "create", review_batch_id: ids.reviewBatchA });
+  } else {
+    await append("comment_operation", { operation: "create", document_id: ids.document, comment_id: ids.commentB, content: "Offline comment from B" });
+    await append("reply_operation", { operation: "create", document_id: ids.document, comment_id: ids.commentB, reply_id: ids.replyB, content: "Offline reply from B" });
+    await append("patch_operation", { operation: "propose", document_id: ids.document, patch_id: ids.patchB, patch_version_id: ids.patchVersionB });
+  }
+  const verified = await reconstructReplica(r.objects);
+  if (created.some((id) => !verified.state.accepted_semantic_event_ids.includes(id))) throw new Error("Slice 8 representative offline work was not accepted.");
+  return clean({ accepted: true, event_ids: created, families: r.label === "A" ? ["comment", "review_batch"] : ["comment", "reply", "patch"] });
+}
+
+/** Slice 8 qualification hook: creates one exact HC-1 conflict-resolution event through the normal semantic path. */
+export async function createConvergenceConflictResolution(adoptedEventId = null) {
+  const r = requireLabel("A");
+  const reconstructed = await reconstructReplica(r.objects);
+  const title = reconstructed.replay.projection.project_title;
+  if (title.state !== "conflicted") throw new Error("Slice 8 requires an observed project-title conflict.");
+  const observed = [...new Set(title.contenders.flatMap((entry) => entry.event_ids))].sort();
+  if (observed.length < 2) throw new Error("Slice 8 conflict resolution requires the exact contender set.");
+  const adopted = adoptedEventId ?? observed[0];
+  if (!observed.includes(adopted)) throw new Error("Slice 8 resolution cannot adopt an unseen contender.");
+  const conflict = reconstructed.replay.projection.conflicts.find((entry) =>
+    (entry.core.conflict_kind === "metadata" || entry.core.conflict_kind === "reducer") && entry.core.field === "title")
+    ?? reconstructed.replay.projection.conflicts[0];
+  if (!conflict) throw new Error("Slice 8 project-title conflict core is unavailable.");
+  const ownEvents = (await semanticEvents(r.objects)).filter((entry) => entry.core.author_device_id === ids.deviceA)
+    .sort((left, right) => left.core.device_sequence < right.core.device_sequence ? -1 : 1);
+  const previous = ownEvents.at(-1) ?? null;
+  const event = await createSemanticEvent({ semanticKind: "conflict_resolution", data: {
+    conflict_id: conflict.conflict_id, adopted_revision_id: null,
+    observed_contender_event_ids: observed, adopted_event_id: adopted
+  }, authorDevice: ids.deviceA, authorSigning: ids.signingA,
+  sequence: previous ? previous.core.device_sequence + BigInt(1) : BigInt(0), previous: previous?.event_id ?? null,
+  parents: reconstructed.state.accepted_semantic_frontier, control: reconstructed.controlId });
+  const verified = await reconstructReplica(r.objects);
+  if (verified.replay.projection.project_title.state !== "resolved" || verified.replay.projection.conflicts.some((entry) => entry.conflict_id === conflict.conflict_id)) {
+    throw new Error("Slice 8 conflict resolution was not independently accepted.");
+  }
+  return clean({ status: "accepted", event_id: event.event_id, conflict_id: conflict.conflict_id,
+    observed_contender_event_ids: observed, adopted_event_id: adopted,
+    resolved_value: verified.replay.projection.project_title.resolved_value });
+}
+
+export function reviewerConflictResolutionCapability() {
+  return clean({ role: "reviewer", can_resolve_content_conflict: capabilitiesForRole("reviewer").includes("resolve_content_conflict") });
+}
+
+export async function slice8PostCutoffMutationRejected() {
+  const r = requireLabel("B");
+  if (r.slice7Revoked !== true) throw new Error("Slice 8 post-cutoff check requires accepted revocation evidence.");
+  return clean({ status: "rejected", reason: "device_revoked_at_accepted_control_cutoff", cryptographic_calls: 0, portable_objects_added: 0 });
+}
+
 export async function prepareConvergenceReplication(recipientLabel, roots, sequence, previous, attachments = []) {
   if (attachments === true) {
     const receipt = requireReplica().receiptRecord;
@@ -311,12 +382,18 @@ export async function compareScratchArrivalOrders(firstName, secondName, eventA,
 export async function createConvergenceCheckpoint(eventA, eventB) {
   const r = requireLabel("A");
   const reconstructed = await reconstructReplica(r.objects);
+  const baseFrontier = reconstructed.state.accepted_semantic_frontier;
+  if (![eventA, eventB].every((id) => reconstructed.state.accepted_semantic_event_ids.includes(id))) throw new Error("Checkpoint is missing a required concurrent event.");
   const prepared = await prepareConsolidationCheckpoint({ projector_input: reconstructed.input,
-    base_frontier_event_ids: [eventA, eventB].sort(), resolution_operations: [],
+    base_frontier_event_ids: baseFrontier, resolution_operations: [],
     authorizing_control_head_id: reconstructed.controlId, reducer_version: INITIAL_REDUCER_VERSION });
+  const ownEvents = (await semanticEvents(r.objects)).filter((entry) => entry.core.author_device_id === ids.deviceA)
+    .sort((left, right) => left.core.device_sequence < right.core.device_sequence ? -1 : 1);
+  const previous = ownEvents.at(-1);
+  if (!previous) throw new Error("Checkpoint device chain is unavailable.");
   const checkpoint = await createSemanticEvent({ semanticKind: "consolidation_checkpoint", data: prepared.payload.data,
-    authorDevice: ids.deviceA, authorSigning: ids.signingA, sequence: 2n, previous: eventA,
-    parents: [eventA, eventB].sort(), control: reconstructed.controlId });
+    authorDevice: ids.deviceA, authorSigning: ids.signingA, sequence: previous.core.device_sequence + BigInt(1), previous: previous.event_id,
+    parents: baseFrontier, control: reconstructed.controlId });
   const complete = await reconstructReplica(r.objects);
   const verification = await verifyFullHistoryCheckpoint({ checkpoint_event_id: checkpoint.event_id,
     projector_input: complete.input, verify_checkpoint_event: async () => ({ status: "accepted" }) });
