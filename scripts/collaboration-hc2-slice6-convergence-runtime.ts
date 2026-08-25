@@ -74,6 +74,7 @@ import { importEncryptedTransportBundleV2 } from "../lib/collaboration/hc2/trans
 import { readCanonicalTransportBundleV2 } from "../lib/collaboration/hc2/transport-bundle-framing.ts";
 import { IndexedDbTransportStreamJournalV2, InMemoryTransportStreamJournalV2 } from "../lib/collaboration/hc2/transport-stream-store.ts";
 import { PortableTransportAttachmentStoreV2 } from "../lib/collaboration/hc2/transport-attachment-store.ts";
+import { Hc1CanonicalPortableObjectVerifier } from "../lib/collaboration/hc2/hc1-object-verifier.ts";
 import { decodeProtocolRecord, encodeProtocolRecord } from "../lib/collaboration/hc2/portable-folder.ts";
 import { parseCanonicalStateBlobRecord } from "../lib/collaboration/state-snapshots.ts";
 import { parseAcknowledgementRecord, parseProjectionSnapshotRecord } from "../lib/collaboration/checkpoints.ts";
@@ -123,6 +124,7 @@ export async function initializeConvergenceReplica(label, restored = null) {
     admission: null,
     delivery: null,
     receiptIds: new Set(restored?.receipt_ids ?? []),
+    receiptRecord: restored?.receipt_record ? parseEpochReceiptRecord(decodeProtocolRecord(fromBase64(restored.receipt_record))) : null,
     explicitSelections: restored?.explicit_object_selections ?? 0,
     syncPlannerCalls: restored?.synchronization_planner_calls ?? 0
   };
@@ -367,6 +369,7 @@ export async function snapshotAndCloseConvergenceReplica() {
   const r = requireReplica();
   const snapshot = clean({ objects: encodeObjectSnapshot(r.objects), attachments: r.attachmentBackend.snapshot(),
     peers: [...r.peers.values()].map(encodePublicInfo), receipt_ids: [...r.receiptIds].sort(),
+    receipt_record: r.receiptRecord ? base64(encodeProtocolRecord(r.receiptRecord)) : null,
     explicit_object_selections: r.explicitSelections, synchronization_planner_calls: r.syncPlannerCalls });
   r.streams.close(); r.keyDb.close(); replica = null;
   return snapshot;
@@ -456,6 +459,83 @@ export async function reopenConvergenceEvidence(duplicateBundle) {
 export async function deleteConvergenceDatabases() {
   if (replica) { replica.streams.close(); replica.keyDb.close(); replica = null; }
   await Promise.all([deleteDb("patchmark-hc2-slice6-convergence-keys"), deleteDb("patchmark-hc2-slice6-convergence-streams")]);
+  return true;
+}
+
+/** Slice 7 test-harness bridge: committed portable bytes, never indexes. */
+export function slice7ReadCommittedPortableObjects() {
+  return encodeObjectSnapshot(requireReplica().objects);
+}
+
+export async function slice7ReadCommittedPortableAttachments() {
+  const r = requireReplica();
+  if (!r.receiptRecord) return [];
+  const payload = { schema_version: HC2_TRANSPORT_SCHEMA_VERSION, payload_kind: "receipt_attachment", epoch_receipt: r.receiptRecord };
+  const attachment = await r.attachments.createAttachment(ids.project, payload);
+  return clean([[attachment.payload_kind, attachment.attachment_id, base64(attachment.exact_payload_bytes)]]);
+}
+
+export function slice7ImportReceiptAttachment(payload) {
+  const r = requireReplica();
+  const record = parseEpochReceiptRecord(payload.epoch_receipt);
+  if (record.core.project_id !== ids.project) throw new Error("Slice 7 receipt belongs to another project.");
+  r.receiptRecord = record;
+  r.receiptIds.add(record.receipt_id);
+  return clean({ status: "imported", receipt_id: record.receipt_id });
+}
+
+/**
+ * Slice 7 test-harness bridge: validate every exact HC-1 byte string into an
+ * isolated candidate map, reconstruct it, then swap the complete map once.
+ */
+export async function slice7AtomicImportPortableObjects(values) {
+  const r = requireReplica();
+  const candidate = new Map(r.objects);
+  const verifier = new Hc1CanonicalPortableObjectVerifier(ids.project);
+  for (const [kind, id, encoded] of values) {
+    const bytes = fromBase64(encoded);
+    await verifier.verifyExactObject({ object_kind: kind, object_id: id, exact_bytes: bytes });
+    const key = objectKey(kind, id);
+    const existing = candidate.get(key);
+    if (existing && hex(existing.bytes) !== hex(bytes)) throw new Error("Slice 7 import found conflicting immutable bytes.");
+    candidate.set(key, { kind, id, bytes: Uint8Array.from(bytes) });
+  }
+  await reconstructReplica(candidate);
+  const before = r.objects.size;
+  r.objects = candidate;
+  return clean({ status: "imported", before, after: candidate.size, added: candidate.size - before });
+}
+
+export async function slice7AcceptedBinding() {
+  const r = requireReplica();
+  const reconstructed = await reconstructReplica(r.objects);
+  const epoch = await epochEvidence();
+  const checkpoint = (await semanticEvents(r.objects)).find((entry) => entry.core.semantic_kind === "consolidation_checkpoint") ?? null;
+  return clean({
+    project_id: ids.project,
+    accepted_control_head_id: reconstructed.controlId,
+    key_epoch_id: ids.epoch,
+    key_epoch_commitment: epoch.key_epoch_commitment,
+    semantic_frontier: reconstructed.state.accepted_semantic_frontier,
+    checkpoint_id: checkpoint?.event_id ?? null,
+    projection_root_id: checkpoint
+      ? (await decodeStoredSemanticPayload(bytesFor(r.objects, "semantic-payload", checkpoint.core.semantic_payload_id))).core.data.projection_root
+      : digest("projection-root", "a"),
+    protocol_version: "hc1-v1",
+    reducer_version: INITIAL_REDUCER_VERSION,
+    portable_generation: BigInt(r.objects.size),
+    revoked: r.slice7Revoked === true,
+    private_keys_non_extractable: !r.registry.resolveSigningKey(r.signing.handle).extractable && !r.registry.resolveRecipientKeyPair(r.recipient).privateKey.extractable
+  });
+}
+
+export function slice7CryptoContext() {
+  const r = requireReplica();
+  return { label: r.label, own: r.own, registry: r.registry, signing: r.signing, recipient: r.recipient, peers: r.peers };
+}
+
+export function slice7SetPeerRevoked(value) {
+  requireReplica().slice7Revoked = value === true;
   return true;
 }
 

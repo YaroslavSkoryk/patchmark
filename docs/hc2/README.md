@@ -7,3 +7,8 @@ This directory contains versioned architecture decisions for Patchmark's Human C
 - `slice4-custody-recovery-security-review.md` records the device-vault, offline-root, mandatory recovery-kit, ceremony, crash-recovery, and profile-loss security boundaries.
 
 These records describe contracts, disabled implementation evidence, and exit gates only. They do not claim that production collaboration, enrollment, bundle exchange, synchronization, or UI integration is enabled. Production collaboration remains disabled through the final HC-2 audit.
+
+- `slice7-synchronization-v3.md` records the transport-independent bounded
+  synchronization architecture and exact V3 boundary.
+- `slice7-security-review-v3.md` records the Slice 7 threat review and
+  production-isolation evidence.

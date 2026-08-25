@@ -1,0 +1,84 @@
+{
+  "fixture_version": 3,
+  "fixture_domain": "patchmark/hc2/slice7-synchronization-v3-vectors/v3",
+  "notice": "Published deterministic test-only keys and payloads; never production secrets.",
+  "inputs": {
+    "sender_ed25519_seed_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "sender_ed25519_public_hex": "03a107bff3ce10be1d70dd18e74bc09967e4d6309ba50d5f1ddc8664125531b8",
+    "recipient_x25519_ikm_hex": "101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f",
+    "ephemeral_x25519_ikm_hexes": [
+      "303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f",
+      "505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f"
+    ],
+    "envelope_id_random_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+    "markdown_text": "# HC-2 Slice 7 frozen vector\n\nBounded encrypted synchronization.\n"
+  },
+  "expected": {
+    "profile_id": "patchmark/hc2/encrypted-synchronization/v3",
+    "descriptor_keys": [
+      "hc1\u0000markdown-blob\u0000pm:markdown-blob:v1:pnbrlpibiykrgoa2qqalxxhlm5musgluhkqilz5t36766xkcpfia",
+      "hc1\u0000semantic-event\u0000pm:semantic-event:v1:qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqa",
+      "hc2_attachment\u0000receipt_attachment\u0000pm:transport-attachment:v2:bwizavmtzmqhngunk47gfvkww62qxgmiz5xm23spuyiape3anpsa"
+    ],
+    "descriptor_sha256": [
+      "e622dee204d1c81718b1f8d97c9e2c6884793d6d32d6953f05a49cbfdb8b0a50",
+      "2d12b115e5ec07e5208f79e92f3fed0287006917b073d6c89d4cb8765ed750fc",
+      "0d91905593cb20769a8d573e62d556b7b50b9988cf6ecd6e4fa6100793606be4"
+    ],
+    "inventory_root_id": "pm:inventory-root:v3:2ldzgfnjv5qb73g3imbeg42cyj3g2gxsg65dnjfslhbnnz3yfooa",
+    "inventory_snapshot_id": "pm:inventory-snapshot:v3:x7sd75dfcitr36lpoo3gavzp2ctbpbnuj43th3iaj3wwibcseycq",
+    "inventory_page_ids": ["pm:inventory-page:v3:r636s3wanynqa3irwlfsyvsueimcid2ygbwnsrrzffe3osv33fia"],
+    "inventory_page_digests": ["d084a8e58eaff5ccd014936fc49c8b1a958909ba1d2d420702d0a056bab479c4"],
+    "session_id": "pm:sync-session:v3:ljlajjhyewpmfa4wrcgybdixqst3o6xzdd7tebqwxtdzquje2oua",
+    "stream_id": "pm:transport-stream:v3:pye5wa7frsx2qiblz53mwp2rkmvzf5t7v4mhz4nbqix3ypy5i4bq",
+    "request_id": "pm:object-request:v3:kgrcm7puawhroqnmj6or4dmsldvdgoyo345jstwuhmt2vecgzyfq",
+    "response_id": "pm:object-response:v3:ikbof7it5vmlgibydxylmkeyvl7sfclujliocsnt2oolltfrfgra",
+    "confirmation_id": "pm:sync-confirmation:v3:jg4p55ryo6em6tr3hju2b4pvrlsv6rs476sh3rykuzze2vehi3ra",
+    "convergence_status": "converged",
+    "reconstruction_divergence_status": "more_required",
+    "replay_status": "duplicate",
+    "gap_status": "retryable_gap",
+    "stream_fork_status": "stream_fork",
+    "manifest_id": "pm:bundle-manifest:v3:6t6qzphnhyuksqrp65r53g2tbdmudiyzewyxvjfaljictou4ayma",
+    "payload_kinds": ["bundle_manifest", "sync_offer"],
+    "payload_canonical_lengths": [1704, 1139],
+    "signature_preimage_lengths": [3363, 2793],
+    "signature_preimage_sha256": [
+      "0a080b6c5e763e6dfe89fdd89a8ede4b49ab4ebeb4eae22a2fe17c9c0687f5af",
+      "b355f6e9aadf863920e1fbfe78cb9c8fb94b082e354372cc1c123e788cff498e"
+    ],
+    "hpke_info_hex": [
+      "82782a70617463686d61726b2f6863322f73796e6368726f6e697a6174696f6e2d68706b652d696e666f2f7633a7656d616769637450415443484d41524b2d4843322d42554e444c456873756974655f6964781d70617463686d61726b2f6863322f63727970746f2d73756974652f76316b6368756e6b5f636f756e74026b656e76656c6f70655f6964781a757773326c6a6e66757773326c6a6e66757773326c6a6e6675756d6368756e6b5f6f7264696e616c0070656e76656c6f70655f76657273696f6e0375726563697069656e745f726f7574696e675f7461675820c3808c767806b4bfae4fe74559230db97de61340b6cdf904d48aaf39d9c9b763",
+      "82782a70617463686d61726b2f6863322f73796e6368726f6e697a6174696f6e2d68706b652d696e666f2f7633a7656d616769637450415443484d41524b2d4843322d42554e444c456873756974655f6964781d70617463686d61726b2f6863322f63727970746f2d73756974652f76316b6368756e6b5f636f756e74026b656e76656c6f70655f6964781a757773326c6a6e66757773326c6a6e66757773326c6a6e6675756d6368756e6b5f6f7264696e616c0170656e76656c6f70655f76657273696f6e0375726563697069656e745f726f7574696e675f7461675820c3808c767806b4bfae4fe74559230db97de61340b6cdf904d48aaf39d9c9b763"
+    ],
+    "aad_hex": [
+      "a9656d616769637450415443484d41524b2d4843322d42554e444c456873756974655f6964781d70617463686d61726b2f6863322f63727970746f2d73756974652f76316b6368756e6b5f636f756e74026b656e76656c6f70655f6964781a757773326c6a6e66757773326c6a6e66757773326c6a6e6675756d6368756e6b5f6f7264696e616c0070656e76656c6f70655f76657273696f6e0371636970686572746578745f6c656e677468190daa75726563697069656e745f726f7574696e675f7461675820c3808c767806b4bfae4fe74559230db97de61340b6cdf904d48aaf39d9c9b76376656e63617073756c617465645f6b65795f627974657358207808d98283260794bb05f2ae69674ca2fe2e55c16c863031f90235576f0f3b0e",
+      "a9656d616769637450415443484d41524b2d4843322d42554e444c456873756974655f6964781d70617463686d61726b2f6863322f63727970746f2d73756974652f76316b6368756e6b5f636f756e74026b656e76656c6f70655f6964781a757773326c6a6e66757773326c6a6e66757773326c6a6e6675756d6368756e6b5f6f7264696e616c0170656e76656c6f70655f76657273696f6e0371636970686572746578745f6c656e677468190b7075726563697069656e745f726f7574696e675f7461675820c3808c767806b4bfae4fe74559230db97de61340b6cdf904d48aaf39d9c9b76376656e63617073756c617465645f6b65795f6279746573582073005b459c8959620de9c0ca67a19f06f947f43f467c50b1e0ef6902720d4f59"
+    ],
+    "ciphertext_sha256": [
+      "218e3f4c4fda30a5a92ce85aaa39291982dc475a8faccc3ec4cb0a7cd632b432",
+      "2fd943e8e95b890e9505c158b7836e5913c59f69a5ab4ae85a92869bfb89592f"
+    ],
+    "ciphertext_lengths": [3498, 2928],
+    "encapsulated_key_hex": [
+      "7808d98283260794bb05f2ae69674ca2fe2e55c16c863031f90235576f0f3b0e",
+      "73005b459c8959620de9c0ca67a19f06f947f43f467c50b1e0ef6902720d4f59"
+    ],
+    "container_ids": [
+      "pm:encrypted-container:v3:gsypc7bcsng2xhpda24im4wo3pkoxuynwb6crrguppp3e4fqyc2q",
+      "pm:encrypted-container:v3:nhgrjwjopanhm4pwi6vicjieicpv4djfyvsmuzaujd7ezvtzqqza"
+    ],
+    "container_canonical_lengths": [4036, 3466],
+    "container_sha256": [
+      "f48c3b89b7d74741c364d1f2a062c762c09c676023231f4087883d3a539a2a2b",
+      "d4cf345f2b0fa350743c7f1fdc38013ab8c5f065916764ef9d5b799044ab4662"
+    ],
+    "bundle_canonical_length": 7503,
+    "bundle_sha256": "af855a1874d452a4878814ab2d425da92bff1d58040b0ef5652f65cbd5e3f912",
+    "public_header_keys": [
+      "chunk_count", "chunk_ordinal", "ciphertext_length", "encapsulated_key_bytes",
+      "envelope_id", "envelope_version", "magic", "recipient_routing_tag", "suite_id"
+    ],
+    "authority_values": ["none", "none", "none", "none", "none"]
+  }
+}
