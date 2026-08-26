@@ -1,0 +1,52 @@
+{
+  "fixture_version": 1,
+  "fixture_domain": "patchmark/hc3/manual-direct-v3-transport-vectors/v1",
+  "notice": "Compact public test data only. Payload bytes are expanded from the descriptor and are never protocol input.",
+  "inputs": {
+    "connection_attempt_id_hex": "000102030405060708090a0b0c0d0e0f",
+    "transfer_id_hex": "a5a4a3a2a1a09f9e9d9c9b9a99989796",
+    "payload_descriptor": {
+      "encoding": "counter_modulo",
+      "length": 10003,
+      "modulo": 251
+    },
+    "descriptions": [
+      {
+        "kind": "offer",
+        "sdp": "v=0\\r\\no=- 1 2 IN IP4 127.0.0.1\\r\\ns=Patchmark HC3\\r\\nt=0 0\\r\\na=group:BUNDLE 0\\r\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\r\\nc=IN IP4 127.0.0.1\\r\\na=mid:0\\r\\na=sctp-port:5000\\r\\n"
+      },
+      {
+        "kind": "answer",
+        "sdp": "v=0\\r\\no=- 2 2 IN IP4 127.0.0.1\\r\\ns=Patchmark HC3\\r\\nt=0 0\\r\\na=group:BUNDLE 0\\r\\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\\r\\nc=IN IP4 127.0.0.1\\r\\na=mid:0\\r\\na=sctp-port:5000\\r\\n"
+      }
+    ]
+  },
+  "expected": {
+    "frame_payload_limit": 4096,
+    "payload_sha256": "95df41fb9bf2b742f256f144115898bb2561ab49d06cff8b66d9474d1f3b2595",
+    "frame_count": 3,
+    "frame_lengths": [4337, 4339, 2054],
+    "frame_sha256": [
+      "b12b3f585bddd093d5dc4fcf3dab870be5b1141f6685ad6358ef9ddc1a731a6c",
+      "6fa3be7f7bf72e790112aac06d3568bb81d1b7884face8abbcb05a3352dc6b53",
+      "1284b18bb7da50657e3d26dba4fe62263b09111e427468484556f8f15b64cbd8"
+    ],
+    "frame_prefix_hex": [
+      "aa6b627974655f6f6666736574006b6672616d655f636f75",
+      "aa6b627974655f6f66667365741910006b6672616d655f63",
+      "aa6b627974655f6f66667365741920006b6672616d655f63"
+    ],
+    "descriptions": [
+      {
+        "kind": "offer",
+        "canonical_bytes": 239,
+        "sha256": "01b1730b4c38227d302ea436a40b64cbbbfef1148a3e2a4fc62ae0ba48a73d69"
+      },
+      {
+        "kind": "answer",
+        "canonical_bytes": 240,
+        "sha256": "9d936699228761e7f9742d79dd65f87fe14648fdfb9dc0c02c131ef1de14371a"
+      }
+    ]
+  }
+}

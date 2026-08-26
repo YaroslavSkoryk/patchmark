@@ -38,6 +38,15 @@ const targets = [
   "../lib/collaboration/hc3/workflow-ports.ts",
   "../lib/collaboration/hc3/browser-adapters.ts",
   "../lib/collaboration/hc3/workflow.ts",
+  "../lib/collaboration/hc3/direct-versions.ts",
+  "../lib/collaboration/hc3/direct-description.ts",
+  "../lib/collaboration/hc3/direct-auth.ts",
+  "../lib/collaboration/hc3/direct-presentation.ts",
+  "../lib/collaboration/hc3/direct-framing.ts",
+  "../lib/collaboration/hc3/direct-byte-channel.ts",
+  "../lib/collaboration/hc3/direct-webrtc-adapter.ts",
+  "../lib/collaboration/hc3/direct-sync.ts",
+  "../lib/collaboration/hc3/direct-workflow.ts",
   "../lib/collaboration/hc3/index.ts"
 ];
 try {

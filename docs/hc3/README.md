@@ -9,6 +9,9 @@ the completed HC-1/HC-2 local-first foundation.
 - `manual-workflow-slice2.md` defines the disabled manual workflow facade,
   preview/confirmation boundary, injected browser ports, accessibility model,
   fallbacks, and two-profile qualification evidence.
+- `direct-transport-slice3.md` defines authenticated manual offer/answer
+  artifacts, the injected direct byte channel, bounded framing/backpressure,
+  interruption rules, and real two-profile V3 qualification evidence.
 
 These records and contracts do not enable production collaboration, add a
 network transport, or authorize a user interface. Production collaboration

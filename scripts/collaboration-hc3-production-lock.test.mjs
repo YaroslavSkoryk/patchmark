@@ -51,7 +51,8 @@ const frozenFixtureHashes = {
   "scripts/fixtures/collaboration-hc2-slice6-v2.json": "4400b16f1de78f3ae49f04844f85c7278dbc28291dd772bdfad1c6ea0b69eb4c",
   "scripts/fixtures/collaboration-hc2-slice7-v3.json": "98450f518c9827ec0e310aa2a7a66d99fb4ba5c33f0b0aa3fddb75b4f95a5df1",
   "scripts/fixtures/collaboration-hc2-slice8-qualification-template.json": "735fdbb8df9b93367d5907592e78e7e3e00050740da312e3b6227bc260f5dc46",
-  "scripts/fixtures/collaboration-hc3-slice1-v1.json": "fd4aaa38af60d0f12054c475a3ce86b71ad9bc85aa4f1f2f9b24f085f3c370fe"
+  "scripts/fixtures/collaboration-hc3-slice1-v1.json": "fd4aaa38af60d0f12054c475a3ce86b71ad9bc85aa4f1f2f9b24f085f3c370fe",
+  "scripts/fixtures/collaboration-hc3-slice3-v1.json": "6defdcb1e2578fa3aa0767c9a009d994046191006db715b7df46fda84221ae8a"
 };
 for (const [path, expected] of Object.entries(frozenFixtureHashes)) {
   const bytes = await readFile(join(root, path));
