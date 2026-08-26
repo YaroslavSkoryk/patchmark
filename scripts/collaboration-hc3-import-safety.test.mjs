@@ -34,6 +34,10 @@ const targets = [
   "../lib/collaboration/hc3/link.ts",
   "../lib/collaboration/hc3/qr.ts",
   "../lib/collaboration/hc3/bundle-files.ts",
+  "../lib/collaboration/hc3/workflow-contracts.ts",
+  "../lib/collaboration/hc3/workflow-ports.ts",
+  "../lib/collaboration/hc3/browser-adapters.ts",
+  "../lib/collaboration/hc3/workflow.ts",
   "../lib/collaboration/hc3/index.ts"
 ];
 try {
