@@ -5,8 +5,11 @@ This directory contains versioned architecture decisions for Patchmark's Human C
 - `architecture-decisions-v1.md` freezes the Slice 1 production-facing contracts.
 - `slice3-crypto-security-review.md` records provider selection, artifact and advisory evidence, vectors, recovery parameters, browser benchmarks, and production-enablement gates.
 - `slice4-custody-recovery-security-review.md` records the device-vault, offline-root, mandatory recovery-kit, ceremony, crash-recovery, and profile-loss security boundaries.
+- `final-security-architecture-audit.md` records the final HC-1/HC-2
+  architecture map, trust boundaries, threat model, dependency evidence,
+  qualification results, risk register, and disabled-readiness decision.
 
-These records describe contracts, disabled implementation evidence, and exit gates only. They do not claim that production collaboration, enrollment, bundle exchange, synchronization, or UI integration is enabled. Production collaboration remains disabled through the final HC-2 audit.
+These records describe contracts, disabled implementation evidence, and exit gates only. They do not claim that production collaboration, enrollment, bundle exchange, synchronization, or UI integration is enabled. Production collaboration remains unconditionally disabled after the final HC-2 audit.
 
 - `slice7-synchronization-v3.md` records the transport-independent bounded
   synchronization architecture and exact V3 boundary.
