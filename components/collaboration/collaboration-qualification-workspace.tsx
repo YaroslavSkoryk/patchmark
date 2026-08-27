@@ -12,6 +12,8 @@ import {
   detectHc3ProductCapabilities,
   hc3ProductCapabilityNames,
   readInjectedHc3ProductQualificationDriver,
+  safeHc3DiagnosticMessage,
+  safeHc3DisplayLabel,
   unavailableHc3ProductSnapshot,
   validateHc3ProductActionInput,
   type Hc3ProductAction,
@@ -42,6 +44,7 @@ const sectionLabels = Object.freeze([
   "Collaborators and devices",
   "Synchronize changes",
   "Conflicts",
+  "Privacy and safety",
   "Recovery and blocked states"
 ]);
 
@@ -78,11 +81,13 @@ export function CollaborationQualificationWorkspace({
 }: CollaborationQualificationWorkspaceProps) {
   const dialogRef = useRef<HTMLElement>(null);
   const headingRef = useRef<HTMLHeadingElement>(null);
+  const errorRef = useRef<HTMLParagraphElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const scannerRef = useRef<Hc3ExplicitQrScanner | null>(null);
   const requestRef = useRef(0);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const driverRef = useRef<Hc3ProductQualificationDriver | null>(null);
+  const busyRef = useRef(false);
   const [snapshot, setSnapshot] = useState<Hc3ProductSnapshot>(() =>
     unavailableHc3ProductSnapshot({ project_id: sourceProjectId, project_title: sourceProjectTitle })
   );
@@ -115,8 +120,10 @@ export function CollaborationQualificationWorkspace({
         document,
         indexedDB,
         crypto,
+        CryptoKey,
         RTCPeerConnection: window.RTCPeerConnection,
         BarcodeDetector: barcodeDetectorConstructor(),
+        createImageBitmap,
         showOpenFilePicker: filePickerWindow().showOpenFilePicker,
         showSaveFilePicker: filePickerWindow().showSaveFilePicker
       })
@@ -149,6 +156,10 @@ export function CollaborationQualificationWorkspace({
     drawQr(canvasRef.current, qr);
   }, [qr]);
 
+  useEffect(() => {
+    if (error) errorRef.current?.focus();
+  }, [error]);
+
   function closeWorkspace() {
     scannerRef.current?.cancel();
     scannerRef.current = null;
@@ -179,7 +190,8 @@ export function CollaborationQualificationWorkspace({
 
   async function invoke(action: Hc3ProductAction, selectedId?: string) {
     const driver = driverRef.current;
-    if (!driver || busy || !snapshot.available_actions.includes(action)) return;
+    if (!driver || busyRef.current || !snapshot.available_actions.includes(action)) return;
+    busyRef.current = true;
     setBusy(true);
     setError(null);
     setQr(null);
@@ -203,6 +215,7 @@ export function CollaborationQualificationWorkspace({
       setError(safeError(reason));
       setStatusMessage("The action stopped without changing displayed authority. Recheck current project state before retrying.");
     } finally {
+      busyRef.current = false;
       if (request === requestRef.current) setBusy(false);
     }
   }
@@ -281,8 +294,9 @@ export function CollaborationQualificationWorkspace({
       setError("The selected QR image is too large.");
       return;
     }
+    let bitmap: ImageBitmap | null = null;
     try {
-      const bitmap = await createImageBitmap(file);
+      bitmap = await createImageBitmap(file);
       if (bitmap.width * bitmap.height > 16_777_216) throw new Error("QR image dimensions are too large.");
       const canvas = document.createElement("canvas");
       canvas.width = bitmap.width;
@@ -291,12 +305,13 @@ export function CollaborationQualificationWorkspace({
       if (!context) throw new Error("Image decoding canvas is unavailable.");
       context.drawImage(bitmap, 0, 0);
       const image = context.getImageData(0, 0, bitmap.width, bitmap.height);
-      bitmap.close();
       const text = decodeHc3QrImage({ artifact_kind: expectedInputKind(snapshot), width: image.width, height: image.height, rgba: image.data });
       setArtifactInput(text);
       setStatusMessage("QR image decoded locally. Preview it before continuing.");
     } catch (reason) {
       setError(safeError(reason));
+    } finally {
+      bitmap?.close();
     }
   }
 
@@ -363,13 +378,14 @@ export function CollaborationQualificationWorkspace({
               ) : null}
             </section>
 
-            {error ? <p className={styles.error} role="alert">{error}</p> : null}
+            {error ? <p ref={errorRef} className={styles.error} role="alert" tabIndex={-1}>{error}</p> : null}
 
             {activeSection === "Set up collaboration" ? (
               <section className={styles.panel} aria-labelledby="collaboration-setup-heading">
                 <h3 id="collaboration-setup-heading">Create a separate collaboration copy</h3>
                 <p>The original project stays unchanged. The new destination contains current shared content, never paths, bookmarks, editor state, review overrides, or recovery data.</p>
-                <strong>{sourceProjectTitle}</strong>
+                <strong>{safeHc3DisplayLabel(sourceProjectTitle)}</strong>
+                <p className={styles.note}>Project files remain readable on this device and in ordinary backups unless the folder or device is protected separately.</p>
                 {actionButton("create_collaboration_copy", snapshot, busy, invoke)}
               </section>
             ) : null}
@@ -415,8 +431,8 @@ export function CollaborationQualificationWorkspace({
                 <p>{snapshot.pending_invitation_count} pending invitation{snapshot.pending_invitation_count === 1 ? "" : "s"}</p>
                 {snapshot.collaborators.length ? snapshot.collaborators.map((person) => (
                   <article key={person.person_id} className={styles.person}>
-                    <h4>{person.display_name}</h4><p>{capitalize(person.role)} · {person.membership_state}</p>
-                    <ul>{person.devices.map((device) => <li key={device.device_id}>{device.display_name} — {device.state}{device.current ? " · This device" : ""}</li>)}</ul>
+                    <h4>{safeHc3DisplayLabel(person.display_name)}</h4><p>{capitalize(person.role)} · {person.membership_state}</p>
+                    <ul>{person.devices.map((device) => <li key={device.device_id}>{safeHc3DisplayLabel(device.display_name)} — {device.state}{device.current ? " · This device" : ""}</li>)}</ul>
                     <div className={styles.actions}>{actionButton("change_role", snapshot, busy, invoke, person.person_id)}{actionButton("revoke_membership", snapshot, busy, invoke, person.person_id)}{person.devices.map((device) => actionButton("revoke_device", snapshot, busy, invoke, device.device_id))}</div>
                   </article>
                 )) : <p>No accepted collaborators are visible yet.</p>}
@@ -427,6 +443,7 @@ export function CollaborationQualificationWorkspace({
               <section className={styles.panel}>
                 <h3>Synchronize changes</h3>
                 <ol><li><strong>Connect directly</strong> — exchange a request and response manually, then choose Sync.</li><li><strong>Send encrypted update</strong> — save and carry an opaque file.</li></ol>
+                <p>Direct connection can reveal network metadata to the intended peer and may not work across the internet without STUN or TURN. Patchmark uses neither; encrypted-file fallback remains available.</p>
                 <div className={styles.actions}>
                   {["create_direct_offer", "open_direct_offer", "create_direct_answer", "open_direct_answer", "sync_directly", "use_encrypted_file", "select_encrypted_file", "preview_encrypted_file", "import_encrypted_file", "reopen_and_verify"].map((name) => actionButton(name as Hc3ProductAction, snapshot, busy, invoke))}
                 </div>
@@ -439,11 +456,31 @@ export function CollaborationQualificationWorkspace({
                 <h3>Conflicts</h3>
                 {snapshot.conflicts.length ? snapshot.conflicts.map((conflict) => (
                   <article key={conflict.conflict_id} className={styles.conflict}>
-                    <h4>{conflict.subject}</h4><ul>{conflict.contenders.map((contender) => <li key={contender.contender_id}>{contender.summary}</li>)}</ul>
+                    <h4>{safeHc3DisplayLabel(conflict.subject)}</h4><ul>{conflict.contenders.map((contender) => <li key={contender.contender_id}>{safeHc3DisplayLabel(contender.summary)}</li>)}</ul>
                     <button type="button" disabled={busy || !conflict.can_resolve || !snapshot.available_actions.includes("resolve_conflict")} onClick={() => void invoke("resolve_conflict", conflict.conflict_id)}>Resolve selected outcome</button>
                     {!conflict.can_resolve ? <p>Current role can review but cannot resolve this conflict.</p> : null}
                   </article>
                 )) : <p>No unresolved conflicts.</p>}
+              </section>
+            ) : null}
+
+            {activeSection === "Privacy and safety" ? (
+              <section className={styles.panel} aria-labelledby="collaboration-privacy-heading">
+                <h3 id="collaboration-privacy-heading">Before you share</h3>
+                <ul>
+                  <li>Collaboration creates a separate project copy. It never converts the source project in place.</li>
+                  <li>Invitations, Responses, connection text, and their QR codes are not confidential. They reveal limited project and device metadata, but opening one does not grant access.</li>
+                  <li>Clipboard history, messengers, file providers, and the operating system may retain anything you copy, share, scan, or save.</li>
+                  <li>Admission and synchronization files are encrypted in transit, but their approximate size and timing remain visible. This does not encrypt the local project folder.</li>
+                  <li>A direct connection can reveal network metadata to the intended peer and may not work across the internet. The encrypted-file fallback remains available.</li>
+                  <li>Revocation blocks future accepted work; it cannot erase project data or artifacts already delivered to another person.</li>
+                  <li>A newly admitted device verifies current state, not necessarily all earlier history. Keep recovery material separate and safe.</li>
+                  <li>If this browser loses its non-extractable device keys, use recovery or re-admission. Patchmark will not silently replace that identity.</li>
+                </ul>
+                <details>
+                  <summary>Technical privacy details</summary>
+                  <p>Direct WebRTC uses no public STUN, TURN, rendezvous, or relay service. Intended peers can still learn connection addresses, fingerprints, timing, and transfer sizes. Local project contents can remain plaintext in the selected folder and may be exposed by backups, indexing, malware, shared operating-system accounts, cloud-synced folders, or a lost unlocked device.</p>
+                </details>
               </section>
             ) : null}
 
@@ -494,7 +531,7 @@ function qrKind(kind: NonNullable<Hc3ProductSnapshot["artifact"]>["kind"]): Hc3Q
 function expectedInputKind(snapshot: Hc3ProductSnapshot): Hc3QrArtifactKind { return snapshot.available_actions.includes("open_direct_offer") || snapshot.available_actions.includes("open_direct_answer") ? "direct" : "handoff"; }
 function labelArtifact(kind: NonNullable<Hc3ProductSnapshot["artifact"]>["kind"]): string { return ({ invitation: "Invitation", response: "Response", direct_offer: "connection request", direct_answer: "connection response", encrypted_file: "encrypted update", receipt: "receipt" })[kind]; }
 function capitalize(value: string): string { return `${value.slice(0, 1).toUpperCase()}${value.slice(1)}`; }
-function safeError(value: unknown): string { const message = value instanceof Error ? value.message : "The operation failed safely."; return /private|secret|plaintext|recovery.*bytes/i.test(message) ? "The operation failed without exposing sensitive diagnostics." : message.slice(0, 500); }
+function safeError(value: unknown): string { return safeHc3DiagnosticMessage(value); }
 function isAbort(value: unknown): boolean { return value instanceof DOMException && value.name === "AbortError"; }
 function focusableWithin(root: HTMLElement | null): HTMLElement[] { return Array.from(root?.querySelectorAll<HTMLElement>('button:not(:disabled), [href], input:not(:disabled), select:not(:disabled), textarea:not(:disabled), summary, [tabindex]:not([tabindex="-1"])') ?? []).filter((node) => node.getClientRects().length > 0); }
 function capabilityLabel(name: (typeof hc3ProductCapabilityNames)[number]): string { return name.replaceAll("_", " "); }

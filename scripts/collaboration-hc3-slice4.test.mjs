@@ -100,14 +100,15 @@ const matrix = await detectHc3ProductCapabilities({
   navigator: { clipboard: { writeText: async () => undefined } },
   crypto: webcrypto,
   RTCPeerConnection: class {
-    createDataChannel() { return { close() {} }; }
+    createDataChannel() { return { ordered: true, close() {} }; }
     close() {}
   },
   document: { createElement() {} }
 });
 equal(matrix.user_agent_inspected, false, "capabilities never rely on browser names");
-equal(matrix.capabilities.find((entry) => entry.name === "webrtc_data_channels")?.state, "available", "explicit no-server data-channel probe reports capability");
-equal(matrix.capabilities.find((entry) => entry.name === "indexeddb")?.state, "fallback", "missing durable storage maps to a declared blocked fallback");
+equal(matrix.capabilities.find((entry) => entry.name === "webrtc_data_channels")?.state, "supported", "explicit no-server data-channel probe reports capability");
+equal(matrix.capabilities.find((entry) => entry.name === "indexeddb")?.state, "unsupported", "missing durable storage maps to a declared blocked fallback");
+equal(matrix.permission_bearing_operations_invoked, false, "entry probing never invokes permission-bearing capability operations");
 equal(matrix.capabilities.length, 17, "all required capability categories are represented");
 
 const scannerEvidence = fakeScanner(invitation);

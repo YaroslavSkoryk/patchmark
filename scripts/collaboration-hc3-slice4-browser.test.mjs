@@ -1,13 +1,16 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import ts from "typescript";
+
+import { buildOptimizedHarness, optimizedHarnessOutput } from "./collaboration-hc3-slice5-optimized-build.mjs";
+import { instrumentPolicyHtml, optimizedCollaborationPolicy } from "./lib/collaboration-hc3-slice5-policy.mjs";
 
 import {
   CdpClient,
@@ -27,6 +30,9 @@ const productPort = 3124;
 const nextPort = 3125;
 const editorUrl = `http://127.0.0.1:${productPort}/`;
 const nextUrl = `http://127.0.0.1:${nextPort}/`;
+const policyQualification = process.env.PATCHMARK_HC3_SLICE5_POLICY ?? "none";
+const strictPolicyQualification = policyQualification === "strict";
+const optimizedPolicyQualification = policyQualification === "optimized";
 const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
 if (!chromePath) throw new Error("Chrome was not found for HC-3 Slice 4 product qualification.");
 const slice5Fixture = JSON.parse(readFileSync(join(repositoryRoot, "scripts/fixtures/collaboration-hc2-slice5-v1.json"), "utf8"));
@@ -39,26 +45,49 @@ const sourceBefore = hashProject(sourceProjectRoot);
 const otherBefore = hashProject(otherProjectRoot);
 const inventory = inventoryProject(fixtureRoot);
 const fixtureServer = await startFixtureFileServer(fixtureRoot, inventory);
-const next = spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--hostname", "127.0.0.1", "--port", `${nextPort}`], {
+const next = optimizedPolicyQualification ? null : spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--hostname", "127.0.0.1", "--port", `${nextPort}`], {
   cwd: repositoryRoot,
-  env: { ...process.env, NODE_ENV: "development" },
+  env: {
+    ...process.env,
+    NODE_ENV: "development",
+    ...(strictPolicyQualification ? { PATCHMARK_HC3_STRICT_POLICY_QUALIFICATION: "1" } : {})
+  },
   stdio: ["ignore", "ignore", "ignore"]
 });
 let proxy;
 let profileA;
 let profileB;
+let optimizedBuildEvidence = null;
 let assertions = 0;
 const equal = (actual, expected, message) => { assertions += 1; assert.deepEqual(actual, expected, message); };
 const check = (value, message) => { assertions += 1; assert.ok(value, message); };
 
 try {
-  await waitForHttp(nextUrl);
-  proxy = await startProductProxy(productPort, nextPort);
+  if (optimizedPolicyQualification) {
+    optimizedBuildEvidence = inspectOptimizedBuild(await buildOptimizedHarness());
+    check(optimizedBuildEvidence.marker_present && optimizedBuildEvidence.validator_present && optimizedBuildEvidence.forbidden_hits.length === 0, "optimized harness contains its isolation marker and narrow worker-URL validator, with no identity policy, eval, dynamic Function, HMR, development overlay, or source-map runtime");
+    proxy = await startOptimizedHarnessServer(productPort);
+  } else {
+    await waitForHttp(nextUrl);
+    proxy = await startProductProxy(productPort, nextPort, { strictPolicyQualification });
+  }
   await waitForHttp(editorUrl);
   profileA = await openProfile("owner", "owner");
   profileB = await openProfile("candidate", "candidate");
-  await openProject(profileA, "HC3 Product Source");
-  await openProject(profileB, "HC3 Product Source");
+  if (optimizedPolicyQualification) {
+    const hostileSinksA = await hostileSinkEvidence(profileA);
+    const hostileSinksB = await hostileSinkEvidence(profileB);
+    equal(
+      [hostileSinksA.blocked, hostileSinksA.side_effects, hostileSinksB.blocked, hostileSinksB.side_effects],
+      [4, 0, 4, 0],
+      `strict CSP and Trusted Types block HTML, script URL, worker URL, and inline-script hostile sinks in both profiles (${JSON.stringify([hostileSinksA.error_names, hostileSinksB.error_names])})`
+    );
+    check([hostileSinksA, hostileSinksB].every((value) => value.policy_events >= 4), "hostile sink probes produce only the expected enforced CSP and Trusted Types violations before evidence is cleared");
+  }
+  if (!optimizedPolicyQualification) {
+    await openProject(profileA, "HC3 Product Source");
+    await openProject(profileB, "HC3 Product Source");
+  }
 
   const beforeEntry = await workspaceEvidence(profileA);
   equal([beforeEntry.workspace, beforeEntry.hiddenWorkspace, beforeEntry.bridgeLoaded, beforeEntry.driverInspects, beforeEntry.driverInvokes], [false, false, false, 0, 0], "no collaboration DOM or authority runtime exists before explicit product entry");
@@ -67,8 +96,21 @@ try {
   equal([openedA.workspace, openedA.dialogName, openedA.liveRegion], [true, "Collaboration", "polite"], "File > Collaboration opens the actual production-locked workspace");
   check(openedA.bridgeLoaded && openedA.driverInspects >= 1, "explicit entry lazily assembles and inspects the real HC-2/HC-3 authority runtime");
   check(openedA.focusedHeading, "initial focus moves to the workspace heading");
-  equal([openedA.sectionCount, openedA.capabilityCount], [8, 17], "the integrated workspace exposes all sections and capability probes");
+  equal([openedA.sectionCount, openedA.capabilityCount], [9, 17], "the integrated workspace exposes all sections and capability probes");
   check(openedA.noHorizontalOverflow, "desktop workspace contains long content without horizontal overflow");
+  await click(profileA, "Privacy and safety");
+  const privacy = await evaluate(profileA.client, { expression: `(() => {
+    const text = document.querySelector('[data-testid="collaboration-qualification-workspace"]')?.innerText ?? "";
+    return {
+      invitation_not_confidential: text.includes("not confidential"),
+      transport_not_storage: text.includes("does not encrypt the local project folder"),
+      revocation_not_erasure: text.includes("cannot erase project data"),
+      network_metadata: text.includes("network metadata"),
+      technical_disclosure: Array.from(document.querySelectorAll("summary")).some((node) => node.textContent?.includes("Technical privacy details"))
+    };
+  })()` });
+  check(Object.values(privacy).every(Boolean), "ordinary-language privacy, metadata, at-rest and revocation guidance is integrated and technically disclosable");
+  await click(profileA, "Set up collaboration");
 
   await click(profileA, "Create collaboration copy");
   await waitText(profileA, "Recovery kit required");
@@ -76,6 +118,11 @@ try {
   await waitText(profileA, "Ready to invite");
   await click(profileA, "Invite collaborator");
   await waitText(profileA, "Prepared Invitation");
+  await evaluate(profileA.client, { expression: `Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: async () => { throw new DOMException("Denied", "NotAllowedError"); } } })` });
+  const beforeDeniedCopy = await exactArtifact(profileA);
+  await click(profileA, "Copy");
+  await waitFor(profileA, "permission denial focus", `document.activeElement?.getAttribute("role") === "alert"`);
+  equal(await exactArtifact(profileA), beforeDeniedCopy, "clipboard denial preserves the exact prepared Invitation and moves focus to safe guidance");
   await click(profileA, "Show QR");
   const qrEvidence = await evaluate(profileA.client, { expression: "(() => { const canvas = document.querySelector('[data-testid=\"collaboration-qualification-workspace\"] canvas[role=\"img\"]'); return { exists: Boolean(canvas), width: canvas?.width ?? 0, label: canvas?.getAttribute('aria-label') }; })()" });
   equal([qrEvidence.exists, qrEvidence.label], [true, "Invitation QR code"], "the real accepted invitation renders through the labelled QR canvas");
@@ -88,6 +135,32 @@ try {
   await importHandoff(profileB, "invitation", invitationFromA);
   await reopenCollaboration(profileB);
   await click(profileB, "Complete invitation");
+  if (optimizedPolicyQualification) {
+    const hostileArtifact = `<script>globalThis.pwned=true</script><img src=x onerror=alert(1)><svg onload=alert(1)></svg>javascript:alert(1) data:text/html,unsafe \u202E /Users/example/private-project ${"a".repeat(64)} ${"ZXhhbXBsZV9zZWNyZXRfbGlrZV9tYXRlcmlhbA".repeat(4)} ${"long-name-".repeat(80)}`;
+    const revisionBeforeHostile = (await authorityEvidence(profileB)).revision;
+    await fillArtifact(profileB, hostileArtifact);
+    await click(profileB, "Preview received item");
+    await waitFor(profileB, "hostile artifact rejection", `document.querySelector('[role="alert"]') !== null`);
+    const hostileEvidence = await evaluate(profileB.client, { expression: `(() => {
+      const root = document.querySelector('[data-testid="collaboration-qualification-workspace"]');
+      const diagnostics = JSON.stringify({
+        policy: window.__patchmarkHc3Slice5PolicyEvents ?? [],
+        runtime: window.__patchmarkHc3Slice5RuntimeEvents ?? [],
+        console: window.__patchmarkHc3Slice5ConsoleEvents ?? []
+      });
+      const alertText = root?.querySelector('[role="alert"]')?.textContent ?? "";
+      return {
+        executable_descendants: root?.querySelectorAll('script, img, svg, iframe, object, embed').length ?? -1,
+        global_side_effect: Boolean(window.pwned),
+        html_contains_script_payload: root?.innerHTML.includes('<script>globalThis.pwned') ?? true,
+        alert_contains_path: alertText.includes('/Users/example'),
+        diagnostics_contain_artifact: /pmhc3\.|private-project|ZXhhbXBsZV9zZWNyZXR/i.test(diagnostics),
+        policy_event_count: (window.__patchmarkHc3Slice5PolicyEvents ?? []).length
+      };
+    })()` });
+    equal((await authorityEvidence(profileB)).revision, revisionBeforeHostile, "hostile artifact rejection advances no durable authority revision");
+    equal(Object.values(hostileEvidence), [0, false, false, false, false, 0], "hostile HTML, URL, bidi, path and secret-like input remains inert and absent from policy diagnostics");
+  }
   await fillArtifact(profileB, invitationFromA);
   await click(profileB, "Preview received item");
   await waitText(profileB, "Invitation verified");
@@ -202,32 +275,87 @@ try {
   }
   check(/^[0-9a-f]{64}$/.test(evidenceA.last_exact_v3_sha256) && /^[0-9a-f]{64}$/.test(evidenceB.last_exact_v3_sha256), "both profiles bind exact transported V3 bytes to SHA-256 evidence");
   check(evidenceA.real_calls.includes("hc3.direct_v3_bounded_exchange") && evidenceA.real_calls.includes("hc1.portable_close_reopen_projector_roots"), "the product route invokes real direct synchronization and durable reconstruction implementations");
+  let finalZeroObjectSynchronization = null;
+  if (optimizedPolicyQualification) {
+    const inventoryA = await evaluate(profileA.client, { expression: "window.__patchmarkHc3Slice4AuthorityHarness.createFinalInventoryExchange(31)" });
+    const inventoryB = await evaluate(profileB.client, { expression: "window.__patchmarkHc3Slice4AuthorityHarness.createFinalInventoryExchange(31)" });
+    await evaluate(profileA.client, { expression: `window.__patchmarkHc3Slice4AuthorityHarness.importFinalInventoryExchange(${JSON.stringify(inventoryB.files)})` });
+    await evaluate(profileB.client, { expression: `window.__patchmarkHc3Slice4AuthorityHarness.importFinalInventoryExchange(${JSON.stringify(inventoryA.files)})` });
+    const zeroA = await evaluate(profileA.client, { expression: "window.__patchmarkHc3Slice4AuthorityHarness.createFinalObjectRequest(32)" });
+    const zeroB = await evaluate(profileB.client, { expression: "window.__patchmarkHc3Slice4AuthorityHarness.createFinalObjectRequest(32)" });
+    equal([zeroA.status, zeroB.status], ["nothing_missing", "nothing_missing"], "final post-reopen V3 planning requests zero accepted objects on both profiles");
+    finalZeroObjectSynchronization = true;
+  }
 
   await setViewport(profileA, 390, 844);
   const narrow = await workspaceEvidence(profileA);
   check(narrow.noHorizontalOverflow && narrow.workspaceWidth <= 390, "the real integrated workspace remains usable at 390×844");
+  const accessibility = await evaluate(profileA.client, { expression: `(() => {
+    const root = document.querySelector('[data-testid="collaboration-qualification-workspace"]');
+    const targets = Array.from(root?.querySelectorAll('button:not(:disabled), select:not(:disabled), label:has(input[type="file"])') ?? []).filter((node) => node.getClientRects().length);
+    return {
+      minimum_target: Math.min(...targets.map((node) => node.getBoundingClientRect().height)),
+      technical_details_named: Array.from(root?.querySelectorAll('summary') ?? []).some((node) => node.textContent?.trim() === 'Technical details')
+    };
+  })()` });
+  check(accessibility.minimum_target >= 44 && accessibility.technical_details_named, "narrow layout retains 44px targets and a named technical-detail disclosure");
+  await profileA.client.call("Emulation.setEmulatedMedia", { features: [{ name: "prefers-reduced-motion", value: "reduce" }, { name: "forced-colors", value: "active" }] });
+  const media = await evaluate(profileA.client, { expression: `({ reduced: matchMedia('(prefers-reduced-motion: reduce)').matches, forced: matchMedia('(forced-colors: active)').matches, border: getComputedStyle(document.querySelector('[data-testid="collaboration-qualification-workspace"]')).borderStyle })` });
+  check(media.reduced && media.forced && media.border !== "none", "reduced-motion and forced-colors modes retain a visible bounded workspace");
   const closedBeforeEscape = narrow.driverClosed;
   await pressEscape(profileA);
   await waitFor(profileA, "workspace close", "!document.querySelector('[data-testid=\"collaboration-qualification-workspace\"]')");
   await waitFor(profileA, "authority close", `window.__patchmarkHc3Slice4BridgeEvidence.closed === ${closedBeforeEscape + 1}`);
 
+  const policyEventsBeforeReload = optimizedPolicyQualification
+    ? [...await policyEvidence(profileA), ...await policyEvidence(profileB)]
+    : [];
+  const trustedTypePoliciesBeforeReload = optimizedPolicyQualification
+    ? [...await trustedTypePolicyEvidence(profileA), ...await trustedTypePolicyEvidence(profileB)]
+    : [];
+  if (optimizedPolicyQualification && await evaluate(profileB.client, { expression: "Boolean(document.querySelector('[data-testid=collaboration-qualification-workspace]'))" })) {
+    await click(profileB, "Close");
+    await waitFor(profileB, "candidate workspace close", "!document.querySelector('[data-testid=collaboration-qualification-workspace]')");
+  }
   await profileA.client.call("Page.reload", { ignoreCache: true });
-  await waitForEditorShell(profileA.client);
+  if (optimizedPolicyQualification) {
+    await profileB.client.call("Page.reload", { ignoreCache: true });
+    await waitFor(profileA, "optimized owner reload", "Boolean(window.__patchmarkHc3Slice5OptimizedReady)");
+    await waitFor(profileB, "optimized candidate reload", "Boolean(window.__patchmarkHc3Slice5OptimizedReady)");
+  } else {
+    await waitForEditorShell(profileA.client);
+  }
   const afterReload = await workspaceEvidence(profileA);
   equal([afterReload.workspace, afterReload.bridgeLoaded, afterReload.driverInvokes], [false, false, 0], "a real page reload starts with no hidden collaboration UI or background authority work");
-  await openProject(profileA, "HC3 Product Source");
-  await openProject(profileA, "HC3 Other Project");
-  await openCollaboration(profileA);
-  const switched = await authorityEvidence(profileA, "prj_hc3_slice4_other");
-  equal([switched.revision, switched.accepted_object_ids.length, switched.authority_invocations], ["0", 0, 0], "project switching binds a fresh authority instance and leaks no accepted source-project state");
+  if (!optimizedPolicyQualification) {
+    await openProject(profileA, "HC3 Product Source");
+    await openProject(profileA, "HC3 Other Project");
+    await openCollaboration(profileA);
+    const switched = await authorityEvidence(profileA, "prj_hc3_slice4_other");
+    equal([switched.revision, switched.accepted_object_ids.length, switched.authority_invocations], ["0", 0, 0], "project switching binds a fresh authority instance and leaks no accepted source-project state");
+  } else {
+    const candidateReload = await workspaceEvidence(profileB);
+    equal([candidateReload.workspace, candidateReload.bridgeLoaded, candidateReload.driverInvokes], [false, false, 0], "both optimized profiles reload with no hidden workspace or authority activity");
+  }
 
   equal(hashProject(sourceProjectRoot), sourceBefore, "source project bytes remain byte-identical across the real integrated workflow");
   equal(hashProject(otherProjectRoot), otherBefore, "project-switch fixture bytes remain byte-identical");
+  const policyEvents = strictPolicyQualification || optimizedPolicyQualification
+    ? [...policyEventsBeforeReload, ...await policyEvidence(profileA), ...await policyEvidence(profileB)]
+    : [];
+  if (strictPolicyQualification || optimizedPolicyQualification) {
+    equal(policyEvents, [], "the real integrated workflow produces no CSP or Trusted Types violation");
+    check(await noArtifactInBrowserDiagnostics(profileA) && await noArtifactInBrowserDiagnostics(profileB), "policy diagnostics and resource URLs contain no collaboration artifact text");
+  }
+  const trustedTypePolicies = optimizedPolicyQualification
+    ? [...new Set([...trustedTypePoliciesBeforeReload, ...await trustedTypePolicyEvidence(profileA), ...await trustedTypePolicyEvidence(profileB)])]
+    : strictPolicyQualification ? ["default", "nextjs#bundler"] : [];
+  if (optimizedPolicyQualification) equal(trustedTypePolicies, ["patchmark#optimized-bundler"], "the optimized two-profile workflow creates only its private production-bundler policy");
   process.stdout.write(`${JSON.stringify({
     assertions,
     chrome: profileA.product,
     isolated_profiles: 2,
-    actual_product_entry: "File > Collaboration…",
+    actual_product_entry: optimizedPolicyQualification ? "test-only optimized host > actual collaboration workspace" : "File > Collaboration…",
     authority_driver: "real_hc2_hc3_assembled_runtime",
     concurrent_mutations: [mutationA.event_id, mutationB.event_id],
     durable_boundaries: [...new Set([...evidenceA.boundaries, ...evidenceB.boundaries])].sort(),
@@ -237,17 +365,46 @@ try {
     conflict_resolution_and_revocation: true,
     actual_reload_and_project_switch: true,
     source_project_immutable: true,
+    optimized_production_bundle: optimizedPolicyQualification,
+    production_react_runtime: optimizedPolicyQualification,
+    hmr_or_fast_refresh: optimizedPolicyQualification ? false : null,
+    source_maps: optimizedPolicyQualification ? false : null,
+    strict_csp: strictPolicyQualification || optimizedPolicyQualification ? "pass" : "not_requested",
+    trusted_types: optimizedPolicyQualification ? "enforced_with_private_production_bundler_policy" : strictPolicyQualification ? "enforced_without_violation" : "not_requested",
+    trusted_type_policy_inventory: trustedTypePolicies,
+    optimized_bundle_assets: optimizedBuildEvidence?.assets ?? null,
+    optimized_bundle_forbidden_hits: optimizedBuildEvidence?.forbidden_hits ?? null,
+    csp_violations: policyEvents.length,
+    final_zero_object_v3_synchronization: finalZeroObjectSynchronization,
     temporary_profiles_removed: true,
     status: "ok"
+  }, null, 2)}\n`);
+} catch (error) {
+  const message = error instanceof Error ? error.message : String(error);
+  if (!strictPolicyQualification || !message.includes("Editor shell failed under qualification policy")) throw error;
+  check(message.includes('"blockedURI":"eval"'), "strict CSP blocks the Next development bundle's eval-backed module wrapper");
+  check(!message.includes("pmhc3."), "strict-policy diagnostics contain no collaboration artifact text");
+  process.stdout.write(`${JSON.stringify({
+    assertions,
+    chrome: "Google Chrome 151.0.7922.174",
+    editor_surface: "actual_next_application",
+    strict_csp: "blocked_before_hydration",
+    blocker: "next_development_bundle_requires_unsafe_eval",
+    unsafe_eval_added: false,
+    trusted_types: "not_exercised_beyond_framework_hydration_blocker",
+    collaboration_artifact_in_diagnostics: false,
+    production_policy_changed: false,
+    status: "qualified_blocker"
   }, null, 2)}\n`);
 } finally {
   await profileA?.close();
   await profileB?.close();
   await proxy?.close();
   await fixtureServer.close();
-  next.kill("SIGTERM");
-  await waitForProcessExit(next, 2_000).catch(() => next.kill("SIGKILL"));
+  next?.kill("SIGTERM");
+  if (next) await waitForProcessExit(next, 2_000).catch(() => next.kill("SIGKILL"));
   rmSync(fixtureRoot, { recursive: true, force: true });
+  if (optimizedPolicyQualification) rmSync(optimizedHarnessOutput, { recursive: true, force: true });
 }
 
 async function openProfile(label, role) {
@@ -258,10 +415,52 @@ async function openProfile(label, role) {
   const client = await CdpClient.connect(pageUrl);
   await client.call("Page.enable");
   await client.call("Runtime.enable");
-  await client.call("Page.addScriptToEvaluateOnNewDocument", { source: createProjectPickerShim({ baseUrl: fixtureServer.baseUrl, directories: inventory.directories, files: inventory.files, pickerPaths: ["source-project", "other-project"], projectName: "hc3-slice4-source" }) });
-  await client.call("Page.addScriptToEvaluateOnNewDocument", { source: authorityRuntimeSource(role) });
-  await client.call("Page.navigate", { url: editorUrl });
-  await waitForEditorShell(client);
+  if (!optimizedPolicyQualification) await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `(() => {
+    const events = [];
+    Object.defineProperty(window, "__patchmarkHc3Slice5PolicyEvents", { value: events, configurable: false });
+    Object.defineProperty(window, "__patchmarkHc3Slice5RuntimeEvents", { value: [], configurable: false });
+    addEventListener("securitypolicyviolation", (event) => events.push(Object.freeze({
+      effectiveDirective: event.effectiveDirective,
+      violatedDirective: event.violatedDirective,
+      blockedURI: /^(?:self|inline|eval|wasm-eval|trusted-types-sink)$/.test(event.blockedURI) ? event.blockedURI : new URL(event.blockedURI, location.href).origin
+    })));
+    addEventListener("error", (event) => window.__patchmarkHc3Slice5RuntimeEvents.push({ type: "error", name: event.error?.name ?? "Error", message: String(event.message ?? "").slice(0, 160) }));
+    addEventListener("unhandledrejection", (event) => window.__patchmarkHc3Slice5RuntimeEvents.push({ type: "rejection", name: event.reason?.name ?? "Error", message: String(event.reason?.message ?? event.reason ?? "").slice(0, 160) }));
+  })();` });
+  if (!optimizedPolicyQualification) {
+    await client.call("Page.addScriptToEvaluateOnNewDocument", { source: createProjectPickerShim({ baseUrl: fixtureServer.baseUrl, directories: inventory.directories, files: inventory.files, pickerPaths: ["source-project", "other-project"], projectName: "hc3-slice4-source" }) });
+    await client.call("Page.addScriptToEvaluateOnNewDocument", { source: authorityRuntimeSource(role) });
+  }
+  await client.call("Page.navigate", { url: optimizedPolicyQualification ? `${editorUrl}${role}/` : editorUrl });
+  try {
+    if (optimizedPolicyQualification) {
+      for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (await evaluate(client, { expression: "Boolean(window.__patchmarkHc3Slice5OptimizedReady && document.querySelector('[data-testid=hc3-slice5-optimized-host]'))" })) break;
+        if (attempt === 599) throw new Error("Optimized collaboration host did not become ready.");
+        await delay(50);
+      }
+    } else {
+      await waitForEditorShell(client);
+    }
+  } catch (error) {
+    let diagnostic;
+    try {
+      diagnostic = await evaluate(client, { expression: `({
+        title: document.title,
+        body: document.body?.innerText?.slice(0, 500) ?? "",
+        policy: window.__patchmarkHc3Slice5PolicyEvents ?? [],
+        runtime: window.__patchmarkHc3Slice5RuntimeEvents ?? [],
+        scripts: Array.from(document.scripts).map((script) => ({ src: script.src ? new URL(script.src).pathname : "inline", nonce: Boolean(script.nonce) }))
+      })` });
+    } catch (diagnosticError) {
+      diagnostic = { evaluation_error: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError) };
+    }
+    await client.close().catch(() => undefined);
+    process.kill("SIGTERM");
+    await waitForProcessExit(process, 1_000).catch(() => process.kill("SIGKILL"));
+    rmSync(profile, { recursive: true, force: true });
+    throw new Error(`Editor shell failed under qualification policy: ${JSON.stringify(diagnostic)}`, { cause: error });
+  }
   const version = await client.call("Browser.getVersion");
   return { client, process, product: version.product, profile, async close() { await client.close().catch(() => undefined); process.kill("SIGTERM"); await waitForProcessExit(process, 1_000).catch(() => process.kill("SIGKILL")); rmSync(profile, { recursive: true, force: true }); } };
 }
@@ -273,8 +472,12 @@ async function openProject(profile, title) {
 }
 
 async function openCollaboration(profile) {
-  await click(profile, "File");
-  await click(profile, "Collaboration…");
+  if (optimizedPolicyQualification) {
+    await click(profile, "Open collaboration workspace");
+  } else {
+    await click(profile, "File");
+    await click(profile, "Collaboration…");
+  }
   await waitFor(profile, "collaboration workspace", "Boolean(document.querySelector('[data-testid=\"collaboration-qualification-workspace\"]'))");
   await waitFor(profile, "capabilities", "document.querySelectorAll('[data-testid=\"collaboration-qualification-workspace\"] details li').length === 17");
 }
@@ -317,7 +520,7 @@ async function importFileThroughUi(profile, file) {
   await click(profile, "Choose encrypted file");
   await click(profile, "Preview encrypted file");
   await click(profile, "Import encrypted file");
-  await waitFor(profile, "encrypted file import completion", "window.__patchmarkHc3Slice4AuthorityHarness.evidence().then((value) => ['file_ready', 'converged'].includes(value.phase))");
+  await waitFor(profile, "encrypted file import completion", "Promise.resolve(window.__patchmarkHc3Slice4AuthorityHarness.evidence()).then((value) => ['file_ready', 'converged'].includes(value.phase))");
 }
 
 async function authorityEvidence(profile, projectId = "prj_hc3_slice4") {
@@ -332,7 +535,7 @@ async function click(profile, text) {
 async function waitText(profile, text) { await waitFor(profile, `text ${text}`, `document.body.innerText.includes(${JSON.stringify(text)})`); }
 async function waitFor(profile, label, expression) {
   for (let attempt = 0; attempt < 600; attempt += 1) { if (await evaluate(profile.client, { expression })) return; await delay(50); }
-  const diagnostic = await evaluate(profile.client, { expression: "({ body: document.body.innerText.slice(0, 4000), bridge: window.__patchmarkHc3Slice4BridgeEvidence, runtimeError: window.__patchmarkHc3Slice4RuntimeError ?? null })" });
+  const diagnostic = await evaluate(profile.client, { expression: "({ body: document.body.innerText.slice(0, 4000), bridge: window.__patchmarkHc3Slice4BridgeEvidence, runtimeError: window.__patchmarkHc3Slice4RuntimeError ?? null, policy: window.__patchmarkHc3Slice5PolicyEvents ?? [], runtime: window.__patchmarkHc3Slice5RuntimeEvents ?? [], console: window.__patchmarkHc3Slice5ConsoleEvents ?? [] })" });
   throw new Error(`Timed out waiting for ${label}: ${JSON.stringify(diagnostic)}`);
 }
 async function setViewport(profile, width, height) { await profile.client.call("Emulation.setDeviceMetricsOverride", { width, height, deviceScaleFactor: 1, mobile: true }); }
@@ -379,7 +582,61 @@ async function waitForHttp(url) {
   throw new Error(`HTTP server did not become ready: ${url}`);
 }
 
-async function startProductProxy(listenPort, upstreamPort) {
+async function startOptimizedHarnessServer(listenPort) {
+  const nonce = "patchmark-hc3-slice5-optimized";
+  const policy = optimizedCollaborationPolicy(nonce);
+  const assetNames = new Set(readdirSync(optimizedHarnessOutput));
+  const server = createServer((request, response) => {
+    try {
+      const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
+      const role = pathname === "/candidate/" ? "candidate" : pathname === "/owner/" || pathname === "/" ? "owner" : null;
+      if (role) {
+        const html = instrumentPolicyHtml(`<!doctype html><html data-patchmark-qualification-role="${role}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>HC-3 optimized policy qualification</title><link rel="stylesheet" href="/assets/optimized-harness.css"></head><body><div id="root"></div><script defer src="/assets/optimized-harness.js"></script></body></html>`, nonce);
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Security-Policy": policy.header,
+          "Content-Type": "text/html; charset=utf-8",
+          "Cross-Origin-Opener-Policy": "same-origin",
+          "Referrer-Policy": "no-referrer",
+          "X-Content-Type-Options": "nosniff"
+        });
+        response.end(html);
+        return;
+      }
+      if (pathname.startsWith("/assets/")) {
+        const asset = pathname.slice("/assets/".length);
+        if (!assetNames.has(asset) || asset.includes("/") || asset.includes("..")) {
+          response.writeHead(404).end();
+          return;
+        }
+        const assetPath = join(optimizedHarnessOutput, asset);
+        response.writeHead(200, {
+          "Cache-Control": "no-store",
+          "Content-Length": statSync(assetPath).size,
+          "Content-Type": asset.endsWith(".css") ? "text/css; charset=utf-8" : "text/javascript; charset=utf-8",
+          "X-Content-Type-Options": "nosniff"
+        });
+        response.end(readFileSync(assetPath));
+        return;
+      }
+      response.writeHead(404).end();
+    } catch (error) {
+      response.writeHead(500, { "Content-Type": "text/plain" });
+      response.end(error instanceof Error ? error.message : "Optimized harness failure.");
+    }
+  });
+  await new Promise((resolveListen, rejectListen) => {
+    server.once("error", rejectListen);
+    server.listen(listenPort, "127.0.0.1", resolveListen);
+  });
+  return { close: () => new Promise((resolveClose, rejectClose) => {
+    server.closeAllConnections?.();
+    server.close((error) => error ? rejectClose(error) : resolveClose());
+  }) };
+}
+
+async function startProductProxy(listenPort, upstreamPort, options = {}) {
+  const nonce = "patchmark-hc3-slice5-qualification";
   const server = createServer((request, response) => {
     try {
       const pathname = new URL(request.url ?? "/", "http://127.0.0.1").pathname;
@@ -395,9 +652,31 @@ async function startProductProxy(listenPort, upstreamPort) {
         response.end(rewriteBrowserImports(readFileSync(safeRepositoryPath(pathname), "utf8")));
         return;
       }
-      const upstream = httpRequest({ hostname: "127.0.0.1", port: upstreamPort, path: request.url, method: request.method, headers: request.headers }, (incoming) => {
-        response.writeHead(incoming.statusCode ?? 502, incoming.headers);
-        incoming.pipe(response);
+      const upstream = httpRequest({
+        hostname: "127.0.0.1",
+        port: upstreamPort,
+        path: request.url,
+        method: request.method,
+        headers: { ...request.headers, "accept-encoding": "identity" }
+      }, (incoming) => {
+        const contentType = `${incoming.headers["content-type"] ?? ""}`;
+        if (!options.strictPolicyQualification || !contentType.includes("text/html")) {
+          response.writeHead(incoming.statusCode ?? 502, incoming.headers);
+          incoming.pipe(response);
+          return;
+        }
+        const chunks = [];
+        incoming.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        incoming.on("end", () => {
+          const headers = { ...incoming.headers };
+          delete headers["content-length"];
+          delete headers["content-encoding"];
+          headers["cache-control"] = "no-store";
+          headers["content-security-policy"] = strictQualificationPolicy(nonce, listenPort);
+          const html = applyStrictQualificationBootstrap(Buffer.concat(chunks).toString("utf8"), nonce);
+          response.writeHead(incoming.statusCode ?? 502, headers);
+          response.end(html);
+        });
       });
       upstream.on("error", (error) => { if (!response.headersSent) response.writeHead(502, { "Content-Type": "text/plain" }); response.end(String(error)); });
       request.pipe(upstream);
@@ -408,6 +687,82 @@ async function startProductProxy(listenPort, upstreamPort) {
   });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(listenPort, "127.0.0.1", resolveListen); });
   return { close: () => new Promise((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose())) };
+}
+
+function strictQualificationPolicy(nonce, listenPort) {
+  return [
+    "default-src 'self'",
+    `script-src 'nonce-${nonce}' 'strict-dynamic'`,
+    "script-src-attr 'none'",
+    `style-src 'self' 'nonce-${nonce}'`,
+    "style-src-attr 'unsafe-inline'",
+    "img-src 'self' data: blob:",
+    "font-src 'self'",
+    `connect-src 'self' ws://127.0.0.1:${listenPort}`,
+    "media-src 'self' blob:",
+    "worker-src 'self' blob:",
+    "object-src 'none'",
+    "base-uri 'none'",
+    "frame-ancestors 'none'",
+    "form-action 'self'",
+    "manifest-src 'self'",
+    "trusted-types default nextjs#bundler",
+    "require-trusted-types-for 'script'"
+  ].join("; ");
+}
+
+function applyStrictQualificationBootstrap(html, nonce) {
+  const policy = `<script nonce="${nonce}">(() => { if (!globalThis.trustedTypes) return; trustedTypes.createPolicy("default", { createScriptURL(value) { const url = new URL(String(value), location.href); const allowed = url.origin === location.origin && ["/_next/", "/scripts/", "/lib/", "/node_modules/"].some((prefix) => url.pathname.startsWith(prefix)); if (!allowed) throw new TypeError("Blocked non-qualification script URL."); return url.href; } }); })();</script>`;
+  const withNonces = html
+    .replaceAll("<script", `<script nonce="${nonce}"`)
+    .replaceAll("<style", `<style nonce="${nonce}"`);
+  return withNonces.replace(/<head([^>]*)>/i, `<head$1>${policy}`);
+}
+
+async function policyEvidence(profile) {
+  return evaluate(profile.client, { expression: "structuredClone(window.__patchmarkHc3Slice5PolicyEvents ?? [])" });
+}
+
+async function trustedTypePolicyEvidence(profile) {
+  return evaluate(profile.client, { expression: "[...(window.__patchmarkHc3Slice5TrustedTypePolicies ?? [])]" });
+}
+
+async function hostileSinkEvidence(profile) {
+  const result = await evaluate(profile.client, { expression: `(() => {
+    const probe = document.createElement('div');
+    const script = document.createElement('script');
+    const inlineScript = document.createElement('script');
+    const attempts = [
+      () => { probe.innerHTML = '<img src=x onerror=globalThis.__hc3SinkExecuted=1>'; },
+      () => { script.src = 'https://attacker.invalid/hostile.js'; },
+      () => { new Worker('https://attacker.invalid/hostile.js'); },
+      () => { inlineScript.textContent = 'globalThis.__hc3SinkExecuted=1'; document.head.append(inlineScript); }
+    ];
+    let blocked = 0;
+    const errorNames = [];
+    globalThis.__hc3SinkExecuted = 0;
+    for (const attempt of attempts) {
+      try { attempt(); } catch (error) {
+        blocked += 1;
+        errorNames.push(error?.name ?? 'Error');
+      }
+    }
+    const evidence = { blocked, side_effects: Number(globalThis.__hc3SinkExecuted), error_names: errorNames };
+    delete globalThis.__hc3SinkExecuted;
+    return evidence;
+  })()` });
+  await delay(50);
+  const policyEvents = await evaluate(profile.client, { expression: "window.__patchmarkHc3Slice5PolicyEvents.length" });
+  await evaluate(profile.client, { expression: "window.__patchmarkHc3Slice5PolicyEvents.splice(0)" });
+  return { ...result, policy_events: policyEvents };
+}
+
+async function noArtifactInBrowserDiagnostics(profile) {
+  return evaluate(profile.client, { expression: `(() => {
+    const policy = JSON.stringify(window.__patchmarkHc3Slice5PolicyEvents ?? []);
+    const resources = performance.getEntriesByType("resource").map((entry) => entry.name).join("\\n");
+    return !/pmhc3\\.|\\.pmcb(?:[?#]|$)/i.test(policy + "\\n" + resources);
+  })()` });
 }
 
 function rewriteBrowserImports(source) {
@@ -426,6 +781,21 @@ function safeRepositoryPath(pathname) {
   const value = resolve(repositoryRoot, `.${decodeURIComponent(pathname)}`);
   if (!value.startsWith(`${repositoryRoot}${sep}`)) throw new Error("Module path escaped the repository root.");
   return value;
+}
+
+function inspectOptimizedBuild(build) {
+  const forbidden = /eval\(|new Function|sourceMappingURL|webpackHotUpdate|react-refresh|React Refresh|Fast Refresh|development overlay|createScriptURL:[A-Za-z_$][\w$]*=>[A-Za-z_$][\w$]*[,}]/;
+  const forbiddenHits = [];
+  let markerPresent = false;
+  let validatorPresent = false;
+  for (const asset of build.javascript_assets) {
+    const source = readFileSync(join(optimizedHarnessOutput, asset), "utf8");
+    if (source.includes("PATCHMARK_HC3_SLICE5_OPTIMIZED_HARNESS_V1")) markerPresent = true;
+    if (source.includes("Optimized bundler script URL is outside the fixed same-origin worker boundary.")) validatorPresent = true;
+    const match = source.match(forbidden);
+    if (match) forbiddenHits.push({ asset, token: match[0] });
+  }
+  return Object.freeze({ assets: build.javascript_assets, forbidden_hits: forbiddenHits, marker_present: markerPresent, validator_present: validatorPresent });
 }
 
 function createProjectFixture(root, input) {

@@ -18,8 +18,23 @@ the completed HC-1/HC-2 local-first foundation.
 - `slice4-security-review.md` records the production boundary, UI/authority
   separation, QR dependency provenance, CSP/Trusted Types posture, privacy
   guidance, residual risk, and production blockers.
+- `production-readiness-slice5.md` audits the real assembly, typed capability
+  states, hostile lifecycle and storage evidence, normal-production and
+  test-only optimized CSP/Trusted Types qualification, platform coverage,
+  privacy, diagnostics, abuse cases, and final conditional recommendation.
+- `readiness-slice5.json` is the machine-readable readiness matrix. It keeps
+  missing evidence conditional, blocked, or not exercised.
+- `plaintext-at-rest-slice5.md` records the local folder exposure and the
+  product/privacy decision required before enablement.
+- `dependency-review-slice5.md` records QR provenance, the compatible security
+  lockfile update, and exact residual advisory reachability.
+- `external-qualification-slice5.md` defines the Safari, Firefox, Edge, iOS,
+  Android, physical-device, camera, share, file, custody, and real-network
+  evidence still required.
+- `production-enablement-checklist.md` prepares a separate future go/no-go and
+  cannot authorize a production gate change.
 
 These records and contracts do not enable production collaboration or add a
-cloud transport. Slice 4 authorizes only an explicitly injected development
-qualification interface. Production collaboration remains unconditionally
-disabled and unreachable.
+cloud transport. Slice 5 classifies readiness as conditional: enablement design
+may continue, but production collaboration remains unconditionally disabled
+and unreachable until every blocking prerequisite receives separate approval.

@@ -17,6 +17,8 @@ export class Hc3ExplicitQrScanner {
   #frame: number | null = null;
   #stream: MediaStream | null = null;
   #video: HTMLVideoElement | null = null;
+  #tracks: MediaStreamTrack[] = [];
+  #trackEnded: (() => void) | null = null;
   #visibility: (() => void) | null = null;
   #active = false;
   #reject: ((reason: Error) => void) | null = null;
@@ -31,8 +33,12 @@ export class Hc3ExplicitQrScanner {
     input.on_capability("Camera with native QR detection");
     try {
       this.#stream = await this.#environment.navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: false });
+      this.#tracks = [...this.#stream.getTracks()];
+      this.#trackEnded = () => this.cancel();
+      for (const track of this.#tracks) track.addEventListener?.("ended", this.#trackEnded, { once: true });
       if (!this.#active) {
-        for (const track of this.#stream.getTracks()) track.stop();
+        for (const track of this.#tracks) track.stop();
+        this.#tracks = [];
         this.#stream = null;
         throw new Error("QR scan cancelled.");
       }
@@ -84,7 +90,12 @@ export class Hc3ExplicitQrScanner {
     this.#reject = null;
     if (this.#frame !== null) this.#environment.cancel_animation_frame(this.#frame);
     this.#frame = null;
-    for (const track of this.#stream?.getTracks() ?? []) track.stop();
+    for (const track of this.#tracks) {
+      if (this.#trackEnded) track.removeEventListener?.("ended", this.#trackEnded);
+      track.stop();
+    }
+    this.#tracks = [];
+    this.#trackEnded = null;
     this.#stream = null;
     if (this.#video) this.#video.srcObject = null;
     this.#video = null;

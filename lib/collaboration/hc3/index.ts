@@ -26,3 +26,4 @@ export * from "./product-contracts.ts";
 export * from "./product-authority-driver.ts";
 export * from "./product-capabilities.ts";
 export * from "./product-driver.ts";
+export * from "./product-hardening.ts";

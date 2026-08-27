@@ -130,6 +130,15 @@ export function createSlice4RealProductAuthorityRuntime(config: Readonly<{
     async attemptRevokedMutation() {
       return hc2s6.slice8PostCutoffMutationRejected();
     },
+    async createFinalInventoryExchange(round: number) {
+      return clone(await hc2s7.createSlice7InventoryExchange(round, 128));
+    },
+    async importFinalInventoryExchange(files: readonly string[]) {
+      return clone(await hc2s7.importSlice7InventoryExchange([...files]));
+    },
+    async createFinalObjectRequest(round: number) {
+      return clone(await hc2s7.createSlice7NextRequest(round, 64));
+    },
     evidence() {
       return clone({
         role: state.role,
