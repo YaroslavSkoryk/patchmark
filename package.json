@@ -98,6 +98,10 @@
     "test:collaboration-hc3-slice3-types": "tsc -p scripts/tsconfig.collaboration-hc3-slice3.json --pretty false",
     "test:collaboration-hc3-slice3-independent": "python3 scripts/collaboration-hc3-slice3-independent.py",
     "test:collaboration-hc3-slice3-browser": "node scripts/collaboration-hc3-slice3-browser.test.mjs",
+    "test:collaboration-hc3-slice4": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc3-slice4.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc3-import-safety.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc3-production-lock.test.mjs",
+    "test:collaboration-hc3-slice4-types": "tsc -p scripts/tsconfig.collaboration-hc3-slice4.json --pretty false",
+    "test:collaboration-hc3-slice4-browser": "node scripts/collaboration-hc3-slice4-browser.test.mjs",
+    "test:collaboration-hc3-slice4-production-browser": "node scripts/collaboration-hc3-slice4-production-browser.test.mjs",
     "test:collaboration-review-evidence-independent": "python3 scripts/collaboration-review-response-evidence-independent.py",
     "test:collaboration-roots": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-root-vectors.test.mjs",
     "test:collaboration-roots-independent": "python3 scripts/collaboration-root-vectors-independent.py",
@@ -167,6 +171,7 @@
     "lexical": "0.35.0",
     "libsodium-wrappers-sumo": "0.8.4",
     "next": "^15.3.5",
+    "qr": "0.6.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   },

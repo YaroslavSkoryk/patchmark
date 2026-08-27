@@ -22,3 +22,7 @@ export * from "./direct-byte-channel.ts";
 export * from "./direct-webrtc-adapter.ts";
 export * from "./direct-sync.ts";
 export * from "./direct-workflow.ts";
+export * from "./product-contracts.ts";
+export * from "./product-authority-driver.ts";
+export * from "./product-capabilities.ts";
+export * from "./product-driver.ts";

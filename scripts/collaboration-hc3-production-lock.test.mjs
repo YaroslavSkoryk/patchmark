@@ -15,7 +15,15 @@ for (const productionRoot of productionRoots) {
     }
   }
 }
-assert.deepEqual(productionImports, [], "HC-3 entered a production import path");
+assert.deepEqual(
+  productionImports,
+  ["components/collaboration/collaboration-qualification-workspace.tsx"],
+  "Only the gated lazy qualification workspace may import HC-3"
+);
+const productLoader = await readFile(join(root, "lib", "collaboration-shadow", "product-qualification-loader.ts"), "utf8");
+assert(productLoader.includes("collaboration-qualification-workspace.tsx"), "The accepted gate must own the only product-workspace load edge");
+const productEntrypoint = await readFile(join(root, "lib", "collaboration-shadow", "entrypoint.ts"), "utf8");
+assert(productEntrypoint.includes('import("./product-qualification-loader.ts")'), "Product qualification must remain behind the shadow production gate");
 
 const collaborationIndex = await readFile(join(root, "lib", "collaboration", "index.ts"), "utf8");
 assert(!collaborationIndex.includes("./hc3/"), "HC-3 entered the production collaboration barrel");
@@ -30,6 +38,10 @@ const forbiddenCapabilities = [
 for (const file of hc3Files) {
   const source = await readFile(file, "utf8");
   for (const pattern of forbiddenCapabilities) {
+    if (
+      relative(root, file) === "lib/collaboration/hc3/product-capabilities.ts" &&
+      /RTCPeerConnection|indexedDB|show\(\?:Open\|Save\)FilePicker/.test(pattern.source)
+    ) continue;
     assert(!pattern.test(source), `${relative(root, file)} contains forbidden HC-3 capability ${pattern}`);
   }
 }
@@ -52,7 +64,8 @@ const frozenFixtureHashes = {
   "scripts/fixtures/collaboration-hc2-slice7-v3.json": "98450f518c9827ec0e310aa2a7a66d99fb4ba5c33f0b0aa3fddb75b4f95a5df1",
   "scripts/fixtures/collaboration-hc2-slice8-qualification-template.json": "735fdbb8df9b93367d5907592e78e7e3e00050740da312e3b6227bc260f5dc46",
   "scripts/fixtures/collaboration-hc3-slice1-v1.json": "fd4aaa38af60d0f12054c475a3ce86b71ad9bc85aa4f1f2f9b24f085f3c370fe",
-  "scripts/fixtures/collaboration-hc3-slice3-v1.json": "6defdcb1e2578fa3aa0767c9a009d994046191006db715b7df46fda84221ae8a"
+  "scripts/fixtures/collaboration-hc3-slice3-v1.json": "6defdcb1e2578fa3aa0767c9a009d994046191006db715b7df46fda84221ae8a",
+  "scripts/fixtures/collaboration-hc3-slice4-v1.json": "ec123fb2dce2eedc4e55f0e82db5ff6d0f18896352ff51ebbafd606f88475ca6"
 };
 for (const [path, expected] of Object.entries(frozenFixtureHashes)) {
   const bytes = await readFile(join(root, path));

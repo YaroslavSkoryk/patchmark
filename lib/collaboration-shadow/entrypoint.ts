@@ -5,6 +5,7 @@ import type {
 } from "./contracts.ts";
 import {
   getBuildCollaborationShadowFeatureState,
+  resolveInjectedCollaborationProductFeatureState,
   type CollaborationShadowFeatureState
 } from "./feature-state.ts";
 
@@ -29,6 +30,14 @@ export type CollaborationShadowDispatch =
   | CollaborationShadowDisabledSentinel
   | Promise<CollaborationShadowResult>;
 
+export type CollaborationProductQualificationModule = Readonly<{
+  CollaborationQualificationWorkspace: unknown;
+}>;
+
+export type CollaborationProductQualificationDispatch =
+  | CollaborationShadowDisabledSentinel
+  | Promise<CollaborationProductQualificationModule>;
+
 const disabledSentinel: CollaborationShadowDisabledSentinel = Object.freeze({
   mode: "disabled",
   outcome: "disabled"
@@ -40,6 +49,20 @@ export function runCollaborationShadowAfterLegacyCommit(
   const featureState = getBuildCollaborationShadowFeatureState();
   if (featureState.mode === "disabled") return disabledSentinel;
   return loadAndDispatch(factory, () => import("./shadow-implementation.ts"));
+}
+
+export function getCollaborationProductQualificationState(
+  injectedState: unknown
+): CollaborationShadowFeatureState {
+  return resolveInjectedCollaborationProductFeatureState(injectedState);
+}
+
+export function loadCollaborationProductQualification(
+  injectedState: unknown
+): CollaborationProductQualificationDispatch {
+  const featureState = resolveInjectedCollaborationProductFeatureState(injectedState);
+  if (featureState.mode === "disabled") return disabledSentinel;
+  return import("./product-qualification-loader.ts");
 }
 
 export function createCollaborationShadowEntrypoint(options: Readonly<{

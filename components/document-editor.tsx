@@ -9,6 +9,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type ComponentType,
   type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode
 } from "react";
@@ -278,6 +279,7 @@ import {
   addExistingDocumentToProject,
   archiveProjectDocument,
   canOpenProjectFolder,
+  getCollaborationProductQualificationState,
   convertProjectToMultiDocument,
   createProjectDocumentGroup,
   createProjectFromMarkdown,
@@ -294,6 +296,7 @@ import {
   getProjectTitle,
   isMultiDocumentProject,
   listProjectVersions,
+  loadCollaborationProductQualification,
   locateProjectDocument,
   moveProjectDocument,
   moveProjectDocumentGroup,
@@ -431,6 +434,16 @@ import {
 } from "@/lib/performance/document-switch-performance";
 
 type EditorMode = "visual" | "markdown";
+type CollaborationWorkspaceComponent = ComponentType<Readonly<{
+  sourceProjectId: string;
+  sourceProjectTitle: string;
+  onClose(): void;
+}>>;
+type CollaborationWorkspaceState = Readonly<{
+  Component: CollaborationWorkspaceComponent;
+  projectId: string;
+  projectTitle: string;
+}>;
 type ReadingBookmarkNavigationRequest = {
   bookmark: PatchmarkReadingBookmark | null;
   documentKey: string;
@@ -812,6 +825,12 @@ export function DocumentEditor() {
     useState<MarkdownFileHandle | null>(null);
   const [projectHandle, setProjectHandle] =
     useState<PatchmarkProjectHandle | null>(null);
+  const collaborationProductFeatureState =
+    getCollaborationProductQualificationState("development_shadow");
+  const [collaborationWorkspace, setCollaborationWorkspace] =
+    useState<CollaborationWorkspaceState | null>(null);
+  const [isCollaborationWorkspaceLoading, setIsCollaborationWorkspaceLoading] =
+    useState(false);
   const [isNarrowNavigation, setIsNarrowNavigation] = useState(false);
   const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
   const [navigationCollapsed, setNavigationCollapsed] = useState(false);
@@ -834,6 +853,15 @@ export function DocumentEditor() {
     activeDocumentIdentity?.projectId ?? null
   );
   activeProjectIdRef.current = activeDocumentIdentity?.projectId ?? null;
+
+  useEffect(() => {
+    if (
+      collaborationWorkspace &&
+      collaborationWorkspace.projectId !== activeDocumentIdentity?.projectId
+    ) {
+      setCollaborationWorkspace(null);
+    }
+  }, [activeDocumentIdentity?.projectId, collaborationWorkspace]);
   const [projectRecovery, setProjectRecovery] =
     useState<PatchmarkProjectRecoveryState | null>(null);
   const [projectDocuments, setProjectDocuments] = useState<
@@ -9474,6 +9502,40 @@ export function DocumentEditor() {
     }
   }
 
+  async function handleOpenCollaborationWorkspace() {
+    if (
+      collaborationProductFeatureState.mode !== "development_shadow" ||
+      !projectHandle ||
+      isCollaborationWorkspaceLoading
+    ) {
+      return;
+    }
+    const identity = getProjectDocumentIdentity(projectHandle);
+    const projectTitle = getProjectTitle(projectHandle);
+    setIsCollaborationWorkspaceLoading(true);
+    try {
+      const dispatch = loadCollaborationProductQualification(
+        "development_shadow"
+      );
+      if (!(dispatch instanceof Promise)) return;
+      const loaded = await dispatch;
+      if (activeProjectIdRef.current !== identity.projectId) return;
+      setCollaborationWorkspace({
+        Component:
+          loaded.CollaborationQualificationWorkspace as CollaborationWorkspaceComponent,
+        projectId: identity.projectId,
+        projectTitle
+      });
+    } catch {
+      setSaveFeedback({
+        kind: "error",
+        message: "The development collaboration workspace could not be loaded."
+      });
+    } finally {
+      setIsCollaborationWorkspaceLoading(false);
+    }
+  }
+
   const documentActionsBusy =
     isSaving ||
     isDocumentSwitchPending ||
@@ -9505,6 +9567,7 @@ export function DocumentEditor() {
   const navigationOpen = isNarrowNavigation
     ? mobileNavigationOpen
     : !navigationCollapsed;
+  const CollaborationWorkspace = collaborationWorkspace?.Component ?? null;
 
   const openComments = useCallback(() => {
     if (isNarrowNavigation) {
@@ -9712,6 +9775,25 @@ export function DocumentEditor() {
                   Create Project From Current Document
                 </ApplicationMenuItem>
               </ApplicationMenuGroup>
+              {collaborationProductFeatureState.mode ===
+                "development_shadow" && projectHandle ? (
+                <ApplicationMenuGroup label="Collaboration qualification">
+                  <ApplicationMenuItem
+                    busy={isCollaborationWorkspaceLoading}
+                    closeMenu={closeMenu}
+                    disabled={
+                      isSaving ||
+                      isDocumentSwitchPending ||
+                      isProjectDataLoading ||
+                      isProjectRecoveryReadOnly ||
+                      isReanchorMode
+                    }
+                    onSelect={handleOpenCollaborationWorkspace}
+                  >
+                    Collaboration…
+                  </ApplicationMenuItem>
+                </ApplicationMenuGroup>
+              ) : null}
               {fileName ? (
                 <ApplicationMenuGroup label="Document actions">
                   <ApplicationMenuItem
@@ -10863,6 +10945,14 @@ export function DocumentEditor() {
         <SnapshotDialog
           dialog={snapshotDialog}
           onClose={() => setSnapshotDialog(null)}
+        />
+      ) : null}
+
+      {collaborationWorkspace && CollaborationWorkspace ? (
+        <CollaborationWorkspace
+          sourceProjectId={collaborationWorkspace.projectId}
+          sourceProjectTitle={collaborationWorkspace.projectTitle}
+          onClose={() => setCollaborationWorkspace(null)}
         />
       ) : null}
 

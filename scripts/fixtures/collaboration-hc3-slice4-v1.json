@@ -1,0 +1,18 @@
+{
+  "fixture_version": 1,
+  "fixture_domain": "patchmark/hc3/product-qualification-qr-vectors/v1",
+  "notice": "Public deterministic test descriptor only; expected values are literal and are not regenerated through Patchmark production code.",
+  "input": {
+    "source_fixture": "collaboration-hc3-slice1-v1.json",
+    "source_field": "expected.invitation.canonical_text",
+    "artifact_kind": "handoff"
+  },
+  "expected": {
+    "error_correction": "low",
+    "encoding": "byte",
+    "mask": 0,
+    "border_modules": 4,
+    "module_count": 109,
+    "matrix_sha256": "959b8a2ae6c193b16d55a48a0571b9dedd70c0337f43fd0e6fa4228ff8f6f34e"
+  }
+}

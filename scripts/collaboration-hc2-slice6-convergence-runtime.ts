@@ -350,6 +350,31 @@ export async function createConvergenceConflictResolution(adoptedEventId = null)
     resolved_value: verified.replay.projection.project_title.resolved_value });
 }
 
+/** Slice 4 product qualification hook: reads the exact reconstructed conflict without mutating it. */
+export async function readConvergenceConflictEvidence() {
+  const r = requireReplica();
+  const reconstructed = await reconstructReplica(r.objects);
+  const title = reconstructed.replay.projection.project_title;
+  const conflict = reconstructed.replay.projection.conflicts.find((entry) =>
+    (entry.core.conflict_kind === "metadata" || entry.core.conflict_kind === "reducer") && entry.core.field === "title")
+    ?? reconstructed.replay.projection.conflicts[0]
+    ?? null;
+  return clean({
+    state: title.state,
+    conflict_id: conflict?.conflict_id ?? null,
+    contenders: title.state === "conflicted"
+      ? title.contenders.map((entry) => ({
+          event_ids: [...entry.event_ids].sort(),
+          value: entry.value
+        }))
+      : [],
+    accepted_semantic_event_ids: reconstructed.state.accepted_semantic_event_ids,
+    accepted_control_event_ids: reconstructed.state.accepted_control_event_ids,
+    semantic_frontier: reconstructed.state.accepted_semantic_frontier,
+    control_head: reconstructed.controlId
+  });
+}
+
 export function reviewerConflictResolutionCapability() {
   return clean({ role: "reviewer", can_resolve_content_conflict: capabilitiesForRole("reviewer").includes("resolve_content_conflict") });
 }

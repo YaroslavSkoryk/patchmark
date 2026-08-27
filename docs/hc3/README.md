@@ -12,7 +12,14 @@ the completed HC-1/HC-2 local-first foundation.
 - `direct-transport-slice3.md` defines authenticated manual offer/answer
   artifacts, the injected direct byte channel, bounded framing/backpressure,
   interruption rules, and real two-profile V3 qualification evidence.
+- `product-integration-slice4.md` defines the actual File-menu integration,
+  lazy accessible workspace, QR/camera and capability ports, progressive
+  collaboration guidance, disabled-mode evidence, and compatibility limits.
+- `slice4-security-review.md` records the production boundary, UI/authority
+  separation, QR dependency provenance, CSP/Trusted Types posture, privacy
+  guidance, residual risk, and production blockers.
 
-These records and contracts do not enable production collaboration, add a
-network transport, or authorize a user interface. Production collaboration
-remains unconditionally disabled and unreachable.
+These records and contracts do not enable production collaboration or add a
+cloud transport. Slice 4 authorizes only an explicitly injected development
+qualification interface. Production collaboration remains unconditionally
+disabled and unreachable.

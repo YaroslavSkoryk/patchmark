@@ -47,6 +47,12 @@ const targets = [
   "../lib/collaboration/hc3/direct-webrtc-adapter.ts",
   "../lib/collaboration/hc3/direct-sync.ts",
   "../lib/collaboration/hc3/direct-workflow.ts",
+  "../lib/collaboration/hc3/product-contracts.ts",
+  "../lib/collaboration/hc3/product-authority-driver.ts",
+  "../lib/collaboration/hc3/product-capabilities.ts",
+  "../lib/collaboration/hc3/product-driver.ts",
+  "../lib/collaboration/hc3/qr-provider.ts",
+  "../lib/collaboration/hc3/qr-scanner.ts",
   "../lib/collaboration/hc3/index.ts"
 ];
 try {

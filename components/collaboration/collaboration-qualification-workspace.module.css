@@ -1,0 +1,278 @@
+.backdrop {
+  position: fixed;
+  z-index: calc(var(--layer-modal) + 10);
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: max(20px, var(--safe-area-top)) max(20px, var(--safe-area-right)) max(20px, var(--safe-area-bottom)) max(20px, var(--safe-area-left));
+  background: rgba(22, 35, 29, 0.58);
+}
+
+.workspace {
+  display: flex;
+  flex-direction: column;
+  width: min(1120px, 100%);
+  max-height: min(900px, calc(100dvh - 40px));
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 18px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+}
+
+.header {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.header span,
+.statusCard > span {
+  color: var(--accent);
+  font-size: 0.75rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.header h2,
+.statusCard h3,
+.panel h3,
+.artifact h3 {
+  margin: 4px 0 6px;
+}
+
+.header p,
+.statusCard p,
+.panel p,
+.artifact p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.layout {
+  display: grid;
+  grid-template-columns: minmax(190px, 250px) minmax(0, 1fr);
+  min-height: 0;
+}
+
+.sections {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 16px;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--surface-muted);
+}
+
+.sections button {
+  padding: 10px 12px;
+  border: 1px solid transparent;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+}
+
+.sections button[aria-current="step"] {
+  border-color: var(--border);
+  background: var(--surface);
+  font-weight: 800;
+}
+
+.content {
+  display: grid;
+  align-content: start;
+  gap: 16px;
+  min-width: 0;
+  padding: 20px 24px 32px;
+  overflow-y: auto;
+}
+
+.statusCard,
+.panel,
+.artifact,
+.technical {
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface);
+}
+
+.statusCard {
+  background: var(--accent-soft);
+}
+
+.primary {
+  margin-top: 14px;
+  border-color: var(--accent-strong);
+  background: var(--accent);
+  color: white;
+}
+
+.panel {
+  display: grid;
+  gap: 14px;
+}
+
+.panel label {
+  display: grid;
+  gap: 6px;
+  font-weight: 700;
+}
+
+.panel textarea,
+.panel select,
+.artifact textarea {
+  width: 100%;
+  max-width: 100%;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.actions button,
+.panel > button,
+.artifact button,
+.header button,
+.fileButton {
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+  color: var(--text);
+  font-weight: 700;
+}
+
+.fileButton input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+
+.error {
+  margin: 0;
+  padding: 12px;
+  border: 1px solid #b84a4a;
+  border-radius: 10px;
+  color: #7d2525;
+  background: #fff1f1;
+}
+
+.state,
+.note {
+  padding: 10px;
+  border-radius: 8px;
+  background: var(--surface-muted);
+}
+
+.person,
+.conflict {
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+.person h4,
+.conflict h4 {
+  margin: 0 0 4px;
+}
+
+.qr {
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  padding-top: 12px;
+}
+
+.qr canvas {
+  width: min(320px, 100%);
+  height: auto;
+  border: 1px solid var(--border);
+  background: white;
+}
+
+.technical {
+  overflow-wrap: anywhere;
+}
+
+.technical dl > div {
+  display: grid;
+  grid-template-columns: minmax(120px, 1fr) 2fr;
+  gap: 12px;
+  padding: 6px 0;
+}
+
+.technical dt {
+  font-weight: 800;
+}
+
+.technical dd {
+  margin: 0;
+}
+
+@media (max-width: 680px) {
+  .backdrop {
+    padding: 0;
+  }
+
+  .workspace {
+    width: 100%;
+    max-height: 100dvh;
+    height: 100dvh;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .header {
+    padding: 16px;
+  }
+
+  .layout {
+    grid-template-columns: 1fr;
+  }
+
+  .sections {
+    flex-direction: row;
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+    overflow-x: auto;
+  }
+
+  .sections button {
+    flex: 0 0 180px;
+  }
+
+  .content {
+    padding: 16px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace,
+  .backdrop {
+    scroll-behavior: auto;
+  }
+}
+
+@media (forced-colors: active) {
+  .workspace,
+  .statusCard,
+  .panel,
+  .artifact,
+  .technical {
+    border: 1px solid CanvasText;
+  }
+}

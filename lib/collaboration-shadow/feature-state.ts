@@ -54,6 +54,20 @@ export function getBuildCollaborationShadowFeatureState(): CollaborationShadowFe
   });
 }
 
+/**
+ * Product qualification uses the same fail-closed state machine as the shadow
+ * seam, but its enable signal is injected by trusted application code rather
+ * than read from a URL, browser store, cookie, or public environment variable.
+ */
+export function resolveInjectedCollaborationProductFeatureState(
+  enableSignal: unknown
+): CollaborationShadowFeatureState {
+  return resolveCollaborationShadowFeatureState({
+    runtime: normalizeRuntime(process.env.NODE_ENV),
+    enable_signal: enableSignal
+  });
+}
+
 function normalizeRuntime(value: unknown): CollaborationShadowFeatureEnvironment["runtime"] {
   if (value === "development" || value === "test" || value === "production") {
     return value;

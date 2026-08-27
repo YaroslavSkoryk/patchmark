@@ -94,7 +94,9 @@ import {
 } from "../rewrite-workspace/rewrite-project-session-schema.ts";
 import type { RewriteProjectSessionRecord } from "../rewrite-workspace/rewrite-session-types.ts";
 import {
+  getCollaborationProductQualificationState,
   isCollaborationShadowDisabled,
+  loadCollaborationProductQualification,
   runCollaborationShadowAfterLegacyCommit,
   type CollaborationShadowMutationKind,
   type CollaborationShadowMutationReceipt,
@@ -102,6 +104,11 @@ import {
   type ShadowLegacyDocument,
   type ShadowLegacySharedState
 } from "../collaboration-shadow/entrypoint.ts";
+
+export {
+  getCollaborationProductQualificationState,
+  loadCollaborationProductQualification
+};
 
 const documentFileName = "document.md";
 const metadataDirectoryName = ".patchmark";
