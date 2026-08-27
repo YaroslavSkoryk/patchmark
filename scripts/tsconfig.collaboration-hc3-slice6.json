@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "collaboration-hc3-slice6.type-test.ts",
+    "../lib/collaboration/hc3/product-capabilities.ts"
+  ]
+}

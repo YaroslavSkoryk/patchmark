@@ -6,12 +6,16 @@ import { join, relative, resolve } from "node:path";
 const root = resolve(new URL("..", import.meta.url).pathname);
 const productionRoots = ["app", "components", "lib"];
 const productionImports = [];
+const slice6QualificationImports = [];
 for (const productionRoot of productionRoots) {
   for (const file of await sourceFiles(join(root, productionRoot))) {
     const source = await readFile(file, "utf8");
     const isHc3 = relative(root, file).startsWith(`lib${join("/", "collaboration", "hc3")}`) || relative(root, file).startsWith("lib/collaboration/hc3/");
     if (!isHc3 && /(?:from\s+|import\s*\()["'][^"']*collaboration\/hc3/.test(source)) {
       productionImports.push(relative(root, file));
+    }
+    if (/PATCHMARK_HC3_SLICE6_EXTERNAL_RUNNER_TEST_ONLY_V1|collaboration-hc3-slice6-external-runner|hc3_slice6_external_qualification_evidence/.test(source)) {
+      slice6QualificationImports.push(relative(root, file));
     }
   }
 }
@@ -20,6 +24,7 @@ assert.deepEqual(
   ["components/collaboration/collaboration-qualification-workspace.tsx"],
   "Only the gated lazy qualification workspace may import HC-3"
 );
+assert.deepEqual(slice6QualificationImports, [], "Slice 6 external qualification infrastructure entered a production source graph");
 const productLoader = await readFile(join(root, "lib", "collaboration-shadow", "product-qualification-loader.ts"), "utf8");
 assert(productLoader.includes("collaboration-qualification-workspace.tsx"), "The accepted gate must own the only product-workspace load edge");
 const productEntrypoint = await readFile(join(root, "lib", "collaboration-shadow", "entrypoint.ts"), "utf8");
@@ -74,6 +79,7 @@ for (const [path, expected] of Object.entries(frozenFixtureHashes)) {
 
 let productionBuildGraphChecked = false;
 let hc3InInitialPageGraph = false;
+const slice6DeployableHits = [];
 try {
   const manifest = JSON.parse(await readFile(join(root, ".next", "build-manifest.json"), "utf8"));
   productionBuildGraphChecked = true;
@@ -84,6 +90,13 @@ try {
     if (/pmhc3|connection-offer-commitment|\.pmcb/.test(source)) hc3InInitialPageGraph = true;
   }
   assert(!hc3InInitialPageGraph, "HC-3 code entered the initial production page graph");
+  for (const file of await deployableFiles(join(root, ".next"))) {
+    const source = await readFile(file, "utf8");
+    if (/PATCHMARK_HC3_SLICE6_EXTERNAL_RUNNER_TEST_ONLY_V1|collaboration-hc3-slice6-external-runner|hc3_slice6_external_qualification_evidence|qualification-metadata\.json/.test(source)) {
+      slice6DeployableHits.push(relative(root, file));
+    }
+  }
+  assert.deepEqual(slice6DeployableHits, [], "Slice 6 qualification runner or evidence parser entered deployable production output");
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
 }
@@ -97,6 +110,8 @@ process.stdout.write(`${JSON.stringify({
   existing_frozen_fixtures_unchanged: Object.keys(frozenFixtureHashes).length,
   production_build_graph_checked: productionBuildGraphChecked,
   hc3_in_initial_page_graph: hc3InInitialPageGraph,
+  slice6_qualification_imports: slice6QualificationImports,
+  slice6_deployable_hits: slice6DeployableHits,
   production_collaboration_state: "disabled"
 }, null, 2)}\n`);
 
@@ -107,6 +122,17 @@ async function sourceFiles(directory) {
     const path = join(directory, entry.name);
     if (entry.isDirectory()) files.push(...await sourceFiles(path));
     else if (/\.(?:ts|tsx|js|mjs)$/.test(entry.name)) files.push(path);
+  }
+  return files;
+}
+
+async function deployableFiles(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await deployableFiles(path));
+    else if (/\.(?:js|json|html|txt)$/.test(entry.name)) files.push(path);
   }
   return files;
 }

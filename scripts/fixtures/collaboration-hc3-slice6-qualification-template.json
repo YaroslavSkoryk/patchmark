@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "record_kind": "hc3_slice6_external_qualification_evidence",
+  "authority": "none",
+  "evidence_session_id": "hc3q_template_not_real_evidence",
+  "source_commit": "96aea97e939b8f7e5e21a1fcb3d30131a9e008eb",
+  "readiness_manifest_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "synthetic_project": true,
+  "fixture_hashes": [
+    { "path": "scripts/fixtures/collaboration-canonical-v1.json", "sha256": "f178eb0510471ef9a9ed6835840b75c1bf9b21a22b445c3ce00275582182726b" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice1-v1.json", "sha256": "534ec34c32cd208759c135c77d69dcd7cab6fa7cfac93ba6f7680c03171f9cbc" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice3-v1.json", "sha256": "a74b3f3f171f1b23a6b8b60c5131e0d15a5a36ecd589d0d5d5b8f5997c47bb73" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice4-v1.json", "sha256": "81b5babfff1faa4092a27ccab598dc78eb47c4ba6609baac59132ef9730a4e50" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice5-v1.json", "sha256": "6cbb2877156de12b54d976e100cb94de0b1f85d1f4b20f8c8c7284df0a4d4e89" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice6-v2.json", "sha256": "4400b16f1de78f3ae49f04844f85c7278dbc28291dd772bdfad1c6ea0b69eb4c" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice7-v3.json", "sha256": "98450f518c9827ec0e310aa2a7a66d99fb4ba5c33f0b0aa3fddb75b4f95a5df1" },
+    { "path": "scripts/fixtures/collaboration-hc2-slice8-qualification-template.json", "sha256": "735fdbb8df9b93367d5907592e78e7e3e00050740da312e3b6227bc260f5dc46" },
+    { "path": "scripts/fixtures/collaboration-hc3-slice1-v1.json", "sha256": "fd4aaa38af60d0f12054c475a3ce86b71ad9bc85aa4f1f2f9b24f085f3c370fe" },
+    { "path": "scripts/fixtures/collaboration-hc3-slice3-v1.json", "sha256": "6defdcb1e2578fa3aa0767c9a009d994046191006db715b7df46fda84221ae8a" },
+    { "path": "scripts/fixtures/collaboration-hc3-slice4-v1.json", "sha256": "ec123fb2dce2eedc4e55f0e82db5ff6d0f18896352ff51ebbafd606f88475ca6" },
+    { "path": "scripts/fixtures/collaboration-review-response-evidence-v1.json", "sha256": "7b9dc41a3407549167286aaed20f32c967db5878f2705d219627b08d4ba30e67" },
+    { "path": "scripts/fixtures/collaboration-roots-v1.json", "sha256": "42189802cee24766e73e974fd09b6e1bd9f612c90da184399a82bea91a1e211e" }
+  ],
+  "environment": {
+    "browser_name": "not_recorded",
+    "browser_version": "not_recorded",
+    "engine": "not_recorded",
+    "os_name": "not_recorded",
+    "os_version": "not_recorded",
+    "device_model": "not_recorded",
+    "execution_mode": "not_recorded",
+    "user_agent": "not_recorded"
+  },
+  "capabilities": [],
+  "permissions": [],
+  "artifacts": [],
+  "assertions": [],
+  "authority_equality": {
+    "status": "not_exercised",
+    "commitments": {},
+    "reopen_equal": false
+  },
+  "policy": {
+    "csp": "not_exercised",
+    "trusted_types": "not_exercised",
+    "violation_count": 0
+  },
+  "cleanup": {
+    "synthetic_project_removed": false,
+    "profiles_removed": false,
+    "camera_tracks_stopped": false,
+    "peer_connections_closed": false,
+    "channels_closed": false,
+    "workers_stopped": false,
+    "object_urls_revoked": false,
+    "downloads_removed": false,
+    "confirmed": false
+  },
+  "test_timestamp": "2026-08-27T00:00:00.000Z"
+}

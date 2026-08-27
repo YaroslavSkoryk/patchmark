@@ -33,8 +33,37 @@ the completed HC-1/HC-2 local-first foundation.
   evidence still required.
 - `production-enablement-checklist.md` prepares a separate future go/no-go and
   cannot authorize a production gate change.
+- `release-candidate-slice6.md` closes locally obtainable release evidence and
+  records the conditional release-candidate decision without enabling
+  collaboration.
+- `readiness-slice6.json` is the strict requirement-level matrix with stable
+  IDs, platform fields, evidence modes, hashes, approvers and invalidation
+  conditions.
+- `review-manifest-slice6.json` hashes reviewed source, dependency, fixture,
+  policy, authority-driver and evidence bytes so later changes invalidate stale
+  conclusions.
+- `dependency-disposition-slice6.md` records the fresh full/production audits,
+  exact MDXEditor/js-yaml and Next/PostCSS paths, major-migration evidence and
+  unresolved release blockers.
+- `qr-disposition-slice6.md` records the pinned QR package, source-commit and
+  reproducible-unpacked-content review and its `accept_pinned_dependency`
+  decision.
+- `platform-qualification-slice6.md` records the actual browser/device
+  inventory, exercised Chrome result, safe fallbacks and missing real OS
+  permission evidence.
+- `external-qualification-slice6.md` documents the test-only local-network
+  runner plus exact Safari, iOS and Android physical qualification protocols.
+- `privacy-approval-slice6.md` provides proposed user disclosure and the three
+  unapproved plaintext-at-rest product choices.
+- `accessibility-review-slice6.md` separates mechanical coverage from exact
+  VoiceOver, TalkBack and NVDA protocols that remain unexercised.
+- `security-review-package-slice6.md` is the secret-free external architecture,
+  threat-model, reproduction, review-question and go/no-go package.
+- `release-support-rollback-slice6.md` defines local support, incident response
+  and authority-preserving rollback without a remote switch or account.
 
 These records and contracts do not enable production collaboration or add a
-cloud transport. Slice 5 classifies readiness as conditional: enablement design
-may continue, but production collaboration remains unconditionally disabled
-and unreachable until every blocking prerequisite receives separate approval.
+cloud transport. Slice 6 remains `conditional`: evidence work may continue, but
+production collaboration remains unconditionally disabled and unreachable.
+External engines/devices/review, privacy approval, dependency disposition and
+support ownership must close before a separately authorized enablement design.

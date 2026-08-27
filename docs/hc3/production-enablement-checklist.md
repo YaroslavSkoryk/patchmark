@@ -4,7 +4,7 @@ This checklist is preparation only. Completing it does not itself authorize a
 gate change. Production remains unconditionally disabled until a separately
 approved implementation explicitly alters that boundary.
 
-- [ ] Every `conditional`, `blocked`, and `not_exercised` Slice 5 readiness
+- [ ] Every `conditional`, `blocked`, and `not_exercised` Slice 6 readiness
   entry has reviewed evidence and an owner-approved disposition.
 - [ ] The supported browser, engine, OS, device, and minimum-version floor is
   explicit; all claimed targets completed the external qualification protocol.
@@ -15,12 +15,16 @@ approved implementation explicitly alters that boundary.
   at-rest language.
 - [ ] The plaintext-at-rest decision is explicitly accepted or replaced by a
   separately designed, migrated, recovered, and qualified encrypted format.
-- [ ] All dependency advisories have a reachability record, upgrade or formal
-  risk acceptance; QR provenance and integrity are rechecked.
+- [ ] The product-reachable MDXEditor/js-yaml path and build-time Next/PostCSS
+  path are migrated or receive formal security/product risk acceptance; no
+  audit record is suppressed.
+- [x] QR provenance, published integrity, source commit, unpacked reproducibility,
+  narrow imports and deterministic vectors are rechecked; independent approval
+  and a monitoring owner remain open.
 - [x] Chrome production and the test-only optimized real-authority bundle pass
   strict CSP and Trusted Types without `unsafe-eval` or a broad default policy;
   external engines remain covered by the separate platform requirement above.
-- [ ] The current threat model and every Slice 5 abuse case receives
+- [ ] The current threat model and every Slice 6 abuse case receives
   independent review.
 - [ ] Recovery is rehearsed from loss of local custody on every supported
   platform; no path silently creates a replacement identity.
@@ -36,6 +40,8 @@ approved implementation explicitly alters that boundary.
   artifact-disclosure, and rollback procedures without telemetry assumptions.
 - [ ] Independent security and privacy reviewers issue a recorded go/no-go.
 - [ ] A named approver explicitly authorizes changing the production gate.
+- [ ] The Slice 6 review manifest is current; no covered source, dependency,
+  fixture, browser floor, policy, authority driver or protocol version changed.
 - [ ] The enablement change proves no URL, fragment, environment, storage,
   cookie, extension, console, script, route, or pasted input can bypass the
   approved product entry and authority checks.
