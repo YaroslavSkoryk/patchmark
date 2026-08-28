@@ -284,8 +284,23 @@ async function openProfile(label, url, existingProfile = null) {
     const version = await browser.call("Browser.getVersion");
     page = await CdpClient.connect(await createPage(webSocketUrl, url));
     await page.call("Runtime.enable"); await waitReady(page);
-    return { page, profile, product: version.product, major: Number(/\/(\d+)\./.exec(version.product)?.[1] ?? 0), async close({ remove = true } = {}) { await page?.close(); await browser?.close(); process.kill("SIGTERM"); await waitForProcessExit(process, 1000); if (process.exitCode === null) { process.kill("SIGKILL"); await waitForProcessExit(process, 1000); } if (remove) rmSync(profile, { recursive: true, force: true }); } };
-  } catch (error) { await page?.close(); await browser?.close(); process.kill("SIGKILL"); if (!existingProfile) rmSync(profile, { recursive: true, force: true }); throw error; }
+    return { page, profile, product: version.product, major: Number(/\/(\d+)\./.exec(version.product)?.[1] ?? 0), async close({ remove = true } = {}) { await boundedCdpClose(page); await boundedCdpClose(browser); process.kill("SIGTERM"); await waitForProcessExit(process, 1000); if (process.exitCode === null) { process.kill("SIGKILL"); await waitForProcessExit(process, 1000); } if (remove) rmSync(profile, { recursive: true, force: true }); } };
+  } catch (error) { await boundedCdpClose(page); await boundedCdpClose(browser); process.kill("SIGKILL"); if (!existingProfile) rmSync(profile, { recursive: true, force: true }); throw error; }
+}
+
+async function boundedCdpClose(client) {
+  if (!client) return;
+  let timeout;
+  try {
+    await Promise.race([
+      client.close(),
+      new Promise((resolveDelay) => { timeout = setTimeout(resolveDelay, 1500); })
+    ]);
+  } catch {
+    // The isolated browser process is terminated immediately below.
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function waitReady(page) {

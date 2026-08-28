@@ -15,9 +15,9 @@ approved implementation explicitly alters that boundary.
   at-rest language.
 - [ ] The plaintext-at-rest decision is explicitly accepted or replaced by a
   separately designed, migrated, recovered, and qualified encrypted format.
-- [ ] The product-reachable MDXEditor/js-yaml path and build-time Next/PostCSS
-  path are migrated or receive formal security/product risk acceptance; no
-  audit record is suppressed.
+- [x] The product-reachable MDXEditor/js-yaml path and build-time Next/PostCSS
+  path are migrated as coherent families, security-requalified, and clean in
+  full and production-only audits; no audit record is suppressed.
 - [x] QR provenance, published integrity, source commit, unpacked reproducibility,
   narrow imports and deterministic vectors are rechecked; independent approval
   and a monitoring owner remain open.
@@ -40,7 +40,7 @@ approved implementation explicitly alters that boundary.
   artifact-disclosure, and rollback procedures without telemetry assumptions.
 - [ ] Independent security and privacy reviewers issue a recorded go/no-go.
 - [ ] A named approver explicitly authorizes changing the production gate.
-- [ ] The Slice 6 review manifest is current; no covered source, dependency,
+- [ ] The Slice 7A-regenerated Slice 6 review manifest is current; no covered source, dependency,
   fixture, browser floor, policy, authority driver or protocol version changed.
 - [ ] The enablement change proves no URL, fragment, environment, storage,
   cookie, extension, console, script, route, or pasted input can bypass the

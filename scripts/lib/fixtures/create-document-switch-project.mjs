@@ -115,6 +115,7 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
         projectTitle,
         root,
         structuredCellRepeatCount: profile.structuredCellRepeatCount,
+        structuredDelimiterWidth: profile.structuredDelimiterWidth,
         structuredTableCount: profile.structuredTableCount,
         structuredTableRowsPerTable: profile.structuredTableRowsPerTable,
         withBookmark: documentIndex === bookmarkDocumentIndex,
@@ -142,6 +143,7 @@ export function createDocumentSwitchProject(destinationRoot, options = {}) {
         projectTitle,
         root,
         structuredCellRepeatCount: 1,
+        structuredDelimiterWidth: undefined,
         structuredTableCount: 0,
         structuredTableRowsPerTable: 1,
         withBookmark: false,
@@ -239,6 +241,14 @@ function resolveDocumentProfile(documentIndex, profile, defaults) {
       value.structuredCellRepeatCount ?? 1,
       { min: 1, max: 20 }
     ),
+    structuredDelimiterWidth:
+      value.structuredDelimiterWidth === undefined
+        ? undefined
+        : validateFixtureInteger(
+            `documentProfiles[${documentIndex}].structuredDelimiterWidth`,
+            value.structuredDelimiterWidth,
+            { min: 16, max: 200 }
+          ),
     structuredTableCount: validateFixtureInteger(
       `documentProfiles[${documentIndex}].structuredTableCount`,
       value.structuredTableCount ?? 0,
@@ -275,6 +285,7 @@ function createDocumentStore({
   projectTitle,
   root,
   structuredCellRepeatCount,
+  structuredDelimiterWidth,
   structuredTableCount,
   structuredTableRowsPerTable,
   withBookmark,
@@ -287,6 +298,7 @@ function createDocumentStore({
     codeBlockCount,
     documentIndex,
     structuredCellRepeatCount,
+    structuredDelimiterWidth,
     structuredTableCount,
     structuredTableRowsPerTable
   });
@@ -457,11 +469,12 @@ function createStructuredWorkload({
   codeBlockCount,
   documentIndex,
   structuredCellRepeatCount,
+  structuredDelimiterWidth,
   structuredTableCount,
   structuredTableRowsPerTable
 }) {
   const lines = [];
-  const delimiterWidth = 48 + documentIndex * 7;
+  const delimiterWidth = structuredDelimiterWidth ?? 48 + documentIndex * 7;
   for (let tableIndex = 0; tableIndex < structuredTableCount; tableIndex += 1) {
     const tableNumber = String(tableIndex + 1).padStart(2, "0");
     lines.push(

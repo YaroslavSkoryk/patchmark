@@ -1,0 +1,462 @@
+{
+  "schema_version": 1,
+  "baseline_commit": "1f4b3049717b4e9faf55a1a2c9541a9e284df58a",
+  "classification": "conditional",
+  "benchmark": {
+    "browser": "Chrome/151.0.7922.174",
+    "browser_js": "15.1.206.23",
+    "node": "22.22.2",
+    "npm": "10.9.7",
+    "architecture": "arm64",
+    "os": "macOS 26.2",
+    "server_mode": "next dev, explicit Webpack",
+    "baseline_port": 3122,
+    "current_port": 3120,
+    "cpu_throttling_rate": 1,
+    "warmups_per_run": 4,
+    "measured_warm_switches_per_direction_per_run": 20,
+    "measured_stress_switches_per_direction_per_run": 20,
+    "independent_runs_per_checkout": 3,
+    "timeout_ms": 15000,
+    "start_boundary": "navigator document-selection click handler",
+    "completion_boundary": "exact target identity and semantic fingerprint, interaction unlocked, then two animation frames",
+    "sample_exclusions": 0
+  },
+  "realistic_fixture": {
+    "project_id": "prj_switch_b6f72d7c3369",
+    "seed": "document-switch-browser-v1",
+    "initial_document": "doc_switch_01_b6f72d7c3369",
+    "bookmark_document": "doc_switch_02_b6f72d7c3369",
+    "documents": [
+      {
+        "document_id": "doc_switch_01_b6f72d7c3369",
+        "path": "switch-document-01.md",
+        "bytes": 148834,
+        "sha256": "3629126e4532f66c3fd99b5c7a01d2f2f74db36543f22b5b329906a94f3fe584",
+        "paragraphs": 90,
+        "headings": 4,
+        "tables": 26,
+        "fenced_code_blocks": 110,
+        "comments": 31,
+        "patches": 59,
+        "versions": 49,
+        "bookmark": false
+      },
+      {
+        "document_id": "doc_switch_02_b6f72d7c3369",
+        "path": "switch-document-02.md",
+        "bytes": 135535,
+        "sha256": "717ca26d63d2c7d0dc16900d2b5ed657ad99f04fdf85e2c286d6fd9175055793",
+        "paragraphs": 70,
+        "headings": 7,
+        "tables": 26,
+        "fenced_code_blocks": 0,
+        "comments": 17,
+        "patches": 41,
+        "versions": 37,
+        "bookmark": true
+      },
+      {
+        "document_id": "doc_switch_03_b6f72d7c3369",
+        "path": "switch-document-03.md",
+        "bytes": 3040,
+        "sha256": "fbd338c9637ea1a76779f6d7b0719f218a08473a4488c0dc13d7220d8be2415f",
+        "paragraphs": 12,
+        "headings": 3,
+        "tables": 0,
+        "fenced_code_blocks": 0,
+        "comments": 0,
+        "patches": 0,
+        "versions": 3,
+        "bookmark": false
+      }
+    ],
+    "warm_directions": {
+      "first_to_second": "code-and-table-heavy Visual target to table-heavy Visual target",
+      "second_to_first": "table-heavy Visual target to code-and-table-heavy Visual target"
+    },
+    "late_stress_directions": {
+      "first_to_second": "code-heavy Visual source to table-heavy Markdown target",
+      "second_to_first": "table-heavy Markdown source to a fresh code-and-table-heavy Visual target"
+    }
+  },
+  "equal_complexity_control": {
+    "document_bytes": 150498,
+    "paragraphs": 90,
+    "headings": 4,
+    "tables": 26,
+    "fenced_code_blocks": 110,
+    "comments": 31,
+    "patches": 59,
+    "versions": 49,
+    "first_sha256": "7ac4388996112807f84ccbc8b8d007a8ae06a2a93806fc04ef49df0b033ca8d4",
+    "second_sha256": "54e82555e54382d1c92820ffce502bc7c16cb0e6c81e785bf26c8336c3ea8b06"
+  },
+  "combined_distributions_ms": {
+    "baseline": {
+      "cold": { "count": 3, "min": 291.2, "median": 295.5, "mean": 295.5, "p75": 299.8, "p90": 299.8, "p95": 299.8, "max": 299.8, "mad": 4.3 },
+      "warm_first_to_second": { "count": 60, "min": 252.5, "median": 280.1, "mean": 307.16, "p75": 361.4, "p90": 379, "p95": 385.6, "max": 413.9, "mad": 19.8 },
+      "warm_second_to_first": { "count": 60, "min": 296.4, "median": 332.9, "mean": 348.84, "p75": 393.9, "p90": 406.4, "p95": 412, "max": 428.4, "mad": 27.6 },
+      "stress_first_to_second": { "count": 60, "min": 92.2, "median": 103.2, "mean": 124.53, "p75": 153.8, "p90": 173.3, "p95": 187.8, "max": 221.5, "mad": 8.1 },
+      "stress_second_to_first": { "count": 60, "min": 374.4, "median": 409, "mean": 442.36, "p75": 497.7, "p90": 509.7, "p95": 519.4, "max": 579.3, "mad": 27.9 }
+    },
+    "unoptimized_slice7a": {
+      "cold": { "count": 3, "min": 292.6, "median": 295.5, "mean": 312.23, "p75": 348.6, "p90": 348.6, "p95": 348.6, "max": 348.6, "mad": 2.9 },
+      "warm_first_to_second": { "count": 60, "min": 252.7, "median": 278.6, "mean": 301.36, "p75": 344.2, "p90": 361, "p95": 363.3, "max": 393, "mad": 20.3 },
+      "warm_second_to_first": { "count": 60, "min": 291.9, "median": 324.4, "mean": 344.48, "p75": 381.9, "p90": 399.9, "p95": 415.1, "max": 428.9, "mad": 23.4 },
+      "stress_first_to_second": { "count": 60, "min": 92.4, "median": 101, "mean": 106.65, "p75": 105.5, "p90": 120.7, "p95": 138.6, "max": 203.7, "mad": 3.9 },
+      "stress_second_to_first": { "count": 60, "min": 709.4, "median": 819.8, "mean": 829.67, "p75": 835.7, "p90": 856.1, "p95": 880.9, "max": 1153.6, "mad": 16.5 }
+    },
+    "optimized_slice7a": {
+      "cold": { "count": 3, "min": 295.1, "median": 311.6, "mean": 333.67, "p75": 394.3, "p90": 394.3, "p95": 394.3, "max": 394.3, "mad": 16.5 },
+      "warm_first_to_second": { "count": 60, "min": 251.9, "median": 277.8, "mean": 300.11, "p75": 345.3, "p90": 360.5, "p95": 365.9, "max": 390.4, "mad": 16.1 },
+      "warm_second_to_first": { "count": 60, "min": 299.1, "median": 331.6, "mean": 349.04, "p75": 386.4, "p90": 412.2, "p95": 417.2, "max": 428.1, "mad": 28.9 },
+      "stress_first_to_second": { "count": 60, "min": 91.3, "median": 106.3, "mean": 119.25, "p75": 131.6, "p90": 166.9, "p95": 169.5, "max": 202, "mad": 9.1 },
+      "stress_second_to_first": { "count": 60, "min": 438.2, "median": 522.4, "mean": 519.12, "p75": 548.7, "p90": 586.1, "p95": 640.6, "max": 758, "mad": 47 }
+    },
+    "equal_baseline": {
+      "first_to_second": { "count": 60, "min": 308, "median": 358.4, "mean": 369.48, "p75": 412.5, "p90": 428.8, "p95": 438, "max": 518.2, "mad": 40.3 },
+      "second_to_first": { "count": 60, "min": 301.6, "median": 338.9, "mean": 355.37, "p75": 385.2, "p90": 419.5, "p95": 442.2, "max": 469, "mad": 29.1 }
+    },
+    "equal_optimized": {
+      "first_to_second": { "count": 60, "min": 303.7, "median": 319.9, "mean": 344.65, "p75": 380.5, "p90": 406.6, "p95": 415.6, "max": 426.3, "mad": 11.8 },
+      "second_to_first": { "count": 60, "min": 300.4, "median": 330.5, "mean": 351.08, "p75": 394.4, "p90": 407.1, "p95": 421.5, "max": 441.3, "mad": 26.6 }
+    }
+  },
+  "code_heavy_stress_phase_medians_ms": {
+    "baseline": { "source_available": 15.3, "state_requested": 16.4, "preview_visible": 211.4, "markdown_parsed": 225.8, "semantic_ready": 226.7, "paint_complete": 409, "secondary_complete": 521.1, "long_task": 313 },
+    "unoptimized_slice7a": { "source_available": 15.4, "state_requested": 16.2, "preview_visible": 46.2, "markdown_parsed": 46.3, "semantic_ready": 593.9, "paint_complete": 819.8, "secondary_complete": 932, "long_task": 434 },
+    "optimized_slice7a": { "source_available": 16, "state_requested": 16.9, "preview_visible": 46.5, "markdown_parsed": 298.2, "semantic_ready": 393.1, "paint_complete": 522.4, "secondary_complete": 640.6, "long_task": 182 }
+  },
+  "resource_medians_for_code_heavy_remount": {
+    "baseline": { "deferred_code_decorators": 220, "intersection_observers_created": 272, "event_listeners_added": 19127, "rail_passes": 5, "projection_passes": 2 },
+    "unoptimized_slice7a": { "deferred_code_decorators": 440, "intersection_observers_created": 544, "event_listeners_added": 39001, "rail_passes": 7, "projection_passes": 3 },
+    "optimized_slice7a": { "deferred_code_decorators": 220, "intersection_observers_created": 1, "mutation_observers_created": 6, "event_listeners_added": 19688, "rail_passes": 5, "projection_passes": 2, "redundant_set_markdown_calls": 0, "post_ready_activation_delay_ms": 120 }
+  },
+  "optimized_heap_growth_bytes_after_collected_stress": [-74228, 4317020, -5186456],
+  "atomicity": {
+    "mixed_visible_states": 0,
+    "premature_readiness": 0,
+    "stale_previews": 0,
+    "stale_generation_commits": 0,
+    "cross_document_writes": 0,
+    "runtime_errors": 0,
+    "timeouts": 0,
+    "editor_root_growth_failures": 0
+  },
+  "raw_evidence_sha256": {
+    "unoptimized": ["b509a08544d265e317bcb519412977a72ac5c9a00bca5f69039d1d8e0ff34381", "f38eb732aefc968c7fafec6b94f564b8bdc813d2b8099bc221b509a00cab5e4f", "776ada30ac503e8c59c02210f11ac79f45d5b1e11feac90c82bc6f2edc5d1a26"],
+    "baseline": ["eda42224c515eaba532cdc1cae4febc7be8044f7fe05fe8da5fe4ec57654ef2c", "4a92644243bcc0a8d638c4dc53ed8447e8bb89e3aecddcf981ffbdace132c3aa", "e79f2cfb70c32811e4c4d130052d478e188a52ff433a58d3f9528f65adb95c62"],
+    "optimized": ["462ce006aa09203b53996bb320b4eb5c5077a6baeaa5d430b7cb253e7aefccf9", "cf9697daef1152b1f78a859eab3a7e2a800859f0cc4abd32e59ae384515635f7", "9cbc4c0d72ecf9b4b7db232bcd3d85eb135d9edec9f685d8ceb888badcd47937"],
+    "equal_baseline": ["5a962cbbc4df9f9c2e497933f72a7194b93e68eda6d7ece3a4bba1cfecf87bd7", "8cad759dc7b36d5d2e093e337a5cbc84f5d70377559c238fa7eaec57196c5906", "9951cb28b893f545253a5f3943071bcace4e72c25f359ee379da40bf8423a383"],
+    "equal_optimized": ["f9e5e83faa03ac0391e8b37687aeecda05065d75121fed6341102a8bba10cf2c", "0af2a5e860c251991d4b108a06537a488b4d1ed563b5991cef35ea3801197d30", "84dd4fe6fa6a9b9f4b316c4683f0358df43a485fd6bbdf5154e8441c5648fc08"]
+  },
+  "remaining_code_heavy_fix": {
+    "classification": "not_ready",
+    "acceptance": {
+      "development_stress_second_to_first_median_limit_ms": 449.9,
+      "development_stress_second_to_first_p95_limit_ms": 619.4,
+      "observed_median_ms": 464.4,
+      "observed_p95_ms": 568.9,
+      "median_pass": false,
+      "p95_pass": true,
+      "criteria_revised_after_observation": false,
+      "excluded_valid_samples": 0
+    },
+    "root_cause": "After the first-pass duplicate-import fix, development-only MDXEditor 4 and Lexical construction, GFM table parsing, and offscreen layout remain above the matched MDXEditor 3 median. Code widget, listener, observer, plugin-registration, storage, identity, comment-rail, and retained-editor hypotheses were rejected by phase, scaling, ablation, production, and resource evidence.",
+    "implementation": {
+      "minimum_adjacent_code_run": 8,
+      "representation": "One process-local inert Lexical run node retains literal code, language, and metadata for adjacent simple fenced-code runs. It exports the original MDAST code nodes and atomically expands to real MDXEditor CodeBlockNodes on viewport or explicit activation.",
+      "strict_mode_mapping": "A four-entry LRU makes preparation idempotent across repeated development renders; mappings are test-independent, never protocol input, and literal user-authored internal-language fences remain ordinary code.",
+      "layout": "Inert code and table roots use layout and paint containment only.",
+      "preserved_first_pass": [
+        "exact in-progress initial import is awaited",
+        "zero duplicate target application",
+        "document-keyed ownership",
+        "shared viewport observer",
+        "busy-switch activation suppression",
+        "immediate explicit activation",
+        "accepted-DOM comment projection",
+        "secondary settle and two-frame stability",
+        "stale-generation rejection and cleanup"
+      ],
+      "rejected_candidates": [
+        "semantic adjacent-table run: regressed corrected probe median to 508.8 ms",
+        "content-visibility: broke automatic scroll-into-view activation",
+        "inline-size containment: regressed probe median to 538.9 ms",
+        "code-run wrapper containment: regressed probe median to 596.5 ms",
+        "whole-editor layout containment: no reliable benefit"
+      ]
+    },
+    "final_development_distributions_ms": {
+      "cold": { "count": 3, "min": 345.7, "median": 354.1, "mean": 371.6, "p75": 415, "p90": 415, "p95": 415, "max": 415, "mad": 8.4 },
+      "warm_first_to_second": { "count": 60, "min": 255.9, "median": 311.3, "mean": 332.89, "p75": 362.5, "p90": 394.1, "p95": 406.5, "max": 1115.2, "mad": 38.3 },
+      "warm_second_to_first": { "count": 60, "min": 239.7, "median": 292.2, "mean": 309.49, "p75": 353.8, "p90": 384.8, "p95": 390, "max": 567.9, "mad": 37.7 },
+      "stress_first_to_second": { "count": 60, "min": 91.9, "median": 121.4, "mean": 128.91, "p75": 153.9, "p90": 168.1, "p95": 169.4, "max": 190.3, "mad": 21.4 },
+      "stress_second_to_first": { "count": 60, "min": 411.2, "median": 464.4, "mean": 483.35, "p75": 524.1, "p90": 546.5, "p95": 568.9, "max": 625.7, "mad": 39.7 },
+      "failures": 0,
+      "timeouts": 0,
+      "runtime_errors": 0
+    },
+    "final_production_distributions_ms": {
+      "cold": { "count": 3, "min": 242.7, "median": 244.7, "mean": 246.1, "p75": 250.9, "p90": 250.9, "p95": 250.9, "max": 250.9, "mad": 2 },
+      "warm_first_to_second": { "count": 60, "min": 204.1, "median": 223.6, "mean": 229.71, "p75": 237.5, "p90": 245.9, "p95": 254.5, "max": 289.9, "mad": 7.4 },
+      "warm_second_to_first": { "count": 60, "min": 181.6, "median": 198.9, "mean": 206.25, "p75": 211.2, "p90": 235, "p95": 239.5, "max": 251.9, "mad": 7.1 },
+      "stress_first_to_second": { "count": 60, "min": 88.1, "median": 103.6, "mean": 103.51, "p75": 104.9, "p90": 105.8, "p95": 111, "max": 153.8, "mad": 1.6 },
+      "stress_second_to_first": { "count": 60, "min": 270.2, "median": 294.9, "mean": 297.38, "p75": 305.5, "p90": 320.8, "p95": 322.3, "max": 358.5, "mad": 10.1 },
+      "failures": 0,
+      "timeouts": 0,
+      "runtime_errors": 0
+    },
+    "equal_complexity_distributions_ms": {
+      "development_first_to_second": { "count": 60, "min": 252.7, "median": 275.9, "mean": 303.66, "p75": 325.4, "p90": 372.2, "p95": 384.2, "max": 460.8, "mad": 14.5 },
+      "development_second_to_first": { "count": 60, "min": 268.2, "median": 300.6, "mean": 323.58, "p75": 362.5, "p90": 400.3, "p95": 401.7, "max": 422.3, "mad": 26.1 },
+      "production_first_to_second": { "count": 60, "min": 205.7, "median": 222.9, "mean": 224.35, "p75": 234.7, "p90": 238.9, "p95": 239.8, "max": 259.3, "mad": 5.5 },
+      "production_second_to_first": { "count": 60, "min": 209.4, "median": 252.2, "mean": 248.63, "p75": 257.2, "p90": 261.7, "p95": 262.2, "max": 268.1, "mad": 6.3 }
+    },
+    "complexity_scaling_development_ms": {
+      "code_only_medians_by_count": {
+        "counts": [0, 1, 10, 30, 60, 110],
+        "baseline": [103.8, 99, 108, 126.3, 104.8, 121.3],
+        "current": [106.3, 97.8, 97.7, 89.5, 98.8, 101.2]
+      },
+      "profiles": {
+        "paragraphs_only": { "baseline": 103.8, "current": 106.3 },
+        "tables_only": { "baseline": 252.8, "current": 217.1 },
+        "code_only": { "baseline": 121.3, "current": 101.2 },
+        "code_plus_tables": { "baseline": 332.5, "current": 233.5 },
+        "code_plus_comments": { "baseline": 139.5, "current": 106.8 },
+        "code_plus_patches_versions": { "baseline": 138.6, "current": 104.8 },
+        "realistic": { "baseline": 384.2, "current": 288.4 }
+      },
+      "approximate_incremental_code_ms_per_block": { "baseline": 0.16, "current": -0.05 },
+      "approximate_table_cost_ms": { "baseline": 149, "current": 110.8 },
+      "code_table_interaction_ms": { "baseline": 62.2, "current": 21.5 },
+      "dominant_cost": "Development-only MDXEditor/Lexical construction and GFM table parse/import/layout; untouched code widgets and listeners are no longer dominant."
+    },
+    "phase_medians_ms_for_final_development_slow_direction": {
+      "validate_target_ownership": 9.7,
+      "read_target_markdown": 0.8,
+      "read_target_manifest": 1.7,
+      "read_target_current_store": 2.5,
+      "deserialize_current_review_state": 0.5,
+      "plugin_registration": 0,
+      "parse_and_normalize_visual_markdown": 0.5,
+      "code_block_node_creation": 0.1,
+      "table_node_dom_creation": 4.4,
+      "inert_code_dom_creation": 0.5,
+      "target_editor_construction_and_initial_parse": 491.5,
+      "comment_rail_dom_measurement": 5.1,
+      "measure_and_position_comment_rail": 42.4
+    },
+    "plugin_ablation_development_visual_target_ms": {
+      "all_plugins": { "median": 338.9, "p95": 379 },
+      "code_editor_integration_disabled": { "median": 298.8, "p95": 413.1 },
+      "table_integration_disabled": { "median": 273.4, "p95": 302.3 },
+      "toolbar_dialog_disabled": { "median": 354.9, "p95": 372.3 },
+      "secondary_activation_disabled": { "median": 358.6, "p95": 469.8 },
+      "comment_projection_and_rail_delta_from_controlled_fixture": 55.0,
+      "patch_version_delta_from_controlled_fixture": 3.6
+    },
+    "resource_bounds": {
+      "instrumentation_overhead_diagnostic": {
+        "sample_count": 10,
+        "without_interception_ms": {
+          "aggregate_first_usable_median": 272.6,
+          "aggregate_secondary_settle_median": 384.9,
+          "first_to_second_first_usable_median": 267.1,
+          "second_to_first_first_usable_median": 275.4
+        },
+        "with_interception_ms": {
+          "aggregate_first_usable_median": 263.8,
+          "aggregate_secondary_settle_median": 378,
+          "first_to_second_first_usable_median": 262.1,
+          "second_to_first_first_usable_median": 282.1
+        },
+        "classification": "No measurable positive aggregate overhead; direction-specific first-usable deltas of -5.0 ms and +6.7 ms were within run-to-run noise. Primary distributions remained uninstrumented."
+      },
+      "initial_heavy_code_widgets": 0,
+      "maximum_around_viewport": 8,
+      "maximum_after_full_traversal": 110,
+      "after_return_to_top": 110,
+      "after_document_switch": 0,
+      "retention_policy": "Activated editors remain bounded by the current document's block count because CodeMirror has no safe deactivation contract; switching releases every CodeMirror root.",
+      "shared_observers_after_switch": { "intersection": 0, "mutation": 2 },
+      "post_gc_stress_heap_growth_bytes": [382832, 361444, 453684],
+      "cross_document_editor_roots": 0,
+      "listener_ownership_after_switch": {
+        "patchmark_comment_rail": { "added": 47, "removed": 37, "active": 10 },
+        "react_runtime": { "added": 742, "removed": 8, "active": 734 },
+        "lexical_core": { "added": 47, "removed": 46, "active": 1 },
+        "mdxeditor_toolbar_dialog": { "added": 9, "removed": 9, "active": 0 },
+        "codemirror_code_block": { "active": 0 },
+        "browser_framework_runtime": { "added": 304, "removed": 7, "active": 297 }
+      }
+    },
+    "correctness": {
+      "browser_find": true,
+      "copy_and_selection": true,
+      "immediate_explicit_activation": true,
+      "viewport_activation": true,
+      "edited_code_export_and_reopen": true,
+      "language_and_metadata_preserved": true,
+      "literal_internal_language_collision_safe": true,
+      "short_code_runs_unchanged": true,
+      "save_failure_retry_reload": true,
+      "comments_bookmark_patches_review": true,
+      "mixed_states": 0,
+      "premature_readiness": 0,
+      "stale_generation_commits": 0,
+      "cross_document_writes": 0,
+      "redundant_set_markdown": 0
+    },
+    "raw_evidence_sha256": {
+      "development_realistic": ["16b8c8b06268fd3bb56d6831e4f5c2219f9a9568611fb55c9ee04e4e41085cd9", "8e1e6b06732f1c6921eaf3bcd0523e7e89016ea2f59bee23f16fb1fba5667261", "0ab5203762d064203e034d8d290a8a37149b8399ea5cc6c40c76305ad7d18ac9"],
+      "development_equal": ["61cb427eec415b881a136b31154e2c902d1b1623419034016460b350f1fec996", "1fabc8ce1fe5dc6ed2249a904c2f348a93870c8a98882e63bdaf10ae6a20e841", "d5d94f0ccdc9638885c7a05e0767c104578a1ade0bd387c4e3c7e90eb9125180"],
+      "production_realistic": ["18c40bdd080d7cf0b072447f04018bb93c0f2357004261b423de54edab38d2ae", "86993778d360f4d616bc669243e219cc83e24a8caf15e170dfe6481f0785cddb", "8e98d764fcf88187a149d5dae67d80d00b026f97e2a8d502ac2389d31817b961"],
+      "production_equal": ["1fba5484b2079649f85570a57993f7e3ab5d12b0b88647e8c4d75e70540bd40b", "6bd08a57337bb004a0067457d33effd4e40dc2d5240ec0cf3f40ed437d56ca60", "3772b97151e8e420060bfbf40081de1c3edff8428f15d2667b37fcaa5ca959d2"],
+      "resource_full_scroll": "c716d6eb328a96c18ba7aaca1873bc72f0e97fbb5ebb4a29f9ad4c29ecdaca92",
+      "listener_ownership": "552d103740d42d4921483bc7b58e9c9d85753d43fd3d69a38dbd9ac49f33817f"
+    }
+  },
+  "surgical_final_pass": {
+    "classification": "not_ready",
+    "decision": "The bounded comment/rail scheduler optimization is retained because it is correct and improves both development and production, but the immutable development median gate still fails by 7.5 ms. No table compaction, virtualization, content-visibility, timing-boundary, fixture, sample-count, timeout, or threshold change was accepted.",
+    "frozen_protocol": {
+      "run_order": [
+        "development realistic runs 1-3",
+        "development equal-control runs 1-3",
+        "production realistic runs 1-3",
+        "production equal-control runs 1-3"
+      ],
+      "fresh_profiles_per_configuration": 3,
+      "warmups_per_run": 4,
+      "measured_samples_per_direction_per_run": 20,
+      "total_samples_per_direction": 60,
+      "listener_observer_interception": false,
+      "valid_samples_excluded": 0,
+      "randomization": "none; deterministic alternating directions",
+      "configuration_correction": "An initial development batch accidentally enabled listener/observer interception. All six outputs were retained as diagnostics and replaced by the predeclared primary sequence with interception disabled; no timing result triggered the correction."
+    },
+    "matched_mdxeditor3_production_baseline_ms": {
+      "realistic": {
+        "cold": { "count": 3, "min": 261.7, "median": 262, "mean": 263.13, "p75": 265.7, "p90": 265.7, "p95": 265.7, "max": 265.7, "mad": 0.3 },
+        "warm_first_to_second": { "count": 60, "min": 206.2, "median": 221.1, "mean": 221.94, "p75": 226.2, "p90": 236.1, "p95": 237.6, "max": 250, "mad": 6.3 },
+        "warm_second_to_first": { "count": 60, "min": 235.4, "median": 247.9, "mean": 253.33, "p75": 255.9, "p90": 268, "p95": 280.1, "max": 386, "mad": 8 },
+        "stress_first_to_second": { "count": 60, "min": 82.9, "median": 114.2, "mean": 116, "p75": 122.6, "p90": 126.9, "p95": 136.2, "max": 137.9, "mad": 6.5 },
+        "stress_second_to_first": { "count": 60, "min": 211.4, "median": 246.1, "mean": 260.23, "p75": 287.5, "p90": 307.3, "p95": 317.8, "max": 371.3, "mad": 16.4 }
+      },
+      "equal_control": {
+        "cold": { "count": 3, "min": 303.3, "median": 304.2, "mean": 304.2, "p75": 305.1, "p90": 305.1, "p95": 305.1, "max": 305.1, "mad": 0.9 },
+        "warm_a": { "count": 60, "min": 247.4, "median": 258.2, "mean": 260.33, "p75": 264.1, "p90": 270.7, "p95": 271.6, "max": 287, "mad": 5.2 },
+        "warm_b": { "count": 60, "min": 234.3, "median": 247.8, "mean": 250.68, "p75": 255, "p90": 258.1, "p95": 263.2, "max": 289.2, "mad": 6.7 },
+        "stress_a": { "count": 60, "min": 97, "median": 118.9, "mean": 118.14, "p75": 124, "p90": 129.3, "p95": 136.8, "max": 191.8, "mad": 7.1 },
+        "stress_b": { "count": 60, "min": 214.1, "median": 237.1, "mean": 244.96, "p75": 251.8, "p90": 272.6, "p95": 291.5, "max": 316.1, "mad": 9.1 }
+      }
+    },
+    "comment_rail_diagnostics": {
+      "no_comments": { "slow_direction_median_ms": 235.8, "projection_ms": 0, "projection_passes": 2, "rail_layout_passes": 2 },
+      "one_comment": { "slow_direction_median_ms": 250.9, "projection_ms": 21, "rail_dom_measurement_ms": 1.6, "projection_passes": 2, "rail_layout_passes": 5 },
+      "thirty_one_comments_before_change": { "slow_direction_median_ms": 282.5, "projection_ms": 41.2, "rail_dom_measurement_ms": 3.6, "projection_passes": 2, "rail_layout_passes": 5, "comment_cards_measured": 93 },
+      "thirty_one_comments_after_change": { "slow_direction_median_ms": 250.4, "projection_ms": 24, "rail_dom_measurement_ms": 2.5, "projection_passes": 1, "rail_layout_passes": 4, "comment_cards_measured": 62 },
+      "fixed_projection_cost_ms": 21,
+      "approximate_additional_cost_ms_per_comment": 0.67,
+      "root_cause": "The first selected-text comment builds the large accepted Visual DOM text index; each additional comment performs one range projection. A second mutation-triggered pass rebuilt the identical index and repeated every anchor projection before its geometry was used. Floating-rail height state also re-entered its own measurement effect once.",
+      "geometry_model": "Each accepted pass batches workspace/editor element bounds, then one Range bounding-rect and one Range client-rect read per projected selected-text anchor before React applies rail positions. Mutation and resize callbacks invalidate the accepted-generation transaction; superseded animation frames are cancelled. No work runs while the target editor is aria-busy.",
+      "coverage": "Paragraph anchors drive the scaling fixture. Independent browser suites cover table-cell, near-table, code-adjacent, activated-editor, hidden/visible rail, mode-change, resize, zoom-equivalent, forced-colors, find, selection, and strict final-coordinate behavior."
+    },
+    "table_diagnostics": {
+      "no_tables": { "document_bytes": 55199, "median_ms": 106.1, "mdx_import_ms": 30.6 },
+      "one_table_nine_rows": { "document_bytes": 58369, "median_ms": 107.6, "mdx_import_ms": 31.4, "table_dom_ms": 0.1 },
+      "twenty_six_tables_nine_rows_each": { "document_bytes": 137944, "median_ms": 242.9, "mdx_import_ms": 100.4, "table_dom_ms": 2.5 },
+      "byte_matched_paragraphs": { "document_bytes": 137819, "median_ms": 157.8, "mdx_import_ms": 64.1 },
+      "approximate_semantic_table_delta_ms": 85.1,
+      "approximate_additional_cost_ms_per_table": 5.47,
+      "approximate_additional_cost_ms_per_cell": 0.15,
+      "plugin_ablation_delta_ms": 65.5,
+      "breakdown": "About 36.3 ms is GFM parse/import above byte-matched paragraphs and 2.5 ms is native table DOM creation; the remainder is Lexical table-node/plugin registration, selection/resize support, listeners, mutation work, and browser layout. Existing native deferral already omits offscreen nested cell editors and table controls until viewport or explicit activation.",
+      "decision": "No further table change was accepted. Semantic adjacent-table compaction, generic virtualization, content-visibility, and broader containment are explicitly rejected by prior correctness/performance evidence."
+    },
+    "implementation": {
+      "components/document-editor.tsx": "Accepted document-switch anchor synchronization now waits for a second generation-bound animation frame, cancels superseded work, and reuses the already resolved canonical anchor within the same projection. Non-switch mode/comment interactions retain the original one-frame response.",
+      "components/comments-panel.tsx": "Floating-card height updates no longer retrigger the measurement effect solely because the derived layout object changed; diagnostics recompute from the just-read heights.",
+      "identity_and_invalidation": "The effect closure is bound to current project handle, document key, switch operation/generation, semantic Markdown, comments, patches, headings, mode, bookmark and re-anchor state. Cleanup cancels scheduled frames/timeouts, disconnects observers, clears highlights, and DOM mutation/resize callbacks invalidate the visual text index before scheduling the latest accepted transaction. No cross-document geometry cache was introduced."
+    },
+    "acceptance": {
+      "median_limit_ms": 449.9,
+      "p95_limit_ms": 619.4,
+      "observed_median_ms": 457.4,
+      "observed_p95_ms": 569.8,
+      "median_pass": false,
+      "p95_pass": true,
+      "criteria_revised_after_observation": false,
+      "excluded_valid_samples": 0
+    },
+    "final_development_distributions_ms": {
+      "cold": { "count": 3, "min": 372.2, "median": 379.8, "mean": 976.43, "p75": 2177.3, "p90": 2177.3, "p95": 2177.3, "max": 2177.3, "mad": 7.6 },
+      "warm_first_to_second": { "count": 60, "min": 221.3, "median": 242.1, "mean": 267.15, "p75": 304.3, "p90": 325.6, "p95": 332, "max": 357.3, "mad": 16.7 },
+      "warm_second_to_first": { "count": 60, "min": 241.1, "median": 268.8, "mean": 291.95, "p75": 338.3, "p90": 351.5, "p95": 354.7, "max": 374.4, "mad": 22.8 },
+      "stress_first_to_second": { "count": 60, "min": 96.3, "median": 123.5, "mean": 133.22, "p75": 151.5, "p90": 167, "p95": 169.4, "max": 180.1, "mad": 19.8 },
+      "stress_second_to_first": { "count": 60, "min": 390.3, "median": 457.4, "mean": 468.94, "p75": 506.1, "p90": 534, "p95": 569.8, "max": 614.2, "mad": 38.6 },
+      "failures": 0,
+      "timeouts": 0,
+      "runtime_errors": 0
+    },
+    "final_production_distributions_ms": {
+      "cold": { "count": 3, "min": 215.7, "median": 220.9, "mean": 222.33, "p75": 230.4, "p90": 230.4, "p95": 230.4, "max": 230.4, "mad": 5.2 },
+      "warm_first_to_second": { "count": 60, "min": 173.2, "median": 186.6, "mean": 186.9, "p75": 189.8, "p90": 194.3, "p95": 196.2, "max": 215.8, "mad": 3.9 },
+      "warm_second_to_first": { "count": 60, "min": 186.9, "median": 202.3, "mean": 203.85, "p75": 211.1, "p90": 215.4, "p95": 216.9, "max": 246.5, "mad": 7 },
+      "stress_first_to_second": { "count": 60, "min": 92.8, "median": 107.7, "mean": 110.11, "p75": 113.6, "p90": 116.5, "p95": 136.3, "max": 150.5, "mad": 5.1 },
+      "stress_second_to_first": { "count": 60, "min": 241.4, "median": 266.2, "mean": 270.22, "p75": 274.3, "p90": 293.3, "p95": 296.1, "max": 366, "mad": 7.6 },
+      "failures": 0,
+      "timeouts": 0,
+      "runtime_errors": 0
+    },
+    "final_equal_control_distributions_ms": {
+      "development_warm_a": { "count": 60, "min": 238.4, "median": 270.1, "mean": 297.4, "p75": 335.9, "p90": 351.5, "p95": 361.7, "max": 637.4, "mad": 21 },
+      "development_warm_b": { "count": 60, "min": 242.3, "median": 288.6, "mean": 301.53, "p75": 331.3, "p90": 363.2, "p95": 371.1, "max": 523.3, "mad": 36.5 },
+      "development_stress_a": { "count": 60, "min": 104.9, "median": 129.2, "mean": 147.71, "p75": 167.9, "p90": 210, "p95": 236.7, "max": 266.6, "mad": 17.7 },
+      "development_stress_b": { "count": 60, "min": 390.2, "median": 478.6, "mean": 481.53, "p75": 519.1, "p90": 565, "p95": 577.2, "max": 663.8, "mad": 42.8 },
+      "production_warm_a": { "count": 60, "min": 188.2, "median": 203, "mean": 204.25, "p75": 208.4, "p90": 212.5, "p95": 216.5, "max": 229.2, "mad": 3.6 },
+      "production_warm_b": { "count": 60, "min": 186.8, "median": 200.8, "mean": 202.45, "p75": 204.8, "p90": 210.1, "p95": 213.8, "max": 230.8, "mad": 2.6 },
+      "production_stress_a": { "count": 60, "min": 83.3, "median": 114.2, "mean": 111.7, "p75": 116.7, "p90": 123, "p95": 124.2, "max": 162.3, "mad": 7.8 },
+      "production_stress_b": { "count": 60, "min": 242.4, "median": 262.9, "mean": 263.95, "p75": 268.1, "p90": 277.7, "p95": 281.5, "max": 296.7, "mad": 5.7 }
+    },
+    "final_phase_medians_ms_for_development_slow_direction": {
+      "target_editor_construction_and_initial_parse": 475.9,
+      "table_node_dom_creation": 4.5,
+      "measure_and_position_comment_rail": 24,
+      "comment_rail_dom_measurement": 5.2,
+      "comment_projection_passes": 1,
+      "rail_layout_passes": 5,
+      "comment_cards_measured": 93,
+      "native_table_nodes_created_under_strict_mode": 52,
+      "redundant_set_markdown": 0
+    },
+    "raw_evidence_sha256": {
+      "matched_production_baseline_realistic": ["ddb43004c86e3a447586c399ae285493c2b69edd887bceb5bf9731947dbf3e8c", "55c9fadab1b652234daedfd96d86da0ee949d354bb5118353e6266f61b45432b", "f8e384ca6c9c00d427d4b2bdb0edfddc24ba0be8961cd1f9405e92c1ec33c18f"],
+      "matched_production_baseline_equal": ["f070bed8cd7f65accec865b2abf8921ad3d19c529a8927e24ae2e65113dfb69d", "2e212b347a6b00b4de28caf2941a70400b21d04e0b345d5a4764c8f56543efdd", "ed8c338cd6e7ddd03a47b64a5c562558c865267df41ec2b1a960624cd55af1ad"],
+      "development_realistic": ["87438c25628b6dc1470df004c95520c7cbbc57a852b10f70e5650c4da3cb9fe4", "7106796d7a4c7d35705e1fece9f4cd33813248d1757354c3e9141e8cfb678513", "5074569fa6519c646138e3f4f324fa84d008540e069918a570982d63a7cc4f88"],
+      "development_equal": ["734fff23e607481ed722dde2606f4d6750f1ae099bf3f5af6db39672e17676cb", "174dbeb6fe994598ab4ea12e8ed3e100a7ac1cf2ce7fd8c3d22cfb1f6248da2f", "c93c35d3e72c03f314e7a0c9788d874be6ae21dd631a2dbd711e953e39802be9"],
+      "production_realistic": ["1f2dfa1c5e857049e07d2a397cd861be777cd41da63fb0a692327474dc8391c3", "054f8367d763db58a575033ab7b22c378f0b7267a037554477ba8158d5e94220", "56ad68fc17aa96023fddd603ee08cf76127ad6962ac0ba9a3d46f54143a837e7"],
+      "production_equal": ["a34bc7d73c0df3d4ebb763ef6dc9f1ade6828f42a370b73aead40d87711fcd72", "bd38e74c672f9c442d1f4d59fe15e4943b4a67a93f5d02a101143c3b0fde8f42", "ae152adbf698f835334168c5a902a3838388296551af254afe0f64656487f5f5"]
+    }
+  },
+  "source_sha256": {
+    "app/globals.css": "74e1bae829bec6d447808547d9485664350fddad50bd8c36ccba040228ed8ff1",
+    "components/deferred-mdx-heavy-editors.tsx": "9f242f8435f0a93bdbed05c8feb4b7a874ce1e23b91c776ca1cdc31ac43d72da",
+    "components/mdx-editor-client.tsx": "58b26370234b16e6d823974a82514d2fc288d50c7b0a44a9e57ee54284c9b1f2",
+    "components/comments-panel.tsx": "edbc8f82197e48b6764c8ec1d08f0a7a85d2f375e69103d51d2b0a179d50176c",
+    "components/document-editor.tsx": "693cd94bd5ed5f67ef19e4aae040c96354910c47886e3f1de029b30487261aae",
+    "lib/performance/document-switch-performance.ts": "5373a2ab6165e8d6c8bda7ba6dd0658cadbc971a48652972f914e5ee683c760d",
+    "scripts/collaboration-hc3-slice7a-editor-browser.test.mjs": "527539e64fa0ebde736e7bedd101cdf08f2ec084e7affb3d3a15917ddf0fe0ad",
+    "scripts/collaboration-hc3-slice7a-regenerate-evidence.mjs": "488990a78712cb0fd763dd7e89e7a432d567b736c775eb89522151ac8479b656",
+    "scripts/document-switch-performance-browser.test.mjs": "07d8dd391f4e96ecf6d37a4df5a9bb61cf997ae88e29f4da4a74bb4a3e8e0206",
+    "scripts/lib/fixtures/create-document-switch-project.mjs": "4584a48a3a7e16d2dbce4b0d60ff3b14c85a337ef0db81029056519f1991d522",
+    "scripts/responsive-accessibility-foundation-browser.test.mjs": "45b9de1e35882575f3bb6b45ded73c27648ee5bd9364c4b040fdd195da183017",
+    "package.json": "d3de5deda28ef13377b4aee1876520109624f69592f84199e9b201ce111b61f4",
+    "package-lock.json": "2609200fc64d096a9fa574bb7f6043ca5b35cb261d4b8c8b4c4e07d76784655c",
+    "AGENTS.md": "63f2c50380ed6303237cce215ce27af1d620d094c215e28d1b1538a3c070e3bb",
+    "CLAUDE.md": "336cc4fbf19beaada7ccf9986414fa91851a8d7a07dfb3ccbe800a69eed0ab49"
+  }
+}

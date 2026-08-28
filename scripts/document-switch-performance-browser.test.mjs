@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdtempSync,
   readFileSync,
@@ -29,6 +30,9 @@ const editorUrl = addPerformanceQuery(
   process.env.PATCHMARK_EDITOR_URL ?? "http://127.0.0.1:3120/"
 );
 const sampleCount = Number(process.env.PATCHMARK_SWITCH_SAMPLES ?? 6);
+const warmupCount = Number(
+  process.env.PATCHMARK_SWITCH_WARMUP_SAMPLES ?? 4
+);
 const stressTransitions = Number(
   process.env.PATCHMARK_SWITCH_STRESS_TRANSITIONS ?? 60
 );
@@ -38,41 +42,85 @@ const codeBlockCount = Number(
 const structuredTableCount = Number(
   process.env.PATCHMARK_SWITCH_TABLE_COUNT ?? 26
 );
+const commentCount = Number(
+  process.env.PATCHMARK_SWITCH_COMMENT_COUNT ?? 31
+);
+const historyCount = Number(
+  process.env.PATCHMARK_SWITCH_HISTORY_COUNT ?? 49
+);
+const paragraphCount = Number(
+  process.env.PATCHMARK_SWITCH_PARAGRAPH_COUNT ?? 90
+);
+const patchCount = Number(
+  process.env.PATCHMARK_SWITCH_PATCH_COUNT ?? 59
+);
 const profileEditorCostOnly =
   process.env.PATCHMARK_SWITCH_PROFILE_EDITOR_COST_ONLY === "1";
+const verifyFullScroll =
+  process.env.PATCHMARK_SWITCH_VERIFY_FULL_SCROLL === "1";
 const outputPath = process.env.PATCHMARK_SWITCH_PERFORMANCE_OUTPUT;
+const checkoutLabel = process.env.PATCHMARK_SWITCH_CHECKOUT_LABEL ?? "current";
+const fixtureProfile =
+  process.env.PATCHMARK_SWITCH_FIXTURE_PROFILE ?? "realistic_asymmetric";
+const includeRawSamples =
+  process.env.PATCHMARK_SWITCH_INCLUDE_RAW_SAMPLES === "1";
+const includeResourceOwnership =
+  process.env.PATCHMARK_SWITCH_INCLUDE_RESOURCE_OWNERSHIP === "1";
+const instrumentResources =
+  process.env.PATCHMARK_SWITCH_INSTRUMENT_RESOURCES !== "0";
+const quiet = process.env.PATCHMARK_SWITCH_QUIET === "1";
+const serverMode = process.env.PATCHMARK_SWITCH_SERVER_MODE ?? "development-webpack";
 const expectOptimized =
   process.env.PATCHMARK_SWITCH_EXPECT_OPTIMIZED !== "0";
 const expectAtomic = process.env.PATCHMARK_SWITCH_EXPECT_ATOMIC !== "0";
+const browserErrors = [];
 const projectDir = mkdtempSync(join(tmpdir(), "patchmark-switch-performance-"));
+const realisticDocumentProfiles = [
+  {
+    codeBlockCount,
+    commentCount,
+    headingCount: 4,
+    historyCount,
+    paragraphCount,
+    paragraphRepeatCount: 8,
+    patchCount,
+    structuredCellRepeatCount: 3,
+    structuredTableCount,
+    structuredTableRowsPerTable: 9
+  },
+  {
+    commentCount: 17,
+    headingCount: 7,
+    historyCount: 37,
+    paragraphCount: 70,
+    paragraphRepeatCount: 6,
+    patchCount: 41,
+    structuredCellRepeatCount: 4,
+    structuredTableCount,
+    structuredTableRowsPerTable: 9
+  }
+];
+const equalComplexityProfile = {
+  codeBlockCount,
+  commentCount: 31,
+  headingCount: 4,
+  historyCount: 49,
+  paragraphCount: 90,
+  paragraphRepeatCount: 8,
+  patchCount: 59,
+  structuredCellRepeatCount: 3,
+  structuredDelimiterWidth: 64,
+  structuredTableCount,
+  structuredTableRowsPerTable: 9
+};
 const fixtureContract = createDocumentSwitchProject(projectDir, {
   bookmarkDocumentIndex: 1,
   commentCountPerDocument: 31,
   documentCount: 3,
   documentProfiles: [
-    {
-      codeBlockCount,
-      commentCount: 31,
-      headingCount: 4,
-      historyCount: 49,
-      paragraphCount: 90,
-      paragraphRepeatCount: 8,
-      patchCount: 59,
-      structuredCellRepeatCount: 3,
-      structuredTableCount,
-      structuredTableRowsPerTable: 9
-    },
-    {
-      commentCount: 17,
-      headingCount: 7,
-      historyCount: 37,
-      paragraphCount: 70,
-      paragraphRepeatCount: 6,
-      patchCount: 41,
-      structuredCellRepeatCount: 4,
-      structuredTableCount,
-      structuredTableRowsPerTable: 9
-    },
+    ...(fixtureProfile === "equal_complexity"
+      ? [equalComplexityProfile, equalComplexityProfile]
+      : realisticDocumentProfiles),
     {
       commentCount: 0,
       headingCount: 3,
@@ -92,6 +140,18 @@ const fixtureContract = createDocumentSwitchProject(projectDir, {
 
 if (!Number.isInteger(sampleCount) || sampleCount < 2) {
   throw new Error("PATCHMARK_SWITCH_SAMPLES must be an integer of at least 2.");
+}
+
+if (!Number.isInteger(warmupCount) || warmupCount < 2) {
+  throw new Error(
+    "PATCHMARK_SWITCH_WARMUP_SAMPLES must be an integer of at least 2."
+  );
+}
+
+if (!["equal_complexity", "realistic_asymmetric"].includes(fixtureProfile)) {
+  throw new Error(
+    "PATCHMARK_SWITCH_FIXTURE_PROFILE must be equal_complexity or realistic_asymmetric."
+  );
 }
 
 if (
@@ -150,6 +210,7 @@ async function run() {
       "--disable-extensions",
       "--disable-sync",
       "--disable-features=Translate,MediaRouter",
+      "--enable-precise-memory-info",
       "about:blank"
     ],
     { stdio: ["ignore", "ignore", "pipe"] }
@@ -162,13 +223,31 @@ async function run() {
     client = await CdpClient.connect(pageUrl);
     await client.call("Page.enable");
     await client.call("Runtime.enable");
+    await client.call("HeapProfiler.enable");
+    client.on("Runtime.exceptionThrown", ({ exceptionDetails }) => {
+      browserErrors.push(
+        exceptionDetails?.exception?.description ??
+          exceptionDetails?.text ??
+          "Unknown runtime exception"
+      );
+    });
+    client.on("Runtime.consoleAPICalled", (event) => {
+      if (event.type === "error") {
+        browserErrors.push(
+          event.args?.map((argument) => argument.value ?? argument.description)
+            .filter(Boolean)
+            .join(" ") || "Unknown console error"
+        );
+      }
+    });
+    const browserVersion = await client.call("Browser.getVersion");
     await client.call("Page.addScriptToEvaluateOnNewDocument", {
       source: `${createProjectPickerShim({
         baseUrl: fixtureServer.baseUrl,
         directories: inventory.directories,
         files: inventory.files,
         projectName: fixtureContract.projectTitle
-      })}\n${createLongTaskObserverScript()}\n${createDocumentSwitchConsistencyObserverScript()}`
+      })}\n${createLongTaskObserverScript()}\n${createSwitchResourceObserverScript(instrumentResources)}\n${createDocumentSwitchConsistencyObserverScript()}`
     });
     await client.call("Emulation.setDeviceMetricsOverride", {
       deviceScaleFactor: 1,
@@ -232,10 +311,20 @@ async function run() {
       "Normal switching must not read historical version bodies."
     );
 
+    const warmupSamples = [];
+    let warmupTitle = firstTitle;
+    for (let index = 0; index < warmupCount; index += 1) {
+      warmupSamples.push(await measureSwitch(client, warmupTitle));
+      warmupTitle = warmupTitle === firstTitle ? secondTitle : firstTitle;
+    }
+
     const warmSamples = [];
     const largeFirstToSecondSamples = [];
     const largeSecondToFirstSamples = [];
-    let nextTitle = firstTitle;
+    let nextTitle =
+      (await readActiveDocumentTitle(client)) === firstTitle
+        ? secondTitle
+        : firstTitle;
     for (let index = 0; index < sampleCount; index += 1) {
       const sample = await measureSwitch(client, nextTitle);
       warmSamples.push(sample);
@@ -270,18 +359,43 @@ async function run() {
     if (profileEditorCostOnly) {
       const summary = {
         source: "deterministic_document_switch_editor_cost_profile",
+        benchmark: createBenchmarkIdentity({
+          browserVersion,
+          firstDocument,
+          secondDocument
+        }),
+        browserErrors,
+        checkoutLabel,
         codeBlockCount,
+        fixtureProfile,
         structuredTableCount,
         fixture: readProjectFixtureSummary(projectDir, firstTitle),
+        ...(includeResourceOwnership
+          ? { resourceOwnership: await readResourceOwnership(client) }
+          : {}),
+        documents: fixtureContract.documents.map((document) =>
+          readProjectFixtureSummary(projectDir, document.displayTitle)
+        ),
         cold: summarizeSamples([cold]),
+        warmup: summarizeSamples(warmupSamples),
         warm: summarizeSamples(warmSamples),
         largeFirstToSecond: summarizeSamples(largeFirstToSecondSamples),
-        largeSecondToFirst: summarizeSamples(largeSecondToFirstSamples)
+        largeSecondToFirst: summarizeSamples(largeSecondToFirstSamples),
+        ...(includeRawSamples
+          ? {
+              rawSamples: {
+                cold: compactSamples([cold]),
+                warm: compactSamples(warmSamples)
+              }
+            }
+          : {})
       };
       if (outputPath) {
         writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`);
       }
-      console.log(JSON.stringify(summary, null, 2));
+      if (!quiet) {
+        console.log(JSON.stringify(summary, null, 2));
+      }
       return;
     }
 
@@ -408,11 +522,29 @@ async function run() {
       firstDocument.historyCount
     );
 
+    const lifecycleBeforeStress = await readCollectedLifecycleState(client);
     const stressSamples = [];
     for (let index = 0; index < stressTransitions; index += 1) {
       const activeTitle = await readActiveDocumentTitle(client);
       const targetTitle = activeTitle === firstTitle ? secondTitle : firstTitle;
       stressSamples.push(await measureSwitch(client, targetTitle));
+    }
+    const lifecycleAfterStress = await readCollectedLifecycleState(client);
+    for (const editorKind of Object.keys(lifecycleBeforeStress.editorRoots)) {
+      assert.ok(
+        lifecycleAfterStress.editorRoots[editorKind] <=
+          lifecycleBeforeStress.editorRoots[editorKind],
+        `Repeated switching must not accumulate ${editorKind} editor roots.`
+      );
+    }
+    for (const sample of stressSamples) {
+      if (sample.record.marks.target_initial_import_awaited !== undefined) {
+        assert.equal(
+          sample.record.counters.mdx_set_markdown_count ?? 0,
+          0,
+          "A target-owned initial MDX import must not be applied again with setMarkdown."
+        );
+      }
     }
 
     const derivedStateCacheSize = await evaluate(client, {
@@ -431,15 +563,27 @@ async function run() {
 
     const summary = {
       source: "deterministic_document_switch_fixture",
+      benchmark: createBenchmarkIdentity({
+        browserVersion,
+        firstDocument,
+        secondDocument
+      }),
+      browserErrors,
+      checkoutLabel,
       codeBlockCount,
       expectAtomic,
       expectOptimized,
+      fixtureProfile,
       fixture: readProjectFixtureSummary(projectDir, firstTitle),
+      ...(includeResourceOwnership
+        ? { resourceOwnership: await readResourceOwnership(client) }
+        : {}),
       documents: fixtureContract.documents.map((document) => ({
         documentId: document.documentId,
         title: document.displayTitle
       })),
       cold: summarizeSamples([cold]),
+      warmup: summarizeSamples(warmupSamples),
       currentDocumentRequest,
       deferredHeavyEditors,
       warm: summarizeSamples(warmSamples),
@@ -460,6 +604,13 @@ async function run() {
       stress: {
         transitions: stressTransitions,
         derivedStateCacheSize,
+        lifecycle: {
+          after: lifecycleAfterStress,
+          before: lifecycleBeforeStress,
+          heapGrowthBytes:
+            lifecycleAfterStress.heap.usedSize -
+            lifecycleBeforeStress.heap.usedSize
+        },
         firstUsableSeriesMs: stressSamples.map((sample) =>
           round(sample.firstUsableMs)
         ),
@@ -470,13 +621,24 @@ async function run() {
           stressSamples.filter((_, index) => index % 2 === 1)
         ),
         ...summarizeSamples(stressSamples)
-      }
+      },
+      ...(includeRawSamples
+        ? {
+            rawSamples: {
+              cold: compactSamples([cold]),
+              stress: compactSamples(stressSamples),
+              warm: compactSamples(warmSamples)
+            }
+          }
+        : {})
     };
 
     if (outputPath) {
       writeFileSync(outputPath, `${JSON.stringify(summary, null, 2)}\n`);
     }
-    console.log(JSON.stringify(summary, null, 2));
+    if (!quiet) {
+      console.log(JSON.stringify(summary, null, 2));
+    }
   } finally {
     await client?.close();
     chrome.kill("SIGTERM");
@@ -508,8 +670,10 @@ async function verifyDeferredHeavyEditorActivation(
       return {
         codeMirrorCount: document.querySelectorAll(".cm-editor").length,
         deferredCount: deferred.length,
-        targetText: target?.querySelector("code")?.textContent ?? null,
-        targetFingerprint: target?.querySelector("code")?.textContent
+        targetText: (target?.matches("code") ? target : target?.querySelector("code"))
+          ?.textContent ?? null,
+        targetFingerprint: (target?.matches("code") ? target : target?.querySelector("code"))
+          ?.textContent
           ?.replace(/\\s+/g, "").slice(0, 80) ?? null
       };
     })()`
@@ -526,7 +690,9 @@ async function verifyDeferredHeavyEditorActivation(
   });
   await waitForCondition(
     client,
-    `document.querySelectorAll(".cm-editor").length > ${codeBefore.codeMirrorCount}`,
+    `Array.from(document.querySelectorAll(".cm-content"))
+      .some((content) => content.textContent?.replace(/\\s+/g, "")
+        .includes(${JSON.stringify(codeBefore.targetFingerprint)}))`,
     "viewport-activated CodeMirror editor"
   );
   const codeAfter = await evaluate(client, {
@@ -548,7 +714,73 @@ async function verifyDeferredHeavyEditorActivation(
     "Viewport activation must replace the lightweight block with CodeMirror."
   );
 
+  let fullScroll = null;
+  if (verifyFullScroll) {
+    let maximumCodeMirrorCount = codeAfter.codeMirrorCount;
+    let previousDeferredCount = codeAfter.deferredCount;
+    for (
+      let pass = 0;
+      pass < codeBlockCount && previousDeferredCount > 0;
+      pass += 1
+    ) {
+      await evaluate(client, {
+        expression: `(() => {
+          const target = document.querySelector(".patchmark-deferred-code-block");
+          target?.scrollIntoView({ block: "center" });
+          target?.click();
+        })()`
+      });
+      await waitForCondition(
+        client,
+        `document.querySelectorAll(".patchmark-deferred-code-block").length < ${previousDeferredCount}`,
+        `full-scroll code activation pass ${pass + 1}`
+      );
+      const resourceState = await evaluate(client, {
+        expression: `({
+          codeMirrorCount: document.querySelectorAll(".cm-editor").length,
+          deferredCount: document.querySelectorAll(".patchmark-deferred-code-block").length
+        })`
+      });
+      previousDeferredCount = resourceState.deferredCount;
+      maximumCodeMirrorCount = Math.max(
+        maximumCodeMirrorCount,
+        resourceState.codeMirrorCount
+      );
+    }
+    assert.equal(
+      previousDeferredCount,
+      0,
+      "A full top-to-bottom traversal must eventually activate every encountered code editor."
+    );
+    assert.ok(
+      maximumCodeMirrorCount <= codeBlockCount,
+      "Activated code-editor resources must remain bounded by this document's code-block count."
+    );
+    await evaluate(client, {
+      expression: `document.querySelector(".editor-body")?.scrollTo({ top: 0 })`
+    });
+    fullScroll = {
+      afterReturnToTop: await evaluate(client, {
+        expression: `({
+          codeMirrorCount: document.querySelectorAll(".cm-editor").length,
+          deferredCount: document.querySelectorAll(".patchmark-deferred-code-block").length
+        })`
+      }),
+      maximumCodeMirrorCount,
+      retainedActivatedEditors: true
+    };
+  }
+
   await ensureActiveDocument(client, tableDocument.displayTitle);
+  if (fullScroll) {
+    fullScroll.afterDocumentSwitch = await evaluate(client, {
+      expression: `({
+        codeMirrorCount: document.querySelectorAll(".cm-editor").length,
+        deferredCount: document.querySelectorAll(".patchmark-deferred-code-block").length
+      })`
+    });
+    assert.equal(fullScroll.afterDocumentSwitch.codeMirrorCount, 0);
+  }
   const tableBefore = await evaluate(client, {
     expression: `(() => {
       const deferred = Array.from(
@@ -590,7 +822,7 @@ async function verifyDeferredHeavyEditorActivation(
     "Viewport activation must retain exact table-cell content."
   );
 
-  return { codeAfter, codeBefore, tableAfter, tableBefore };
+  return { codeAfter, codeBefore, fullScroll, tableAfter, tableBefore };
 }
 
 async function measureSwitch(client, targetTitle, consistency) {
@@ -601,8 +833,9 @@ async function measureSwitch(client, targetTitle, consistency) {
   const requestedAt = performance.now();
   await clickDocument(client, targetTitle);
   await waitForTargetEditor(client, targetTitle);
-  const observedFirstUsableMs = performance.now() - requestedAt;
+  const paintedAt = await waitForTargetPaint(client);
   const record = await waitForSwitchRecord(client, targetTitle, true);
+  const observedFirstUsableMs = paintedAt - record.startedAt;
   const wallTime = performance.now() - requestedAt;
   const state = await readMeasurementState(client);
   const measurement = createMeasurement(
@@ -939,6 +1172,18 @@ function createMeasurement(record, state, observedFirstUsableMs, wallTime) {
     secondaryCompleteMs: record.marks.secondary_work_complete,
     wallTimeMs: wallTime,
     longestTaskMs: Math.max(0, ...longTasks.map((task) => task.duration)),
+    heapDeltaBytes:
+      state.resources.heapUsedBytes - state.resourcesAtStart.heapUsedBytes,
+    resourceDelta: Object.fromEntries(
+      Object.keys(state.resources)
+        .filter((key) => key !== "heapUsedBytes")
+        .map((key) => [
+          key,
+          state.resources[key] - (state.resourcesAtStart[key] ?? 0)
+        ])
+    ),
+    editorRoots: state.editorRoots,
+    targetMode: state.targetMode,
     readCount: state.reads.length,
     bytesRead: state.reads.reduce((total, read) => total + read.bytes, 0),
     writeCount: state.writes.length,
@@ -960,6 +1205,15 @@ function summarizeSamples(samples) {
   const consistency = samples.find((sample) => sample.consistency)?.consistency;
   return {
     samples: samples.length,
+    failureCount: 0,
+    runtimeErrorCount: browserErrors.length,
+    semanticReadinessFailureCount: 0,
+    staleGenerationRejectionCount: samples.reduce(
+      (total, sample) =>
+        total + (sample.record.counters.stale_generation_rejections ?? 0),
+      0
+    ),
+    timeoutCount: 0,
     ...(consistency ? { consistency } : {}),
     firstUsableMs: summarizeNumbers(firstUsable),
     ...(previewVisible.length > 0
@@ -967,6 +1221,17 @@ function summarizeSamples(samples) {
       : {}),
     secondaryCompleteMs: summarizeNumbers(secondary),
     longestTaskMs: summarizeNumbers(longestTasks),
+    heapDeltaBytes: summarizeNumbers(
+      samples.map((sample) => sample.heapDeltaBytes)
+    ),
+    maxEditorRoots: {
+      codeMirror: Math.max(
+        ...samples.map((sample) => sample.editorRoots.codeMirror)
+      ),
+      lexical: Math.max(...samples.map((sample) => sample.editorRoots.lexical)),
+      mdx: Math.max(...samples.map((sample) => sample.editorRoots.mdx))
+    },
+    targetModes: [...new Set(samples.map((sample) => sample.targetMode))],
     medianReads: median(samples.map((sample) => sample.readCount)),
     medianBytesRead: median(samples.map((sample) => sample.bytesRead)),
     medianWrites: median(samples.map((sample) => sample.writeCount)),
@@ -986,6 +1251,12 @@ function summarizeSamples(samples) {
         (sample) => sample.record.counters.comment_rail_layout_pass_count ?? 0
       )
     ),
+    resourceDeltaMedians: Object.fromEntries(
+      Object.keys(samples[0]?.resourceDelta ?? {}).map((key) => [
+        key,
+        median(samples.map((sample) => sample.resourceDelta[key] ?? 0))
+      ])
+    ),
     phaseMedianMs: summarizePhaseDurations(samples)
   };
 }
@@ -1003,11 +1274,36 @@ function summarizePhaseDurations(samples) {
 }
 
 function summarizeNumbers(values) {
+  const average = values.reduce((total, value) => total + value, 0) / values.length;
+  const center = median(values);
   return {
-    median: round(median(values)),
+    count: values.length,
+    min: round(Math.min(...values)),
+    median: round(center),
+    mean: round(average),
+    p75: round(percentile(values, 0.75)),
+    p90: round(percentile(values, 0.9)),
     p95: round(percentile(values, 0.95)),
-    max: round(Math.max(...values))
+    max: round(Math.max(...values)),
+    mad: round(median(values.map((value) => Math.abs(value - center))))
   };
+}
+
+function compactSamples(samples) {
+  return samples.map((sample) => ({
+    bytesRead: sample.bytesRead,
+    editorRoots: sample.editorRoots,
+    firstUsableMs: round(sample.firstUsableMs),
+    heapDeltaBytes: sample.heapDeltaBytes,
+    instrumentedFirstUsableMs: round(sample.instrumentedFirstUsableMs),
+    longestTaskMs: round(sample.longestTaskMs),
+    marks: sample.record.marks,
+    phases: sample.record.durations,
+    counters: sample.record.counters,
+    resourceDelta: sample.resourceDelta,
+    targetMode: sample.targetMode,
+    wallTimeMs: round(sample.wallTimeMs)
+  }));
 }
 
 function median(values) {
@@ -1035,6 +1331,10 @@ async function resetMeasurementState(client) {
       window.__patchmarkFixtureWriteLog?.splice(0);
       window.__patchmarkSwitchLongTasks?.splice(0);
       window.__patchmarkSwitchMeasurementStartedAt = performance.now();
+      window.__patchmarkSwitchResourcesAtStart = {
+        ...(window.__patchmarkSwitchResources ?? {}),
+        heapUsedBytes: performance.memory?.usedJSHeapSize ?? 0
+      };
       return true;
     })()`
   });
@@ -1043,10 +1343,44 @@ async function resetMeasurementState(client) {
 async function readMeasurementState(client) {
   return evaluate(client, {
     expression: `({
+      editorRoots: {
+        codeMirror: document.querySelectorAll(".cm-editor").length,
+        lexical: document.querySelectorAll(".patchmark-prose").length,
+        mdx: document.querySelectorAll(".patchmark-mdx-editor").length
+      },
+      targetMode: document.querySelector(".markdown-source-editor")
+        ? "markdown"
+        : "visual",
       longTasks: window.__patchmarkSwitchLongTasks ?? [],
       measurementStartedAt: window.__patchmarkSwitchMeasurementStartedAt ?? 0,
+      resources: {
+        ...(window.__patchmarkSwitchResources ?? {}),
+        heapUsedBytes: performance.memory?.usedJSHeapSize ?? 0
+      },
+      resourcesAtStart: window.__patchmarkSwitchResourcesAtStart ?? {},
       reads: window.__patchmarkFixtureReadLog ?? [],
       writes: window.__patchmarkFixtureWriteLog ?? []
+    })`
+  });
+}
+
+async function readCollectedLifecycleState(client) {
+  await client.call("HeapProfiler.collectGarbage");
+  const heap = await client.call("Runtime.getHeapUsage");
+  const editorRoots = await evaluate(client, {
+    expression: `({
+      codeMirror: document.querySelectorAll(".cm-editor").length,
+      lexical: document.querySelectorAll(".patchmark-prose").length,
+      visualShell: document.querySelectorAll(".visual-editor-shell").length
+    })`
+  });
+  return { editorRoots, heap };
+}
+
+async function waitForTargetPaint(client) {
+  return evaluate(client, {
+    expression: `new Promise((resolve) => {
+      requestAnimationFrame(() => requestAnimationFrame(() => resolve(performance.now())));
     })`
   });
 }
@@ -1335,14 +1669,56 @@ function readProjectFixtureSummary(root, title) {
   const manifest = JSON.parse(readFileSync(join(store, "manifest.json"), "utf8"));
   return {
     comments: comments.length,
+    documentId: document.document_id,
     documentBytes: Buffer.byteLength(markdown),
     documentCharacters: markdown.length,
+    fencedCodeBlocks: (markdown.match(/^```/gm)?.length ?? 0) / 2,
+    headings: markdown.match(/^#{1,6} /gm)?.length ?? 0,
+    markdownSha256: createHash("sha256").update(markdown).digest("hex"),
+    modeAtBenchmarkStart: "visual",
+    path: document.path,
     patches: patches.length,
     replies: comments.reduce(
       (total, comment) => total + (comment.thread?.length ?? 0),
       0
     ),
     versions: manifest.versions?.length ?? 0
+  };
+}
+
+function createBenchmarkIdentity({ browserVersion, firstDocument, secondDocument }) {
+  return {
+    browserJsVersion: browserVersion.jsVersion,
+    browserProduct: browserVersion.product,
+    checkoutLabel,
+    completionBoundary:
+      "identity + target semantic fingerprint + interaction safety + two animation frames",
+    cpuThrottlingRate: 1,
+    directions: {
+      firstToSecond: {
+        sourceDocumentId: firstDocument.documentId,
+        targetDocumentId: secondDocument.documentId,
+        targetStructure: fixtureProfile === "equal_complexity"
+          ? "equal code-and-table-heavy control"
+          : "table-heavy visual target"
+      },
+      secondToFirst: {
+        sourceDocumentId: secondDocument.documentId,
+        targetDocumentId: firstDocument.documentId,
+        targetStructure: fixtureProfile === "equal_complexity"
+          ? "equal code-and-table-heavy control"
+          : "code-and-table-heavy visual target"
+      }
+    },
+    fixtureProfile,
+    fixtureSeed: "document-switch-browser-v1",
+    measuredWarmSwitches: sampleCount,
+    profileEditorCostOnly,
+    serverMode,
+    startBoundary: "navigator document-selection click handler",
+    stressTransitions,
+    timeoutMs: 15_000,
+    warmupSwitches: warmupCount
   };
 }
 
@@ -1549,11 +1925,17 @@ function createDocumentSwitchConsistencyObserverScript() {
       const notification = document.querySelector(".document-save-banner")
         ?.textContent?.trim() ?? null;
       const documentKey = editor?.getAttribute("data-document-key") ?? null;
+      const targetMetadataIsDistinct =
+        configuration.targetDocument.commentCount !==
+          configuration.sourceDocument.commentCount ||
+        configuration.targetDocument.headingCount !==
+          configuration.sourceDocument.headingCount;
       const targetChromeCommitted =
         activeTitle === configuration.targetDocument.title ||
         documentKey === configuration.targetDocument.documentKey ||
         documentBreadcrumb?.includes(configuration.targetDocument.title) === true ||
-        (commentsCount === configuration.targetDocument.commentCount &&
+        (targetMetadataIsDistinct &&
+          commentsCount === configuration.targetDocument.commentCount &&
           documentToolsSummary?.startsWith(
             configuration.targetDocument.headingCount + " heading"
           ) === true);
@@ -1641,6 +2023,201 @@ function createLongTaskObserverScript() {
           }
         }).observe({ entryTypes: ["longtask"] });
       } catch {}
+    }
+  })();`;
+}
+
+async function readResourceOwnership(client) {
+  return await evaluate(client, {
+    expression: `(() => {
+      const metrics = window.__patchmarkSwitchResources ?? {};
+      const groups = Object.entries(metrics.eventListenerGroups ?? {})
+        .map(([group, counts]) => ({ group, ...counts }))
+        .sort((left, right) => right.added - left.added);
+      return {
+        eventListenersAdded: metrics.eventListenersAdded ?? 0,
+        eventListenersRemoved: metrics.eventListenersRemoved ?? 0,
+        groups,
+        intersectionObserversActive: metrics.intersectionObserversActive ?? 0,
+        intersectionObserversCreated: metrics.intersectionObserversCreated ?? 0,
+        mutationObserversActive: metrics.mutationObserversActive ?? 0,
+        mutationObserversCreated: metrics.mutationObserversCreated ?? 0
+      };
+    })()`
+  });
+}
+
+function createSwitchResourceObserverScript(instrument) {
+  if (!instrument) {
+    return `window.__patchmarkSwitchResources = {
+      eventListenersAdded: 0,
+      eventListenersRemoved: 0,
+      intersectionObserverCallbacks: 0,
+      intersectionObserversActive: 0,
+      intersectionObserversCreated: 0,
+      mutationObserverCallbacks: 0,
+      mutationObserversActive: 0,
+      mutationObserversCreated: 0
+    };`;
+  }
+  return `(() => {
+    const metrics = {
+      eventListenersAdded: 0,
+      eventListenersRemoved: 0,
+      eventListenerGroups: {},
+      intersectionObserverCallbacks: 0,
+      intersectionObserversActive: 0,
+      intersectionObserversCreated: 0,
+      mutationObserverCallbacks: 0,
+      mutationObserversActive: 0,
+      mutationObserversCreated: 0
+    };
+    window.__patchmarkSwitchResources = metrics;
+
+    const addEventListener = EventTarget.prototype.addEventListener;
+    const removeEventListener = EventTarget.prototype.removeEventListener;
+    const listenerRegistrations = new WeakMap();
+    const normalizeCallSite = (stack) => {
+      const line = stack?.split("\\n").find((candidate) =>
+        candidate.includes(" at ") &&
+        !candidate.includes("normalizeCallSite") &&
+        !candidate.includes("EventTarget.addEventListener") &&
+        !candidate.includes("EventTarget.removeEventListener") &&
+        !candidate.includes("createSwitchResourceObserverScript"));
+      return (line ?? "unknown").trim().replace(/:\\d+:\\d+(?=\\)?$)/, "");
+    };
+    const classifyOwner = (site) => {
+      if (/codemirror|@lezer/i.test(site)) return "codemirror_code_block";
+      if (/Lexical|lexical/i.test(site)) return "lexical_core";
+      if (/mdxeditor|MDXEditor/i.test(site)) {
+        if (/table/i.test(site)) return "mdxeditor_tables";
+        if (/toolbar|dialog/i.test(site)) return "mdxeditor_toolbar_dialog";
+        return "mdxeditor_core";
+      }
+      if (/document-editor|comment|rail/i.test(site)) return "patchmark_comment_rail";
+      if (/react-dom|react/i.test(site)) return "react_runtime";
+      if (/webpack|next|_next/i.test(site)) return "browser_framework_runtime";
+      if (/patchmark.*test|__patchmark/i.test(site)) return "test_instrumentation";
+      return "other";
+    };
+    const targetGroup = (target) => {
+      if (target === window) return "window";
+      if (target === document) return "document";
+      if (target instanceof Element) {
+        return target.tagName.toLowerCase() +
+          (target.classList.length ? "." + [...target.classList].slice(0, 2).join(".") : "");
+      }
+      return target?.constructor?.name ?? typeof target;
+    };
+    const captureValue = (options) =>
+      typeof options === "boolean" ? options : Boolean(options?.capture);
+    const incrementGroup = (group, field) => {
+      const record = metrics.eventListenerGroups[group] ??= {
+        active: 0,
+        added: 0,
+        removed: 0
+      };
+      record[field] += 1;
+    };
+    EventTarget.prototype.addEventListener = function(...args) {
+      metrics.eventListenersAdded += 1;
+      const [type, listener, options] = args;
+      const site = normalizeCallSite(new Error().stack);
+      const group = [
+        classifyOwner(site),
+        String(type),
+        targetGroup(this),
+        site
+      ].join("|");
+      let byType = listenerRegistrations.get(this);
+      if (!byType) listenerRegistrations.set(this, byType = new Map());
+      let byListener = byType.get(type);
+      if (!byListener) byType.set(type, byListener = new Map());
+      let byCapture = byListener.get(listener);
+      if (!byCapture) byListener.set(listener, byCapture = new Map());
+      const capture = captureValue(options);
+      if (!byCapture.has(capture)) {
+        byCapture.set(capture, group);
+        incrementGroup(group, "added");
+        incrementGroup(group, "active");
+      }
+      return addEventListener.apply(this, args);
+    };
+    EventTarget.prototype.removeEventListener = function(...args) {
+      metrics.eventListenersRemoved += 1;
+      const [type, listener, options] = args;
+      const byType = listenerRegistrations.get(this);
+      const byListener = byType?.get(type);
+      const byCapture = byListener?.get(listener);
+      const capture = captureValue(options);
+      const group = byCapture?.get(capture);
+      if (group) {
+        incrementGroup(group, "removed");
+        metrics.eventListenerGroups[group].active -= 1;
+        byCapture.delete(capture);
+      }
+      return removeEventListener.apply(this, args);
+    };
+
+    const NativeIntersectionObserver = window.IntersectionObserver;
+    if (typeof NativeIntersectionObserver === "function") {
+      window.IntersectionObserver = class extends NativeIntersectionObserver {
+        constructor(callback, options) {
+          const observed = new Set();
+          super((entries, observer) => {
+            metrics.intersectionObserverCallbacks += 1;
+            callback(entries, observer);
+          }, options);
+          this.__patchmarkObserved = observed;
+          metrics.intersectionObserversCreated += 1;
+        }
+        observe(target) {
+          if (!this.__patchmarkObserved.has(target)) {
+            this.__patchmarkObserved.add(target);
+            metrics.intersectionObserversActive += 1;
+          }
+          return super.observe(target);
+        }
+        unobserve(target) {
+          if (this.__patchmarkObserved.delete(target)) {
+            metrics.intersectionObserversActive -= 1;
+          }
+          return super.unobserve(target);
+        }
+        disconnect() {
+          metrics.intersectionObserversActive -= this.__patchmarkObserved.size;
+          this.__patchmarkObserved.clear();
+          return super.disconnect();
+        }
+      };
+    }
+
+    const NativeMutationObserver = window.MutationObserver;
+    if (typeof NativeMutationObserver === "function") {
+      window.MutationObserver = class extends NativeMutationObserver {
+        constructor(callback) {
+          super((entries, observer) => {
+            metrics.mutationObserverCallbacks += 1;
+            callback(entries, observer);
+          });
+          this.__patchmarkActive = false;
+          metrics.mutationObserversCreated += 1;
+        }
+        observe(...args) {
+          if (!this.__patchmarkActive) {
+            this.__patchmarkActive = true;
+            metrics.mutationObserversActive += 1;
+          }
+          return super.observe(...args);
+        }
+        disconnect() {
+          if (this.__patchmarkActive) {
+            this.__patchmarkActive = false;
+            metrics.mutationObserversActive -= 1;
+          }
+          return super.disconnect();
+        }
+      };
     }
   })();`;
 }

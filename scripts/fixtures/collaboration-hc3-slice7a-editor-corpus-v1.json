@@ -1,0 +1,169 @@
+{
+  "version": "patchmark-hc3-slice7a-editor-corpus-v1",
+  "provenance": "Synthetic test documents plus syntax classes already exercised by Patchmark editor, comment, bookmark, patch, and document-switch fixtures. Contains no user documents and is not a protocol object.",
+  "frontmatter_security_cases": [
+    {
+      "id": "ordinary",
+      "yaml": "title: Patchmark\ntags:\n  - editor\n  - security\ndraft: false\n",
+      "expect": "object"
+    },
+    {
+      "id": "empty",
+      "yaml": "",
+      "expect": "undefined"
+    },
+    {
+      "id": "malformed",
+      "yaml": "title: [unterminated\n",
+      "expect": "reject"
+    },
+    {
+      "id": "duplicate_keys",
+      "yaml": "title: first\ntitle: second\n",
+      "expect": "reject"
+    },
+    {
+      "id": "aliases_and_merge",
+      "yaml": "defaults: &defaults\n  visible: true\n  owner: local\ndocument:\n  <<: *defaults\n  owner: author\n",
+      "expect": "object"
+    },
+    {
+      "id": "explicit_safe_tags",
+      "yaml": "title: !!str 2026-08-27\nflags: !!seq [safe, local]\n",
+      "expect": "object"
+    },
+    {
+      "id": "explicit_unsafe_tag",
+      "yaml": "payload: !!js/function 'function () { globalThis.__patchmarkYamlExecuted = true }'\n",
+      "expect": "reject"
+    },
+    {
+      "id": "prototype_like_keys",
+      "yaml": "__proto__:\n  polluted: true\nconstructor:\n  prototype:\n    compromised: true\nprototype:\n  visible: data\n",
+      "expect": "object"
+    },
+    {
+      "id": "nested_bounded",
+      "descriptor": {
+        "encoding": "nested_mapping",
+        "depth": 48,
+        "leaf": "bounded"
+      },
+      "expect": "object"
+    },
+    {
+      "id": "large_scalar_bounded",
+      "descriptor": {
+        "encoding": "repeated_scalar",
+        "byte": 97,
+        "length": 262144
+      },
+      "expect": "object"
+    },
+    {
+      "id": "repeated_alias_merge_regression",
+      "descriptor": {
+        "encoding": "repeated_alias_merge",
+        "count": 768
+      },
+      "expect": "object"
+    },
+    {
+      "id": "merge_chain_regression",
+      "descriptor": {
+        "encoding": "merge_chain",
+        "count": 384
+      },
+      "expect": "reject"
+    },
+    {
+      "id": "ordered_map_regression",
+      "descriptor": {
+        "encoding": "ordered_map",
+        "count": 768
+      },
+      "expect": "array"
+    }
+  ],
+  "markdown_cases": [
+    {
+      "id": "empty_document",
+      "markdown": "",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "rich_supported_markdown",
+      "markdown": "# Heading 1\n\n## Heading 2\n\n### Heading 3\n\n#### Heading 4\n\n##### Heading 5\n\n###### Heading 6\n\nPlain **strong**, *emphasis*, and `inline code` with escaped \\*text\\*.\n\n> A blockquote with [a local link](./other.md).\n\n- unordered\n  - nested\n- [x] completed task\n- [ ] open task\n\n1. ordered\n   1. nested ordered\n\n```ts\nconst delimiter = '---';\n```\n\n| Column A | Column B |\n| --- | --- |\n| alpha | beta |\n\n![Local image](./image.png)\n\n---\n\nUnicode: สวัสดี 👩🏽‍💻 café. Bidi controls are visible text: LTR ‮abc‬ end.\n\nHTML-like escaped text: \\<script>not executable\\</script>.\n\n<br />\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "ordinary_frontmatter",
+      "markdown": "---\ntitle: Patchmark\ntags: [editor, security]\ndraft: false\n---\n\n# Frontmatter document\n\nBody remains Markdown authority.\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "empty_frontmatter",
+      "markdown": "---\n---\n\n# Empty frontmatter\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "alias_merge_frontmatter",
+      "markdown": "---\ndefaults: &defaults\n  visible: true\ndocument:\n  <<: *defaults\n---\n\n# Alias document\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "prototype_like_frontmatter",
+      "markdown": "---\n__proto__:\n  polluted: true\nconstructor:\n  prototype:\n    compromised: true\n---\n\n# Prototype-like keys are inert data\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "malformed_frontmatter",
+      "markdown": "---\ntitle: [unterminated\n---\n\n# Malformed YAML remains bounded\n",
+      "expected_visual_state": "fallback"
+    },
+    {
+      "id": "without_frontmatter",
+      "markdown": "# No frontmatter\n\nThe document starts directly with Markdown.\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "frontmatter_text_in_fence",
+      "markdown": "# Fenced text\n\n```yaml\n---\ntitle: not frontmatter\n---\n```\n\nBody follows the fence.\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "closing_delimiter_ambiguity",
+      "markdown": "---\ntitle: no closing delimiter\n----\n\n# This line remains document content\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "accepted_jsx_break",
+      "markdown": "# Accepted JSX\n\nLine one<br />Line two.\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "unsupported_jsx_safe_fallback",
+      "markdown": "# Unsupported JSX\n\n<UnregisteredPatchmarkFixture value=\"inert\" />\n",
+      "expected_visual_state": "fallback"
+    },
+    {
+      "id": "unsupported_directive_safe_fallback",
+      "markdown": "# Unsupported directive\n\n:::patchmark-fixture{value=\"inert\"}\nbody\n:::\n",
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "long_document",
+      "descriptor": {
+        "encoding": "repeated_markdown_sections",
+        "count": 384,
+        "template": "## Section {{index}}\n\nParagraph {{index}} has **strong text**, a [link](./doc-{{index}}.md), and Unicode สวัสดี.\n\n"
+      },
+      "expected_visual_state": "ready"
+    },
+    {
+      "id": "invalid_utf8_replacement_at_file_boundary",
+      "markdown": "# Invalid UTF-8 boundary\n\nReplacement is preserved safely: �(�.\n",
+      "expected_visual_state": "ready"
+    }
+  ]
+}

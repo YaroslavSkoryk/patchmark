@@ -1595,7 +1595,14 @@ function FloatingCommentList({
         floatingStageOffsetTop: nextFloatingStageOffsetTop,
         floatingItemRefs: floatingItemRefs.current,
         items: floatingLayoutItems,
-        layout: floatingLayout,
+        layout: createFloatingCommentLayout(
+          floatingLayoutItems,
+          nextMeasuredItemHeights,
+          {
+            gap: COMMENT_CARD_GAP,
+            minStageHeight: COMMENT_FLOATING_STAGE_MIN_HEIGHT
+          }
+        ),
         layoutPass: layoutPassRef.current + 1,
         stage: floatingStageRef.current
       });
@@ -1660,7 +1667,6 @@ function FloatingCommentList({
     activeCommentState,
     editComment,
     editingCommentId,
-    floatingLayout,
     floatingLayoutItems,
     replyComment,
     replyingCommentId

@@ -3,6 +3,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import nextWebpack from "next/dist/compiled/webpack/webpack.js";
+import { loadBindings } from "next/dist/build/swc/index.js";
 import terser from "next/dist/compiled/terser/bundle.min.js";
 
 const scriptDirectory = dirname(fileURLToPath(import.meta.url));
@@ -12,7 +13,7 @@ export const optimizedHarnessOutput = join(repositoryRoot, ".hc3-slice5-optimize
 export async function buildOptimizedHarness() {
   rmSync(optimizedHarnessOutput, { recursive: true, force: true });
   mkdirSync(optimizedHarnessOutput, { recursive: true });
-  nextWebpack.init();
+  await loadBindings();
   const webpack = nextWebpack.webpack;
   const compiler = webpack({
     mode: "production",

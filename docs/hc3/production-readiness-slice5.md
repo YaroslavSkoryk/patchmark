@@ -154,13 +154,31 @@ The normal profile creates exactly two policies. The qualification-owned
 matching style hash authorizes only those bytes. It returns no arbitrary HTML,
 script text, or script URL. `nextjs#bundler` is Next/Webpack's private runtime
 policy for build-computed chunk URLs. The qualification bootstrap replaces its
-generated identity rule with a validator that accepts only same-origin HTTPS
-or loopback `/_next/static/chunks/*.js` paths and rejects credentials, query,
-fragment, other paths, and other origins. Its object is not exposed to
-application or fixture input, and hostile HTML, script URL, worker URL, and
-inline-script probes all fail with `TypeError`.
+generated identity rule with a validator that requires the candidate's exact
+current page origin, including scheme and effective port. HTTPS is required
+except when that same current origin uses HTTP with the canonical loopback
+hostname `localhost`, `127.0.0.1`, or `[::1]`; a non-loopback deployed page
+cannot authorize a localhost or other loopback script URL.
+
+The `candidate.origin === window.location.origin` comparison is mandatory.
+Different schemes, non-default ports, hostnames, subdomains, suffix-confusion
+hosts, and loopback spellings reject unless URL canonicalization makes them the
+exact current origin. Credentials, query strings, fragments, `blob:`, `data:`,
+and `javascript:` inputs reject. URL parsing and path normalization occur
+before the required `/_next/static/chunks/*.js` path predicate. The policy
+object is not exposed to application or fixture input, and hostile HTML,
+script URL, worker URL, and inline-script probes all fail with `TypeError`.
 The style-attribute exception is limited to existing React style properties
 and cannot execute script.
+
+This normal-production profile is enforced by the qualification proxy around
+`next start`. It exercises the real production build and Webpack runtime and
+proves compatibility with the strict policy, but it is not yet the final
+deployed CSP/Trusted Types header and bootstrap integration. Before production
+collaboration enablement, the selected deployment architecture must install
+and requalify these constraints at the actual serving boundary. That future
+enablement prerequisite is not a localhost vulnerability, and the production
+collaboration gate remains independently disabled.
 
 The normal profile passed hydration, project open, Visual and Markdown modes,
 save state, two-document navigation, reading bookmarks, File and Review menus,
@@ -191,10 +209,14 @@ require-trusted-types-for 'script'
 
 The sole `patchmark#optimized-bundler` policy is Webpack's private
 production-runtime policy. The test-only optimizer replaces Webpack's identity
-rule with an exact same-origin HTTPS-or-loopback
-`/assets/optimized-harness-<content-hash>.js` validator; credentials, query,
-fragment, other names, paths, and origins are rejected. The policy is not
-exposed to artifact or UI input. The full two-profile workflow passed 52 browser
+rule with a validator that requires the exact current page origin and an exact
+`/assets/optimized-harness-<content-hash>.js` path. HTTPS is required except
+when that same current origin is recognized HTTP loopback; credentials, query,
+fragment, other names, paths, and origins are rejected. This separate
+test-only profile uses `strict-dynamic`, but exact-origin Trusted Types and CSP
+remain cumulative defenses. The policy is not exposed to artifact or UI input
+and is absent from deployable production graphs. The full two-profile workflow
+passed 52 browser
 assertions with simultaneous CSP and Trusted Types enforcement: foundation,
 recovery, invitation and QR, strict parse/preview, enrollment and possession,
 V2 admission and receipt, concurrent mutations, empty-ICE-server WebRTC,

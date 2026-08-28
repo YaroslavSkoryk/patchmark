@@ -893,6 +893,9 @@ async function verifyModeSpecificCommentRailRegression(initialWrites) {
   await setViewport({ height: 900, mobile: false, width: 1440 });
   await ensureEditorMode("Visual Mode");
   await ensureCommentsOpen();
+  // The primary editor is already interactive. Observe the intentionally
+  // deferred heavy-editor presentation pass before freezing spatial layout.
+  await delay(150);
   const visual = await readCommentRailLayout();
   await screenshot("C01-visual-spatial-comment-rail.png");
 

@@ -2790,6 +2790,14 @@ export function DocumentEditor() {
     }
 
     function scheduleCommentAnchorSync() {
+      if (editorContainer?.getAttribute("aria-busy") === "true") {
+        incrementDocumentSwitchPerformanceCounter(
+          switchOperationId,
+          "comment_projection_deferred_while_busy"
+        );
+        return;
+      }
+
       if (editorContainer) {
         visualTextIndexCache.delete(editorContainer);
       }
@@ -2799,8 +2807,16 @@ export function DocumentEditor() {
       }
 
       animationFrameId = window.requestAnimationFrame(() => {
-        animationFrameId = null;
-        syncCommentAnchors();
+        if (!switchOperationId) {
+          animationFrameId = null;
+          syncCommentAnchors();
+          return;
+        }
+
+        animationFrameId = window.requestAnimationFrame(() => {
+          animationFrameId = null;
+          syncCommentAnchors();
+        });
       });
     }
 
@@ -20677,7 +20693,8 @@ function computeCommentPreferredTop({
         container,
         headings,
         markdown,
-        patches
+        patches,
+        resolution
       }),
       workspaceRect
     });
@@ -20698,7 +20715,8 @@ function computeCommentPreferredTop({
         container,
         headings,
         markdown,
-        patches
+        patches,
+        resolution
       }),
       workspaceRect
     });
@@ -20874,15 +20892,18 @@ function findVisualCommentAnchorProjection({
   container,
   headings,
   markdown,
-  patches = []
+  patches = [],
+  resolution: providedResolution
 }: {
   comment: PatchmarkComment;
   container: HTMLElement;
   headings: ReturnType<typeof parseMarkdownHeadings>;
   markdown: string;
   patches?: PatchmarkPatch[];
+  resolution?: CommentAnchorResolution;
 }): VisualTargetProjection {
-  const resolution = resolveCommentAnchor(comment, markdown, headings, patches);
+  const resolution =
+    providedResolution ?? resolveCommentAnchor(comment, markdown, headings, patches);
 
   if (resolution.status !== "active") {
     return {

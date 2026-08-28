@@ -7,6 +7,7 @@ const root = resolve(new URL("..", import.meta.url).pathname);
 const productionRoots = ["app", "components", "lib"];
 const productionImports = [];
 const slice6QualificationImports = [];
+const agentGuidanceSourceHits = [];
 for (const productionRoot of productionRoots) {
   for (const file of await sourceFiles(join(root, productionRoot))) {
     const source = await readFile(file, "utf8");
@@ -17,6 +18,9 @@ for (const productionRoot of productionRoots) {
     if (/PATCHMARK_HC3_SLICE6_EXTERNAL_RUNNER_TEST_ONLY_V1|collaboration-hc3-slice6-external-runner|hc3_slice6_external_qualification_evidence/.test(source)) {
       slice6QualificationImports.push(relative(root, file));
     }
+    if (/BEGIN:nextjs-agent-rules|This is NOT the Next\.js you know|@AGENTS\.md/.test(source)) {
+      agentGuidanceSourceHits.push(relative(root, file));
+    }
   }
 }
 assert.deepEqual(
@@ -25,6 +29,18 @@ assert.deepEqual(
   "Only the gated lazy qualification workspace may import HC-3"
 );
 assert.deepEqual(slice6QualificationImports, [], "Slice 6 external qualification infrastructure entered a production source graph");
+assert.deepEqual(agentGuidanceSourceHits, [], "Repository agent guidance entered a production source graph");
+const reviewManifest = JSON.parse(await readFile(join(root, "docs", "hc3", "review-manifest-slice6.json"), "utf8"));
+assert.deepEqual(
+  reviewManifest.covered_files
+    .filter((entry) => entry.path === "AGENTS.md" || entry.path === "CLAUDE.md")
+    .map(({ path, category }) => ({ path, category })),
+  [
+    { path: "AGENTS.md", category: "covered_source" },
+    { path: "CLAUDE.md", category: "covered_source" }
+  ],
+  "Agent guidance must remain reviewed repository source rather than a deployable category"
+);
 const productLoader = await readFile(join(root, "lib", "collaboration-shadow", "product-qualification-loader.ts"), "utf8");
 assert(productLoader.includes("collaboration-qualification-workspace.tsx"), "The accepted gate must own the only product-workspace load edge");
 const productEntrypoint = await readFile(join(root, "lib", "collaboration-shadow", "entrypoint.ts"), "utf8");
@@ -80,6 +96,7 @@ for (const [path, expected] of Object.entries(frozenFixtureHashes)) {
 let productionBuildGraphChecked = false;
 let hc3InInitialPageGraph = false;
 const slice6DeployableHits = [];
+const agentGuidanceDeployableHits = [];
 try {
   const manifest = JSON.parse(await readFile(join(root, ".next", "build-manifest.json"), "utf8"));
   productionBuildGraphChecked = true;
@@ -95,8 +112,12 @@ try {
     if (/PATCHMARK_HC3_SLICE6_EXTERNAL_RUNNER_TEST_ONLY_V1|collaboration-hc3-slice6-external-runner|hc3_slice6_external_qualification_evidence|qualification-metadata\.json/.test(source)) {
       slice6DeployableHits.push(relative(root, file));
     }
+    if (/BEGIN:nextjs-agent-rules|This is NOT the Next\.js you know|@AGENTS\.md/.test(source)) {
+      agentGuidanceDeployableHits.push(relative(root, file));
+    }
   }
   assert.deepEqual(slice6DeployableHits, [], "Slice 6 qualification runner or evidence parser entered deployable production output");
+  assert.deepEqual(agentGuidanceDeployableHits, [], "Repository agent guidance entered deployable production output");
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
 }
@@ -112,6 +133,9 @@ process.stdout.write(`${JSON.stringify({
   hc3_in_initial_page_graph: hc3InInitialPageGraph,
   slice6_qualification_imports: slice6QualificationImports,
   slice6_deployable_hits: slice6DeployableHits,
+  agent_guidance_manifest_category: "covered_source",
+  agent_guidance_source_hits: agentGuidanceSourceHits,
+  agent_guidance_deployable_hits: agentGuidanceDeployableHits,
   production_collaboration_state: "disabled"
 }, null, 2)}\n`);
 

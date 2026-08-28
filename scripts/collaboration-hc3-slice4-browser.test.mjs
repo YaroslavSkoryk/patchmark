@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { createServer, request as httpRequest } from "node:http";
+import { connect as connectTcp } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve, sep } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
@@ -45,7 +46,7 @@ const sourceBefore = hashProject(sourceProjectRoot);
 const otherBefore = hashProject(otherProjectRoot);
 const inventory = inventoryProject(fixtureRoot);
 const fixtureServer = await startFixtureFileServer(fixtureRoot, inventory);
-const next = optimizedPolicyQualification ? null : spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--hostname", "127.0.0.1", "--port", `${nextPort}`], {
+const next = optimizedPolicyQualification ? null : spawn(process.execPath, ["node_modules/next/dist/bin/next", "dev", "--webpack", "--hostname", "127.0.0.1", "--port", `${nextPort}`], {
   cwd: repositoryRoot,
   env: {
     ...process.env,
@@ -455,14 +456,29 @@ async function openProfile(label, role) {
     } catch (diagnosticError) {
       diagnostic = { evaluation_error: diagnosticError instanceof Error ? diagnosticError.message : String(diagnosticError) };
     }
-    await client.close().catch(() => undefined);
+    await boundedCdpClose(client);
     process.kill("SIGTERM");
     await waitForProcessExit(process, 1_000).catch(() => process.kill("SIGKILL"));
     rmSync(profile, { recursive: true, force: true });
     throw new Error(`Editor shell failed under qualification policy: ${JSON.stringify(diagnostic)}`, { cause: error });
   }
   const version = await client.call("Browser.getVersion");
-  return { client, process, product: version.product, profile, async close() { await client.close().catch(() => undefined); process.kill("SIGTERM"); await waitForProcessExit(process, 1_000).catch(() => process.kill("SIGKILL")); rmSync(profile, { recursive: true, force: true }); } };
+  return { client, process, product: version.product, profile, async close() { await boundedCdpClose(client); process.kill("SIGTERM"); await waitForProcessExit(process, 1_000).catch(() => process.kill("SIGKILL")); rmSync(profile, { recursive: true, force: true }); } };
+}
+
+async function boundedCdpClose(client) {
+  if (!client) return;
+  let timeout;
+  try {
+    await Promise.race([
+      client.close(),
+      new Promise((resolveDelay) => { timeout = setTimeout(resolveDelay, 1500); })
+    ]);
+  } catch {
+    // The isolated browser process is terminated immediately below.
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 async function openProject(profile, title) {
@@ -684,6 +700,19 @@ async function startProductProxy(listenPort, upstreamPort, options = {}) {
       response.writeHead(500, { "Content-Type": "text/plain" });
       response.end(error instanceof Error ? error.stack : String(error));
     }
+  });
+  server.on("upgrade", (request, socket, head) => {
+    const upstream = connectTcp(upstreamPort, "127.0.0.1", () => {
+      upstream.write(`${request.method} ${request.url} HTTP/${request.httpVersion}\r\n`);
+      for (let index = 0; index < request.rawHeaders.length; index += 2) {
+        upstream.write(`${request.rawHeaders[index]}: ${request.rawHeaders[index + 1]}\r\n`);
+      }
+      upstream.write("\r\n");
+      if (head.length > 0) upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    upstream.on("error", () => socket.destroy());
+    socket.on("error", () => upstream.destroy());
   });
   await new Promise((resolveListen, rejectListen) => { server.once("error", rejectListen); server.listen(listenPort, "127.0.0.1", resolveListen); });
   return { close: () => new Promise((resolveClose, rejectClose) => server.close((error) => error ? rejectClose(error) : resolveClose())) };

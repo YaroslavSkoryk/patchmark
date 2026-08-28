@@ -1,8 +1,10 @@
 "use client";
 
 import {
+  Component,
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type SyntheticEvent,
   memo,
   useEffect,
@@ -14,7 +16,9 @@ import {
 import { flushSync } from "react-dom";
 import {
   DeferredMdxHeavyEditorProvider,
-  deferredCodeBlockEditorDescriptor
+  deferredCodeBlockEditorDescriptor,
+  deferredSemanticCodeBlockPlugin,
+  prepareMarkdownForDeferredCodeImport
 } from "@/components/deferred-mdx-heavy-editors";
 import {
   BlockTypeSelect,
@@ -28,6 +32,7 @@ import {
   ListsToggle,
   MDXEditor,
   type MDXEditorMethods,
+  type Translation,
   Separator,
   UndoRedo,
   codeBlockPlugin,
@@ -93,6 +98,25 @@ const clearHistoryAfterDocumentResetPlugin = realmPlugin({
 
 const StableMdxEditor = memo(MDXEditor);
 
+class MdxEditorRenderBoundary extends Component<
+  { children: ReactNode; onRenderError: (error: unknown) => void },
+  { hasError: boolean }
+> {
+  state = { hasError: false };
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error: unknown) {
+    this.props.onRenderError(error);
+  }
+
+  render() {
+    return this.state.hasError ? null : this.props.children;
+  }
+}
+
 export function MdxEditorClient({
   ariaLabel = "editable markdown",
   documentReadiness = null,
@@ -106,6 +130,20 @@ export function MdxEditorClient({
   selectionOnly = false,
   showToolbar = true
 }: MdxEditorClientProps) {
+  const slice7aDiagnosticAblations = useMemo(() => {
+    if (
+      process.env.NODE_ENV === "production" ||
+      typeof window === "undefined"
+    ) {
+      return new Set<string>();
+    }
+    return new Set(
+      new URLSearchParams(window.location.search)
+        .get("patchmarkSlice7aAblate")
+        ?.split(",")
+        .filter(Boolean) ?? []
+    );
+  }, []);
   const visualMarkdown = useMemo(
     () => {
       const startedAt = performance.now();
@@ -119,36 +157,60 @@ export function MdxEditorClient({
     },
     [markdown]
   );
+  const editorTranslation = useMemo<Translation>(
+    () => (key, defaultValue, interpolations = {}) => {
+      let value =
+        key === "contentArea.editableMarkdown" ? ariaLabel : defaultValue;
+      for (const [name, replacement] of Object.entries(interpolations)) {
+        value = value.replaceAll(`{{${name}}}`, String(replacement));
+      }
+      return value;
+    },
+    [ariaLabel]
+  );
+  const editorImportMarkdown = useMemo(
+    () => prepareMarkdownForDeferredCodeImport(visualMarkdown),
+    [visualMarkdown]
+  );
   const editorPlugins = useMemo(
-    () => [
+    () => {
+      const startedAt = performance.now();
+      const plugins = [
       headingsPlugin(),
       listsPlugin(),
       quotePlugin(),
       clearHistoryAfterDocumentResetPlugin(),
       thematicBreakPlugin(),
       frontmatterPlugin(),
-      tablePlugin(),
-      codeBlockPlugin({
-        codeBlockEditorDescriptors: [deferredCodeBlockEditorDescriptor],
-        defaultCodeBlockLanguage: "markdown"
-      }),
-      codeMirrorPlugin({
-        codeBlockLanguages: {
-          "": "Plain text",
-          markdown: "Markdown",
-          md: "Markdown",
-          text: "Plain text",
-          json: "JSON",
-          yaml: "YAML",
-          yml: "YAML",
-          js: "JavaScript",
-          ts: "TypeScript",
-          tsx: "TypeScript (React)",
-          jsx: "JavaScript (React)",
-          html: "HTML",
-          css: "CSS"
-        }
-      }),
+      ...(!slice7aDiagnosticAblations.has("table")
+        ? [tablePlugin()]
+        : []),
+      deferredSemanticCodeBlockPlugin(),
+      ...(!slice7aDiagnosticAblations.has("code")
+        ? [
+            codeBlockPlugin({
+              codeBlockEditorDescriptors: [deferredCodeBlockEditorDescriptor],
+              defaultCodeBlockLanguage: "markdown"
+            }),
+            codeMirrorPlugin({
+              codeBlockLanguages: {
+                "": "Plain text",
+                markdown: "Markdown",
+                md: "Markdown",
+                text: "Plain text",
+                json: "JSON",
+                yaml: "YAML",
+                yml: "YAML",
+                js: "JavaScript",
+                ts: "TypeScript",
+                tsx: "TypeScript (React)",
+                jsx: "JavaScript (React)",
+                html: "HTML",
+                css: "CSS"
+              }
+            })
+          ]
+        : []),
       imagePlugin({ disableImageResize: true }),
       jsxPlugin({
         jsxComponentDescriptors: [
@@ -164,24 +226,35 @@ export function MdxEditorClient({
       linkPlugin(),
       linkDialogPlugin(),
       markdownShortcutPlugin(),
-      toolbarPlugin({
-        toolbarContents: () => (
-          <>
-            <UndoRedo />
-            <Separator />
-            <BlockTypeSelect />
-            <BoldItalicUnderlineToggles />
-            <ListsToggle />
-            <CreateLink />
-            <InsertCodeBlock />
-            <InsertTable />
-            <InsertImage />
-            <InsertThematicBreak />
-          </>
-        )
-      })
-    ],
-    []
+      ...(!slice7aDiagnosticAblations.has("toolbar")
+        ? [
+            toolbarPlugin({
+              toolbarContents: () => (
+                <>
+                  <UndoRedo />
+                  <Separator />
+                  <BlockTypeSelect />
+                  <BoldItalicUnderlineToggles />
+                  <ListsToggle />
+                  <CreateLink />
+                  <InsertCodeBlock />
+                  <InsertTable />
+                  <InsertImage />
+                  <InsertThematicBreak />
+                </>
+              )
+            })
+          ]
+        : [])
+      ];
+      recordDocumentSwitchPerformanceDuration(
+        getLatestDocumentSwitchPerformanceOperationId(),
+        "plugin_registration",
+        performance.now() - startedAt
+      );
+      return plugins;
+    },
+    [slice7aDiagnosticAblations]
   );
   const readinessContentFingerprint =
     documentReadiness?.contentFingerprint ?? null;
@@ -191,7 +264,7 @@ export function MdxEditorClient({
   const readinessSwitchOperationId =
     documentReadiness?.switchOperationId ?? null;
   const editorRef = useRef<MDXEditorMethods>(null);
-  const editorInitialMarkdownRef = useRef(visualMarkdown);
+  const editorInitialMarkdownRef = useRef(editorImportMarkdown);
   const editorShellRef = useRef<HTMLDivElement>(null);
   const documentReadinessRef = useRef(documentReadiness);
   const editorConstructionStartedAtRef = useRef(performance.now());
@@ -293,7 +366,11 @@ export function MdxEditorClient({
         return;
       }
       try {
-        editor.setMarkdown(visualMarkdown);
+        incrementDocumentSwitchPerformanceCounter(
+          getLatestDocumentSwitchPerformanceOperationId(),
+          "mdx_set_markdown_count"
+        );
+        editor.setMarkdown(editorImportMarkdown);
         lastSyncedMarkdownRef.current = visualMarkdown;
         lastResetKeyRef.current = resetKey;
         setRenderError(null);
@@ -334,7 +411,11 @@ export function MdxEditorClient({
       editorDomHasContent(shell, visualMarkdown)
     ) {
       if (resetKey !== lastResetKeyRef.current) {
-        editor.setMarkdown(visualMarkdown);
+        incrementDocumentSwitchPerformanceCounter(
+          readinessSwitchOperationId,
+          "mdx_set_markdown_count"
+        );
+        editor.setMarkdown(editorImportMarkdown);
         lastResetKeyRef.current = resetKey;
       }
       markDocumentSwitchPerformance(
@@ -378,13 +459,35 @@ export function MdxEditorClient({
     });
     readinessObserverRef.current = observer;
 
+    if (
+      !markdownChanged &&
+      editorDocumentKey === readinessDocumentKey &&
+      (initialMarkdownParsedRef.current === null ||
+        initialImportRepresentsTarget)
+    ) {
+      markDocumentSwitchPerformance(
+        readinessSwitchOperationId,
+        "target_initial_import_awaited"
+      );
+      return () => {
+        observer.disconnect();
+        if (readinessObserverRef.current === observer) {
+          readinessObserverRef.current = null;
+        }
+      };
+    }
+
     try {
       markDocumentSwitchPerformance(
         readinessSwitchOperationId,
         "target_editor_update_requested"
       );
       const importStartedAt = performance.now();
-      editor.setMarkdown(visualMarkdown);
+      incrementDocumentSwitchPerformanceCounter(
+        readinessSwitchOperationId,
+        "mdx_set_markdown_count"
+      );
+      editor.setMarkdown(editorImportMarkdown);
       recordDocumentSwitchPerformanceDuration(
         readinessSwitchOperationId,
         "mdx_markdown_import",
@@ -416,31 +519,13 @@ export function MdxEditorClient({
     readinessDocumentKey,
     readinessRequestGeneration,
     readinessSwitchOperationId,
+    editorImportMarkdown,
     editorInstanceKey,
     editorDocumentKey,
     renderError,
     resetKey,
     visualMarkdown
   ]);
-
-  useEffect(() => {
-    const content = editorShellRef.current?.querySelector(
-      ".patchmark-prose"
-    );
-
-    if (!content) {
-      return;
-    }
-
-    content.setAttribute("aria-label", ariaLabel);
-    if (readOnly || selectionOnly) {
-      content.setAttribute("aria-readonly", "true");
-    }
-    return () => {
-      content.removeAttribute("aria-label");
-      content.removeAttribute("aria-readonly");
-    };
-  }, [ariaLabel, editorInstanceKey, readOnly, selectionOnly, visualMarkdown]);
 
   useEffect(() => {
     if (renderError || visualMarkdown.trim().length === 0) {
@@ -489,10 +574,10 @@ export function MdxEditorClient({
 
     lastAutoRetryMarkdownRef.current = visualMarkdown;
     queuedRenderErrorRef.current = null;
-    editorInitialMarkdownRef.current = visualMarkdown;
+    editorInitialMarkdownRef.current = editorImportMarkdown;
     setEditorInstanceKey((currentKey) => currentKey + 1);
     setRenderError(null);
-  }, [markdown, renderError, visualMarkdown]);
+  }, [editorImportMarkdown, markdown, renderError, visualMarkdown]);
 
   function queueRenderError(error: unknown) {
     queuedRenderErrorRef.current = normalizeVisualModeError(error);
@@ -522,7 +607,7 @@ export function MdxEditorClient({
   function handleRetryVisualMode() {
     queuedRenderErrorRef.current = null;
     lastAutoRetryMarkdownRef.current = null;
-    editorInitialMarkdownRef.current = visualMarkdown;
+    editorInitialMarkdownRef.current = editorImportMarkdown;
     setEditorInstanceKey((currentKey) => currentKey + 1);
     setRenderError(null);
   }
@@ -711,19 +796,24 @@ export function MdxEditorClient({
           />
         </div>
       ) : (
-        <DeferredMdxHeavyEditorProvider>
-          <StableMdxEditor
-            key={editorInstanceKey}
-            ref={editorRef}
-            className="patchmark-mdx-editor"
-            contentEditableClassName="patchmark-prose"
-            markdown={editorInitialMarkdownRef.current}
-            readOnly={readOnly}
-            onChange={stableMarkdownChangeHandler}
-            onError={stableRenderErrorHandler}
-            plugins={editorPlugins}
-          />
-        </DeferredMdxHeavyEditorProvider>
+        <MdxEditorRenderBoundary
+          key={editorInstanceKey}
+          onRenderError={stableRenderErrorHandler}
+        >
+          <DeferredMdxHeavyEditorProvider>
+            <StableMdxEditor
+              ref={editorRef}
+              className="patchmark-mdx-editor"
+              contentEditableClassName="patchmark-prose"
+              markdown={editorInitialMarkdownRef.current}
+              readOnly={readOnly}
+              onChange={stableMarkdownChangeHandler}
+              onError={stableRenderErrorHandler}
+              plugins={editorPlugins}
+              translation={editorTranslation}
+            />
+          </DeferredMdxHeavyEditorProvider>
+        </MdxEditorRenderBoundary>
       )}
     </div>
   );

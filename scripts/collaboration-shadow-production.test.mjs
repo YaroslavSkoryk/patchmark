@@ -24,8 +24,15 @@ assert.equal(receiptFactoryCalls, 0);
 
 const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, "..");
-const appManifest = JSON.parse(
-  await fs.readFile(path.join(root, ".next/app-build-manifest.json"), "utf8")
+const pageClientReferenceSource = await fs.readFile(
+  path.join(root, ".next/server/app/page_client-reference-manifest.js"),
+  "utf8"
+);
+const pageManifestPrefix = 'globalThis.__RSC_MANIFEST["/page"]=';
+const pageManifestStart = pageClientReferenceSource.indexOf(pageManifestPrefix);
+assert(pageManifestStart >= 0, "Next app-page client reference manifest is present");
+const appPageManifest = JSON.parse(
+  pageClientReferenceSource.slice(pageManifestStart + pageManifestPrefix.length, pageClientReferenceSource.lastIndexOf(";"))
 );
 const loadableManifest = JSON.parse(
   await fs.readFile(path.join(root, ".next/react-loadable-manifest.json"), "utf8")
@@ -33,7 +40,10 @@ const loadableManifest = JSON.parse(
 const deferredKey = "lib/collaboration-shadow/entrypoint.ts -> ./shadow-implementation.ts";
 assert(loadableManifest[deferredKey]);
 const deferredFiles = loadableManifest[deferredKey].files;
-const initialPageFiles = appManifest.pages["/page"];
+const initialPageFiles = [...new Set(Object.values(appPageManifest.clientModules)
+  .flatMap((entry) => entry.chunks)
+  .filter((entry) => typeof entry === "string" && entry.endsWith(".js")))];
+assert(initialPageFiles.length > 0, "Next app-page client chunks are explicit");
 assert(deferredFiles.every((file) => !initialPageFiles.includes(file)));
 
 const initialPageSource = (

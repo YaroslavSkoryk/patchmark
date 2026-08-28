@@ -37,6 +37,8 @@ declare global {
 
 const MAX_RECORDED_OPERATIONS = 200;
 let operationCounter = 0;
+let pendingDomSyncOperation: DocumentSwitchPerformanceOperation | null = null;
+let domSyncScheduled = false;
 
 export function startDocumentSwitchPerformanceOperation(
   metadata: DocumentSwitchPerformanceMetadata
@@ -159,6 +161,7 @@ function getDocumentSwitchPerformanceApi(): DocumentSwitchPerformanceApi | null 
     window.__PATCHMARK_DOCUMENT_SWITCH_PERFORMANCE__ = {
       clear() {
         records.splice(0, records.length);
+        pendingDomSyncOperation = null;
         if (typeof document !== "undefined") {
           document.documentElement.removeAttribute(
             "data-patchmark-switch-performance"
@@ -188,10 +191,23 @@ function syncDocumentSwitchPerformanceDom(
   if (typeof document === "undefined") {
     return;
   }
-  document.documentElement.setAttribute(
-    "data-patchmark-switch-performance",
-    JSON.stringify(operation)
-  );
+  pendingDomSyncOperation = operation;
+  if (domSyncScheduled) {
+    return;
+  }
+  domSyncScheduled = true;
+  queueMicrotask(() => {
+    domSyncScheduled = false;
+    const pendingOperation = pendingDomSyncOperation;
+    pendingDomSyncOperation = null;
+    if (!pendingOperation || typeof document === "undefined") {
+      return;
+    }
+    document.documentElement.setAttribute(
+      "data-patchmark-switch-performance",
+      JSON.stringify(pendingOperation)
+    );
+  });
 }
 
 function isDocumentSwitchPerformanceEnabled(): boolean {

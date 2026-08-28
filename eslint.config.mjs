@@ -1,18 +1,21 @@
-import { FlatCompat } from "@eslint/eslintrc";
-import { dirname } from "node:path";
-import { fileURLToPath } from "node:url";
+import { defineConfig, globalIgnores } from "eslint/config";
+import nextVitals from "eslint-config-next/core-web-vitals";
+import nextTypescript from "eslint-config-next/typescript";
 
-const filename = fileURLToPath(import.meta.url);
-const dirnamePath = dirname(filename);
-const compat = new FlatCompat({
-  baseDirectory: dirnamePath
-});
-
-const eslintConfig = [
+const eslintConfig = defineConfig([
+  ...nextVitals,
+  ...nextTypescript,
   {
-    ignores: [".next/**", "node_modules/**", "next-env.d.ts"]
+    // Next 16's React Hooks 7 flat preset newly enables compiler-oriented
+    // rules that were not part of Patchmark's accepted lint contract. Their
+    // findings span existing state/ref architecture and require a separate,
+    // behavior-qualified refactor rather than a dependency-security migration.
+    rules: {
+      "react-hooks/refs": "off",
+      "react-hooks/set-state-in-effect": "off"
+    }
   },
-  ...compat.extends("next/core-web-vitals", "next/typescript")
-];
+  globalIgnores([".next/**", "node_modules/**", "next-env.d.ts"])
+]);
 
 export default eslintConfig;

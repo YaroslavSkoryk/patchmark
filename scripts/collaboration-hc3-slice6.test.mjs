@@ -94,11 +94,16 @@ const frozenHashes = {
   "collaboration-hc2-slice5-v1.json": "6cbb2877156de12b54d976e100cb94de0b1f85d1f4b20f8c8c7284df0a4d4e89",
   "collaboration-hc2-slice6-v2.json": "4400b16f1de78f3ae49f04844f85c7278dbc28291dd772bdfad1c6ea0b69eb4c",
   "collaboration-hc2-slice7-v3.json": "98450f518c9827ec0e310aa2a7a66d99fb4ba5c33f0b0aa3fddb75b4f95a5df1",
+  "collaboration-hc2-slice8-qualification-template.json": "735fdbb8df9b93367d5907592e78e7e3e00050740da312e3b6227bc260f5dc46",
   "collaboration-hc3-slice1-v1.json": "fd4aaa38af60d0f12054c475a3ce86b71ad9bc85aa4f1f2f9b24f085f3c370fe",
   "collaboration-hc3-slice3-v1.json": "6defdcb1e2578fa3aa0767c9a009d994046191006db715b7df46fda84221ae8a",
-  "collaboration-hc3-slice4-v1.json": "ec123fb2dce2eedc4e55f0e82db5ff6d0f18896352ff51ebbafd606f88475ca6"
+  "collaboration-hc3-slice4-v1.json": "ec123fb2dce2eedc4e55f0e82db5ff6d0f18896352ff51ebbafd606f88475ca6",
+  "collaboration-hc3-slice6-qualification-template.json": "d2b2bea2e3ba746e4dbd3ed7d16aee072b37b6fcda633dbaa3d5fdda3bb4c2c6",
+  "collaboration-review-response-evidence-v1.json": "7b9dc41a3407549167286aaed20f32c967db5878f2705d219627b08d4ba30e67",
+  "collaboration-roots-v1.json": "42189802cee24766e73e974fd09b6e1bd9f612c90da184399a82bea91a1e211e"
 };
 for (const [name, digest] of Object.entries(frozenHashes)) equal(sha256Bytes(readFileSync(join(root, "scripts/fixtures", name))), digest, `${name} remains byte-identical`);
+equal(sha256Bytes(readFileSync(join(root, "scripts/fixtures/collaboration-hc3-slice7a-editor-corpus-v1.json"))), "4a9afec6f85d57bfe433a9166511ed8a96683c5b0c95252855c6832a8e278e2c", "the Slice 7A test-only editor corpus remains byte-identical");
 
 process.stdout.write(`${JSON.stringify({
   assertions,

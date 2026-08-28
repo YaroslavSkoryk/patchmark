@@ -43,8 +43,15 @@ the completed HC-1/HC-2 local-first foundation.
   policy, authority-driver and evidence bytes so later changes invalidate stale
   conclusions.
 - `dependency-disposition-slice6.md` records the fresh full/production audits,
-  exact MDXEditor/js-yaml and Next/PostCSS paths, major-migration evidence and
-  unresolved release blockers.
+  historical MDXEditor/js-yaml and Next/PostCSS blockers, and their qualified
+  Slice 7A closure.
+- `dependency-migration-slice7a.md` records the ordered editor and framework
+  family migrations, compatibility adaptations, security corpus, Webpack
+  decision, document-switch performance closure, validation and byte-bound
+  evidence regeneration.
+- `document-switch-performance-slice7a.json` freezes the matched baseline,
+  unoptimized and optimized directional distributions, exact benchmark
+  identity, phase/resource evidence and raw-result digests.
 - `qr-disposition-slice6.md` records the pinned QR package, source-commit and
   reproducible-unpacked-content review and its `accept_pinned_dependency`
   decision.
@@ -65,5 +72,6 @@ the completed HC-1/HC-2 local-first foundation.
 These records and contracts do not enable production collaboration or add a
 cloud transport. Slice 6 remains `conditional`: evidence work may continue, but
 production collaboration remains unconditionally disabled and unreachable.
-External engines/devices/review, privacy approval, dependency disposition and
-support ownership must close before a separately authorized enablement design.
+External engines/devices/review, privacy approval and support ownership must
+close before a separately authorized enablement design. Slice 7A closes the two
+dependency blockers only; it does not weaken the remaining decision.

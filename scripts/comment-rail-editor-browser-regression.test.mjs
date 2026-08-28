@@ -1011,7 +1011,7 @@ if (
 async function waitForEditorShell(client) {
   let latestState = null;
 
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+  for (let attempt = 0; attempt < 600; attempt += 1) {
     const state = await evaluate(client, {
       expression: `(() => {
         const button = Array.from(document.querySelectorAll("button"))

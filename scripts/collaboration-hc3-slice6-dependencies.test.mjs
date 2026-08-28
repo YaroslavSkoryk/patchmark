@@ -35,19 +35,32 @@ const productionImports = [
 check(productionImports.includes('from "qr"') && productionImports.includes('from "qr/decode.js"'), "Patchmark uses the raw QR encoder and decoder");
 check(!productionImports.includes('from "qr/dom.js"'), "Patchmark never imports QR DOM, SVG, GIF, or string rendering helpers");
 
-equal(lock.packages["node_modules/@mdxeditor/editor"].version, "3.55.0", "MDXEditor remains on the reviewed v3 baseline");
-equal(lock.packages["node_modules/js-yaml"].version, "4.1.1", "the product-reachable js-yaml advisory path remains explicit");
-equal(lock.packages["node_modules/next"].version, "15.5.24", "Next remains on the reviewed v15 baseline");
-equal(lock.packages["node_modules/postcss"].version, "8.4.31", "the build-time PostCSS advisory path remains explicit");
-equal(lock.packages["node_modules/@mdxeditor/editor"].dependencies["js-yaml"], "4.1.1", "the exact MDXEditor to js-yaml path is recorded");
-equal(lock.packages["node_modules/next"].dependencies.postcss, "8.4.31", "the exact Next to PostCSS path is recorded");
+equal(packageJson.dependencies["@mdxeditor/editor"], "4.2.2", "MDXEditor is exactly pinned to the qualified v4 release");
+equal(packageJson.dependencies.lexical, "0.48.0", "the direct Lexical command provider is exactly pinned to the editor family");
+equal(packageJson.dependencies.next, "16.3.3", "Next is exactly pinned to the qualified v16 release");
+equal(packageJson.devDependencies["eslint-config-next"], "16.3.3", "the Next lint configuration follows the framework family");
+equal(lock.packages["node_modules/@mdxeditor/editor"].version, "4.2.2", "MDXEditor migrated to the qualified v4 release");
+equal(lock.packages["node_modules/js-yaml"].version, "4.3.1", "the product-reachable js-yaml path is patched");
+equal(lock.packages["node_modules/lexical"].version, "0.48.0", "the direct Lexical command provider matches MDXEditor");
+equal(lock.packages["node_modules/next"].version, "16.3.3", "Next migrated to the qualified v16 release");
+equal(lock.packages["node_modules/postcss"].version, "8.5.23", "the Next build-time PostCSS path is patched");
+equal(lock.packages["node_modules/@mdxeditor/editor"].dependencies["js-yaml"], "4.3.1", "the exact MDXEditor to js-yaml path is recorded");
+equal(lock.packages["node_modules/next"].dependencies.postcss, "8.5.23", "the exact Next to PostCSS path is recorded");
+const lexicalVersions = new Set(Object.entries(lock.packages)
+  .filter(([path]) => path === "node_modules/lexical" || path.includes("/node_modules/lexical"))
+  .map(([, entry]) => entry.version));
+equal([...lexicalVersions], ["0.48.0"], "the lock contains one coherent Lexical family");
+check(!Object.keys(lock.packages).some((path) => path.includes("sandpack")), "the removed Sandpack family is absent from the lock");
+check(!Object.keys(lock.packages).some((path) => /node_modules\/(?:js-yaml|postcss)$/.test(path) && ["4.1.1", "8.4.31"].includes(lock.packages[path].version)), "the vulnerable js-yaml and PostCSS baselines are absent");
+equal(packageJson.scripts.dev, "next dev --webpack", "development uses the same reviewed Webpack topology as qualification");
+equal(packageJson.scripts.build, "next build --webpack", "production builds opt into the reviewed Webpack topology explicitly");
 
 const disposition = readFileSync(join(root, "docs/hc3/dependency-disposition-slice6.md"), "utf8");
 for (const advisory of ["GHSA-h67p-54hq-rp68", "GHSA-52cp-r559-cp3m", "GHSA-5p4m-2wfm-xmqj", "GHSA-qx2v-qp2m-jg93", "GHSA-6g55-p6wh-862q", "GHSA-fxqj-rqcc-2cmp", "GHSA-r28c-9q8g-f849"]) {
   check(disposition.includes(advisory), `${advisory} has an explicit disposition`);
 }
-check(disposition.includes("@mdxeditor/editor@4.2.2") && disposition.includes("next@16.3.3"), "both registry-reported major fixes are documented");
-check(disposition.includes("No migration was applied") && disposition.includes("release blocker"), "unresolved advisories are neither suppressed nor misclassified");
+check(disposition.includes("@mdxeditor/editor@4.2.2") && disposition.includes("next@16.3.3"), "both qualified major fixes are documented");
+check(disposition.includes("Slice 7A") && disposition.includes("zero vulnerable package records"), "the completed migration and clean final audits are explicit");
 check(!/npm\s+audit\s+fix\s+--force|npm_config_audit\s*=\s*false|npm\s+audit[^&]*\|\|\s*true/.test(Object.values(packageJson.scripts).join("\n")), "package scripts contain no audit suppression or forced repair");
 
 const qrDisposition = readFileSync(join(root, "docs/hc3/qr-disposition-slice6.md"), "utf8");
@@ -66,8 +79,8 @@ process.stdout.write(`${JSON.stringify({
   assertions,
   node: process.version,
   qr: { version: qrManifest.version, files: qrFiles(qrRoot).length, installed_bytes: directorySize(qrRoot), encoder_sha256: rootImportSha256, decoder_sha256: decoderSha256, disposition: "accept_pinned_dependency" },
-  residual_packages: ["@mdxeditor/editor@3.55.0", "js-yaml@4.1.1", "next@15.5.24", "postcss@8.4.31"],
-  dependency_migration: "none",
+  residual_packages: [],
+  dependency_migration: "hc3_slice7a_closed",
   status: "ok"
 }, null, 2)}\n`);
 

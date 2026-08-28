@@ -1433,6 +1433,14 @@ button {
   cursor: text;
 }
 
+.patchmark-deferred-code-block {
+  contain: layout paint;
+}
+
+.patchmark-deferred-table {
+  contain: layout paint;
+}
+
 .patchmark-deferred-code-block:focus-visible,
 .patchmark-deferred-table:focus-visible {
   outline: 2px solid var(--control-focus-ring);
@@ -1446,14 +1454,26 @@ button {
   background: var(--surface-muted);
 }
 
-.patchmark-deferred-code-block pre {
-  margin: 0;
+.patchmark-deferred-code-block > code {
+  display: block;
   padding: 16px;
   overflow-x: auto;
   white-space: pre-wrap;
 }
 
-.patchmark-deferred-code-language {
+.patchmark-deferred-semantic-code-block {
+  display: block;
+  padding: 0 16px 16px;
+  overflow-x: auto;
+  white-space: pre-wrap;
+}
+
+.patchmark-deferred-semantic-code-block::before {
+  margin: 0 -16px 16px;
+}
+
+.patchmark-deferred-code-block::before {
+  content: attr(data-language-label);
   display: block;
   padding: 6px 12px;
   border-bottom: 1px solid var(--border);
