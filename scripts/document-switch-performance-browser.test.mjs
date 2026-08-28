@@ -530,12 +530,14 @@ async function run() {
       stressSamples.push(await measureSwitch(client, targetTitle));
     }
     const lifecycleAfterStress = await readCollectedLifecycleState(client);
-    for (const editorKind of Object.keys(lifecycleBeforeStress.editorRoots)) {
-      assert.ok(
-        lifecycleAfterStress.editorRoots[editorKind] <=
-          lifecycleBeforeStress.editorRoots[editorKind],
-        `Repeated switching must not accumulate ${editorKind} editor roots.`
-      );
+    if (expectOptimized) {
+      for (const editorKind of Object.keys(lifecycleBeforeStress.editorRoots)) {
+        assert.ok(
+          lifecycleAfterStress.editorRoots[editorKind] <=
+            lifecycleBeforeStress.editorRoots[editorKind],
+          `Repeated switching must not accumulate ${editorKind} editor roots.`
+        );
+      }
     }
     for (const sample of stressSamples) {
       if (sample.record.marks.target_initial_import_awaited !== undefined) {

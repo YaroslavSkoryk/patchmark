@@ -52,7 +52,7 @@
     },
     {
       "path": "components/mdx-editor-client.tsx",
-      "sha256": "58b26370234b16e6d823974a82514d2fc288d50c7b0a44a9e57ee54284c9b1f2",
+      "sha256": "08c1d90508c8532ca94b4cc74e9fefe8b64ca377c3fd4dcb704c6e294ebf88b9",
       "category": "covered_source"
     },
     {
@@ -77,7 +77,7 @@
     },
     {
       "path": "docs/hc3/dependency-migration-slice7a.md",
-      "sha256": "1e489843839fc63785ca733c281f907ddf21f0484a0adb51807e41c5ce27820f",
+      "sha256": "0146261fb36f5306158589efe2d7adb2684760c7dfd8bde1941c650b6da87fa1",
       "category": "covered_source"
     },
     {
@@ -92,7 +92,7 @@
     },
     {
       "path": "docs/hc3/document-switch-performance-slice7a.json",
-      "sha256": "4ba4ebe663a6d6a00fbc6ed33adb2b6aa03054ac0254f8881e2bdcf073b55ffd",
+      "sha256": "ba3a40675edef951a6207099159241ea891913c71f4e464244689b6a81b10b17",
       "category": "covered_source"
     },
     {
@@ -152,7 +152,7 @@
     },
     {
       "path": "docs/hc3/readiness-slice6.json",
-      "sha256": "b2b1f353b86015e675ea75142e08550a89e213ac31ea00f0f63bb5feb7ec2512",
+      "sha256": "2448943e559bfd723ffd00c874bc945c4a048943d90ada387647650a4fb7f1f0",
       "category": "covered_source"
     },
     {
@@ -1497,7 +1497,7 @@
     },
     {
       "path": "scripts/collaboration-hc3-slice7a-regenerate-evidence.mjs",
-      "sha256": "488990a78712cb0fd763dd7e89e7a432d567b736c775eb89522151ac8479b656",
+      "sha256": "3019afeb4ef0bb24dcf8094e7213584bbc86e9d56ceb4cc9f3980ec770abe642",
       "category": "covered_source"
     },
     {
@@ -1566,8 +1566,13 @@
       "category": "covered_source"
     },
     {
+      "path": "scripts/comment-reanchor-browser.test.mjs",
+      "sha256": "3f2743bcac5c1955d213a5a856675defea8661c4ac6b4fcff72ce6f574630d1a",
+      "category": "covered_source"
+    },
+    {
       "path": "scripts/document-switch-performance-browser.test.mjs",
-      "sha256": "07d8dd391f4e96ecf6d37a4df5a9bb61cf997ae88e29f4da4a74bb4a3e8e0206",
+      "sha256": "aea2b072db644087c71150b943aa1922722ec0073ccacd7a60ea9919abd3548e",
       "category": "covered_source"
     },
     {

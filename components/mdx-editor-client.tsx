@@ -344,6 +344,32 @@ export function MdxEditorClient({
   }, [documentReadiness?.switchOperationId, visualMarkdown]);
 
   useLayoutEffect(() => {
+    const content = editorShellRef.current?.querySelector<HTMLElement>(
+      ".patchmark-prose"
+    );
+
+    if (!content) {
+      return;
+    }
+
+    const ownsSelectionOnlySemantics = selectionOnly && !readOnly;
+    if (ownsSelectionOnlySemantics) {
+      content.setAttribute("aria-readonly", "true");
+    } else if (content.getAttribute("contenteditable") === "true") {
+      content.removeAttribute("aria-readonly");
+    }
+
+    return () => {
+      if (
+        ownsSelectionOnlySemantics &&
+        content.getAttribute("contenteditable") === "true"
+      ) {
+        content.removeAttribute("aria-readonly");
+      }
+    };
+  }, [editorInstanceKey, readOnly, selectionOnly]);
+
+  useLayoutEffect(() => {
     const editor = editorRef.current;
     const shell = editorShellRef.current;
     const markdownChanged =

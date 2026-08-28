@@ -101,6 +101,7 @@ let client;
 const runtimeExceptions = [];
 
 try {
+  qualification: {
   const browserWsUrl = await waitForDevToolsUrl(chrome);
   const pageWsUrl = await createPage(browserWsUrl, "about:blank");
   client = await CdpClient.connect(pageWsUrl);
@@ -153,6 +154,19 @@ try {
   await waitForSelector(client, ".reanchor-workspace");
   const workspaceEntry = await measureWorkspace(client);
   await assertFocusedTestId(client, "reanchor-workspace");
+  if (process.env.PATCHMARK_REANCHOR_STATE_DIAGNOSTIC === "1") {
+    console.log(
+      JSON.stringify(
+        {
+          checkpoint: "selection_only_workspace_ready",
+          baselineEntry,
+          workspaceEntry
+        },
+        null,
+        2
+      )
+    );
+  }
   const controlsLatencyMs = Date.now() - controlsStartedAt;
   assert.ok(
     Math.abs(workspaceEntry.scrollY - baselineEntry.scrollY) <= 1,
@@ -169,6 +183,34 @@ try {
     "true",
     "Visual re-anchor must expose selection-only state to assistive technology."
   );
+  assert.equal(workspaceEntry.editorRole, "textbox");
+  assert.equal(workspaceEntry.editorSelectionOnly, true);
+  assert.equal(workspaceEntry.editorBodyAriaBusy, null);
+  assert.equal(workspaceEntry.editorAriaBusy, null);
+  assert.equal(
+    workspaceEntry.editorDocumentKey,
+    workspaceEntry.editorBodyDocumentKey,
+    "Selection-only semantics must belong to the accepted document editor."
+  );
+  assert.equal(workspaceEntry.editorBodySwitching, null);
+  assert.equal(workspaceEntry.focusInEditor, false);
+  if (process.env.PATCHMARK_REANCHOR_FOCUSED_ACCESSIBILITY === "1") {
+    console.log(
+      JSON.stringify(
+        {
+          checkpoint: "selection_only_accessibility_pass",
+          editorAriaReadOnly: workspaceEntry.editorAriaReadOnly,
+          editorContentEditable: workspaceEntry.editorContentEditable,
+          editorDocumentKey: workspaceEntry.editorDocumentKey,
+          editorRole: workspaceEntry.editorRole,
+          editorSelectionOnly: workspaceEntry.editorSelectionOnly
+        },
+        null,
+        2
+      )
+    );
+    break qualification;
+  }
   assert.ok(
     Math.abs(workspaceEntry.editorHeight - baselineEntry.editorHeight) <= 1,
     "Visual re-anchor must not collapse table-heavy editor content."
@@ -695,6 +737,7 @@ try {
       2
     )
   );
+  }
 } finally {
   await client?.close();
   chrome.kill("SIGTERM");
@@ -1111,18 +1154,33 @@ async function waitForWorkspaceViewport(pageClient) {
         const rect = workspace.getBoundingClientRect();
         const style = getComputedStyle(workspace);
         const editor = document.querySelector("[aria-label='editable markdown']");
+        const editorBody = editor?.closest(".editor-body");
+        const editorShell = editor?.closest("[data-editor-document-key]");
         return {
           bottom: rect.bottom,
           activeElementTestId: document.activeElement?.getAttribute("data-testid") ?? null,
           bodyOverflow: document.body.style.overflow,
           candidateCount: workspace.querySelectorAll(".reanchor-candidate-option").length,
           commentsPanelVisible: Boolean(document.querySelector(".comments-panel")),
+          deferredCodeRunCount: editor?.querySelectorAll("[data-deferred-code-run]").length ?? 0,
+          deferredEditorCount: editor?.querySelectorAll(".cm-editor").length ?? 0,
+          editorBodyAriaBusy: editorBody?.getAttribute("aria-busy") ?? null,
+          editorBodyDocumentKey: editorBody?.getAttribute("data-document-key") ?? null,
+          editorBodySwitchPhase: editorBody?.getAttribute("data-document-switch-phase") ?? null,
+          editorBodySwitching: editorBody?.getAttribute("data-document-switching") ?? null,
           editorAriaReadOnly: editor?.getAttribute("aria-readonly"),
+          editorAriaBusy: editor?.getAttribute("aria-busy") ?? null,
           editorContentEditable: editor?.getAttribute("contenteditable"),
+          editorContentFingerprint: editorShell?.getAttribute("data-editor-content-fingerprint") ?? null,
+          editorDocumentKey: editorShell?.getAttribute("data-editor-document-key") ?? null,
           editorHeight: editor?.getBoundingClientRect().height ?? 0,
+          editorRequestGeneration: editorShell?.getAttribute("data-editor-request-generation") ?? null,
+          editorRole: editor?.getAttribute("role") ?? null,
           editorSame:
             window.__patchmarkReanchorEditorNode ===
             editor,
+          editorSelectionOnly: editorShell?.classList.contains("visual-editor-selection-only") ?? false,
+          focusInEditor: Boolean(editor?.contains(document.activeElement)),
           height: rect.height,
           left: rect.left,
           expandedPreviewCount: workspace.querySelectorAll(".reanchor-candidate-preview").length,

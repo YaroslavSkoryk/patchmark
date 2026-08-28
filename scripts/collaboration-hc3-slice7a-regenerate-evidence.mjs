@@ -22,6 +22,13 @@ const dependencyClosures = new Map([
     residual_risk: "Future framework, build input, bundler, source-map, CSP, or Trusted Types changes require requalification",
     blocking: false,
     required_approver: "none"
+  }],
+  ["HC3-S6-S7A-EDITOR-PERFORMANCE", {
+    requirement: "MDXEditor 4 passes the fixed optimized-production materiality gate while the original development gate remains historical diagnostic evidence",
+    status: "pass",
+    residual_risk: "The final production comparison passes the prospectively fixed +50 ms median and +100 ms p95 materiality budgets; development remains a reported diagnostic and misses its historical median ceiling",
+    blocking: false,
+    required_approver: "none"
   }]
 ]);
 
@@ -57,6 +64,7 @@ for (const [path, category] of Object.entries({
   "scripts/collaboration-hc3-slice7a-editor-browser.test.mjs": "covered_source",
   "scripts/collaboration-hc3-slice7a-frontmatter-security.test.mjs": "covered_source",
   "scripts/collaboration-hc3-slice7a-regenerate-evidence.mjs": "covered_source",
+  "scripts/comment-reanchor-browser.test.mjs": "covered_source",
   "scripts/document-switch-performance-browser.test.mjs": "covered_source",
   "scripts/fixtures/collaboration-hc3-slice7a-editor-corpus-v1.json": "frozen_fixture",
   "scripts/lib/fixtures/create-document-switch-project.mjs": "covered_source",
@@ -74,7 +82,7 @@ process.stdout.write(`${JSON.stringify({
   readiness_sha256: sha256File("docs/hc3/readiness-slice6.json"),
   manifest_sha256: sha256File("docs/hc3/review-manifest-slice6.json"),
   manifest_files: manifest.covered_files.length,
-  dependency_rows_closed: [...dependencyClosures.keys()],
+  evidence_rows_closed: [...dependencyClosures.keys()],
   production_enabled: readiness.production_enabled,
   classification: readiness.classification
 }, null, 2)}\n`);

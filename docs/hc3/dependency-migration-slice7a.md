@@ -317,6 +317,91 @@ remains blocked and not ready to commit. The full historical comparison,
 production baseline, diagnostics, distributions, raw hashes, and failed
 decision are frozen in `document-switch-performance-slice7a.json`.
 
+### Accessibility and final production acceptance
+
+The closure pass froze the retained performance implementation and corrected
+one current-only accessibility regression. At the comment re-anchor readiness
+cut, five fresh current profiles all exposed the accepted Lexical textbox
+without `aria-readonly`; five untouched MDXEditor 3 baseline profiles all
+exposed `aria-readonly="true"`. The baseline retained `contenteditable="true"`
+so users can select and copy in Patchmark's selection-only state. The migration
+had replaced the prior owner effect with the MDXEditor 4 translation override
+and accidentally stopped propagating that state to the owned `.patchmark-prose`
+element. A layout effect in `MdxEditorClient` now derives ownership from
+`selectionOnly && !readOnly`, sets `aria-readonly="true"` before readiness, and
+removes only its own value during transition or cleanup. It does not change
+Lexical editability, focus, keyboard handling, comments, or document identity.
+Five fresh current profiles passed the focused semantic test after the fix.
+
+The focused comparison also proved the accepted project/document key,
+selection-only state, textbox role, `contenteditable`, both busy boundaries,
+focus ownership, readiness, re-anchor state, deferred-editor state, and switch
+generation at the same semantic point. Current and untouched baseline then
+reached the same strict restored-height failure with identical measured and
+expected values; temporary diagnostic continuation passed the remaining
+re-anchor, reload, export, deep-scroll, no-remount, and mobile cases and was
+removed. The broader responsive suite retains a pre-existing browser-ordering
+flake: fresh current and untouched-baseline profiles both reproduced the same
+Visual highlight assertion, while an additional untouched-baseline run passed.
+No assertion, timeout, coordinate tolerance, or semantic wait was weakened.
+
+The historical development limits remain 449.9 ms median and 619.4 ms p95.
+The final accessibility-qualified development slow direction measured 477.7
+ms median and 602.0 ms p95, so the median still fails by 27.8 ms and the p95
+passes. This result does not revise or erase the earlier sequence: MDXEditor 3
+409.0/519.4 ms; unoptimized MDXEditor 4 819.8/880.9 ms; first pass
+522.4/640.6 ms; second pass 464.4/568.9 ms; comment-projection pass
+457.4/569.8 ms; final accessibility-qualified run 477.7/602.0 ms. Development
+Webpack timing is retained as diagnostic historical evidence, not described as
+a passed release gate.
+
+Before measurement, the release gate was fixed against matched untouched
+MDXEditor 3 optimized-production results: current may be at most 50 ms slower
+at the median and 100 ms slower at p95, with zero correctness failures and no
+resource accumulation. The baseline slow direction measured 238.65/306.2 ms;
+current measured 263.35/300.9 ms. The median difference is +24.70 ms
+(+10.3499%) and p95 difference is -5.30 ms (-1.7309%), passing both margins.
+A deterministic 10,000-resample bootstrap (seed `0x7A202608`) places the
+current-minus-baseline median difference at [16.15, 31.55] ms; acceptance rests
+on the fixed materiality budgets, not a claim of statistical
+indistinguishability. All 24 primary runs completed with zero timeouts, runtime
+errors, identity failures, semantic-readiness failures, stale commits, mixed
+states, premature readiness, or cross-document writes. Current resource probes
+ended with one Lexical root, zero CodeMirror roots, and negative collected-heap
+deltas in all 12 current configurations.
+
+The first 24-run attempt used 20 total alternating warm samples, yielding only
+10 per direction instead of the frozen 20. That objective whole-batch
+configuration error was retained under aggregate SHA-256
+`be02991d8a98139b9e74901fd277bc868ac7a39196f69ef7e4883e11e71e0750`
+and excluded in full before observing an acceptance result. The entire ordered
+24-run sequence was repeated once with 40 alternating samples, four warmups,
+three fresh profiles per checkout/configuration, separate ports, the same
+fixture and boundaries, and Chrome 151.0.7922.174. No individual direction or
+sample was selectively rerun. Exact final distributions, per-run medians, raw
+digests, equal controls, correctness, accessibility matrices, and lifecycle
+evidence are frozen in `document-switch-performance-slice7a.json`.
+
+One baseline preflight also exposed a runner-compatibility error after timing:
+the shared harness applied an MDXEditor 4 deferred-CodeMirror root invariant to
+the untouched MDXEditor 3 checkout. The runner now conditions only that
+MDXEditor 4-specific post-measurement assertion on `expectOptimized`; all
+timing boundaries, samples, fixtures, correctness checks, and current resource
+assertions are unchanged. The retained preflight digest is frozen with the
+final benchmark evidence.
+
+All accepted optimizations remain intact: exact in-progress import awaiting,
+zero redundant target application, document-keyed ownership, generation-bound
+stale-work rejection, shared viewport observation, deferred heavy-editor
+activation, eligible adjacent-code compaction with literal MDAST reconstruction,
+the four-entry preparation LRU, comment-projection coalescing, canonical-anchor
+reuse, qualified layout/paint containment, and exact secondary-settle spatial
+layout. No further performance product change, dependency, protocol, fixture,
+format, identity, authority, or collaboration enablement was introduced. Slice
+7A is ready to commit under the production-focused policy; Slice 6 and the
+overall release remain `conditional` pending Slice 7B's existing external
+platform, physical-device, human-review, support, and approval scope.
+
 ## Evidence invalidation and regeneration
 
 Every dependency, lockfile, adapter, test, documentation and policy byte

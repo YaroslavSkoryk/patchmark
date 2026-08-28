@@ -442,16 +442,202 @@
       "production_equal": ["a34bc7d73c0df3d4ebb763ef6dc9f1ade6828f42a370b73aead40d87711fcd72", "bd38e74c672f9c442d1f4d59fe15e4943b4a67a93f5d02a101143c3b0fde8f42", "ae152adbf698f835334168c5a902a3838388296551af254afe0f64656487f5f5"]
     }
   },
+  "accessibility_final_acceptance": {
+    "classification": "ready_to_commit",
+    "decision": "The current-only aria-readonly regression is resolved, the focused semantic boundary passes five of five fresh current profiles, the fixed optimized-production materiality gate passes, correctness and resource invariants remain clean, and the historical development median miss remains reported honestly as diagnostic evidence.",
+    "accessibility": {
+      "pre_fix_current": ["fail_aria_readonly", "fail_aria_readonly", "fail_aria_readonly", "fail_aria_readonly", "fail_aria_readonly"],
+      "pre_fix_untouched_baseline": ["pass_aria_then_fail_height", "pass_aria_and_full_suite", "pass_aria_then_fail_height", "pass_aria_then_fail_height", "pass_aria_then_fail_height"],
+      "post_fix_current": ["pass", "pass", "pass", "pass", "pass"],
+      "semantic_boundary": {
+        "role": "textbox",
+        "aria_readonly": "true",
+        "contenteditable": "true",
+        "selection_only": true,
+        "editor_aria_busy": null,
+        "body_aria_busy": null,
+        "accepted_document_key": ["project_document", "project-reanchor-fixture", "doc_action"],
+        "switch_in_flight": false,
+        "deferred_editor_in_flight": false,
+        "focus_owner": "workspace"
+      },
+      "root_cause": "The MDXEditor 4 migration replaced the baseline owner effect with a translation override and accidentally removed propagation of Patchmark's selection-only/read-only state to the owned contenteditable Lexical textbox.",
+      "resolution": "MdxEditorClient now uses a layout effect derived from selectionOnly && !readOnly to set aria-readonly=true before readiness, and removes only its owner value on cleanup or state transition. Lexical remains contenteditable for selection and copy.",
+      "following_height_assertion": {
+        "classification": "exact_baseline_equivalent",
+        "baseline_and_current_values": [11140.578125, 11446.515625],
+        "assertion_weakened": false,
+        "temporary_bypass_persisted": false,
+        "remaining_subcases": "pass"
+      },
+      "responsive_suite": "Fresh current and untouched-baseline profiles both reproduced the same pre-existing Visual highlight assertion; an additional untouched-baseline run passed. No current-only responsive or accessibility failure remains."
+    },
+    "governance": {
+      "historical_development_gate": {
+        "median_limit_ms": 449.9,
+        "p95_limit_ms": 619.4,
+        "observed_median_ms": 477.7,
+        "observed_p95_ms": 602,
+        "median_pass": false,
+        "p95_pass": true,
+        "median_miss_ms": 27.8,
+        "role": "diagnostic historical criterion; not the primary product-release gate",
+        "criteria_revised_after_observation": false
+      },
+      "performance_sequence_slow_direction_median_p95_ms": {
+        "mdxeditor3_baseline": [409, 519.4],
+        "unoptimized_mdxeditor4": [819.8, 880.9],
+        "first_optimization_pass": [522.4, 640.6],
+        "second_optimization_pass": [464.4, 568.9],
+        "comment_projection_pass": [457.4, 569.8],
+        "final_accessibility_qualified": [477.7, 602]
+      },
+      "production_gate": {
+        "median_maximum_regression_ms": 50,
+        "p95_maximum_regression_ms": 100,
+        "frozen_before_measurement": true,
+        "median_pass": true,
+        "p95_pass": true,
+        "correctness_pass": true,
+        "resource_lifecycle_pass": true
+      }
+    },
+    "final_benchmark": {
+      "browser": "Chrome/151.0.7922.174",
+      "baseline_commit": "1f4b3049717b4e9faf55a1a2c9541a9e284df58a",
+      "baseline_uses_own_lockfile_and_dependencies": true,
+      "server_modes": ["development-webpack", "production-webpack"],
+      "fixture_seed_and_boundaries_unchanged": true,
+      "fresh_profiles_per_configuration": 3,
+      "warmups_per_run": 4,
+      "measured_samples_per_direction_per_run": 20,
+      "excluded_valid_samples": 0,
+      "listener_observer_interception": false,
+      "run_order": [
+        "baseline development realistic 1-3",
+        "current development realistic 1-3",
+        "baseline development equal-control 1-3",
+        "current development equal-control 1-3",
+        "baseline production realistic 1-3",
+        "current production realistic 1-3",
+        "baseline production equal-control 1-3",
+        "current production equal-control 1-3"
+      ],
+      "invalidated_whole_batch": {
+        "reason": "PATCHMARK_SWITCH_SAMPLES was 20 total alternating samples, yielding 10 instead of 20 samples per direction",
+        "outputs": 24,
+        "aggregate_manifest_sha256": "be02991d8a98139b9e74901fd277bc868ac7a39196f69ef7e4883e11e71e0750",
+        "decision": "Retained as invalid evidence and replaced by one complete ordered 24-run sequence before acceptance analysis; no direction or sample was selectively rerun."
+      },
+      "baseline_harness_compatibility_correction": {
+        "reason": "The shared Slice 7A runner initially applied an MDXEditor 4 deferred-CodeMirror root invariant to the untouched MDXEditor 3 checkout after timing completed.",
+        "change": "Only that MDXEditor 4-specific post-measurement assertion is conditional on expectOptimized; every timing boundary, fixture, sample, correctness invariant, and current resource assertion is unchanged.",
+        "preflight_sha256": "ed6fc5a3b7b764f3971035cbefe95fc3479d4d4ffef27ff435987b98bdb06d77"
+      }
+    },
+    "final_development_distributions_ms": {
+      "baseline": {
+        "cold": { "count": 3, "min": 320, "median": 336.6, "mean": 926.6, "p75": 2123.2, "p90": 2123.2, "p95": 2123.2, "max": 2123.2, "mad": 16.6, "per_run_medians": [336.6, 2123.2, 320] },
+        "warm_first_to_second": { "count": 60, "min": 267.7, "median": 295.9, "mean": 320.4033, "p75": 365.9, "p90": 392.3, "p95": 403.9, "max": 429.5, "mad": 19.6, "per_run_medians": [302.35, 295.1, 301.8] },
+        "warm_second_to_first": { "count": 60, "min": 306.7, "median": 356.35, "mean": 371.945, "p75": 412.2, "p90": 436.3, "p95": 462, "max": 571.9, "mad": 35.6, "per_run_medians": [347.25, 353.95, 363.4] },
+        "stress_first_to_second": { "count": 60, "min": 97.9, "median": 140.5, "mean": 152.91, "p75": 178.3, "p90": 204.3, "p95": 214.4, "max": 246, "mad": 19.65, "per_run_medians": [143.05, 170, 121.55] },
+        "stress_second_to_first": { "count": 60, "min": 386.3, "median": 562.55, "mean": 562.9733, "p75": 627.9, "p90": 679.6, "p95": 707.2, "max": 874.7, "mad": 69.3, "per_run_medians": [626.45, 587.95, 460.3] }
+      },
+      "current": {
+        "cold": { "count": 3, "min": 372.1, "median": 402.3, "mean": 997.8667, "p75": 2219.2, "p90": 2219.2, "p95": 2219.2, "max": 2219.2, "mad": 30.2, "per_run_medians": [372.1, 2219.2, 402.3] },
+        "warm_first_to_second": { "count": 60, "min": 217.1, "median": 249.45, "mean": 268.2033, "p75": 306, "p90": 326.1, "p95": 337.9, "max": 367.3, "mad": 27.2, "per_run_medians": [248.45, 277.55, 239.45] },
+        "warm_second_to_first": { "count": 60, "min": 232.6, "median": 267.25, "mean": 290.6133, "p75": 336.4, "p90": 352.8, "p95": 363.6, "max": 388.2, "mad": 27.15, "per_run_medians": [264.85, 294.6, 261.8] },
+        "stress_first_to_second": { "count": 60, "min": 99.8, "median": 121.75, "mean": 133.25, "p75": 153.6, "p90": 169.3, "p95": 178.5, "max": 212.9, "mad": 12.35, "per_run_medians": [120, 122, 128.25] },
+        "stress_second_to_first": { "count": 60, "min": 383.9, "median": 477.7, "mean": 477.6633, "p75": 502.4, "p90": 570, "p95": 602, "max": 699.8, "mad": 47.6, "per_run_medians": [480.05, 447.2, 504.2] }
+      },
+      "slow_direction_current_minus_baseline": { "median_ms": -84.85, "median_percent": -15.0831, "p95_ms": -105.2, "p95_percent": -14.8756, "bootstrap_median_difference_95_ci_ms": [-132.35, -60.1], "bootstrap_seed": "0x7A202608", "bootstrap_resamples": 10000 }
+    },
+    "final_production_distributions_ms": {
+      "baseline": {
+        "cold": { "count": 3, "min": 248.4, "median": 254.5, "mean": 253.3667, "p75": 257.2, "p90": 257.2, "p95": 257.2, "max": 257.2, "mad": 2.7, "per_run_medians": [257.2, 254.5, 248.4] },
+        "warm_first_to_second": { "count": 60, "min": 203.4, "median": 218.2, "mean": 218.0117, "p75": 221.2, "p90": 228.9, "p95": 229.7, "max": 246.2, "mad": 4.9, "per_run_medians": [213.1, 221.05, 217.7] },
+        "warm_second_to_first": { "count": 60, "min": 229.6, "median": 246.05, "mean": 245.4817, "p75": 248.7, "p90": 255.3, "p95": 255.9, "max": 265.7, "mad": 5.85, "per_run_medians": [239.45, 253.65, 246.1] },
+        "stress_first_to_second": { "count": 60, "min": 78.8, "median": 112.2, "mean": 119.7583, "p75": 119.1, "p90": 126.7, "p95": 131.5, "max": 460.1, "mad": 6.85, "per_run_medians": [105.7, 119.5, 112] },
+        "stress_second_to_first": { "count": 60, "min": 213.6, "median": 238.65, "mean": 248.9383, "p75": 267.2, "p90": 292.5, "p95": 306.2, "max": 326.9, "mad": 17.05, "per_run_medians": [234.55, 279.8, 229.2] }
+      },
+      "current": {
+        "cold": { "count": 3, "min": 225.4, "median": 227.5, "mean": 232.7333, "p75": 245.3, "p90": 245.3, "p95": 245.3, "max": 245.3, "mad": 2.1, "per_run_medians": [227.5, 245.3, 225.4] },
+        "warm_first_to_second": { "count": 60, "min": 175.3, "median": 188.25, "mean": 189.0417, "p75": 190.2, "p90": 196.6, "p95": 198.5, "max": 256.7, "mad": 3.35, "per_run_medians": [188.7, 188.65, 182.55] },
+        "warm_second_to_first": { "count": 60, "min": 188.7, "median": 202.65, "mean": 205.2283, "p75": 211.9, "p90": 219.6, "p95": 220.4, "max": 227.6, "mad": 7.75, "per_run_medians": [202.95, 202.05, 201.2] },
+        "stress_first_to_second": { "count": 60, "min": 81.1, "median": 107.15, "mean": 109.5917, "p75": 112.5, "p90": 123.3, "p95": 137.7, "max": 169.3, "mad": 5, "per_run_medians": [105.1, 111.15, 107.15] },
+        "stress_second_to_first": { "count": 60, "min": 245.4, "median": 263.35, "mean": 269.0517, "p75": 276.2, "p90": 293.8, "p95": 300.9, "max": 371.3, "mad": 10.25, "per_run_medians": [261.4, 253.25, 286.25] }
+      },
+      "slow_direction_current_minus_baseline": { "median_ms": 24.7, "median_percent": 10.3499, "p95_ms": -5.3, "p95_percent": -1.7309, "bootstrap_median_difference_95_ci_ms": [16.15, 31.55], "bootstrap_seed": "0x7A202608", "bootstrap_resamples": 10000, "statistically_indistinguishable_claimed": false }
+    },
+    "final_equal_control_distributions_ms": {
+      "baseline_development": {
+        "warm_first_to_second": { "count": 60, "min": 314.4, "median": 381.7, "mean": 399.8633, "p75": 447.3, "p90": 497.2, "p95": 548.7, "max": 606.7, "mad": 52.6, "per_run_medians": [375.3, 395.7, 388.05] },
+        "warm_second_to_first": { "count": 60, "min": 313.1, "median": 371.1, "mean": 382.1567, "p75": 418.8, "p90": 462.5, "p95": 473.9, "max": 531.9, "mad": 43.25, "per_run_medians": [336.55, 399.75, 364.5] },
+        "stress_first_to_second": { "count": 60, "min": 104.3, "median": 137.4, "mean": 145.6383, "p75": 161.8, "p90": 193.8, "p95": 205, "max": 235.8, "mad": 15.75, "per_run_medians": [138.1, 133.1, 134.15] },
+        "stress_second_to_first": { "count": 60, "min": 385.2, "median": 456.65, "mean": 460.615, "p75": 499.9, "p90": 516.7, "p95": 530.6, "max": 568.3, "mad": 46.1, "per_run_medians": [488.7, 424.85, 450.9] }
+      },
+      "current_development": {
+        "warm_first_to_second": { "count": 60, "min": 233.9, "median": 261.5, "mean": 292.7817, "p75": 343.9, "p90": 361.5, "p95": 366.9, "max": 375.4, "mad": 18.85, "per_run_medians": [283.3, 251.95, 260.1] },
+        "warm_second_to_first": { "count": 60, "min": 238.6, "median": 278.65, "mean": 294.9133, "p75": 331.9, "p90": 356.3, "p95": 366.5, "max": 369.6, "mad": 33.95, "per_run_medians": [278.75, 262.75, 316.05] },
+        "stress_first_to_second": { "count": 60, "min": 107.3, "median": 124.4, "mean": 141.7633, "p75": 173.6, "p90": 191.3, "p95": 195, "max": 246.1, "mad": 13.25, "per_run_medians": [121.7, 123.45, 127.95] },
+        "stress_second_to_first": { "count": 60, "min": 391.3, "median": 477.85, "mean": 478.3333, "p75": 511.4, "p90": 565.4, "p95": 586.4, "max": 656.5, "mad": 47.9, "per_run_medians": [493.95, 484.65, 454.5] }
+      },
+      "baseline_production": {
+        "warm_first_to_second": { "count": 60, "min": 245.4, "median": 260.45, "mean": 260.1183, "p75": 264.4, "p90": 270.9, "p95": 274.4, "max": 298.3, "mad": 5.7, "per_run_medians": [261.3, 261.5, 254.75] },
+        "warm_second_to_first": { "count": 60, "min": 231.6, "median": 251.3, "mean": 252.2983, "p75": 256, "p90": 263.6, "p95": 264.4, "max": 314, "mad": 4.7, "per_run_medians": [247.2, 254.05, 253.25] },
+        "stress_first_to_second": { "count": 60, "min": 95.4, "median": 120, "mean": 120.0817, "p75": 127.3, "p90": 133.9, "p95": 136.7, "max": 170.6, "mad": 6.9, "per_run_medians": [121.05, 113.6, 122.4] },
+        "stress_second_to_first": { "count": 60, "min": 213.7, "median": 239.35, "mean": 249.2017, "p75": 264.4, "p90": 282.8, "p95": 299.3, "max": 317.6, "mad": 13.6, "per_run_medians": [239.05, 239, 256] }
+      },
+      "current_production": {
+        "warm_first_to_second": { "count": 60, "min": 187.7, "median": 205, "mean": 205.28, "p75": 209.6, "p90": 215.4, "p95": 216.9, "max": 231.7, "mad": 5.95, "per_run_medians": [206.35, 202.8, 205.85] },
+        "warm_second_to_first": { "count": 60, "min": 190.7, "median": 202.75, "mean": 203.795, "p75": 207.6, "p90": 215.2, "p95": 217.6, "max": 228.2, "mad": 5.9, "per_run_medians": [206.85, 200.8, 199.45] },
+        "stress_first_to_second": { "count": 60, "min": 89, "median": 111.65, "mean": 111.415, "p75": 119.3, "p90": 122.1, "p95": 134.3, "max": 156.7, "mad": 9.15, "per_run_medians": [115.1, 103.7, 111.7] },
+        "stress_second_to_first": { "count": 60, "min": 244.3, "median": 261.3, "mean": 263.7383, "p75": 268.4, "p90": 274.3, "p95": 287, "max": 310.6, "mad": 5.8, "per_run_medians": [260.05, 256.4, 268.1] }
+      }
+    },
+    "correctness": {
+      "runs": 24,
+      "timeouts": 0,
+      "runtime_errors": 0,
+      "identity_failures": 0,
+      "semantic_readiness_failures": 0,
+      "stale_generation_failures": 0,
+      "mixed_visible_states": 0,
+      "premature_readiness": 0,
+      "cross_document_writes": 0,
+      "redundant_target_applications": 0,
+      "source_bytes_changed_on_open_or_noop": false
+    },
+    "resources": {
+      "current_development_realistic_collected_heap_delta_bytes": [-1405124, -3643412, -2584924],
+      "current_development_equal_collected_heap_delta_bytes": [-1216496, -1768700, -1609944],
+      "current_production_realistic_collected_heap_delta_bytes": [-4224784, -4511252, -4339300],
+      "current_production_equal_collected_heap_delta_bytes": [-4371468, -4100976, -4106672],
+      "editor_roots_after_each_current_run": { "code_mirror": 0, "lexical": 1, "visual_shell": 1 },
+      "post_gc_accumulation": false
+    },
+    "raw_evidence_sha256": {
+      "baseline_development_equal": ["ff9108a4fbd6ec71315af1539ccec598371eec769d7d6886f40bcbdcc645d807", "9d1d795419896fc090cd17fd23092aaf251b46c9f35180ac37cdd8e746105caa", "55d8714f089d4e898b170e6cacdde4ddfb0a37a83d6635188b2447286b87db60"],
+      "baseline_development_realistic": ["2ed36fbceca6d002e3d2545b05e05617efed702ab721d0d7eef55a5764889be6", "dcbdb4e0f7d9e48b81a1b83dbdc7a2b83ec5d710c03017b37876cb37d267a19b", "16b3aeb5ba9ff293b309da26c761f81cae83d9286208d8d46a10b55e0c85f5af"],
+      "baseline_production_equal": ["781d55e0b6bb2d486e72c30dfeab78a9272ff7fab4211180c21dfc3131861856", "6832696f18ca1bc48601df357f3a1f60e3027813cf0c593b258e5af7b4690a7f", "7fb5cd3bc6edceafbea99a40470132ebcc75aa29f757cb0d7687182600e720ca"],
+      "baseline_production_realistic": ["a63c3fe8ac9cbe601b4944b176da0462a15119ada838b14f2fd88b70f8d4fd81", "f71b8d4f4d7681df47e3dcb09113ea7bf815c9ef990d14617ab4feccea3c37e3", "bd82fe828d87e4d3def66618bb9985b0b2c2585e6b3e34a30dc35d2c1ae8e007"],
+      "current_development_equal": ["a0b3db53664d5dc413f98e067192c38365b524abdb35c0e17b52143e2c4feae8", "1e1c235e36a28d7168644bf0bf523b10702536009e33673ccabf443b06ef4b0a", "ef5eafc23465b7d9b16946a38832f72700fbdc7c55ec0cc19dcd7391abb0774c"],
+      "current_development_realistic": ["5f2e19c907dd5ee25b04b3e1dc7959c07f92127f317503b4add6861ce18117ca", "022ef0d0ca8900bc84fbe977771c2c0813ff387732daf711cbf8ff3f6bb5d9bf", "ce589fffb11416bd83c02c4eae7e9e90c949b0d6409b8d8b6e16e6267bc9fef7"],
+      "current_production_equal": ["7e583a90cc75b1d31b1d9fa3f489a19a9f1d8ac0de34a68717e107916b2c5cb8", "6f33f2e5dce7ccb6e373d2e88cbf53509d6acafd3987e7495518702d3c9e64d2", "d6a514f16750e3dd97b9dd51fb31d1753e89fcebecba3bb5be53d12e8d93d5e0"],
+      "current_production_realistic": ["9eda671287c50047ad9fb73941a50e3a84f8b5625882f899d1efd7225fe532f0", "aa655ddd2c5d810fc0338f72abd784a6eab325edcfa5bafc189224f4495b28df", "7155b32cb5c9fa03d4130aab063ebeaf629c1f5eb94b5dfe9b32143656a58978"]
+    }
+  },
   "source_sha256": {
     "app/globals.css": "74e1bae829bec6d447808547d9485664350fddad50bd8c36ccba040228ed8ff1",
     "components/deferred-mdx-heavy-editors.tsx": "9f242f8435f0a93bdbed05c8feb4b7a874ce1e23b91c776ca1cdc31ac43d72da",
-    "components/mdx-editor-client.tsx": "58b26370234b16e6d823974a82514d2fc288d50c7b0a44a9e57ee54284c9b1f2",
+    "components/mdx-editor-client.tsx": "08c1d90508c8532ca94b4cc74e9fefe8b64ca377c3fd4dcb704c6e294ebf88b9",
     "components/comments-panel.tsx": "edbc8f82197e48b6764c8ec1d08f0a7a85d2f375e69103d51d2b0a179d50176c",
     "components/document-editor.tsx": "693cd94bd5ed5f67ef19e4aae040c96354910c47886e3f1de029b30487261aae",
     "lib/performance/document-switch-performance.ts": "5373a2ab6165e8d6c8bda7ba6dd0658cadbc971a48652972f914e5ee683c760d",
     "scripts/collaboration-hc3-slice7a-editor-browser.test.mjs": "527539e64fa0ebde736e7bedd101cdf08f2ec084e7affb3d3a15917ddf0fe0ad",
-    "scripts/collaboration-hc3-slice7a-regenerate-evidence.mjs": "488990a78712cb0fd763dd7e89e7a432d567b736c775eb89522151ac8479b656",
-    "scripts/document-switch-performance-browser.test.mjs": "07d8dd391f4e96ecf6d37a4df5a9bb61cf997ae88e29f4da4a74bb4a3e8e0206",
+    "scripts/collaboration-hc3-slice7a-regenerate-evidence.mjs": "3019afeb4ef0bb24dcf8094e7213584bbc86e9d56ceb4cc9f3980ec770abe642",
+    "scripts/comment-reanchor-browser.test.mjs": "3f2743bcac5c1955d213a5a856675defea8661c4ac6b4fcff72ce6f574630d1a",
+    "scripts/document-switch-performance-browser.test.mjs": "aea2b072db644087c71150b943aa1922722ec0073ccacd7a60ea9919abd3548e",
     "scripts/lib/fixtures/create-document-switch-project.mjs": "4584a48a3a7e16d2dbce4b0d60ff3b14c85a337ef0db81029056519f1991d522",
     "scripts/responsive-accessibility-foundation-browser.test.mjs": "45b9de1e35882575f3bb6b45ded73c27648ee5bd9364c4b040fdd195da183017",
     "package.json": "d3de5deda28ef13377b4aee1876520109624f69592f84199e9b201ce111b61f4",
