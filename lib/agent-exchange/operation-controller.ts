@@ -38,6 +38,9 @@ export type AgentExchangeOperation<TResult> = Readonly<{
   copy_manual_fallback_bytes(): Uint8Array;
   execute(): Promise<TResult>;
   phase(): AgentExchangeOperationPhase;
+  subscribe(
+    listener: (phase: AgentExchangeOperationPhase) => void
+  ): () => void;
 }>;
 
 type InvalidatedReason = "project_changed" | "scope_changed" | "superseded";
@@ -140,6 +143,7 @@ class InternalAgentExchangeOperation<TResult>
   #importResponse: AgentExchangeResponseImporter<TResult>;
   #invalidatedReason: InvalidatedReason | null = null;
   #isOwned: (candidate: InternalAgentExchangeOperation<TResult>) => boolean;
+  #listeners = new Set<(phase: AgentExchangeOperationPhase) => void>();
   #onSettled: (candidate: InternalAgentExchangeOperation<TResult>) => void;
   #phase: AgentExchangeOperationPhase = "prepared";
   #prepared: PreparedAgentExchange;
@@ -186,7 +190,7 @@ class InternalAgentExchangeOperation<TResult>
 
   cancel(): void {
     if (isTerminal(this.#phase)) return;
-    this.#phase = "cancelled";
+    this.#setPhase("cancelled");
     this.#abortController.abort();
   }
 
@@ -202,7 +206,7 @@ class InternalAgentExchangeOperation<TResult>
   invalidate(reason: InvalidatedReason): void {
     if (isTerminal(this.#phase)) return;
     this.#invalidatedReason = reason;
-    this.#phase = "invalidated";
+    this.#setPhase("invalidated");
     this.#abortController.abort();
   }
 
@@ -210,10 +214,18 @@ class InternalAgentExchangeOperation<TResult>
     return this.#phase;
   }
 
+  subscribe(
+    listener: (phase: AgentExchangeOperationPhase) => void
+  ): () => void {
+    this.#listeners.add(listener);
+    listener(this.#phase);
+    return () => this.#listeners.delete(listener);
+  }
+
   async #run(): Promise<TResult> {
     try {
       this.#assertEligible();
-      this.#phase = "checking_availability";
+      this.#setPhase("checking_availability");
       let availability;
       try {
         availability = await this.#connector.checkAvailability({
@@ -228,21 +240,23 @@ class InternalAgentExchangeOperation<TResult>
       }
       this.#assertEligible();
       if (availability.status !== "available") {
-        this.#phase = "unavailable";
+        this.#setPhase("unavailable");
         throw new AgentExchangeOperationError(
           "connector_unavailable",
           "The Agent Exchange connector is unavailable."
         );
       }
 
-      this.#phase = "submitting";
+      this.#setPhase("submitting");
       let response: AgentExchangeConnectorResponse;
       try {
-        response = await this.#connector.submit({
+        const responsePromise = this.#connector.submit({
           binding: this.binding,
           request_bytes: this.#prepared.copy_request_bytes(),
           signal: this.#abortController.signal
         });
+        this.#setPhase("waiting");
+        response = await responsePromise;
       } catch {
         this.#assertEligible();
         throw new AgentExchangeOperationError(
@@ -255,17 +269,17 @@ class InternalAgentExchangeOperation<TResult>
       validateResponseBinding(this.binding, response, responseBytes);
       this.#assertEligible();
 
-      this.#phase = "importing";
+      this.#setPhase("importing");
       const imported = await this.#importResponse({
         binding: this.binding,
         response_bytes: Uint8Array.from(responseBytes),
         validate_before_commit: () => this.#assertEligible()
       });
       this.#assertEligible();
-      this.#phase = "completed";
+      this.#setPhase("completed");
       return imported;
     } catch (error) {
-      if (!isTerminal(this.#phase)) this.#phase = "failed";
+      if (!isTerminal(this.#phase)) this.#setPhase("failed");
       throw error;
     } finally {
       try {
@@ -292,6 +306,18 @@ class InternalAgentExchangeOperation<TResult>
         "operation_invalidated",
         "The Agent Exchange operation no longer owns the active project scope."
       );
+    }
+  }
+
+  #setPhase(phase: AgentExchangeOperationPhase): void {
+    if (this.#phase === phase) return;
+    this.#phase = phase;
+    for (const listener of this.#listeners) {
+      try {
+        listener(phase);
+      } catch {
+        // Product observation cannot change transport/import authority.
+      }
     }
   }
 }

@@ -100,6 +100,7 @@ export type AgentExchangeOperationPhase =
   | "prepared"
   | "checking_availability"
   | "submitting"
+  | "waiting"
   | "importing"
   | "completed"
   | "cancelled"

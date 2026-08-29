@@ -1,0 +1,80 @@
+.surface {
+  align-items: flex-start;
+  background: color-mix(in srgb, var(--surface-raised, Canvas) 92%, transparent);
+  border: 1px solid var(--border-subtle, ButtonBorder);
+  border-radius: 0.75rem;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem 0.75rem;
+  margin-block: 0.75rem;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0.75rem;
+}
+
+.status {
+  flex: 1 1 12rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.status strong,
+.status span {
+  display: block;
+}
+
+.status span {
+  font-size: 0.875rem;
+  margin-top: 0.2rem;
+}
+
+.actions {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  min-width: 0;
+}
+
+.actions button {
+  max-width: 100%;
+  white-space: normal;
+}
+
+.compact {
+  display: inline-flex;
+}
+
+@media (max-width: 480px) {
+  .surface,
+  .actions {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .actions button {
+    width: 100%;
+  }
+}
+
+@media (forced-colors: active) {
+  .surface {
+    border: 1px solid CanvasText;
+  }
+
+  .actions button:focus-visible,
+  .compact button:focus-visible {
+    outline: 2px solid Highlight;
+    outline-offset: 2px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .surface,
+  .actions button,
+  .compact button {
+    scroll-behavior: auto;
+    transition: none;
+  }
+}

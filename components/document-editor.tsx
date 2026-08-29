@@ -118,6 +118,10 @@ import {
 import { MarkdownFileLoader } from "@/components/markdown-file-loader";
 import { LegacyProjectAssemblyDialog } from "@/components/legacy-project-assembly-dialog";
 import { GuidedReviewWizard } from "@/components/guided-review/guided-review-wizard";
+import {
+  getAgentExchangeProductQualificationState,
+  loadAgentExchangeProductQualification
+} from "@/lib/agent-exchange/entrypoint";
 import type {
   DocumentEditorReadinessIdentity,
   DocumentEditorReadyDetail
@@ -334,7 +338,11 @@ import {
   CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES,
   CHATGPT_INTERNAL_CITATION_PROMPT_RULES
 } from "@/lib/imports/patchmark-comment-reply-import";
-import { importProjectCommentReplyResponse } from "@/lib/imports/project-comment-reply-import";
+import {
+  importProjectCommentReplyResponse,
+  importProjectCommentReplyResponseBytes,
+  type ProjectCommentReplyImportResult
+} from "@/lib/imports/project-comment-reply-import";
 import { applyPatchReplacementAt } from "@/lib/patches/patch-application";
 import {
   requirePendingPatchTargetRevalidation,
@@ -519,6 +527,97 @@ type ChatGptPromptDialogState = {
   jsonText?: string;
   promptText: string;
 };
+type AgentExchangeProductPhase =
+  | "idle"
+  | "preparing"
+  | "sending"
+  | "waiting"
+  | "importing"
+  | "ready"
+  | "failed"
+  | "cancelled";
+type AgentExchangeProductFailure = "import" | "stale" | "unavailable";
+type AgentExchangeProductUiState = {
+  documentKey: string;
+  failure: AgentExchangeProductFailure | null;
+  phase: AgentExchangeProductPhase;
+  result: { patches: number; replies: number } | null;
+  reviewCommentId: string | null;
+};
+type AgentExchangePrepared = Readonly<{
+  copy_request_bytes(): Uint8Array;
+}>;
+type AgentExchangeOperationPhase =
+  | "prepared"
+  | "checking_availability"
+  | "submitting"
+  | "waiting"
+  | "importing"
+  | "completed"
+  | "cancelled"
+  | "invalidated"
+  | "unavailable"
+  | "failed";
+type AgentExchangeProductOperation<TResult> = Readonly<{
+  cancel(): void;
+  copy_manual_fallback_bytes(): Uint8Array;
+  execute(): Promise<TResult>;
+  phase(): AgentExchangeOperationPhase;
+  subscribe(listener: (phase: AgentExchangeOperationPhase) => void): () => void;
+}>;
+type AgentExchangeProductController = {
+  begin<TResult>(input: {
+    connector: unknown;
+    createOperationId(): string;
+    importResponse(input: {
+      binding: { expected_response_protocol_version: 2 };
+      response_bytes: Uint8Array;
+      validate_before_commit(): void;
+    }): Promise<TResult>;
+    prepared: AgentExchangePrepared;
+  }): AgentExchangeProductOperation<TResult>;
+  invalidateCurrent(): void;
+  invalidateForScopeChange(input: {
+    document_id: string;
+    project_id: string;
+  }): void;
+};
+type AgentExchangeProductDriver = Readonly<{
+  createConnector(): unknown;
+  createOperationId(): string;
+}>;
+type AgentExchangeActionsProps = {
+  canFallback: boolean;
+  disabled: boolean;
+  failure: AgentExchangeProductFailure | null;
+  mode?: "full" | "send_only";
+  onCancel(): void;
+  onFallback(): void;
+  onReview(): void;
+  onSend(): void;
+  phase: AgentExchangeProductPhase;
+  result: { patches: number; replies: number } | null;
+};
+type AgentExchangeProductModule = Readonly<{
+  ReviewDeliveryActions: ComponentType<AgentExchangeActionsProps>;
+  createReviewDeliveryController(): AgentExchangeProductController;
+  prepareReviewDelivery(input: {
+    batch: PatchmarkReviewBatch;
+    project: PatchmarkProjectHandle;
+  }): Promise<AgentExchangePrepared>;
+  readReviewDeliveryDriver(): AgentExchangeProductDriver;
+}>;
+type AgentExchangeOperationContext = {
+  batch: PatchmarkReviewBatch;
+  documentId: string;
+  documentKey: string;
+  operation: AgentExchangeProductOperation<ProjectCommentReplyImportResult> | null;
+  prepared: AgentExchangePrepared;
+  projectId: string;
+  token: number;
+  unsubscribe: () => void;
+};
+type ReviewDelivery = "agent" | "manual";
 type ReviewBatchCancelDialogState = {
   batchId: string;
   documentId: string;
@@ -526,11 +625,13 @@ type ReviewBatchCancelDialogState = {
 };
 type DocumentLevelExportGuardDialogState =
   | {
+      delivery: ReviewDelivery;
       documentCommentIds: string[];
       kind: "multiple_document_comments";
       nonDocumentCommentIds: string[];
     }
   | {
+      delivery: ReviewDelivery;
       documentCommentId: string;
       kind: "mixed_document_comment";
       nonDocumentCommentIds: string[];
@@ -813,6 +914,8 @@ export function DocumentEditor() {
     useState<PatchmarkProjectHandle | null>(null);
   const collaborationProductFeatureState =
     getCollaborationProductQualificationState("development_shadow");
+  const agentExchangeProductFeatureState =
+    getAgentExchangeProductQualificationState("agent_exchange_qualification");
   const [collaborationWorkspace, setCollaborationWorkspace] =
     useState<CollaborationWorkspaceState | null>(null);
   const [isCollaborationWorkspaceLoading, setIsCollaborationWorkspaceLoading] =
@@ -1076,6 +1179,57 @@ export function DocumentEditor() {
   const reviewBatchCancelDialogRef = useRef<HTMLElement>(null);
   const reviewBatchCancelPrimaryButtonRef = useRef<HTMLButtonElement>(null);
   const [isGuidedReviewOpen, setIsGuidedReviewOpen] = useState(false);
+  const [agentExchangeProductModule, setAgentExchangeProductModule] =
+    useState<AgentExchangeProductModule | null>(null);
+  const [agentExchangeUiState, setAgentExchangeUiState] =
+    useState<AgentExchangeProductUiState | null>(null);
+  const agentExchangeControllerRef =
+    useRef<AgentExchangeProductController | null>(null);
+  const agentExchangeContextRef =
+    useRef<AgentExchangeOperationContext | null>(null);
+  const agentExchangeLoadRequestRef = useRef(0);
+  const agentExchangeOperationTokenRef = useRef(0);
+  const agentExchangeInitiationLockRef = useRef(false);
+  const reviewBatchExportLockRef = useRef(false);
+
+  useEffect(() => {
+    if (
+      agentExchangeProductFeatureState.mode === "disabled" ||
+      agentExchangeProductModule ||
+      (!commentsOpen && !isGuidedReviewOpen)
+    ) {
+      return;
+    }
+    const requestId = agentExchangeLoadRequestRef.current + 1;
+    agentExchangeLoadRequestRef.current = requestId;
+    const dispatch = loadAgentExchangeProductQualification(
+      "agent_exchange_qualification"
+    );
+    if (!(dispatch instanceof Promise)) return;
+    void dispatch
+      .then((loaded) => {
+        if (requestId !== agentExchangeLoadRequestRef.current) return;
+        setAgentExchangeProductModule(
+          loaded as unknown as AgentExchangeProductModule
+        );
+      })
+      .catch(() => {
+        // A failed qualification-only UI load leaves the normal manual flow.
+      });
+  }, [
+    agentExchangeProductFeatureState.mode,
+    agentExchangeProductModule,
+    commentsOpen,
+    isGuidedReviewOpen
+  ]);
+
+  useEffect(
+    () => () => {
+      agentExchangeContextRef.current?.unsubscribe();
+      agentExchangeControllerRef.current?.invalidateCurrent();
+    },
+    []
+  );
   useEffect(() => {
     if (reviewBatchCancelDialog) {
       reviewBatchCancelPrimaryButtonRef.current?.focus();
@@ -3093,6 +3247,7 @@ export function DocumentEditor() {
   }, [fileName, handleSaveChanges]);
 
   async function handleFileLoaded(loadedFile: LoadedMarkdownFile) {
+    invalidateAgentExchangeForNavigation();
     const requestId = deviceRecoveryLoadRequestRef.current + 1;
     deviceRecoveryLoadRequestRef.current = requestId;
     let standaloneInstance: LocalStandaloneFileRecord | null = null;
@@ -3973,6 +4128,7 @@ export function DocumentEditor() {
     if (!confirmTransientDraftLoss()) {
       return;
     }
+    invalidateAgentExchangeForNavigation();
     setSelectionActions(null);
     setVisualSelectionDraft(null);
     setMarkdownSelection({ end: 0, start: 0 });
@@ -4535,15 +4691,34 @@ export function DocumentEditor() {
   }
 
   function handleGenerateChatGptPrompt() {
+    handleGenerateFocusedReview("manual");
+  }
+
+  function handleSendFocusedReviewToAgent() {
+    handleGenerateFocusedReview("agent");
+  }
+
+  function handleGenerateFocusedReview(delivery: ReviewDelivery) {
     if (!projectHandle) {
       setSaveFeedback({
         kind: "info",
-        message: "ChatGPT prompt generation is available in Project Folder Mode."
+        message:
+          delivery === "agent"
+            ? "Agent delivery is available in Project Folder Mode."
+            : "ChatGPT prompt generation is available in Project Folder Mode."
       });
       return;
     }
 
     if (activeReviewBatch) {
+      if (delivery === "agent") {
+        void startAgentExchangeForBatch({
+          batch: activeReviewBatch,
+          project: projectHandle,
+          reviewBatches
+        });
+        return;
+      }
       handleOpenGuidedReview();
       setSaveFeedback({
         kind: "info",
@@ -4580,6 +4755,7 @@ export function DocumentEditor() {
 
     if (documentLevelFocusedComments.length > 1) {
       setDocumentLevelExportGuardDialog({
+        delivery,
         documentCommentIds: documentLevelFocusedComments.map((comment) => comment.id),
         kind: "multiple_document_comments",
         nonDocumentCommentIds: nonDocumentFocusedComments.map(
@@ -4599,6 +4775,7 @@ export function DocumentEditor() {
       nonDocumentFocusedComments.length > 0
     ) {
       setDocumentLevelExportGuardDialog({
+        delivery,
         documentCommentId: documentLevelFocusedComments[0].id,
         kind: "mixed_document_comment",
         nonDocumentCommentIds: nonDocumentFocusedComments.map(
@@ -4614,21 +4791,29 @@ export function DocumentEditor() {
     }
 
     void createManualReviewBatch({
+      delivery,
       dedicatedDocumentReview: documentLevelFocusedComments.length === 1,
       focusedComments
     });
   }
 
   async function createManualReviewBatch({
+    delivery,
     dedicatedDocumentReview,
     focusedComments
   }: {
+    delivery: ReviewDelivery;
     dedicatedDocumentReview: boolean;
     focusedComments: PatchmarkComment[];
   }) {
-    if (!projectHandle || isCommentBusy) {
+    if (
+      !projectHandle ||
+      isCommentBusy ||
+      reviewBatchExportLockRef.current
+    ) {
       return;
     }
+    reviewBatchExportLockRef.current = true;
     const operationProject = projectHandle;
     const operationDocumentId = getProjectDocumentScopeId(operationProject);
     const operationGeneration = operationProject.persistence.generation;
@@ -4686,26 +4871,35 @@ export function DocumentEditor() {
         return;
       }
       setReviewBatches(result.batches);
-      setChatGptPromptDialog(
-        createReviewBatchPromptDialogState({
+      if (delivery === "agent") {
+        await startAgentExchangeForBatch({
           batch: result.batch,
-          jsonText: result.jsonText,
-          promptText: result.promptText
-        })
-      );
-      setSaveFeedback({
-        kind: "success",
-        message: dedicatedDocumentReview
-          ? "Generated and saved a tracked prompt for one document-level comment."
-          : `Generated and saved a tracked prompt for ${focusedComments.length} focused comment${
-              focusedComments.length === 1 ? "" : "s"
-            }. Focus marks were left unchanged.`
-      });
+          project: operationProject,
+          reviewBatches: result.batches
+        });
+      } else {
+        setChatGptPromptDialog(
+          createReviewBatchPromptDialogState({
+            batch: result.batch,
+            jsonText: result.jsonText,
+            promptText: result.promptText
+          })
+        );
+        setSaveFeedback({
+          kind: "success",
+          message: dedicatedDocumentReview
+            ? "Generated and saved a tracked prompt for one document-level comment."
+            : `Generated and saved a tracked prompt for ${focusedComments.length} focused comment${
+                focusedComments.length === 1 ? "" : "s"
+              }. Focus marks were left unchanged.`
+        });
+      }
     } catch (error) {
       const message = getProjectErrorMessage(error);
       setCommentsError(message);
       setSaveFeedback({ kind: "error", message });
     } finally {
+      reviewBatchExportLockRef.current = false;
       setIsCommentBusy(false);
     }
   }
@@ -4735,6 +4929,7 @@ export function DocumentEditor() {
 
     setDocumentLevelExportGuardDialog(null);
     void createManualReviewBatch({
+      delivery: documentLevelExportGuardDialog.delivery,
       dedicatedDocumentReview: true,
       focusedComments: [documentComment]
     });
@@ -4787,6 +4982,7 @@ export function DocumentEditor() {
       );
       setDocumentLevelExportGuardDialog(null);
       await createManualReviewBatch({
+        delivery: documentLevelExportGuardDialog.delivery,
         dedicatedDocumentReview: true,
         focusedComments: [documentComment]
       });
@@ -4877,12 +5073,14 @@ export function DocumentEditor() {
   }
 
   async function handleGenerateGuidedReviewBatch(
-    proposalSession: GuidedReviewProposalSession
+    proposalSession: GuidedReviewProposalSession,
+    delivery: ReviewDelivery = "manual"
   ) {
     if (
       !projectHandle ||
       !activeDocumentIdentity ||
-      isCommentBusy
+      isCommentBusy ||
+      reviewBatchExportLockRef.current
     ) {
       return;
     }
@@ -4973,6 +5171,7 @@ export function DocumentEditor() {
         : null;
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
+    reviewBatchExportLockRef.current = true;
     setIsCommentBusy(true);
     setCommentsError(null);
     setSaveFeedback(null);
@@ -5036,25 +5235,303 @@ export function DocumentEditor() {
         return;
       }
       setReviewBatches(result.batches);
-      setChatGptPromptDialog(
-        createReviewBatchPromptDialogState({
+      if (delivery === "agent") {
+        await startAgentExchangeForBatch({
           batch: result.batch,
-          jsonText: result.jsonText,
-          promptText: result.promptText
-        })
-      );
-      setSaveFeedback({
-        kind: "success",
-        message: `Generated and saved tracked Review Batch ${result.batch.batch_id}.`
-      });
+          project: operationProject,
+          reviewBatches: result.batches
+        });
+      } else {
+        setChatGptPromptDialog(
+          createReviewBatchPromptDialogState({
+            batch: result.batch,
+            jsonText: result.jsonText,
+            promptText: result.promptText
+          })
+        );
+        setSaveFeedback({
+          kind: "success",
+          message: `Generated and saved tracked Review Batch ${result.batch.batch_id}.`
+        });
+      }
     } catch (error) {
       const message = getProjectErrorMessage(error);
       setCommentsError(message);
       setSaveFeedback({ kind: "error", message });
       throw error;
     } finally {
+      reviewBatchExportLockRef.current = false;
       setIsCommentBusy(false);
     }
+  }
+
+  async function startAgentExchangeForBatch({
+    batch,
+    project,
+    reviewBatches: operationReviewBatches
+  }: {
+    batch: PatchmarkReviewBatch;
+    project: PatchmarkProjectHandle;
+    reviewBatches: PatchmarkReviewBatch[];
+  }) {
+    if (
+      !agentExchangeProductModule ||
+      agentExchangeInitiationLockRef.current
+    ) {
+      return;
+    }
+    const identity = getProjectDocumentIdentity(project);
+    const documentKey = createProjectDocumentKey(identity);
+    if (activeDocumentKeyRef.current !== documentKey) return;
+
+    agentExchangeInitiationLockRef.current = true;
+    const token = agentExchangeOperationTokenRef.current + 1;
+    agentExchangeOperationTokenRef.current = token;
+    const operationComments = commentsRef.current;
+    const operationMarkdown = markdownRef.current;
+    const knownCommentIds = new Set(
+      getActiveComments(operationComments).map((comment) => comment.id)
+    );
+    let lastObservedPhase: AgentExchangeOperationPhase = "prepared";
+    setAgentExchangeUiState({
+      documentKey,
+      failure: null,
+      phase: "preparing",
+      result: null,
+      reviewCommentId: batch.ordered_comment_ids[0] ?? null
+    });
+    setCommentsError(null);
+    setSaveFeedback(null);
+
+    try {
+      const prepared = await agentExchangeProductModule.prepareReviewDelivery({
+        batch,
+        project
+      });
+      if (
+        token !== agentExchangeOperationTokenRef.current ||
+        activeDocumentKeyRef.current !== documentKey
+      ) {
+        return;
+      }
+      const context: AgentExchangeOperationContext = {
+        batch,
+        documentId: identity.documentId,
+        documentKey,
+        operation: null,
+        prepared,
+        projectId: identity.projectId,
+        token,
+        unsubscribe: () => undefined
+      };
+      agentExchangeContextRef.current?.unsubscribe();
+      agentExchangeContextRef.current = context;
+      const driver =
+        agentExchangeProductModule.readReviewDeliveryDriver();
+      const controller =
+        agentExchangeControllerRef.current ??
+        agentExchangeProductModule.createReviewDeliveryController();
+      agentExchangeControllerRef.current = controller;
+      const operation = controller.begin<ProjectCommentReplyImportResult>({
+        connector: driver.createConnector(),
+        createOperationId: () => driver.createOperationId(),
+        importResponse: async ({
+          binding,
+          response_bytes,
+          validate_before_commit
+        }) => {
+          const validateOwnership = () => {
+            validate_before_commit();
+            if (activeDocumentKeyRef.current !== documentKey) {
+              throw new Error(
+                "The agent response no longer belongs to the active project document."
+              );
+            }
+          };
+          const imported = await importProjectCommentReplyResponseBytes({
+            comments: operationComments,
+            expectedProtocolVersion:
+              binding.expected_response_protocol_version,
+            knownCommentIds,
+            markdown: operationMarkdown,
+            project,
+            responseBytes: response_bytes,
+            reviewBatches: operationReviewBatches,
+            validateBeforeCommit: validateOwnership
+          });
+          validateOwnership();
+          if (
+            token !== agentExchangeOperationTokenRef.current ||
+            activeDocumentKeyRef.current !== documentKey
+          ) {
+            throw new Error(
+              "The agent response no longer belongs to the active project document."
+            );
+          }
+          setBaselineMarkdown(operationMarkdown);
+          setRestoredMarkdown(null);
+          commentsRef.current = imported.comments;
+          patchesRef.current = imported.patches;
+          setComments(imported.comments);
+          setPatches(imported.patches);
+          setReviewBatches(imported.review_batches);
+          return imported;
+        },
+        prepared
+      });
+      context.operation = operation;
+      context.unsubscribe = operation.subscribe((phase) => {
+        if (phase !== "failed") lastObservedPhase = phase;
+        if (
+          token !== agentExchangeOperationTokenRef.current ||
+          activeDocumentKeyRef.current !== documentKey
+        ) {
+          return;
+        }
+        const productPhase = getAgentExchangeProductPhase(phase);
+        if (!productPhase) return;
+        setAgentExchangeUiState((current) =>
+          current?.documentKey === documentKey
+            ? { ...current, phase: productPhase }
+            : current
+        );
+      });
+      void operation
+        .execute()
+        .then((imported) => {
+          if (
+            token !== agentExchangeOperationTokenRef.current ||
+            activeDocumentKeyRef.current !== documentKey
+          ) {
+            return;
+          }
+          setAgentExchangeUiState({
+            documentKey,
+            failure: null,
+            phase: "ready",
+            result: {
+              patches: imported.patch_proposals_stored,
+              replies:
+                imported.replies_attached + imported.open_questions_attached
+            },
+            reviewCommentId: batch.ordered_comment_ids[0] ?? null
+          });
+        })
+        .catch((error: unknown) => {
+          if (
+            token !== agentExchangeOperationTokenRef.current ||
+            activeDocumentKeyRef.current !== documentKey
+          ) {
+            return;
+          }
+          if (operation.phase() === "cancelled") {
+            setAgentExchangeUiState((current) =>
+              current?.documentKey === documentKey
+                ? { ...current, phase: "cancelled" }
+                : current
+            );
+            return;
+          }
+          const failure = classifyAgentExchangeProductFailure(
+            error,
+            lastObservedPhase
+          );
+          setAgentExchangeUiState((current) =>
+            current?.documentKey === documentKey
+              ? { ...current, failure, phase: "failed" }
+              : current
+          );
+        });
+    } catch (error) {
+      if (
+        token !== agentExchangeOperationTokenRef.current ||
+        activeDocumentKeyRef.current !== documentKey
+      ) {
+        return;
+      }
+      const failure = classifyAgentExchangeProductFailure(
+        error,
+        lastObservedPhase
+      );
+      setAgentExchangeUiState((current) =>
+        current?.documentKey === documentKey
+          ? { ...current, failure, phase: "failed" }
+          : current
+      );
+    } finally {
+      if (token === agentExchangeOperationTokenRef.current) {
+        agentExchangeInitiationLockRef.current = false;
+      }
+    }
+  }
+
+  function handleCancelAgentExchange() {
+    const context = agentExchangeContextRef.current;
+    if (
+      !context ||
+      context.token !== agentExchangeOperationTokenRef.current ||
+      context.documentKey !== activeDocumentKeyRef.current
+    ) {
+      return;
+    }
+    context.operation?.cancel();
+  }
+
+  function handleAgentExchangeManualFallback() {
+    const context = agentExchangeContextRef.current;
+    if (
+      !context ||
+      context.token !== agentExchangeOperationTokenRef.current ||
+      context.documentKey !== activeDocumentKeyRef.current
+    ) {
+      return;
+    }
+    try {
+      const promptText = new TextDecoder("utf-8", { fatal: true }).decode(
+        context.operation?.copy_manual_fallback_bytes() ??
+          context.prepared.copy_request_bytes()
+      );
+      setChatGptPromptDialog(
+        createReviewBatchPromptDialogState({
+          batch: context.batch,
+          promptText
+        })
+      );
+    } catch {
+      setSaveFeedback({
+        kind: "error",
+        message: "The exact saved Review Batch prompt could not be opened."
+      });
+    }
+  }
+
+  function handleReviewAgentExchangeResponse() {
+    const state = agentExchangeUiState;
+    if (!state || state.documentKey !== activeDocumentKeyRef.current) return;
+    setIsGuidedReviewOpen(false);
+    openComments();
+    if (!state.reviewCommentId) return;
+    setActiveCommentState({
+      kind: "comment",
+      commentId: state.reviewCommentId
+    });
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        if (activeDocumentKeyRef.current !== state.documentKey) return;
+        document
+          .getElementById(`patchmark-comment-card-${state.reviewCommentId}`)
+          ?.focus();
+      });
+    });
+  }
+
+  function invalidateAgentExchangeForNavigation() {
+    agentExchangeOperationTokenRef.current += 1;
+    agentExchangeInitiationLockRef.current = false;
+    agentExchangeContextRef.current?.unsubscribe();
+    agentExchangeControllerRef.current?.invalidateCurrent();
+    agentExchangeContextRef.current = null;
+    setAgentExchangeUiState(null);
   }
 
   async function handleDeferGuidedReviewComment(commentId: string) {
@@ -9000,6 +9477,13 @@ export function DocumentEditor() {
     const requestId = deviceRecoveryLoadRequestRef.current + 1;
     deviceRecoveryLoadRequestRef.current = requestId;
     const identity = getProjectDocumentIdentity(loadedProject.project);
+    const incomingDocumentKey = createProjectDocumentKey(identity);
+    if (
+      activeDocumentKeyRef.current &&
+      activeDocumentKeyRef.current !== incomingDocumentKey
+    ) {
+      invalidateAgentExchangeForNavigation();
+    }
     const projectDirectory =
       loadedProject.project.projectDirectoryHandle ??
       loadedProject.project.directoryHandle;
@@ -9419,6 +9903,50 @@ export function DocumentEditor() {
     ? mobileNavigationOpen
     : !navigationCollapsed;
   const CollaborationWorkspace = collaborationWorkspace?.Component ?? null;
+  const ReviewDeliveryActions =
+    agentExchangeProductModule?.ReviewDeliveryActions ?? null;
+  const currentAgentExchangeUiState =
+    agentExchangeUiState?.documentKey === activeDocumentKey
+      ? agentExchangeUiState
+      : null;
+  const currentAgentExchangeContext =
+    agentExchangeContextRef.current?.documentKey === activeDocumentKey
+      ? agentExchangeContextRef.current
+      : null;
+  const focusedReviewCommentCount = getFocusedCommentsForExport(comments).length;
+  const agentExchangeSendDisabled =
+    !projectHandle ||
+    isCommentBusy ||
+    isDocumentSwitchPending ||
+    isProjectRecoveryReadOnly ||
+    Boolean(pendingReviewResponseBatch) ||
+    (!activeReviewBatch && focusedReviewCommentCount === 0);
+
+  function renderAgentExchangeActions({
+    disabled = agentExchangeSendDisabled,
+    mode = "full",
+    onSend = handleSendFocusedReviewToAgent
+  }: {
+    disabled?: boolean;
+    mode?: "full" | "send_only";
+    onSend?: () => void;
+  } = {}) {
+    if (!ReviewDeliveryActions) return null;
+    return (
+      <ReviewDeliveryActions
+        canFallback={Boolean(currentAgentExchangeContext)}
+        disabled={disabled}
+        failure={currentAgentExchangeUiState?.failure ?? null}
+        mode={mode}
+        onCancel={handleCancelAgentExchange}
+        onFallback={handleAgentExchangeManualFallback}
+        onReview={handleReviewAgentExchangeResponse}
+        onSend={onSend}
+        phase={currentAgentExchangeUiState?.phase ?? "idle"}
+        result={currentAgentExchangeUiState?.result ?? null}
+      />
+    );
+  }
 
   const openComments = useCallback(() => {
     if (isNarrowNavigation) {
@@ -10667,6 +11195,9 @@ export function DocumentEditor() {
           pendingPatchTotal={pendingPatches.length}
           projectId={activeDocumentIdentity?.projectId ?? null}
           replyRequest={commentReplyRequest}
+          reviewDeliveryActions={
+            isGuidedReviewOpen ? undefined : renderAgentExchangeActions()
+          }
           selectedTextPreview={selectedCommentText || null}
           selectedAnchorContextKind={selectedCommentAnchorContextKind}
           spatialLayout={mode === "visual"}
@@ -11105,7 +11636,26 @@ export function DocumentEditor() {
               });
             }
           }}
+          activeBatchDeliveryActions={renderAgentExchangeActions({
+            disabled: agentExchangeSendDisabled || !activeReviewBatch,
+            onSend: () => {
+              if (!activeReviewBatch || !projectHandle) return;
+              void startAgentExchangeForBatch({
+                batch: activeReviewBatch,
+                project: projectHandle,
+                reviewBatches
+              });
+            }
+          })}
           queue={guidedReviewQueue}
+          renderProposalDeliveryAction={(session, disabled) =>
+            renderAgentExchangeActions({
+              disabled,
+              mode: "send_only",
+              onSend: () =>
+                void handleGenerateGuidedReviewBatch(session, "agent")
+            })
+          }
           responseBatch={pendingReviewResponseBatch}
           workingStateKey={guidedReviewWorkingStateKey}
         />
@@ -13614,6 +14164,47 @@ function getFocusedCommentsForExport(
       (comment.export_state.focus_state === "in_focus" ||
         comment.export_state.focus_state === "awaiting_reply")
   );
+}
+
+function getAgentExchangeProductPhase(
+  phase: AgentExchangeOperationPhase
+): AgentExchangeProductPhase | null {
+  switch (phase) {
+    case "checking_availability":
+    case "submitting":
+      return "sending";
+    case "waiting":
+      return "waiting";
+    case "importing":
+      return "importing";
+    case "cancelled":
+      return "cancelled";
+    default:
+      return null;
+  }
+}
+
+function classifyAgentExchangeProductFailure(
+  error: unknown,
+  lastObservedPhase: AgentExchangeOperationPhase
+): AgentExchangeProductFailure {
+  const code =
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+      ? error.code
+      : null;
+  if (
+    code === "operation_invalidated" ||
+    code === "response_binding_mismatch" ||
+    code === "response_length_mismatch" ||
+    code === "response_oversized"
+  ) {
+    return "stale";
+  }
+  if (lastObservedPhase === "importing") return "import";
+  return "unavailable";
 }
 
 function createCommentExportId(exportedAt: string): string {

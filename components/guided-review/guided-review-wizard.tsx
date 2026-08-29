@@ -3,7 +3,8 @@ import {
   useMemo,
   useRef,
   useState,
-  type KeyboardEvent as ReactKeyboardEvent
+  type KeyboardEvent as ReactKeyboardEvent,
+  type ReactNode
 } from "react";
 import type { PatchmarkComment } from "@/lib/project/project-types";
 import type { PatchmarkReviewBatch } from "@/lib/review-batches/review-batch-types";
@@ -93,6 +94,8 @@ export function GuidedReviewWizard({
   onRestoreDeferredComment,
   onReviewResponseComment,
   onReviewComments,
+  renderProposalDeliveryAction,
+  activeBatchDeliveryActions,
   queue,
   responseBatch,
   workingStateKey
@@ -120,6 +123,11 @@ export function GuidedReviewWizard({
   onRestoreDeferredComment: (commentId: string) => Promise<void>;
   onReviewResponseComment: (commentId: string) => void;
   onReviewComments: () => void;
+  renderProposalDeliveryAction?: (
+    session: GuidedReviewProposalSession,
+    disabled: boolean
+  ) => ReactNode;
+  activeBatchDeliveryActions?: ReactNode;
   queue: ReviewQueue;
   responseBatch: PatchmarkReviewBatch | null;
   workingStateKey: string;
@@ -432,6 +440,13 @@ export function GuidedReviewWizard({
               onRemove={removeFromProposal}
               onReset={resetSuggestion}
               queue={queue}
+              reviewDeliveryAction={renderProposalDeliveryAction?.(
+                session,
+                isBusy ||
+                  isSessionStale ||
+                  session.selectedCommentIds.length === 0 ||
+                  Boolean(generationBlockedReason)
+              )}
               session={session}
             />
           ) : null}
@@ -445,6 +460,7 @@ export function GuidedReviewWizard({
               onCopy={onCopyPrompt}
               onImport={onImportResponse}
               onOpen={onOpenContextPack}
+              reviewDeliveryActions={activeBatchDeliveryActions}
             />
           ) : null}
 
@@ -649,6 +665,7 @@ function ProposalStep({
   onRemove,
   onReset,
   queue,
+  reviewDeliveryAction,
   session
 }: {
   additionOptions: ReturnType<typeof getGuidedReviewAdditionOptions>;
@@ -665,6 +682,7 @@ function ProposalStep({
   onRemove: (commentId: string) => void;
   onReset: () => void;
   queue: ReviewQueue;
+  reviewDeliveryAction?: ReactNode;
   session: GuidedReviewProposalSession;
 }) {
   const queueById = new Map(
@@ -829,6 +847,7 @@ function ProposalStep({
         <p className="guided-review-warning">{generationBlockedReason}</p>
       ) : null}
       <div className="guided-review-wizard-actions">
+        {reviewDeliveryAction}
         <button
           disabled={
             isBusy ||
@@ -927,7 +946,8 @@ function ActiveBatchStep({
   onCancel,
   onCopy,
   onImport,
-  onOpen
+  onOpen,
+  reviewDeliveryActions
 }: {
   batch: PatchmarkReviewBatch;
   documentChangedSinceExport: boolean;
@@ -936,6 +956,7 @@ function ActiveBatchStep({
   onCopy: () => void;
   onImport: () => void;
   onOpen: () => void;
+  reviewDeliveryActions?: ReactNode;
 }) {
   return (
     <section aria-label="Active Review Batch" className="guided-review-step">
@@ -989,6 +1010,7 @@ function ActiveBatchStep({
         ))}
       </ol>
       <div className="guided-review-wizard-actions">
+        {reviewDeliveryActions}
         <button disabled={isBusy} onClick={onCopy} type="button">
           Copy prompt again
         </button>

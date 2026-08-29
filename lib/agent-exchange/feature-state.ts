@@ -32,3 +32,13 @@ export function resolveBuildAgentExchangeFeatureState(
       : "unknown";
   return resolveAgentExchangeFeatureState(runtime, injectedSignal);
 }
+
+export function resolveAgentExchangeProductFeatureState(
+  injectedState: unknown
+): AgentExchangeFeatureState {
+  return resolveBuildAgentExchangeFeatureState(
+    injectedState === "agent_exchange_qualification"
+      ? developmentQualificationSignal
+      : undefined
+  );
+}

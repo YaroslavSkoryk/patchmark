@@ -1,0 +1,14 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "../next-env.d.ts",
+    "agent-exchange-ae1-slice2.type-test.ts",
+    "../components/agent-exchange/agent-exchange-actions.tsx",
+    "../lib/agent-exchange/contracts.ts",
+    "../lib/agent-exchange/operation-controller.ts"
+  ]
+}

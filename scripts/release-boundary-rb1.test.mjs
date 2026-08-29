@@ -227,7 +227,28 @@ for (const file of productionSources) {
     releaseAuthorityAssignments.push(path);
   }
 }
-equal(ungatedAgentImplementationEdges, [], "Agent Exchange has no ordinary product UI or ungated application load edge");
+equal(
+  ungatedAgentImplementationEdges.sort(),
+  [
+    "components/agent-exchange/agent-exchange-actions.tsx",
+    "components/document-editor.tsx"
+  ],
+  "Agent Exchange has only its qualification-only lazy UI and gated product shell edges"
+);
+const agentProductShell = await readFile(
+  join(root, "components/document-editor.tsx"),
+  "utf8"
+);
+check(
+  /from\s+["']@\/lib\/agent-exchange\/entrypoint["']/.test(agentProductShell),
+  "the product shell reaches Agent Exchange only through its entrypoint"
+);
+check(
+  !/(?:operation-controller|prepared-exchange|product-driver|qualification-loader)/.test(
+    agentProductShell
+  ),
+  "the product shell has no direct Agent Exchange implementation edge"
+);
 equal(releaseAuthorityAssignments, ["lib/release/product-release-state.ts"], "application source contains one release authority");
 
 const agentEntrypoint = await readFile(

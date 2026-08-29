@@ -6,7 +6,8 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState
+  useState,
+  type ReactNode
 } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -167,6 +168,7 @@ type CommentsPanelProps = {
   selectedTextPreview: string | null;
   spatialLayout: boolean;
   trashedComments: PatchmarkComment[];
+  reviewDeliveryActions?: ReactNode;
 };
 
 const commentTypeOptions: PatchmarkCommentType[] = [
@@ -264,7 +266,8 @@ export function CommentsPanel({
   selectedAnchorContextKind,
   selectedTextPreview,
   spatialLayout,
-  trashedComments
+  trashedComments,
+  reviewDeliveryActions
 }: CommentsPanelProps) {
   const handledAddRequestNonceRef = useRef<number | null>(null);
   const handledReplyRequestNonceRef = useRef<number | null>(null);
@@ -976,6 +979,7 @@ export function CommentsPanel({
               {isSelectionMode ? "Exit selection mode" : "Select comments"}
             </button>
           </div>
+          {reviewDeliveryActions}
           {comments.length > 0 ? (
             <details className="comment-list-tools">
               <summary>
