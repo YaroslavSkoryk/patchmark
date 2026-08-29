@@ -61,6 +61,8 @@
     "test:collaboration-shadow-production": "NODE_ENV=production NEXT_PUBLIC_PATCHMARK_COLLABORATION_SHADOW=development_shadow node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-shadow-production.test.mjs",
     "test:release-boundary-rb1": "NODE_ENV=production node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/release-boundary-rb1.test.mjs",
     "test:release-boundary-rb1-types": "tsc -p scripts/tsconfig.release-boundary-rb1.json --pretty false",
+    "test:agent-exchange-ae1-slice1": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-exchange-ae1-slice1.test.mjs",
+    "test:agent-exchange-ae1-slice1-types": "tsc -p scripts/tsconfig.agent-exchange-ae1-slice1.json --pretty false",
     "test:collaboration-hardening": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc1-hardening.test.mjs",
     "test:collaboration-hc2-slice1": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-slice1.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-import-safety.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-production-lock.test.mjs",
     "test:collaboration-hc2-slice1-independent": "python3 scripts/collaboration-hc2-slice1-independent.py",

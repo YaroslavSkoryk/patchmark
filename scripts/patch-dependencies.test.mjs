@@ -20,15 +20,19 @@ const commentId = "PM-COMMENT-0019";
     new URL("../components/document-editor.tsx", import.meta.url),
     "utf8"
   );
-  const simulationIndex = editorSource.indexOf(
+  const importSource = readFileSync(
+    new URL("../lib/imports/project-comment-reply-import.ts", import.meta.url),
+    "utf8"
+  );
+  const simulationIndex = importSource.indexOf(
     "validateImportedPatchDependencySimulation({"
   );
-  const analysisIndex = editorSource.indexOf(
+  const analysisIndex = importSource.indexOf(
     "analyzeImportedReviewBatchResponse({",
     simulationIndex
   );
-  const importWriteIndex = editorSource.indexOf("await writeProjectImport({");
-  const stateSaveIndex = editorSource.indexOf(
+  const importWriteIndex = importSource.indexOf("await writeProjectImport({");
+  const stateSaveIndex = importSource.indexOf(
     "await saveProjectState({",
     importWriteIndex
   );
@@ -37,7 +41,7 @@ const commentId = "PM-COMMENT-0019";
   assert.ok(simulationIndex < analysisIndex && analysisIndex < importWriteIndex);
   assert.ok(importWriteIndex < stateSaveIndex);
   assert.match(
-    editorSource.slice(stateSaveIndex, stateSaveIndex + 500),
+    importSource.slice(stateSaveIndex, stateSaveIndex + 500),
     /reviewBatches: nextReviewBatches/
   );
   assert.doesNotMatch(

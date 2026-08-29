@@ -16,6 +16,10 @@ import {
   isCollaborationShadowDisabled,
   loadCollaborationProductQualification
 } from "../lib/collaboration-shadow/entrypoint.ts";
+import {
+  agentExchangeDisabled,
+  loadAgentExchangeQualification
+} from "../lib/agent-exchange/entrypoint.ts";
 
 const root = resolve(new URL("..", import.meta.url).pathname);
 let assertions = 0;
@@ -170,6 +174,12 @@ const disabledHumanDispatch = loadCollaborationProductQualification(
 check(isCollaborationShadowDisabled(disabledHumanDispatch), "production human-collaboration loading returns the existing disabled sentinel");
 check(!(disabledHumanDispatch instanceof Promise), "production human-collaboration loading returns before dynamic import");
 
+const disabledAgentDispatch = loadAgentExchangeQualification(
+  developmentQualificationSignal
+);
+equal(disabledAgentDispatch, agentExchangeDisabled, "production Agent Exchange loading returns the disabled sentinel");
+check(!(disabledAgentDispatch instanceof Promise), "production Agent Exchange loading returns before dynamic import");
+
 const releaseSource = await readFile(
   join(root, "lib/release/product-release-state.ts"),
   "utf8"
@@ -202,23 +212,32 @@ equal(
 );
 
 const productionSources = await sourceFiles(join(root, "app"), join(root, "components"), join(root, "lib"));
-const agentImplementationEdges = [];
+const ungatedAgentImplementationEdges = [];
 const releaseAuthorityAssignments = [];
 for (const file of productionSources) {
   const source = await readFile(file, "utf8");
   const path = relative(root, file);
   if (
-    path !== "lib/release/product-release-state.ts" &&
+    !path.startsWith("lib/agent-exchange/") &&
     /(?:from\s+|import\s*\()["'][^"']*agent[-_/]exchange|AgentExchangeWorkspace|agent_exchange_loader/.test(source)
   ) {
-    agentImplementationEdges.push(path);
+    ungatedAgentImplementationEdges.push(path);
   }
   if (/\b(?:human_collaboration|agent_exchange):\s*(?:true|false)/.test(source)) {
     releaseAuthorityAssignments.push(path);
   }
 }
-equal(agentImplementationEdges, [], "RB-1 adds no agent-exchange implementation, UI, or load edge");
+equal(ungatedAgentImplementationEdges, [], "Agent Exchange has no ordinary product UI or ungated application load edge");
 equal(releaseAuthorityAssignments, ["lib/release/product-release-state.ts"], "application source contains one release authority");
+
+const agentEntrypoint = await readFile(
+  join(root, "lib/agent-exchange/entrypoint.ts"),
+  "utf8"
+);
+check(
+  agentEntrypoint.includes('import("./qualification-loader.ts")'),
+  "Agent Exchange qualification remains behind one dynamic loader"
+);
 
 process.stdout.write(`${JSON.stringify({
   assertions,
@@ -229,7 +248,7 @@ process.stdout.write(`${JSON.stringify({
   },
   independence_matrix: matrix,
   activation_vectors_rejected_per_feature: activationVectors.length,
-  agent_exchange_boundary: "typed_empty_no_loader",
+  agent_exchange_boundary: "production_disabled_qualification_loader",
   production_dispatch: "synchronous_disabled_sentinel",
   status: "ok"
 }, null, 2)}\n`);

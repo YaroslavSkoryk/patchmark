@@ -272,6 +272,7 @@ type ProjectCommitRequest = {
   reason: string;
   allowSupersede?: boolean;
   rollbackOnFailure?: boolean;
+  validateBeforeCommit?: () => void;
 };
 
 export type PatchmarkProjectDocumentListItem = PatchmarkProjectDocumentView & {
@@ -1092,7 +1093,8 @@ export async function saveProjectState({
   project,
   reason,
   allowSupersede = false,
-  rollbackOnFailure = false
+  rollbackOnFailure = false,
+  validateBeforeCommit
 }: {
   comments?: PatchmarkComment[];
   manifest?: PatchmarkManifest;
@@ -1105,6 +1107,7 @@ export async function saveProjectState({
   reason: string;
   allowSupersede?: boolean;
   rollbackOnFailure?: boolean;
+  validateBeforeCommit?: () => void;
 }): Promise<PatchmarkProjectCommitResult> {
   return commitProjectState({
     allowSupersede,
@@ -1117,7 +1120,8 @@ export async function saveProjectState({
     rewriteSessions,
     project,
     reason,
-    rollbackOnFailure
+    rollbackOnFailure,
+    validateBeforeCommit
   });
 }
 
@@ -1990,15 +1994,30 @@ export async function writeProjectImport({
   contents: string;
   fileName: string;
   project: PatchmarkProjectHandle;
-}): Promise<string> {
+}): Promise<Readonly<{
+  createdDirectory: boolean;
+  relativePath: string;
+}>> {
   const metadataDirectoryHandle = await project.directoryHandle.getDirectoryHandle(
     metadataDirectoryName,
     { create: true }
   );
-  const importsDirectoryHandle =
-    await metadataDirectoryHandle.getDirectoryHandle("imports", {
-      create: true
-    });
+  let createdDirectory = false;
+  let importsDirectoryHandle: PatchmarkDirectoryHandle;
+  try {
+    importsDirectoryHandle = await metadataDirectoryHandle.getDirectoryHandle(
+      "imports"
+    );
+  } catch (error) {
+    if (!isNotFoundError(error)) throw error;
+    importsDirectoryHandle = await metadataDirectoryHandle.getDirectoryHandle(
+      "imports",
+      {
+        create: true
+      }
+    );
+    createdDirectory = true;
+  }
   const importFileHandle = await importsDirectoryHandle.getFileHandle(fileName, {
     create: true
   });
@@ -2010,15 +2029,20 @@ export async function writeProjectImport({
     throw error;
   }
 
-  return `${metadataDirectoryName}/imports/${fileName}`;
+  return Object.freeze({
+    createdDirectory,
+    relativePath: `${metadataDirectoryName}/imports/${fileName}`
+  });
 }
 
 export async function removeProjectImport({
   project,
-  relativePath
+  relativePath,
+  removeEmptyDirectory = false
 }: {
   project: PatchmarkProjectHandle;
   relativePath: string;
+  removeEmptyDirectory?: boolean;
 }): Promise<boolean> {
   const match = /^\.patchmark\/imports\/([^/]+)$/.exec(relativePath);
   if (!match || match[1].includes("..")) {
@@ -2034,13 +2058,17 @@ export async function removeProjectImport({
   }
   try {
     await importsDirectoryHandle.removeEntry(match[1]);
-    return true;
   } catch (error) {
-    if (isNotFoundError(error)) {
-      return true;
-    }
-    throw error;
+    if (!isNotFoundError(error)) throw error;
   }
+  if (removeEmptyDirectory) {
+    try {
+      await metadataDirectoryHandle.removeEntry?.("imports");
+    } catch {
+      // Preserve a concurrently populated imports directory.
+    }
+  }
+  return true;
 }
 
 export function getProjectPersistenceDebugState(
@@ -2202,6 +2230,7 @@ async function commitProjectState({
   rewriteSessions,
   rewriteSessionsUpdate,
   rollbackOnFailure = false,
+  validateBeforeCommit,
   project,
   reason
 }: ProjectCommitRequest & {
@@ -2248,6 +2277,7 @@ async function commitProjectState({
         rewriteSessions,
         rewriteSessionsUpdate,
         rollbackOnFailure,
+        validateBeforeCommit,
         project,
         queue,
         reason,
@@ -2278,6 +2308,7 @@ async function executeProjectCommit({
   rewriteSessions,
   rewriteSessionsUpdate,
   rollbackOnFailure,
+  validateBeforeCommit,
   project,
   queue,
   reason,
@@ -2287,6 +2318,7 @@ async function executeProjectCommit({
   queue: ProjectWriteQueueState;
   requestId: number;
 }): Promise<PatchmarkProjectCommitResult> {
+  validateBeforeCommit?.();
   const persistence = project.persistence;
   const debug = persistence.debug;
   const bytesWrittenBeforeCommit = debug.bytesWritten;
@@ -2668,6 +2700,7 @@ async function executeProjectCommit({
     for (const prepared of preparedFiles.filter(
       (file) => file.key !== "manifest" && file.key !== "commit"
     )) {
+      validateBeforeCommit?.();
       attemptedInstalls.push(prepared);
       await installPreparedProjectFile(prepared, (bytes) =>
         recordPersistenceWrite(project, bytes)
@@ -2683,14 +2716,17 @@ async function executeProjectCommit({
       throw new Error(`Could not prepare project save ${reason}.`);
     }
 
+    validateBeforeCommit?.();
     attemptedInstalls.push(manifestPrepared);
     await installPreparedProjectFile(manifestPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+    validateBeforeCommit?.();
     attemptedInstalls.push(commitPrepared);
     await installPreparedProjectFile(commitPrepared, (bytes) =>
       recordPersistenceWrite(project, bytes)
     );
+    validateBeforeCommit?.();
   } catch (error) {
     if (rollbackOnFailure) {
       const rollbackSucceeded = await rollbackAttemptedProjectInstalls({

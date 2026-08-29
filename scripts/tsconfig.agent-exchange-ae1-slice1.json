@@ -1,0 +1,11 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "agent-exchange-ae1-slice1.type-test.ts",
+    "../lib/agent-exchange/contracts.ts"
+  ]
+}

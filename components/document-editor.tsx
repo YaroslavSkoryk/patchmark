@@ -174,7 +174,6 @@ import {
 import { createReviewBatchExportLifecycleEvidence } from "@/lib/review-batches/review-batch-active-evidence";
 import {
   createTrackedReviewBatchExport,
-  readExactReviewBatchDocumentSnapshot,
   ReviewBatchDocumentSnapshotError,
   readExactReviewBatchPrompt
 } from "@/lib/review-batches/review-batch-export";
@@ -184,12 +183,7 @@ import {
   listReviewBatches
 } from "@/lib/review-batches/review-batch-repository";
 import {
-  associateReviewBatchResponse,
-  validateExactReviewBatchResponseComments
-} from "@/lib/review-batches/review-batch-response-receipt";
-import {
   acknowledgeReviewBatchResponse,
-  createRespondedReviewBatchRecords,
   getPendingReviewResponseBatch,
   upgradeLegacyReviewBatchResponse
 } from "@/lib/review-batches/review-batch-progression";
@@ -258,15 +252,13 @@ import {
   createAtomicTableRepairPrompt,
   getCompleteTableOccurrencesForExport,
   replaceCompleteTableOccurrencesWithMarkers,
-  validateAtomicTablePatchImport,
   type CanonicalTableContext
 } from "@/lib/patches/atomic-table-patches";
 import { getDeterministicAppliedPatchOffsetMatch } from "@/lib/patches/applied-patch-anchor";
 import {
   getPatchDisplayTitle,
   getPatchDisplayTitleInfo,
-  getPatchGroupDisplayTitle,
-  normalizePatchDisplayTitleCandidate
+  getPatchGroupDisplayTitle
 } from "@/lib/patches/patch-display-title";
 import {
   createCommentPatchHistorySummary,
@@ -309,7 +301,6 @@ import {
   readProjectVersionMarkdownByRef,
   readProjectComments,
   readProjectPatches,
-  removeProjectImport,
   resolveDocumentPathFromFileHandle,
   renameProjectDocumentGroup,
   restoreProjectDocument,
@@ -318,7 +309,6 @@ import {
   switchProjectDocument,
   updateProjectManifestMetadata,
   writeProjectComments,
-  writeProjectImport,
   writeProjectPatches,
   updateProjectDocumentMetadata,
   type LoadedPatchmarkProject,
@@ -342,10 +332,9 @@ import {
 import {
   CHATGPT_IMPORT_REPAIR_PROMPT,
   CHATGPT_DEPENDENCY_REPAIR_PROMPT_RULES,
-  CHATGPT_INTERNAL_CITATION_PROMPT_RULES,
-  normalizeSourceChatUrl,
-  parsePatchmarkCommentReplyImport
+  CHATGPT_INTERNAL_CITATION_PROMPT_RULES
 } from "@/lib/imports/patchmark-comment-reply-import";
+import { importProjectCommentReplyResponse } from "@/lib/imports/project-comment-reply-import";
 import { applyPatchReplacementAt } from "@/lib/patches/patch-application";
 import {
   requirePendingPatchTargetRevalidation,
@@ -356,7 +345,6 @@ import {
   createPatchDependencyRepairPrompt,
   getPatchDependencyBlockerMessage,
   getPatchDependencyReviewStatus,
-  validateImportedPatchDependencySimulation,
   type PatchDependencyReviewStatus
 } from "@/lib/patches/patch-dependencies";
 import {
@@ -368,7 +356,6 @@ import {
   type PatchCommentImpactKind,
   type PatchmarkCommentPatchImpact,
   type PatchmarkCommentType,
-  type PatchmarkCommentReplyImport,
   type PatchmarkCommentThreadEntry,
   type PatchmarkPatch,
   type PatchmarkPatchAnchorRecoveryMethod,
@@ -377,7 +364,6 @@ import {
   type PatchmarkSelectedTextAnchorContext,
   type PatchmarkSelectedTextAnchorContextKind,
   type PatchmarkSourceReference,
-  type PatchmarkSuggestedUserAction,
   type PatchmarkVersionEntry
 } from "@/lib/project/project-types";
 import {
@@ -5467,184 +5453,32 @@ export function DocumentEditor() {
       return;
     }
 
-    let parsedResponse: PatchmarkCommentReplyImport;
-    let sourceChatUrl: string | undefined;
-    let responseAssociation: ReturnType<
-      typeof associateReviewBatchResponse
-    >;
-    let dependencyBaseDocumentState:
-      | "changed"
-      | "current"
-      | "unknown" = "unknown";
-    let dependencyValidationMarkdown = markdown;
-    let dependencyBaseDocumentSha256 = "";
-
-    try {
-      parsedResponse = parsePatchmarkCommentReplyImport(
-        chatGptImportDialog.responseJson
-      );
-      responseAssociation = associateReviewBatchResponse({
-        batches: reviewBatches,
-        response: parsedResponse,
-        target: getProjectDocumentIdentity(projectHandle)
-      });
-      if (responseAssociation.kind === "exact") {
-        validateExactReviewBatchResponseComments({
-          batch: responseAssociation.batch,
-          response: parsedResponse
-        });
-        dependencyValidationMarkdown = (
-          await readExactReviewBatchDocumentSnapshot({
-            batch: responseAssociation.batch,
-            currentMarkdown: markdown,
-            project: projectHandle
-          })
-        ).markdown;
-        dependencyBaseDocumentState = "current";
-      }
-      validateAtomicTablePatchImport({
-        markdown: dependencyValidationMarkdown,
-        patchProposals: parsedResponse.patch_proposals
-      });
-      dependencyBaseDocumentSha256 = await createContentSha256(
-        dependencyValidationMarkdown
-      );
-      sourceChatUrl = normalizeSourceChatUrl(
-        chatGptImportDialog.sourceChatUrl
-      );
-    } catch (error) {
-      const message = getProjectErrorMessage(error);
-      const repairPrompt = createChatGptImportRepairPrompt(error);
-      setChatGptImportDialog({
-        ...chatGptImportDialog,
-        error: message,
-        errorCode:
-          error instanceof AtomicTablePatchValidationError ||
-          error instanceof PatchDependencyValidationError ||
-          error instanceof ReviewBatchDocumentSnapshotError
-            ? error.code
-            : null,
-        repairPrompt
-      });
-      setSaveFeedback({
-        kind: "error",
-        message
-      });
-      return;
-    }
-
     setIsCommentBusy(true);
     setCommentsError(null);
     setSaveFeedback(null);
 
     try {
-      const importedAt = new Date().toISOString();
-      const importId = createCommentImportId(importedAt);
-      const safeTimestamp = createFileSafeTimestamp(importedAt);
-      const knownCommentIds = new Set(
-        activeComments.map((comment) => comment.id)
+      const operationDocumentKey = createProjectDocumentKey(
+        chatGptImportDialog
       );
-      const unknownCommentIds = getUnknownImportCommentIds(
-        parsedResponse,
-        knownCommentIds
-      );
-      const importedCommentIds = getKnownImportCommentIds(
-        parsedResponse,
-        knownCommentIds
-      );
-      const existingPatches = await readProjectPatches(projectHandle);
-      const importedPatches = createImportedPatchProposals({
+      const imported = await importProjectCommentReplyResponse({
         comments,
-        existingPatches,
-        importedAt,
-        importId,
-        knownCommentIds,
-        patchProposals: parsedResponse.patch_proposals,
-        sourceChatUrl
+        knownCommentIds: new Set(
+          activeComments.map((comment) => comment.id)
+        ),
+        markdown,
+        project: projectHandle,
+        responseText: chatGptImportDialog.responseJson,
+        reviewBatches,
+        sourceChatUrl: chatGptImportDialog.sourceChatUrl,
+        validateBeforeCommit: () => {
+          if (activeDocumentKeyRef.current !== operationDocumentKey) {
+            throw new Error(
+              "The project document changed during response import. No response data was imported."
+            );
+          }
+        }
       });
-      validateImportedPatchDependencySimulation({
-        baseDocumentSha256: dependencyBaseDocumentSha256,
-        baseDocumentState: dependencyBaseDocumentState,
-        comments,
-        documentId: chatGptImportDialog.documentId,
-        existingPatches:
-          responseAssociation.kind === "exact" ? [] : existingPatches,
-        importedPatches,
-        markdown: dependencyValidationMarkdown
-      });
-      const { nextComments, openQuestionsAttached, repliesAttached } =
-        createImportedCommentThreads({
-          comments,
-          importedAt,
-          importId,
-          importedCommentIds,
-          openQuestions: parsedResponse.open_questions,
-          replies: parsedResponse.replies,
-          sourceChatUrl
-        });
-      const importWarnings = unknownCommentIds.map(
-        (commentId) =>
-          `Response referenced a comment that was not found: ${commentId}`
-      );
-      if (activeReviewBatch && responseAssociation.kind !== "exact") {
-        importWarnings.push(
-          "The response did not include exact Review Batch identity. The active batch remains awaiting an associated response."
-        );
-      }
-      const importWrapper = {
-        import_id: importId,
-        imported_at: importedAt,
-        target_document: getProjectDocumentExportIdentity(projectHandle),
-        source_chat_url: sourceChatUrl,
-        sources: parsedResponse.sources,
-        raw_response: parsedResponse,
-        warnings: importWarnings
-      };
-
-      const nextPatches = [...existingPatches, ...importedPatches];
-      const responseAnalysis =
-        responseAssociation.kind === "exact"
-          ? analyzeImportedReviewBatchResponse({
-              analyzedAt: importedAt,
-              batch: responseAssociation.batch,
-              comments: nextComments,
-              importId,
-              patches: nextPatches
-            })
-          : null;
-      const nextReviewBatches =
-        responseAssociation.kind === "exact" && responseAnalysis
-          ? createRespondedReviewBatchRecords({
-              analysis: responseAnalysis,
-              batchId: responseAssociation.batch.batch_id,
-              batches: reviewBatches,
-              importId,
-              responseReceivedAt: importedAt
-            })
-          : reviewBatches;
-      const importRelativePath = await writeProjectImport({
-        contents: `${JSON.stringify(importWrapper, null, 2)}\n`,
-        fileName: `${safeTimestamp}-comment-reply-import.json`,
-        project: projectHandle
-      });
-
-      try {
-        await saveProjectState({
-          comments: nextComments,
-          markdown,
-          patches: nextPatches,
-          reviewBatches: nextReviewBatches,
-          project: projectHandle,
-          reason: "import_chatgpt_response",
-          rollbackOnFailure: true
-        });
-      } catch (error) {
-        await removeProjectImport({
-          project: projectHandle,
-          relativePath: importRelativePath
-        }).catch(() => false);
-        throw error;
-      }
 
       if (
         activeDocumentKeyRef.current !==
@@ -5655,19 +5489,19 @@ export function DocumentEditor() {
 
       setBaselineMarkdown(markdown);
       setRestoredMarkdown(null);
-      commentsRef.current = nextComments;
-      patchesRef.current = nextPatches;
-      setComments(nextComments);
-      setPatches(nextPatches);
-      setReviewBatches(nextReviewBatches);
+      commentsRef.current = imported.comments;
+      patchesRef.current = imported.patches;
+      setComments(imported.comments);
+      setPatches(imported.patches);
+      setReviewBatches(imported.review_batches);
       setChatGptImportDialog(null);
       setSaveFeedback({
-        kind: importWarnings.length > 0 ? "info" : "success",
+        kind: imported.warnings.length > 0 ? "info" : "success",
         message: createChatGptImportSummaryMessage({
-          openQuestionsAttached,
-          patchProposalsStored: importedPatches.length,
-          repliesAttached,
-          warnings: importWarnings
+          openQuestionsAttached: imported.open_questions_attached,
+          patchProposalsStored: imported.patch_proposals_stored,
+          repliesAttached: imported.replies_attached,
+          warnings: imported.warnings
         })
       });
     } catch (error) {
@@ -5683,7 +5517,8 @@ export function DocumentEditor() {
           error: message,
           errorCode:
             error instanceof AtomicTablePatchValidationError ||
-            error instanceof PatchDependencyValidationError
+            error instanceof PatchDependencyValidationError ||
+            error instanceof ReviewBatchDocumentSnapshotError
               ? error.code
               : null,
           repairPrompt
@@ -14123,350 +13958,6 @@ Remember: you may suggest \`resolve_manually\`, but you must not claim the comme
 ${jsonText.trimEnd()}
 \`\`\`
 `;
-}
-
-function createCommentImportId(importedAt: string): string {
-  return `PM-IMPORT-${createFileSafeTimestamp(importedAt)}`;
-}
-
-function getUnknownImportCommentIds(
-  response: PatchmarkCommentReplyImport,
-  knownCommentIds: Set<string>
-): string[] {
-  const referencedCommentIds = [
-    ...response.replies.map((reply) => reply.comment_id),
-    ...response.patch_proposals.map((patchProposal) => patchProposal.comment_id),
-    ...response.open_questions.map((openQuestion) => openQuestion.comment_id)
-  ];
-
-  return Array.from(
-    new Set(
-      referencedCommentIds.filter((commentId) => !knownCommentIds.has(commentId))
-    )
-  );
-}
-
-function getKnownImportCommentIds(
-  response: PatchmarkCommentReplyImport,
-  knownCommentIds: Set<string>
-): Set<string> {
-  return new Set(
-    [
-      ...response.replies.map((reply) => reply.comment_id),
-      ...response.patch_proposals.map((patchProposal) => patchProposal.comment_id),
-      ...response.open_questions.map((openQuestion) => openQuestion.comment_id)
-    ].filter((commentId) => knownCommentIds.has(commentId))
-  );
-}
-
-function createImportedCommentThreads({
-  comments,
-  importedAt,
-  importId,
-  importedCommentIds,
-  openQuestions,
-  replies,
-  sourceChatUrl
-}: {
-  comments: PatchmarkComment[];
-  importedAt: string;
-  importId: string;
-  importedCommentIds: Set<string>;
-  openQuestions: PatchmarkCommentReplyImport["open_questions"];
-  replies: PatchmarkCommentReplyImport["replies"];
-  sourceChatUrl?: string;
-}): {
-  nextComments: PatchmarkComment[];
-  openQuestionsAttached: number;
-  repliesAttached: number;
-} {
-  let openQuestionsAttached = 0;
-  let repliesAttached = 0;
-
-  const nextComments = comments.map((comment) => {
-    const matchingReplies = replies.filter(
-      (reply) => reply.comment_id === comment.id
-    );
-    const matchingOpenQuestions = openQuestions.filter(
-      (openQuestion) => openQuestion.comment_id === comment.id
-    );
-
-    if (
-      matchingReplies.length === 0 &&
-      matchingOpenQuestions.length === 0 &&
-      !importedCommentIds.has(comment.id)
-    ) {
-      return comment;
-    }
-
-    let nextThread = comment.thread;
-
-    for (const reply of matchingReplies) {
-      nextThread = [
-        ...nextThread,
-        createChatGptThreadEntry({
-          content: reply.reply,
-          createdAt: importedAt,
-          importId,
-          sources: reply.reply_sources,
-          sourceChatUrl,
-          suggestedUserAction: reply.suggested_user_action,
-          thread: nextThread
-        })
-      ];
-      repliesAttached += 1;
-    }
-
-    for (const openQuestion of matchingOpenQuestions) {
-      nextThread = [
-        ...nextThread,
-        createChatGptThreadEntry({
-          content: `Question: ${openQuestion.question}`,
-          createdAt: importedAt,
-          importId,
-          sources: openQuestion.question_sources,
-          sourceChatUrl,
-          suggestedUserAction: "clarify",
-          thread: nextThread
-        })
-      ];
-      openQuestionsAttached += 1;
-    }
-
-    return {
-      ...comment,
-      thread: nextThread,
-      export_state: {
-        ...comment.export_state,
-        focus_state: "reply_received" as const,
-        marked_for_export_at: undefined,
-        last_imported_at: importedAt,
-        last_import_id: importId
-      },
-      updated_at: importedAt
-    };
-  });
-
-  return {
-    nextComments,
-    openQuestionsAttached,
-    repliesAttached
-  };
-}
-
-function createChatGptThreadEntry({
-  content,
-  createdAt,
-  importId,
-  sources,
-  sourceChatUrl,
-  suggestedUserAction,
-  thread
-}: {
-  content: string;
-  createdAt: string;
-  importId: string;
-  sources?: PatchmarkSourceReference[];
-  sourceChatUrl?: string;
-  suggestedUserAction?: PatchmarkSuggestedUserAction;
-  thread: PatchmarkCommentThreadEntry[];
-}): PatchmarkCommentThreadEntry {
-  return {
-    id: createNextThreadEntryIdFromEntries(thread),
-    role: "chatgpt",
-    content,
-    created_at: createdAt,
-    sources,
-    source_import_id: importId,
-    source_chat_url: sourceChatUrl,
-    suggested_user_action: suggestedUserAction
-  };
-}
-
-function createImportedPatchProposals({
-  comments,
-  existingPatches,
-  importedAt,
-  importId,
-  knownCommentIds,
-  patchProposals,
-  sourceChatUrl
-}: {
-  comments: PatchmarkComment[];
-  existingPatches: PatchmarkPatch[];
-  importedAt: string;
-  importId: string;
-  knownCommentIds: Set<string>;
-  patchProposals: PatchmarkCommentReplyImport["patch_proposals"];
-  sourceChatUrl?: string;
-}): PatchmarkPatch[] {
-  const validPatchProposals = patchProposals.filter((patchProposal) =>
-    knownCommentIds.has(patchProposal.comment_id)
-  );
-  const groupIdsByCommentId = new Map<string, string>();
-
-  validPatchProposals.forEach((patchProposal) => {
-    if (groupIdsByCommentId.has(patchProposal.comment_id)) {
-      return;
-    }
-
-    groupIdsByCommentId.set(
-      patchProposal.comment_id,
-      createNextPatchGroupId(existingPatches, groupIdsByCommentId.size)
-    );
-  });
-
-  const groupTotalsByCommentId = validPatchProposals.reduce<Map<string, number>>(
-    (totals, patchProposal) => {
-      totals.set(
-        patchProposal.comment_id,
-        (totals.get(patchProposal.comment_id) ?? 0) + 1
-      );
-      return totals;
-    },
-    new Map()
-  );
-  const groupIndexesByCommentId = new Map<string, number>();
-  const commentsById = new Map(comments.map((comment) => [comment.id, comment]));
-  const patchIdsByKey = new Map(
-    validPatchProposals.flatMap((patchProposal, index) =>
-      patchProposal.patch_key
-        ? [[patchProposal.patch_key, createNextPatchId(existingPatches, index)]]
-        : []
-    )
-  );
-
-  return validPatchProposals.map((patchProposal, index) => {
-    const currentGroupIndex =
-      (groupIndexesByCommentId.get(patchProposal.comment_id) ?? 0) + 1;
-    groupIndexesByCommentId.set(
-      patchProposal.comment_id,
-      currentGroupIndex
-    );
-
-    const importedPatch = {
-      id: createNextPatchId(existingPatches, index),
-      status: "pending" as const,
-      patch_group_id: groupIdsByCommentId.get(patchProposal.comment_id),
-      patch_group_index: currentGroupIndex,
-      patch_group_total:
-        groupTotalsByCommentId.get(patchProposal.comment_id) ?? 1,
-      comment_id: patchProposal.comment_id,
-      source_import_id: importId,
-      source_chat_url: sourceChatUrl,
-      source_patch_key: patchProposal.patch_key,
-      depends_on_patch_ids: patchProposal.depends_on?.map((dependencyKey) => {
-        const dependencyPatchId = patchIdsByKey.get(dependencyKey);
-
-        if (!dependencyPatchId) {
-          throw new PatchDependencyValidationError({
-            code: "missing_patch_dependency",
-            dependencyKey,
-            message: `Patch ${patchProposal.patch_key ?? index + 1} references a dependency that was not assigned an internal patch ID.`,
-            patchKey: patchProposal.patch_key
-          });
-        }
-
-        return dependencyPatchId;
-      }),
-      depends_on_patch_keys_snapshot: patchProposal.depends_on
-        ? [...patchProposal.depends_on]
-        : undefined,
-      display_title: patchProposal.display_title,
-      target_heading: patchProposal.target_heading,
-      original_text: patchProposal.original_text,
-      suggested_text: patchProposal.suggested_text,
-      suggested_text_sources: patchProposal.suggested_text_sources,
-      reason: patchProposal.reason,
-      reason_sources: patchProposal.reason_sources,
-      risk: patchProposal.risk,
-      risk_sources: patchProposal.risk_sources,
-      sources: patchProposal.sources,
-      created_at: importedAt
-    };
-    const displayTitle =
-      importedPatch.display_title ??
-      createDerivedImportedPatchDisplayTitle({
-        comment: commentsById.get(patchProposal.comment_id) ?? null,
-        patch: importedPatch
-      });
-
-    return {
-      ...importedPatch,
-      display_title: displayTitle
-    };
-  });
-}
-
-function createDerivedImportedPatchDisplayTitle({
-  comment,
-  patch
-}: {
-  comment: PatchmarkComment | null;
-  patch: PatchmarkPatch;
-}): string | undefined {
-  const title = getPatchDisplayTitleInfo(patch, { comment }).title;
-
-  return normalizePatchDisplayTitleCandidate(title) ?? undefined;
-}
-
-function createNextThreadEntryIdFromEntries(
-  thread: PatchmarkCommentThreadEntry[]
-): string {
-  const nextNumber =
-    thread.reduce((maxNumber, entry) => {
-      const match = /^PM-THREAD-(\d+)$/.exec(entry.id);
-
-      if (!match) {
-        return maxNumber;
-      }
-
-      return Math.max(maxNumber, Number(match[1]));
-    }, 0) + 1;
-
-  return `PM-THREAD-${String(nextNumber).padStart(4, "0")}`;
-}
-
-function createNextPatchId(
-  patches: PatchmarkPatch[],
-  offset: number
-): string {
-  const nextNumber =
-    patches.reduce((maxNumber, patch) => {
-      const match = /^PM-PATCH-(\d+)$/.exec(patch.id);
-
-      if (!match) {
-        return maxNumber;
-      }
-
-      return Math.max(maxNumber, Number(match[1]));
-    }, 0) +
-    offset +
-    1;
-
-  return `PM-PATCH-${String(nextNumber).padStart(4, "0")}`;
-}
-
-function createNextPatchGroupId(
-  patches: PatchmarkPatch[],
-  offset: number
-): string {
-  const nextNumber =
-    patches.reduce((maxNumber, patch) => {
-      const match = /^PM-PATCH-GROUP-(\d+)$/.exec(
-        patch.patch_group_id ?? ""
-      );
-
-      if (!match) {
-        return maxNumber;
-      }
-
-      return Math.max(maxNumber, Number(match[1]));
-    }, 0) +
-    offset +
-    1;
-
-  return `PM-PATCH-GROUP-${String(nextNumber).padStart(4, "0")}`;
 }
 
 function getPendingPatchCountsByCommentId(

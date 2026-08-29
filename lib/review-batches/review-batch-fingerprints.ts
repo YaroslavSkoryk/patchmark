@@ -3,14 +3,17 @@ import type { PatchmarkComment } from "../project/project-types.ts";
 const SHA256_PATTERN = /^[a-f0-9]{64}$/;
 
 export async function createReviewBatchSha256(value: string): Promise<string> {
+  return createReviewBatchBytesSha256(new TextEncoder().encode(value));
+}
+
+export async function createReviewBatchBytesSha256(
+  value: Uint8Array
+): Promise<string> {
   const subtleCrypto = globalThis.crypto?.subtle;
   if (!subtleCrypto) {
     throw new Error("SHA-256 is unavailable in this browser.");
   }
-  const digest = await subtleCrypto.digest(
-    "SHA-256",
-    new TextEncoder().encode(value)
-  );
+  const digest = await subtleCrypto.digest("SHA-256", Uint8Array.from(value));
   return Array.from(new Uint8Array(digest))
     .map((byte) => byte.toString(16).padStart(2, "0"))
     .join("");

@@ -148,6 +148,10 @@ const commentsPanelSource = readFileSync(
   new URL("../components/comments-panel.tsx", import.meta.url),
   "utf8"
 );
+const projectImportSource = readFileSync(
+  new URL("../lib/imports/project-comment-reply-import.ts", import.meta.url),
+  "utf8"
+);
 
 assert.match(documentEditorSource, /Continue discussion/);
 assert.match(documentEditorSource, /The linked comment stays open/);
@@ -161,9 +165,9 @@ assert.match(commentsPanelSource, /\.focus\(\)/);
 assert.match(documentEditorSource, /related_patch_history/);
 assert.match(documentEditorSource, /current Markdown as the source of truth/);
 assert.match(documentEditorSource, /not a revision of an accepted patch/);
-assert.match(documentEditorSource, /createNextPatchId\(existingPatches, index\)/);
-assert.match(documentEditorSource, /status: "pending" as const/);
-assert.match(documentEditorSource, /\.\.\.existingPatches/);
+assert.match(projectImportSource, /createNextPatchId\(existingPatches, index\)/);
+assert.match(projectImportSource, /status: "pending"/);
+assert.match(projectImportSource, /\.\.\.existingPatches/);
 assert.match(documentEditorSource, /createLinkedPatchTransformedAnchor/);
 assert.match(documentEditorSource, /selectedText: transform\.selectedText/);
 assert.match(

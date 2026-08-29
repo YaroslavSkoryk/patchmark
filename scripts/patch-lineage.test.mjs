@@ -247,12 +247,17 @@ const documentEditorSource = readFileSync(
   new URL("../components/document-editor.tsx", import.meta.url),
   "utf8"
 );
+const projectImportSource = readFileSync(
+  new URL("../lib/imports/project-comment-reply-import.ts", import.meta.url),
+  "utf8"
+);
 const commentsPanelSource = readFileSync(
   new URL("../components/comments-panel.tsx", import.meta.url),
   "utf8"
 );
 
-assert.match(documentEditorSource, /display_title: displayTitle/);
+assert.match(projectImportSource, /display_title:/);
+assert.match(projectImportSource, /getPatchDisplayTitleInfo/);
 assert.match(documentEditorSource, /Refines/);
 assert.match(documentEditorSource, /Follow-up to/);
 assert.match(documentEditorSource, /Earlier patch ID/);

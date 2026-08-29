@@ -52,6 +52,7 @@ assert(!/(?:process\.env|NEXT_PUBLIC_|window|document|navigator|localStorage|ses
 const nextConfigSource = await readFile(join(root, "next.config.ts"), "utf8");
 assert.match(nextConfigSource, /from\s+["']\.\/lib\/release\/product-release-state\.ts["']/, "The production bundler must consume the checked-in release authority");
 assert.match(nextConfigSource, /!productReleaseState\.human_collaboration/, "The production bundler must exclude a disabled human-collaboration loader");
+assert.match(nextConfigSource, /!productReleaseState\.agent_exchange/, "The production bundler must exclude a disabled Agent Exchange loader");
 assert.match(nextConfigSource, /IgnorePlugin/, "The disabled implementation must be removed while the production graph is assembled");
 const releaseAuthorityImporters = [];
 for (const productionRoot of productionRoots) {
@@ -63,8 +64,9 @@ for (const productionRoot of productionRoots) {
   }
 }
 assert.deepEqual(releaseAuthorityImporters.sort(), [
+  "lib/agent-exchange/feature-state.ts",
   "lib/collaboration-shadow/feature-state.ts"
-], "Only the existing collaboration feature resolver consumes the checked-in production release authority");
+], "Only the independent feature resolvers consume the checked-in production release authority");
 
 const collaborationIndex = await readFile(join(root, "lib", "collaboration", "index.ts"), "utf8");
 assert(!collaborationIndex.includes("./hc3/"), "HC-3 entered the production collaboration barrel");
@@ -124,14 +126,14 @@ try {
   const loadableManifest = JSON.parse(await readFile(join(root, ".next", "react-loadable-manifest.json"), "utf8"));
   productionBuildGraphChecked = true;
   disabledFeatureLoadableKeys = Object.keys(loadableManifest).filter((key) =>
-    /collaboration-shadow\/entrypoint\.ts -> \.(?:\/shadow-implementation|\/product-qualification-loader)\.ts/.test(key)
+    /collaboration-shadow\/entrypoint\.ts -> \.(?:\/shadow-implementation|\/product-qualification-loader)\.ts|agent-exchange\/entrypoint\.ts -> \.\/qualification-loader\.ts/.test(key)
   );
   assert.deepEqual(disabledFeatureLoadableKeys, [], "Disabled collaboration implementations remain reachable through the production loadable manifest");
   const initialFiles = [...new Set(Object.values(manifest.pages ?? {}).flat())];
   for (const path of initialFiles) {
     if (!path.endsWith(".js")) continue;
     const source = await readFile(join(root, ".next", path), "utf8");
-    if (/pmhc3|connection-offer-commitment|\.pmcb|AgentExchangeWorkspace|agent_exchange_loader/.test(source)) hc3InInitialPageGraph = true;
+    if (/pmhc3|connection-offer-commitment|\.pmcb|AgentExchangeWorkspace|agent_exchange_loader|AgentExchangeOperationController|prepareAgentExchange/.test(source)) hc3InInitialPageGraph = true;
   }
   assert(!hc3InInitialPageGraph, "HC-3 code entered the initial production page graph");
   for (const file of await deployableFiles(join(root, ".next"))) {
@@ -142,7 +144,7 @@ try {
     if (/BEGIN:nextjs-agent-rules|This is NOT the Next\.js you know|@AGENTS\.md/.test(source)) {
       agentGuidanceDeployableHits.push(relative(root, file));
     }
-    if (/collaboration_shadow_container_metadata|complete_experimental_foundation|PatchmarkCollaborationQualification|connection-offer-commitment|\.pmcb\b|AgentExchangeWorkspace|agent_exchange_loader/.test(source)) {
+    if (/collaboration_shadow_container_metadata|complete_experimental_foundation|PatchmarkCollaborationQualification|connection-offer-commitment|\.pmcb\b|AgentExchangeWorkspace|agent_exchange_loader|AgentExchangeOperationController|prepareAgentExchange|qualification\.deterministic/.test(source)) {
       disabledFeatureDeployableHits.push(relative(root, file));
     }
   }

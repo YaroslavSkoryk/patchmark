@@ -257,6 +257,13 @@ export async function readExactReviewBatchPrompt({
   return prompt;
 }
 
+export async function readExactReviewBatchPromptBytes(input: {
+  batch: PatchmarkReviewBatch;
+  project: PatchmarkProjectHandle;
+}): Promise<Uint8Array> {
+  return new TextEncoder().encode(await readExactReviewBatchPrompt(input));
+}
+
 export class ReviewBatchDocumentSnapshotError extends Error {
   readonly code:
     | "exported_document_snapshot_invalid"

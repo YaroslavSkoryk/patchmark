@@ -23,6 +23,15 @@ const nextConfig: NextConfig = {
           );
         }
       }));
+      config.plugins.push(new webpack.IgnorePlugin({
+        checkResource(resource: string, context: string) {
+          return (
+            !productReleaseState.agent_exchange &&
+            context.replaceAll("\\", "/").endsWith("/lib/agent-exchange") &&
+            resource === "./qualification-loader.ts"
+          );
+        }
+      }));
     }
     return config;
   }

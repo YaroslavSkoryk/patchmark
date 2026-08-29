@@ -62,7 +62,11 @@ export class NodeDirectoryHandle {
     try {
       const stats = fs.statSync(entryPath);
       if (stats.isDirectory()) {
-        fs.rmSync(entryPath, { recursive: options.recursive === true });
+        if (options.recursive === true) {
+          fs.rmSync(entryPath, { recursive: true });
+        } else {
+          fs.rmdirSync(entryPath);
+        }
       } else {
         fs.unlinkSync(entryPath);
       }
