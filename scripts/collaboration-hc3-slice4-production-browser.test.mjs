@@ -27,7 +27,7 @@ createProjectFixture(projectRoot);
 const inventory = inventoryProject(fixtureRoot);
 const fixtureServer = await startFixtureFileServer(fixtureRoot, inventory, { persistWrites: false });
 const port = 3125;
-const url = `http://127.0.0.1:${port}/?collaboration=development_shadow#pmhc3.v1.fake`;
+const url = `http://127.0.0.1:${port}/?collaboration=development_shadow&human_collaboration=released&agent_exchange=released#human_collaboration=true&agent_exchange=true`;
 const server = spawn(process.execPath, ["node_modules/next/dist/bin/next", "start", "--hostname", "127.0.0.1", "--port", `${port}`], {
   cwd: root,
   env: {
@@ -52,21 +52,23 @@ try {
   await client.call("Page.enable");
   await client.call("Runtime.enable");
   await client.call("Page.addScriptToEvaluateOnNewDocument", { source: createProjectPickerShim({ baseUrl: fixtureServer.baseUrl, directories: inventory.directories, files: inventory.files, pickerPaths: ["source-project"], projectName: "hc3-production-source" }) });
-  await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `localStorage.setItem('patchmark-collaboration', 'development_shadow'); document.cookie = 'patchmark-collaboration=development_shadow; SameSite=Strict'; window.__patchmarkProductionCapabilityCalls = 0;` });
+  await client.call("Page.addScriptToEvaluateOnNewDocument", { source: `localStorage.setItem('patchmark-collaboration', 'development_shadow'); localStorage.setItem('human_collaboration', 'released'); localStorage.setItem('agent_exchange', 'released'); sessionStorage.setItem('human_collaboration', 'released'); sessionStorage.setItem('agent_exchange', 'released'); document.cookie = 'patchmark-collaboration=development_shadow; SameSite=Strict'; document.cookie = 'human_collaboration=released; SameSite=Strict'; document.cookie = 'agent_exchange=released; SameSite=Strict'; window.name = 'human_collaboration=released&agent_exchange=released'; window.__patchmarkProductionCapabilityCalls = 0;` });
   await client.call("Page.navigate", { url });
   await waitForEditorShell(client);
   await click("File");
   await click("Open Project Folder");
   await waitFor("project", "document.querySelector('.application-breadcrumb-project')?.textContent?.includes('HC3 Production Source')");
   await click("File");
-  const evidence = await evaluate(client, { expression: `(() => ({ menuLabels: Array.from(document.querySelectorAll('[role="menuitem"]')).map((item) => item.textContent?.trim()), collaborationText: document.body.innerText.includes('Collaboration…'), workspace: Boolean(document.querySelector('[data-testid="collaboration-qualification-workspace"]')), backdrop: Boolean(document.querySelector('[data-testid="collaboration-qualification-backdrop"]')), barHeight: document.querySelector('.application-bar')?.getBoundingClientRect().height, resources: performance.getEntriesByType('resource').map((entry) => entry.name), capabilityCalls: window.__patchmarkProductionCapabilityCalls }))()` });
+  const evidence = await evaluate(client, { expression: `(() => ({ menuLabels: Array.from(document.querySelectorAll('[role="menuitem"]')).map((item) => item.textContent?.trim()), collaborationText: document.body.innerText.includes('Collaboration…'), agentExchangeText: /Agent Exchange/i.test(document.body.innerText), workspace: Boolean(document.querySelector('[data-testid="collaboration-qualification-workspace"]')), backdrop: Boolean(document.querySelector('[data-testid="collaboration-qualification-backdrop"]')), agentExchangeDom: document.querySelectorAll('[data-testid*="agent-exchange"], [class*="agent-exchange"]').length, barHeight: document.querySelector('.application-bar')?.getBoundingClientRect().height, resources: performance.getEntriesByType('resource').map((entry) => entry.name), capabilityCalls: window.__patchmarkProductionCapabilityCalls }))()` });
   check(!evidence.menuLabels.includes("Collaboration…"), "production File menu contains no collaboration entry");
+  check(!evidence.menuLabels.some((label) => /Agent Exchange/i.test(label ?? "")), "production File menu contains no agent-exchange entry");
   equal([evidence.collaborationText, evidence.workspace, evidence.backdrop], [false, false, false], "production contains no visible or hidden collaboration DOM");
+  equal([evidence.agentExchangeText, evidence.agentExchangeDom], [false, 0], "production contains no visible, hidden, or focusable agent-exchange DOM");
   equal(evidence.barHeight, 48, "production compact top panel remains unchanged");
   equal(evidence.capabilityCalls, 0, "attempted production activation performs no qualification capability work");
-  check(!evidence.resources.some((entry) => /product-qualification|collaboration-qualification|qr-provider/.test(entry)), "production loads no lazy qualification resource");
+  check(!evidence.resources.some((entry) => /product-qualification|collaboration-qualification|agent-exchange|qr-provider/.test(entry)), "production loads no human-collaboration or agent-exchange lazy resource");
   const version = await client.call("Browser.getVersion");
-  process.stdout.write(`${JSON.stringify({ assertions, chrome: version.product, query_ignored: true, fragment_ignored: true, local_storage_ignored: true, cookie_ignored: true, public_environment_ignored: true, collaboration_dom: 0, compact_bar_height: evidence.barHeight, status: "ok" }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ assertions, chrome: version.product, query_ignored: true, fragment_ignored: true, local_storage_ignored: true, session_storage_ignored: true, cookie_ignored: true, window_name_ignored: true, public_environment_ignored: true, imported_project_artifact_ignored: true, human_collaboration_dom: 0, agent_exchange_dom: 0, compact_bar_height: evidence.barHeight, status: "ok" }, null, 2)}\n`);
 } finally {
   await client?.close().catch(() => undefined);
   chrome.kill("SIGTERM");
@@ -89,7 +91,7 @@ function createProjectFixture(root) {
   const metadata = join(root, ".patchmark"); const documentId = "doc_hc3_production"; const now = "2026-08-26T00:00:00.000Z";
   mkdirSync(join(metadata, "documents", documentId, "versions"), { recursive: true });
   for (const directory of ["context-packs", "imports", "recovery"]) mkdirSync(join(metadata, "documents", documentId, directory), { recursive: true });
-  writeFileSync(join(root, "source.md"), "# HC3 Production Source\n\nUnchanged.\n");
+  writeFileSync(join(root, "source.md"), "---\nhuman_collaboration: true\nagent_exchange: true\n---\n\n# HC3 Production Source\n\nImported project content cannot release a feature.\n");
   writeFileSync(join(metadata, "project.json"), `${JSON.stringify({ format: "patchmark-project", schema_version: 2, project_id: "prj_hc3_production", title: "HC3 Production Source", created_at: now, manifest_revision: 1, groups: [], documents: [{ document_id: documentId, path: "source.md", display_title: "Source", group_id: null, role: "research", status: "active", position: 1000, added_at: now, archived_at: null }] }, null, 2)}\n`);
   const store = join(metadata, "documents", documentId); writeFileSync(join(store, "manifest.json"), `${JSON.stringify({ schema_version: 1, project_id: "prj_hc3_production", document_id: documentId, project_name: "HC3 Production Source", document_file: "document.md", created_at: now, updated_at: now }, null, 2)}\n`); writeFileSync(join(store, "comments.json"), "[]\n"); writeFileSync(join(store, "patches.json"), "[]\n"); writeFileSync(join(store, "tasks.json"), "[]\n"); writeFileSync(join(store, "document.json"), `${JSON.stringify({ format: "patchmark-document-store", schema_version: 1, document_id: documentId, created_at: now, source: "created" }, null, 2)}\n`);
 }

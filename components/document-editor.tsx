@@ -9520,7 +9520,7 @@ export function DocumentEditor() {
 
   async function handleOpenCollaborationWorkspace() {
     if (
-      collaborationProductFeatureState.mode !== "development_shadow" ||
+      collaborationProductFeatureState.mode === "disabled" ||
       !projectHandle ||
       isCollaborationWorkspaceLoading
     ) {
@@ -9545,7 +9545,7 @@ export function DocumentEditor() {
     } catch {
       setSaveFeedback({
         kind: "error",
-        message: "The development collaboration workspace could not be loaded."
+        message: "The collaboration workspace could not be loaded."
       });
     } finally {
       setIsCollaborationWorkspaceLoading(false);
@@ -9791,9 +9791,15 @@ export function DocumentEditor() {
                   Create Project From Current Document
                 </ApplicationMenuItem>
               </ApplicationMenuGroup>
-              {collaborationProductFeatureState.mode ===
-                "development_shadow" && projectHandle ? (
-                <ApplicationMenuGroup label="Collaboration qualification">
+              {collaborationProductFeatureState.mode !== "disabled" &&
+              projectHandle ? (
+                <ApplicationMenuGroup
+                  label={
+                    collaborationProductFeatureState.mode === "released"
+                      ? "Collaboration"
+                      : "Collaboration qualification"
+                  }
+                >
                   <ApplicationMenuItem
                     busy={isCollaborationWorkspaceLoading}
                     closeMenu={closeMenu}

@@ -10,6 +10,29 @@ const manifestPath = join(root, "docs/hc3/review-manifest-slice6.json");
 const readiness = JSON.parse(readFileSync(readinessPath, "utf8"));
 readiness.baseline_commit = baselineCommit;
 
+if (!readiness.items.some((row) => row.id === "HC3-S6-RB1-DEVELOPER-RELEASE-BOUNDARY")) {
+  readiness.items.push({
+    id: "HC3-S6-RB1-DEVELOPER-RELEASE-BOUNDARY",
+    requirement: "Independent checked-in release authority, production graph exclusion, and frozen human-collaboration availability",
+    evidence_source: "scripts/release-boundary-rb1.test.mjs",
+    evidence_hash: "0".repeat(64),
+    browser: "all",
+    engine: "all",
+    os: "all",
+    device: "all",
+    evidence_mode: "automated",
+    status: "pass",
+    residual_risk: "A release literal, bundler exclusion, product gate, route, or implementation-load change requires feature-specific requalification and a separate approval",
+    blocking: false,
+    required_approver: "none",
+    expires_or_invalidates_on: [
+      "release authority or production bundler changes",
+      "feature gate, route, handler, UI, or implementation-load changes",
+      "dependency, lockfile, protocol, fixture, or qualification changes"
+    ]
+  });
+}
+
 const dependencyClosures = new Map([
   ["HC3-S6-JS-YAML", {
     status: "pass",
@@ -27,6 +50,12 @@ const dependencyClosures = new Map([
     requirement: "MDXEditor 4 passes the fixed optimized-production materiality gate while the original development gate remains historical diagnostic evidence",
     status: "pass",
     residual_risk: "The final production comparison passes the prospectively fixed +50 ms median and +100 ms p95 materiality budgets; development remains a reported diagnostic and misses its historical median ceiling",
+    blocking: false,
+    required_approver: "none"
+  }],
+  ["HC3-S6-RB1-DEVELOPER-RELEASE-BOUNDARY", {
+    status: "pass",
+    residual_risk: "A release literal, bundler exclusion, product gate, route, or implementation-load change requires feature-specific requalification and a separate approval",
     blocking: false,
     required_approver: "none"
   }]
@@ -58,8 +87,10 @@ for (const [path, category] of Object.entries({
   "components/mdx-render-error-lifecycle-regression-harness.tsx": "covered_source",
   "docs/hc3/dependency-migration-slice7a.md": "covered_source",
   "docs/hc3/document-switch-performance-slice7a.json": "covered_source",
+  "docs/hc3/human-collaboration-freeze-rb1.md": "security_policy",
   "eslint.config.mjs": "security_policy",
   "lib/performance/document-switch-performance.ts": "covered_source",
+  "lib/release/product-release-state.ts": "security_policy",
   "next-env.d.ts": "covered_source",
   "scripts/collaboration-hc3-slice7a-editor-browser.test.mjs": "covered_source",
   "scripts/collaboration-hc3-slice7a-frontmatter-security.test.mjs": "covered_source",
@@ -69,6 +100,9 @@ for (const [path, category] of Object.entries({
   "scripts/fixtures/collaboration-hc3-slice7a-editor-corpus-v1.json": "frozen_fixture",
   "scripts/lib/fixtures/create-document-switch-project.mjs": "covered_source",
   "scripts/responsive-accessibility-foundation-browser.test.mjs": "covered_source",
+  "scripts/release-boundary-rb1.test.mjs": "covered_source",
+  "scripts/release-boundary-rb1.type-test.ts": "covered_source",
+  "scripts/tsconfig.release-boundary-rb1.json": "covered_source",
   "tsconfig.json": "covered_source"
 })) covered.set(path, category);
 

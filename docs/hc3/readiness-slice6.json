@@ -10,7 +10,7 @@
       "id": "HC3-S6-PRODUCTION-LOCK",
       "requirement": "Frozen production gate and zero activity",
       "evidence_source": "scripts/collaboration-hc3-production-lock.test.mjs",
-      "evidence_hash": "8e12b527ce1352d720258443ee5c12bbadef29c01df504e1c01096e9f834179b",
+      "evidence_hash": "6f2d90b28b9163799998c20f308e2abf60963afd222bddd50f686d29c135dcea",
       "browser": "all",
       "engine": "all",
       "os": "all",
@@ -472,7 +472,7 @@
       "id": "HC3-S6-CSP-TT",
       "requirement": "Production and optimized CSP and Trusted Types",
       "evidence_source": "scripts/collaboration-hc3-slice5-production-policy-browser.test.mjs",
-      "evidence_hash": "7b49834eaa2e5f85293af85e78c4aa20aec90c7cba9968fb954b196c01a74918",
+      "evidence_hash": "0f193faac5d57653ebad85f36290b490ba066a3183643477458bcc317f49d2ad",
       "browser": "Chrome 151",
       "engine": "Blink",
       "os": "macOS 26.2",
@@ -640,7 +640,7 @@
       "id": "HC3-S6-DISABLED",
       "requirement": "Slice 6 changes remain test-only and production stays disabled",
       "evidence_source": "scripts/collaboration-hc3-production-lock.test.mjs",
-      "evidence_hash": "8e12b527ce1352d720258443ee5c12bbadef29c01df504e1c01096e9f834179b",
+      "evidence_hash": "6f2d90b28b9163799998c20f308e2abf60963afd222bddd50f686d29c135dcea",
       "browser": "production application",
       "engine": "all",
       "os": "all",
@@ -682,7 +682,7 @@
       "id": "HC3-S6-S7A-EDITOR-PERFORMANCE",
       "requirement": "MDXEditor 4 passes the fixed optimized-production materiality gate while the original development gate remains historical diagnostic evidence",
       "evidence_source": "docs/hc3/document-switch-performance-slice7a.json",
-      "evidence_hash": "ba3a40675edef951a6207099159241ea891913c71f4e464244689b6a81b10b17",
+      "evidence_hash": "c23b537f9a2b35de97a7e3356326b9b4d5701e4618a97e57564ebc44a485d99b",
       "browser": "Chrome 151",
       "engine": "Blink",
       "os": "macOS 26.2",
@@ -696,6 +696,26 @@
         "editor, performance, fixture, timing-boundary, or readiness changes",
         "dependency or lockfile changes",
         "browser or framework development-runtime changes"
+      ]
+    },
+    {
+      "id": "HC3-S6-RB1-DEVELOPER-RELEASE-BOUNDARY",
+      "requirement": "Independent checked-in release authority, production graph exclusion, and frozen human-collaboration availability",
+      "evidence_source": "scripts/release-boundary-rb1.test.mjs",
+      "evidence_hash": "9e692d11fa68b0cb38d0807370a0be40daff1be7d9d0b1e5e1aea083db53ff50",
+      "browser": "all",
+      "engine": "all",
+      "os": "all",
+      "device": "all",
+      "evidence_mode": "automated",
+      "status": "pass",
+      "residual_risk": "A release literal, bundler exclusion, product gate, route, or implementation-load change requires feature-specific requalification and a separate approval",
+      "blocking": false,
+      "required_approver": "none",
+      "expires_or_invalidates_on": [
+        "release authority or production bundler changes",
+        "feature gate, route, handler, UI, or implementation-load changes",
+        "dependency, lockfile, protocol, fixture, or qualification changes"
       ]
     }
   ]

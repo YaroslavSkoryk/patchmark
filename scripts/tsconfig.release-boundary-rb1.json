@@ -1,0 +1,12 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "allowImportingTsExtensions": true
+  },
+  "include": [
+    "release-boundary-rb1.type-test.ts",
+    "../lib/release/product-release-state.ts",
+    "../lib/collaboration-shadow/feature-state.ts"
+  ]
+}

@@ -4,14 +4,32 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 import {
+  getCollaborationProductQualificationState,
   isCollaborationShadowDisabled,
+  loadCollaborationProductQualification,
   runCollaborationShadowAfterLegacyCommit
 } from "../lib/collaboration-shadow/entrypoint.ts";
 import { getBuildCollaborationShadowFeatureState } from "../lib/collaboration-shadow/feature-state.ts";
+import { productReleaseState } from "../lib/release/product-release-state.ts";
 
 assert.equal(process.env.NODE_ENV, "production");
 assert.equal(process.env.NEXT_PUBLIC_PATCHMARK_COLLABORATION_SHADOW, "development_shadow");
+assert.deepEqual(productReleaseState, {
+  human_collaboration: false,
+  agent_exchange: false
+});
+assert(Object.isFrozen(productReleaseState));
 assert.equal(getBuildCollaborationShadowFeatureState().mode, "disabled");
+assert.equal(
+  getCollaborationProductQualificationState("development_shadow").mode,
+  "disabled"
+);
+
+const productDispatch = loadCollaborationProductQualification(
+  "development_shadow"
+);
+assert(isCollaborationShadowDisabled(productDispatch));
+assert(!(productDispatch instanceof Promise));
 
 let receiptFactoryCalls = 0;
 const dispatch = runCollaborationShadowAfterLegacyCommit(() => {
@@ -37,14 +55,18 @@ const appPageManifest = JSON.parse(
 const loadableManifest = JSON.parse(
   await fs.readFile(path.join(root, ".next/react-loadable-manifest.json"), "utf8")
 );
-const deferredKey = "lib/collaboration-shadow/entrypoint.ts -> ./shadow-implementation.ts";
-assert(loadableManifest[deferredKey]);
-const deferredFiles = loadableManifest[deferredKey].files;
+const disabledImplementationKeys = Object.keys(loadableManifest).filter((key) =>
+  /collaboration-shadow\/entrypoint\.ts -> \.(?:\/shadow-implementation|\/product-qualification-loader)\.ts/.test(key)
+);
+assert.deepEqual(
+  disabledImplementationKeys,
+  [],
+  "Production manifests must not expose disabled collaboration loaders"
+);
 const initialPageFiles = [...new Set(Object.values(appPageManifest.clientModules)
   .flatMap((entry) => entry.chunks)
   .filter((entry) => typeof entry === "string" && entry.endsWith(".js")))];
 assert(initialPageFiles.length > 0, "Next app-page client chunks are explicit");
-assert(deferredFiles.every((file) => !initialPageFiles.includes(file)));
 
 const initialPageSource = (
   await Promise.all(
@@ -55,6 +77,8 @@ const initialPageSource = (
 ).join("\n");
 assert(!initialPageSource.includes("collaboration_shadow_container_metadata"));
 assert(!initialPageSource.includes("complete_experimental_foundation"));
+assert(!initialPageSource.includes("AgentExchangeWorkspace"));
+assert(!initialPageSource.includes("agent_exchange_loader"));
 
 const productionModule = await fs.readFile(
   path.join(root, "lib/project/patchmark-project.ts"),
@@ -70,9 +94,12 @@ assert(!productionModule.includes("../collaboration/bootstrap"));
 
 console.log(JSON.stringify({
   production_feature_state: "disabled",
+  release_state: productReleaseState,
+  agent_exchange_implementation_in_initial_page: false,
   attempted_enable_ignored: true,
   receipt_factory_calls: receiptFactoryCalls,
-  heavy_chunk_deferred: deferredFiles,
+  disabled_implementation_loadable_keys: disabledImplementationKeys,
+  disabled_implementation_in_production_manifest: false,
   heavy_chunk_in_initial_page: false,
   production_collaboration_imports: productionCollaborationImports
 }, null, 2));

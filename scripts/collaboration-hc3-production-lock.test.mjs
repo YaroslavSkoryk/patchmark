@@ -45,6 +45,26 @@ const productLoader = await readFile(join(root, "lib", "collaboration-shadow", "
 assert(productLoader.includes("collaboration-qualification-workspace.tsx"), "The accepted gate must own the only product-workspace load edge");
 const productEntrypoint = await readFile(join(root, "lib", "collaboration-shadow", "entrypoint.ts"), "utf8");
 assert(productEntrypoint.includes('import("./product-qualification-loader.ts")'), "Product qualification must remain behind the shadow production gate");
+const releaseStateSource = await readFile(join(root, "lib", "release", "product-release-state.ts"), "utf8");
+assert.match(releaseStateSource, /human_collaboration:\s*false/);
+assert.match(releaseStateSource, /agent_exchange:\s*false/);
+assert(!/(?:process\.env|NEXT_PUBLIC_|window|document|navigator|localStorage|sessionStorage|indexedDB|fetch\(|WebSocket|RTCPeerConnection|setTimeout|setInterval|new\s+Worker|import\()/.test(releaseStateSource), "Checked-in release state must not read runtime activation inputs or feature implementations");
+const nextConfigSource = await readFile(join(root, "next.config.ts"), "utf8");
+assert.match(nextConfigSource, /from\s+["']\.\/lib\/release\/product-release-state\.ts["']/, "The production bundler must consume the checked-in release authority");
+assert.match(nextConfigSource, /!productReleaseState\.human_collaboration/, "The production bundler must exclude a disabled human-collaboration loader");
+assert.match(nextConfigSource, /IgnorePlugin/, "The disabled implementation must be removed while the production graph is assembled");
+const releaseAuthorityImporters = [];
+for (const productionRoot of productionRoots) {
+  for (const file of await sourceFiles(join(root, productionRoot))) {
+    const source = await readFile(file, "utf8");
+    if (/from\s+["'][^"']*release\/product-release-state/.test(source)) {
+      releaseAuthorityImporters.push(relative(root, file));
+    }
+  }
+}
+assert.deepEqual(releaseAuthorityImporters.sort(), [
+  "lib/collaboration-shadow/feature-state.ts"
+], "Only the existing collaboration feature resolver consumes the checked-in production release authority");
 
 const collaborationIndex = await readFile(join(root, "lib", "collaboration", "index.ts"), "utf8");
 assert(!collaborationIndex.includes("./hc3/"), "HC-3 entered the production collaboration barrel");
@@ -70,7 +90,7 @@ for (const file of hc3Files) {
 const routeFiles = (await sourceFiles(join(root, "app"))).filter((file) => /(?:route|page)\.(?:ts|tsx|js|mjs)$/.test(file));
 for (const file of routeFiles) {
   const source = await readFile(file, "utf8");
-  assert(!/hc3|handoff|pmhc3|\.pmcb/.test(source), `${relative(root, file)} exposes an HC-3 production route or handler`);
+    assert(!/hc3|handoff|pmhc3|\.pmcb|agent[-_]exchange/.test(source), `${relative(root, file)} exposes a disabled-feature production route or handler`);
 }
 
 const frozenFixtureHashes = {
@@ -97,14 +117,21 @@ let productionBuildGraphChecked = false;
 let hc3InInitialPageGraph = false;
 const slice6DeployableHits = [];
 const agentGuidanceDeployableHits = [];
+const disabledFeatureDeployableHits = [];
+let disabledFeatureLoadableKeys = [];
 try {
   const manifest = JSON.parse(await readFile(join(root, ".next", "build-manifest.json"), "utf8"));
+  const loadableManifest = JSON.parse(await readFile(join(root, ".next", "react-loadable-manifest.json"), "utf8"));
   productionBuildGraphChecked = true;
+  disabledFeatureLoadableKeys = Object.keys(loadableManifest).filter((key) =>
+    /collaboration-shadow\/entrypoint\.ts -> \.(?:\/shadow-implementation|\/product-qualification-loader)\.ts/.test(key)
+  );
+  assert.deepEqual(disabledFeatureLoadableKeys, [], "Disabled collaboration implementations remain reachable through the production loadable manifest");
   const initialFiles = [...new Set(Object.values(manifest.pages ?? {}).flat())];
   for (const path of initialFiles) {
     if (!path.endsWith(".js")) continue;
     const source = await readFile(join(root, ".next", path), "utf8");
-    if (/pmhc3|connection-offer-commitment|\.pmcb/.test(source)) hc3InInitialPageGraph = true;
+    if (/pmhc3|connection-offer-commitment|\.pmcb|AgentExchangeWorkspace|agent_exchange_loader/.test(source)) hc3InInitialPageGraph = true;
   }
   assert(!hc3InInitialPageGraph, "HC-3 code entered the initial production page graph");
   for (const file of await deployableFiles(join(root, ".next"))) {
@@ -115,9 +142,13 @@ try {
     if (/BEGIN:nextjs-agent-rules|This is NOT the Next\.js you know|@AGENTS\.md/.test(source)) {
       agentGuidanceDeployableHits.push(relative(root, file));
     }
+    if (/collaboration_shadow_container_metadata|complete_experimental_foundation|PatchmarkCollaborationQualification|connection-offer-commitment|\.pmcb\b|AgentExchangeWorkspace|agent_exchange_loader/.test(source)) {
+      disabledFeatureDeployableHits.push(relative(root, file));
+    }
   }
   assert.deepEqual(slice6DeployableHits, [], "Slice 6 qualification runner or evidence parser entered deployable production output");
   assert.deepEqual(agentGuidanceDeployableHits, [], "Repository agent guidance entered deployable production output");
+  assert.deepEqual(disabledFeatureDeployableHits, [], "Disabled collaboration or agent-exchange implementation entered deployable production output");
 } catch (error) {
   if (error?.code !== "ENOENT") throw error;
 }
@@ -136,7 +167,14 @@ process.stdout.write(`${JSON.stringify({
   agent_guidance_manifest_category: "covered_source",
   agent_guidance_source_hits: agentGuidanceSourceHits,
   agent_guidance_deployable_hits: agentGuidanceDeployableHits,
-  production_collaboration_state: "disabled"
+  production_collaboration_state: "disabled",
+  product_release_state: {
+    human_collaboration: false,
+    agent_exchange: false
+  },
+  release_authority_importers: releaseAuthorityImporters,
+  disabled_feature_loadable_keys: disabledFeatureLoadableKeys,
+  disabled_feature_deployable_hits: disabledFeatureDeployableHits
 }, null, 2)}\n`);
 
 async function sourceFiles(directory) {
@@ -155,6 +193,10 @@ async function deployableFiles(directory) {
   const files = [];
   for (const entry of entries) {
     const path = join(directory, entry.name);
+    const repositoryPath = relative(root, path);
+    if (repositoryPath === ".next/dev" || repositoryPath === ".next/cache") {
+      continue;
+    }
     if (entry.isDirectory()) files.push(...await deployableFiles(path));
     else if (/\.(?:js|json|html|txt)$/.test(entry.name)) files.push(path);
   }

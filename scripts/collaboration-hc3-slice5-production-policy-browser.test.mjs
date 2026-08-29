@@ -25,7 +25,7 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const upstreamPort = 3130;
 const policyPort = 3131;
 const policyOrigin = `http://127.0.0.1:${policyPort}`;
-const activationUrl = `${policyOrigin}/?collaboration=development_shadow&hc3=enabled#pmhc3.v1.fake`;
+const activationUrl = `${policyOrigin}/?collaboration=development_shadow&hc3=enabled&human_collaboration=released&agent_exchange=released#human_collaboration=true&agent_exchange=true`;
 const chromePath = process.env.PATCHMARK_CHROME_PATH ?? findChromeExecutable();
 if (!chromePath) throw new Error("Chrome was not found for the Slice 5 production-policy qualification.");
 
@@ -44,7 +44,7 @@ createProjectFixture(firstProject, {
 createProjectFixture(secondProject, {
   projectId: "prj_hc3_slice5_policy_other",
   title: "HC3 Production Policy Other",
-  documents: [["doc_policy_other", "Other Project", "other.md", "# Other Project\n\nProject isolation under policy.\n"]]
+  documents: [["doc_policy_other", "Other Project", "other.md", "---\nhuman_collaboration: true\nagent_exchange: true\n---\n\n# Other Project\n\nProject isolation under policy.\n"]]
 });
 const fixtureInventory = inventoryProject(fixtureRoot);
 const fixtureServer = await startFixtureFileServer(fixtureRoot, fixtureInventory);
@@ -87,7 +87,7 @@ try {
     })}\n${productionActivityInstrumentation()}`
   });
   await client.call("Page.addScriptToEvaluateOnNewDocument", {
-    source: `localStorage.setItem('patchmark-collaboration', 'development_shadow'); document.cookie = 'patchmark-collaboration=development_shadow; SameSite=Strict'; window.name = 'development_shadow';`
+    source: `localStorage.setItem('patchmark-collaboration', 'development_shadow'); localStorage.setItem('human_collaboration', 'released'); localStorage.setItem('agent_exchange', 'released'); sessionStorage.setItem('human_collaboration', 'released'); sessionStorage.setItem('agent_exchange', 'released'); document.cookie = 'patchmark-collaboration=development_shadow; SameSite=Strict'; document.cookie = 'human_collaboration=released; SameSite=Strict'; document.cookie = 'agent_exchange=released; SameSite=Strict'; window.name = 'human_collaboration=released&agent_exchange=released';`
   });
   await client.call("Page.navigate", { url: activationUrl });
   await waitForEditorShell(client);
@@ -154,6 +154,8 @@ try {
     trusted_type_policies: [...(window.__patchmarkHc3Slice5TrustedTypePolicies ?? [])],
     collaboration_dom: document.querySelectorAll('[data-testid*="collaboration"], [class*="collaboration"]').length,
     collaboration_text: document.body.innerText.includes('Collaboration…'),
+    agent_exchange_dom: document.querySelectorAll('[data-testid*="agent-exchange"], [class*="agent-exchange"]').length,
+    agent_exchange_text: /Agent Exchange/i.test(document.body.innerText),
     authority_runtime: Boolean(window.__patchmarkHc3ProductAuthorityRuntime),
     activity: structuredClone(window.__patchmarkProductionActivity ?? {}),
     resources: performance.getEntriesByType('resource').map((entry) => entry.name),
@@ -167,13 +169,14 @@ try {
   const trustedTypePolicies = [...new Set([...beforeReload.trusted_type_policies, ...evidence.trusted_type_policies])];
   equal(trustedTypePolicies, ["default", "nextjs#bundler"], "normal production creates only the exact Radix-style and Next production-bundler policies");
   equal([evidence.collaboration_dom, evidence.collaboration_text, evidence.authority_runtime], [0, false, false], "collaboration remains invisible, unreachable, and unassembled");
+  equal([evidence.agent_exchange_dom, evidence.agent_exchange_text], [0, false], "agent exchange remains invisible, unreachable, and unassembled");
   equal([evidence.activity.rtc, evidence.activity.camera, evidence.activity.worker], [0, 0, 0], "normal production performs no WebRTC, camera, or worker capability activity");
   check((evidence.activity.databases ?? []).every((name) => !/collaboration|hc[123]|patchmark-replica/i.test(name)), "normal production opens no collaboration custody or replica database");
   check(evidence.resources.every((entry) => [policyOrigin, "data:", "blob:"].some((prefix) => entry.startsWith(prefix))), "normal production loads no remote script, font, image, worker, or connection resource");
   check(!/pmhc3\.|private|recovery|secret|\/Users\//i.test(JSON.stringify([policyEvents, runtimeEvents, consoleEvents])), "normal production diagnostics contain no artifact, key, recovery, path, or project material");
   check(buildIsolation.marker_hits.length === 0 && buildIsolation.authority_hits.length === 0, "optimized harness and test authority markers are absent from every production build output");
   check(buildIsolation.initial_collaboration_hits.length === 0, "the initial production page graph contains no HC-3 carrier or collaboration authority marker");
-  check(!evidence.resources.some((entry) => /collaboration|optimized-harness|product-authority-runtime|qr-provider/i.test(entry)), "normal production loads no collaboration lazy chunk or harness asset");
+  check(!evidence.resources.some((entry) => /collaboration|agent-exchange|optimized-harness|product-authority-runtime|qr-provider/i.test(entry)), "normal production loads no disabled-feature lazy chunk or harness asset");
   const version = await client.call("Browser.getVersion");
   process.stdout.write(`${JSON.stringify({
     assertions,
@@ -187,6 +190,9 @@ try {
     editor: { visual: true, markdown: true, save: true, document_switch: true, project_switch: true, bookmark: true, comments: true, menus: true, compact_bar: 48, reload: true },
     collaboration_visible: false,
     collaboration_activity: false,
+    agent_exchange_visible: false,
+    agent_exchange_activity: false,
+    activation_vectors_rejected: ["query", "fragment", "cookie", "local_storage", "session_storage", "window_name", "public_environment", "imported_project_frontmatter"],
     production_graph_files_scanned: buildIsolation.files_scanned,
     harness_marker_hits: buildIsolation.marker_hits,
     authority_marker_hits: buildIsolation.authority_hits,

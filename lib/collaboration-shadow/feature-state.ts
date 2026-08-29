@@ -1,3 +1,8 @@
+import {
+  developmentQualificationSignal,
+  resolveCheckedInProductFeatureRelease
+} from "../release/product-release-state.ts";
+
 export const collaborationShadowModes = [
   "disabled",
   "development_shadow"
@@ -22,6 +27,13 @@ export type CollaborationShadowFeatureState =
   | Readonly<{
       mode: "development_shadow";
       reason: "explicit_development_or_test_enable";
+    }>;
+
+export type CollaborationProductFeatureState =
+  | CollaborationShadowFeatureState
+  | Readonly<{
+      mode: "released";
+      reason: "reviewed_source_release";
     }>;
 
 export function resolveCollaborationShadowFeatureState(
@@ -61,11 +73,40 @@ export function getBuildCollaborationShadowFeatureState(): CollaborationShadowFe
  */
 export function resolveInjectedCollaborationProductFeatureState(
   enableSignal: unknown
-): CollaborationShadowFeatureState {
-  return resolveCollaborationShadowFeatureState({
-    runtime: normalizeRuntime(process.env.NODE_ENV),
-    enable_signal: enableSignal
-  });
+): CollaborationProductFeatureState {
+  return resolveCollaborationProductFeatureStateForRuntime(
+    normalizeRuntime(process.env.NODE_ENV),
+    enableSignal
+  );
+}
+
+export function resolveCollaborationProductFeatureStateForRuntime(
+  runtime: CollaborationShadowFeatureEnvironment["runtime"],
+  enableSignal: unknown
+): CollaborationProductFeatureState {
+  const resolution = resolveCheckedInProductFeatureRelease(
+    "human_collaboration",
+    {
+      runtime,
+      qualification_signal:
+        enableSignal === "development_shadow"
+          ? developmentQualificationSignal
+          : enableSignal
+    }
+  );
+  if (resolution.mode === "released") {
+    return Object.freeze({
+      mode: "released" as const,
+      reason: "reviewed_source_release" as const
+    });
+  }
+  if (resolution.mode === "development_qualification") {
+    return Object.freeze({
+      mode: "development_shadow" as const,
+      reason: "explicit_development_or_test_enable" as const
+    });
+  }
+  return disabledState;
 }
 
 function normalizeRuntime(value: unknown): CollaborationShadowFeatureEnvironment["runtime"] {

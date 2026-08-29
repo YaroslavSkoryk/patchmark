@@ -6,6 +6,7 @@ import type {
 import {
   getBuildCollaborationShadowFeatureState,
   resolveInjectedCollaborationProductFeatureState,
+  type CollaborationProductFeatureState,
   type CollaborationShadowFeatureState
 } from "./feature-state.ts";
 
@@ -53,7 +54,7 @@ export function runCollaborationShadowAfterLegacyCommit(
 
 export function getCollaborationProductQualificationState(
   injectedState: unknown
-): CollaborationShadowFeatureState {
+): CollaborationProductFeatureState {
   return resolveInjectedCollaborationProductFeatureState(injectedState);
 }
 
