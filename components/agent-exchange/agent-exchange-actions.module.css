@@ -42,6 +42,29 @@
   white-space: normal;
 }
 
+.pairing {
+  align-items: end;
+  display: grid;
+  gap: 0.4rem;
+  grid-template-columns: minmax(10rem, 1fr) auto auto;
+  width: 100%;
+}
+
+.pairing label,
+.pairingError {
+  grid-column: 1 / -1;
+}
+
+.pairing input {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  min-width: 0;
+}
+
+.pairingError {
+  color: var(--danger, #a00);
+  overflow-wrap: anywhere;
+}
+
 .compact {
   display: inline-flex;
 }
@@ -55,6 +78,12 @@
 
   .actions button {
     width: 100%;
+  }
+
+  .pairing {
+    align-items: stretch;
+    display: flex;
+    flex-direction: column;
   }
 }
 

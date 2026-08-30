@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "agent-exchange:connector": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON local-connector/cli.ts",
     "dev": "next dev --webpack",
     "build": "next build --webpack",
     "start": "next start",
@@ -67,6 +68,9 @@
     "test:agent-exchange-ae1-slice2-types": "tsc -p scripts/tsconfig.agent-exchange-ae1-slice2.json --pretty false",
     "test:agent-exchange-ae1-slice2-browser": "node scripts/agent-exchange-ae1-slice2-browser.test.mjs",
     "test:agent-exchange-ae1-slice2-production": "node scripts/agent-exchange-ae1-slice2-production-lock.test.mjs",
+    "test:agent-exchange-ae2-slice2": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-exchange-ae2-slice2.test.mjs",
+    "test:agent-exchange-ae2-slice2-browser": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-exchange-ae2-slice2-browser.test.mjs",
+    "test:agent-exchange-ae2-slice2-types": "tsc -p scripts/tsconfig.agent-exchange-ae2-slice2.json --pretty false",
     "test:collaboration-hardening": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc1-hardening.test.mjs",
     "test:collaboration-hc2-slice1": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-slice1.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-import-safety.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-production-lock.test.mjs",
     "test:collaboration-hc2-slice1-independent": "python3 scripts/collaboration-hc2-slice1-independent.py",

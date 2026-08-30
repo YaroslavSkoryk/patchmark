@@ -530,17 +530,28 @@ type ChatGptPromptDialogState = {
 type AgentExchangeProductPhase =
   | "idle"
   | "preparing"
+  | "pairing"
   | "sending"
   | "waiting"
   | "importing"
   | "ready"
   | "failed"
   | "cancelled";
-type AgentExchangeProductFailure = "import" | "stale" | "unavailable";
+type AgentExchangeProductFailure =
+  | "authentication_required"
+  | "busy"
+  | "codex_unavailable"
+  | "codex_unsupported"
+  | "import"
+  | "provider"
+  | "stale"
+  | "unavailable";
 type AgentExchangeProductUiState = {
   documentKey: string;
   failure: AgentExchangeProductFailure | null;
   phase: AgentExchangeProductPhase;
+  pairingCode: string;
+  pairingError: boolean;
   result: { patches: number; replies: number } | null;
   reviewCommentId: string | null;
 };
@@ -586,6 +597,15 @@ type AgentExchangeProductDriver = Readonly<{
   createConnector(): unknown;
   createOperationId(): string;
 }>;
+type AgentExchangePairableConnector = Readonly<{
+  checkPairingStatus(input: { signal: AbortSignal }): Promise<{
+    busy: boolean;
+    compatibility: "supported" | "unavailable" | "unsupported";
+    paired: boolean;
+  }>;
+  close(): void | Promise<void>;
+  pair(input: { pairing_code: string; signal: AbortSignal }): Promise<void>;
+}>;
 type AgentExchangeActionsProps = {
   canFallback: boolean;
   disabled: boolean;
@@ -593,9 +613,13 @@ type AgentExchangeActionsProps = {
   mode?: "full" | "send_only";
   onCancel(): void;
   onFallback(): void;
+  onPair(): void;
+  onPairingCodeChange(value: string): void;
   onReview(): void;
   onSend(): void;
   phase: AgentExchangeProductPhase;
+  pairingCode: string;
+  pairingError: boolean;
   result: { patches: number; replies: number } | null;
 };
 type AgentExchangeProductModule = Readonly<{
@@ -605,13 +629,20 @@ type AgentExchangeProductModule = Readonly<{
     batch: PatchmarkReviewBatch;
     project: PatchmarkProjectHandle;
   }): Promise<AgentExchangePrepared>;
+  isLocalCodexPairableConnector(
+    value: unknown
+  ): value is AgentExchangePairableConnector;
   readReviewDeliveryDriver(): AgentExchangeProductDriver;
 }>;
 type AgentExchangeOperationContext = {
   batch: PatchmarkReviewBatch;
+  beginOperation: (() => void) | null;
+  connector: unknown;
   documentId: string;
   documentKey: string;
   operation: AgentExchangeProductOperation<ProjectCommentReplyImportResult> | null;
+  pairingAbortController: AbortController | null;
+  pairingInFlight: boolean;
   prepared: AgentExchangePrepared;
   projectId: string;
   token: number;
@@ -1225,10 +1256,18 @@ export function DocumentEditor() {
 
   useEffect(
     () => () => {
+      agentExchangeContextRef.current?.pairingAbortController?.abort();
+      const connector = agentExchangeContextRef.current?.connector;
+      if (
+        connector &&
+        agentExchangeProductModule?.isLocalCodexPairableConnector(connector)
+      ) {
+        void connector.close();
+      }
       agentExchangeContextRef.current?.unsubscribe();
       agentExchangeControllerRef.current?.invalidateCurrent();
     },
-    []
+    [agentExchangeProductModule]
   );
   useEffect(() => {
     if (reviewBatchCancelDialog) {
@@ -5297,6 +5336,8 @@ export function DocumentEditor() {
       documentKey,
       failure: null,
       phase: "preparing",
+      pairingCode: "",
+      pairingError: false,
       result: null,
       reviewCommentId: batch.ordered_comment_ids[0] ?? null
     });
@@ -5316,9 +5357,13 @@ export function DocumentEditor() {
       }
       const context: AgentExchangeOperationContext = {
         batch,
+        beginOperation: null,
+        connector: null,
         documentId: identity.documentId,
         documentKey,
         operation: null,
+        pairingAbortController: null,
+        pairingInFlight: false,
         prepared,
         projectId: identity.projectId,
         token,
@@ -5328,12 +5373,18 @@ export function DocumentEditor() {
       agentExchangeContextRef.current = context;
       const driver =
         agentExchangeProductModule.readReviewDeliveryDriver();
+      const connector = driver.createConnector();
+      context.connector = connector;
       const controller =
         agentExchangeControllerRef.current ??
         agentExchangeProductModule.createReviewDeliveryController();
       agentExchangeControllerRef.current = controller;
-      const operation = controller.begin<ProjectCommentReplyImportResult>({
-        connector: driver.createConnector(),
+      const beginOperation = () => {
+        if (context.beginOperation === null) return;
+        context.beginOperation = null;
+        context.pairingAbortController = null;
+        const operation = controller.begin<ProjectCommentReplyImportResult>({
+        connector,
         createOperationId: () => driver.createOperationId(),
         importResponse: async ({
           binding,
@@ -5409,6 +5460,8 @@ export function DocumentEditor() {
             documentKey,
             failure: null,
             phase: "ready",
+            pairingCode: "",
+            pairingError: false,
             result: {
               patches: imported.patch_proposals_stored,
               replies:
@@ -5442,6 +5495,66 @@ export function DocumentEditor() {
               : current
           );
         });
+      };
+      context.beginOperation = beginOperation;
+      if (
+        agentExchangeProductModule.isLocalCodexPairableConnector(connector)
+      ) {
+        const pairingAbortController = new AbortController();
+        context.pairingAbortController = pairingAbortController;
+        const status = await connector.checkPairingStatus({
+          signal: pairingAbortController.signal
+        });
+        if (
+          token !== agentExchangeOperationTokenRef.current ||
+          activeDocumentKeyRef.current !== documentKey
+        ) {
+          return;
+        }
+        if (status.compatibility !== "supported") {
+          context.beginOperation = null;
+          context.pairingAbortController = null;
+          await connector.close();
+          setAgentExchangeUiState((current) =>
+            current?.documentKey === documentKey
+              ? {
+                  ...current,
+                  failure:
+                    status.compatibility === "unsupported"
+                      ? "codex_unsupported"
+                      : "codex_unavailable",
+                  phase: "failed"
+                }
+              : current
+          );
+          return;
+        }
+        if (status.busy) {
+          context.beginOperation = null;
+          context.pairingAbortController = null;
+          await connector.close();
+          setAgentExchangeUiState((current) =>
+            current?.documentKey === documentKey
+              ? { ...current, failure: "busy", phase: "failed" }
+              : current
+          );
+          return;
+        }
+        if (!status.paired) {
+          setAgentExchangeUiState((current) =>
+            current?.documentKey === documentKey
+              ? {
+                  ...current,
+                  failure: null,
+                  phase: "pairing",
+                  pairingError: false
+                }
+              : current
+          );
+          return;
+        }
+      }
+      beginOperation();
     } catch (error) {
       if (
         token !== agentExchangeOperationTokenRef.current ||
@@ -5474,7 +5587,128 @@ export function DocumentEditor() {
     ) {
       return;
     }
+    if (!context.operation && context.beginOperation) {
+      context.beginOperation = null;
+      context.pairingInFlight = false;
+      context.pairingAbortController?.abort();
+      context.pairingAbortController = null;
+      if (
+        agentExchangeProductModule?.isLocalCodexPairableConnector(
+          context.connector
+        )
+      ) {
+        void context.connector.close();
+      }
+      setAgentExchangeUiState((current) =>
+        current?.documentKey === context.documentKey
+          ? {
+              ...current,
+              phase: "cancelled",
+              pairingCode: "",
+              pairingError: false
+            }
+          : current
+      );
+      return;
+    }
     context.operation?.cancel();
+  }
+
+  function handleAgentExchangePairingCodeChange(value: string) {
+    const context = agentExchangeContextRef.current;
+    if (
+      !context ||
+      context.token !== agentExchangeOperationTokenRef.current ||
+      context.documentKey !== activeDocumentKeyRef.current
+    ) {
+      return;
+    }
+    setAgentExchangeUiState((current) =>
+      current?.documentKey === context.documentKey && current.phase === "pairing"
+        ? { ...current, pairingCode: value, pairingError: false }
+        : current
+    );
+  }
+
+  async function handlePairAgentExchange() {
+    const context = agentExchangeContextRef.current;
+    const current = agentExchangeUiState;
+    if (
+      !context ||
+      !current ||
+      current.phase !== "pairing" ||
+      !context.beginOperation ||
+      context.pairingInFlight ||
+      context.token !== agentExchangeOperationTokenRef.current ||
+      context.documentKey !== activeDocumentKeyRef.current ||
+      !agentExchangeProductModule?.isLocalCodexPairableConnector(
+        context.connector
+      )
+    ) {
+      return;
+    }
+    context.pairingInFlight = true;
+    const connector = context.connector;
+    const pairingAbortController = new AbortController();
+    context.pairingAbortController?.abort();
+    context.pairingAbortController = pairingAbortController;
+    setAgentExchangeUiState((state) =>
+      state?.documentKey === context.documentKey
+        ? { ...state, pairingError: false }
+        : state
+    );
+    let pairedSuccessfully = false;
+    try {
+      await connector.pair({
+        pairing_code: current.pairingCode,
+        signal: pairingAbortController.signal
+      });
+      const status = await connector.checkPairingStatus({
+        signal: pairingAbortController.signal
+      });
+      if (
+        pairingAbortController.signal.aborted ||
+        context.token !== agentExchangeOperationTokenRef.current ||
+        context.documentKey !== activeDocumentKeyRef.current
+      ) {
+        return;
+      }
+      if (status.compatibility !== "supported" || !status.paired) {
+        throw new Error("The connector pairing was not confirmed.");
+      }
+      pairedSuccessfully = true;
+      setAgentExchangeUiState((state) =>
+        state?.documentKey === context.documentKey
+          ? {
+              ...state,
+              phase: "preparing",
+              pairingCode: "",
+              pairingError: false
+            }
+          : state
+      );
+      context.beginOperation();
+    } catch {
+      if (pairingAbortController.signal.aborted) return;
+      setAgentExchangeUiState((state) =>
+        state?.documentKey === context.documentKey
+          ? pairedSuccessfully
+            ? {
+                ...state,
+                failure: "unavailable",
+                phase: "failed",
+                pairingCode: "",
+                pairingError: false
+              }
+            : { ...state, pairingError: true }
+          : state
+      );
+    } finally {
+      context.pairingInFlight = false;
+      if (context.pairingAbortController === pairingAbortController) {
+        context.pairingAbortController = null;
+      }
+    }
   }
 
   function handleAgentExchangeManualFallback() {
@@ -5528,6 +5762,14 @@ export function DocumentEditor() {
   function invalidateAgentExchangeForNavigation() {
     agentExchangeOperationTokenRef.current += 1;
     agentExchangeInitiationLockRef.current = false;
+    agentExchangeContextRef.current?.pairingAbortController?.abort();
+    const connector = agentExchangeContextRef.current?.connector;
+    if (
+      connector &&
+      agentExchangeProductModule?.isLocalCodexPairableConnector(connector)
+    ) {
+      void connector.close();
+    }
     agentExchangeContextRef.current?.unsubscribe();
     agentExchangeControllerRef.current?.invalidateCurrent();
     agentExchangeContextRef.current = null;
@@ -9940,9 +10182,13 @@ export function DocumentEditor() {
         mode={mode}
         onCancel={handleCancelAgentExchange}
         onFallback={handleAgentExchangeManualFallback}
+        onPair={handlePairAgentExchange}
+        onPairingCodeChange={handleAgentExchangePairingCodeChange}
         onReview={handleReviewAgentExchangeResponse}
         onSend={onSend}
         phase={currentAgentExchangeUiState?.phase ?? "idle"}
+        pairingCode={currentAgentExchangeUiState?.pairingCode ?? ""}
+        pairingError={currentAgentExchangeUiState?.pairingError ?? false}
         result={currentAgentExchangeUiState?.result ?? null}
       />
     );
@@ -14188,6 +14434,20 @@ function classifyAgentExchangeProductFailure(
   error: unknown,
   lastObservedPhase: AgentExchangeOperationPhase
 ): AgentExchangeProductFailure {
+  const connectorCode = readAgentExchangeNestedErrorCode(error);
+  if (connectorCode === "authentication_required") {
+    return "authentication_required";
+  }
+  if (connectorCode === "busy") return "busy";
+  if (connectorCode === "codex_unavailable") return "codex_unavailable";
+  if (connectorCode === "codex_unsupported") return "codex_unsupported";
+  if (
+    connectorCode === "provider_failed" ||
+    connectorCode === "connector_protocol_error" ||
+    connectorCode === "response_too_large"
+  ) {
+    return "provider";
+  }
   const code =
     typeof error === "object" &&
     error !== null &&
@@ -14205,6 +14465,26 @@ function classifyAgentExchangeProductFailure(
   }
   if (lastObservedPhase === "importing") return "import";
   return "unavailable";
+}
+
+function readAgentExchangeNestedErrorCode(error: unknown): string | null {
+  let candidate = error;
+  const seen = new Set<object>();
+  for (let depth = 0; depth < 4; depth += 1) {
+    if (!candidate || typeof candidate !== "object" || seen.has(candidate)) {
+      return null;
+    }
+    seen.add(candidate);
+    if (
+      "code" in candidate &&
+      typeof candidate.code === "string" &&
+      candidate.code !== "connector_failed"
+    ) {
+      return candidate.code;
+    }
+    candidate = "cause" in candidate ? candidate.cause : null;
+  }
+  return null;
 }
 
 function createCommentExportId(exportedAt: string): string {

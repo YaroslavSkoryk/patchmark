@@ -25,10 +25,15 @@ export type AgentExchangeOperationErrorCode =
 export class AgentExchangeOperationError extends Error {
   readonly code: AgentExchangeOperationErrorCode;
 
-  constructor(code: AgentExchangeOperationErrorCode, message: string) {
+  constructor(
+    code: AgentExchangeOperationErrorCode,
+    message: string,
+    cause?: unknown
+  ) {
     super(message);
     this.name = "AgentExchangeOperationError";
     this.code = code;
+    if (cause !== undefined) this.cause = cause;
   }
 }
 
@@ -231,11 +236,12 @@ class InternalAgentExchangeOperation<TResult>
         availability = await this.#connector.checkAvailability({
           signal: this.#abortController.signal
         });
-      } catch {
+      } catch (error) {
         this.#assertEligible();
         throw new AgentExchangeOperationError(
           "connector_failed",
-          "The Agent Exchange connector failed during its availability check."
+          "The Agent Exchange connector failed during its availability check.",
+          sanitizeConnectorCause(error)
         );
       }
       this.#assertEligible();
@@ -257,11 +263,12 @@ class InternalAgentExchangeOperation<TResult>
         });
         this.#setPhase("waiting");
         response = await responsePromise;
-      } catch {
+      } catch (error) {
         this.#assertEligible();
         throw new AgentExchangeOperationError(
           "connector_failed",
-          "The Agent Exchange connector failed while delivering the prepared request."
+          "The Agent Exchange connector failed while delivering the prepared request.",
+          sanitizeConnectorCause(error)
         );
       }
       this.#assertEligible();
@@ -379,6 +386,19 @@ function sameScope(
     left.batch_type === right.batch_type &&
     left.source === right.source
   );
+}
+
+function sanitizeConnectorCause(error: unknown): Readonly<{ code: string }> | undefined {
+  if (
+    !error ||
+    typeof error !== "object" ||
+    !("code" in error) ||
+    typeof error.code !== "string" ||
+    !/^[a-z][a-z0-9_]{0,63}$/.test(error.code)
+  ) {
+    return undefined;
+  }
+  return Object.freeze({ code: error.code });
 }
 
 function isSafeIdentity(value: unknown): value is string {

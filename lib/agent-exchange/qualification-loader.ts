@@ -1,6 +1,6 @@
 import { AgentExchangeOperationController } from "./operation-controller.ts";
 import { prepareAgentExchange } from "./prepared-exchange.ts";
-import { readInjectedAgentExchangeProductQualificationDriver } from "./product-driver.ts";
+import { readAgentExchangeProductQualificationDriver } from "./product-driver.ts";
 
 export {
   copyPreparedExchangeForManualDelivery,
@@ -15,8 +15,12 @@ export {
   AgentExchangeActions as ReviewDeliveryActions
 } from "../../components/agent-exchange/agent-exchange-actions.tsx";
 export {
+  readAgentExchangeProductQualificationDriver,
   readInjectedAgentExchangeProductQualificationDriver
 } from "./product-driver.ts";
+export {
+  isLocalCodexPairableConnector
+} from "./local-codex-connector.ts";
 export type {
   AgentExchangeConnector,
   AgentExchangeConnectorResponse,
@@ -36,7 +40,7 @@ export function prepareReviewDelivery(
 }
 
 export function readReviewDeliveryDriver(): ReturnType<
-  typeof readInjectedAgentExchangeProductQualificationDriver
+  typeof readAgentExchangeProductQualificationDriver
 > {
-  return readInjectedAgentExchangeProductQualificationDriver();
+  return readAgentExchangeProductQualificationDriver();
 }

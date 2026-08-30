@@ -1,0 +1,17 @@
+{
+  "extends": "../tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": [
+    "../next-env.d.ts",
+    "../components/agent-exchange/agent-exchange-actions.tsx",
+    "../lib/agent-exchange/contracts.ts",
+    "../lib/agent-exchange/local-codex-connector.ts",
+    "../lib/agent-exchange/local-connector-protocol.ts",
+    "../lib/agent-exchange/product-driver.ts",
+    "../local-connector/codex-exec-adapter.ts",
+    "../local-connector/server.ts"
+  ]
+}
