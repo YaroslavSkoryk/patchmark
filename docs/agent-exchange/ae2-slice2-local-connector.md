@@ -104,12 +104,13 @@ still passes through the existing protocol-v2 byte importer, stale ownership
 checks, atomic persistence, and human review; the connector gains no patch
 acceptance or comment-resolution authority.
 
-## Qualification
+## Slice 2 mechanical qualification
 
-No test invokes a live model. The executable fixture supports exact-byte
-capture, delayed success, auth/provider/non-zero failures, malformed and
-unknown events, missing/multiple/ambiguous final messages, forbidden tool
-items, oversized streams, hangs, cancellation races, and version mismatch.
+The Slice 2 deterministic tests invoke no live model. The executable fixture
+supports exact-byte capture, delayed success, auth/provider/non-zero failures,
+malformed and unknown events, missing/multiple/ambiguous final messages,
+forbidden tool items, oversized streams, hangs, cancellation races, and version
+mismatch.
 
 ```sh
 npm run test:agent-exchange-ae2-slice2
@@ -122,6 +123,49 @@ boundary against the fake executable. It covers wrong/correct pairing, keyboard
 focus, exact AE-1 request bytes, importer persistence, cancellation, exact
 manual fallback, active-request reload, late-result rejection, console/network
 cleanliness, and a 390 px viewport.
+
+## Slice 3 real-provider qualification
+
+On 30 August 2026, the complete development-qualification workflow passed one
+bounded live turn using the ChatGPT-bundled `codex-cli 0.148.0-alpha.15` and the
+user's existing provider-owned ChatGPT authentication. The connector still
+supports exactly `0.148.0-alpha.15`: Slice 2 mechanically qualified that exact
+version, and Slice 3 live-qualified it. No version range or portable Patchmark
+protocol/schema was changed.
+
+The run used an invented three-document fixture with two focused comments and
+an inert shell-like literal. The 30,930-byte canonical manual-export request
+was byte-identical at preparation, connector receipt, and Codex stdin. The
+direct, no-shell invocation used the fixed adapter arguments, ignored user
+configuration and rules, ran ephemerally in a new empty connector temporary
+directory, requested the read-only sandbox, and disabled the qualified shell,
+file, web, MCP, app, plugin, browser, computer-use, image, hook, memory, and
+multi-agent surfaces. No Patchmark repository/project path or request content
+appeared in argv or the child environment. The run emitted no tool or approval
+event and created no file from the inert command-like text.
+
+The machine lifecycle was `thread.started`, `turn.started`, one completed
+`agent_message`, then `turn.completed`, followed by a clean process exit. The
+authoritative response was one 2,404-byte fenced JSON artifact; the adapter did
+not repair it. The normal AE-1 binding and strict protocol-v2 importer accepted
+two replies and two independent patch proposals. Markdown remained unchanged
+after import. A human explicitly accepted one proposal and rejected the other
+in the existing review UI; only the accepted text entered Markdown, and the
+reply and decision state persisted after reopen.
+
+The CLI's typed completion event reported 13,807 input tokens, 0 cached input
+tokens, and 581 output tokens. The first provider event arrived about 275 ms
+after process start; the provider process completed in about 34.4 seconds, and
+the browser request reached imported response-ready state in about 34.9
+seconds. Real-provider cancellation was not repeated because the live lifecycle
+matched the already-qualified deterministic process path and no provider-
+specific cancellation uncertainty appeared.
+
+Real Codex output remains untrusted and always passes through the existing
+binding and strict importer. Manual export/import remains available. Patchmark
+does not inspect, copy, proxy, or store Codex credentials, and Codex receives no
+Patchmark project authority. Agent Exchange and Human Collaboration remain
+production-disabled.
 
 ## Deliberate limits
 
