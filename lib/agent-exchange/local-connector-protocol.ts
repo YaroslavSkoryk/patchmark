@@ -6,7 +6,37 @@ export const LOCAL_CONNECTOR_MAX_REQUEST_BYTES = 1024 * 1024;
 export const LOCAL_CONNECTOR_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const LOCAL_CONNECTOR_ID = "patchmark.local_codex_exec" as const;
 export const LOCAL_CONNECTOR_VERSION = "ae2.slice2" as const;
-export const QUALIFIED_CODEX_VERSION = "0.148.0-alpha.15" as const;
+export const PUBLICLY_SUPPORTED_CODEX_VERSIONS = Object.freeze([
+  "0.151.0"
+] as const);
+export const DEVELOPMENT_QUALIFIED_CODEX_VERSIONS = Object.freeze([
+  "0.148.0-alpha.15"
+] as const);
+
+export type CodexVersionQualification =
+  | "development_qualified"
+  | "publicly_supported"
+  | "unsupported";
+
+export function classifyCodexVersion(
+  version: string
+): CodexVersionQualification {
+  if (
+    PUBLICLY_SUPPORTED_CODEX_VERSIONS.some(
+      (supportedVersion) => version === supportedVersion
+    )
+  ) {
+    return "publicly_supported";
+  }
+  if (
+    DEVELOPMENT_QUALIFIED_CODEX_VERSIONS.some(
+      (qualifiedVersion) => version === qualifiedVersion
+    )
+  ) {
+    return "development_qualified";
+  }
+  return "unsupported";
+}
 
 export type LocalConnectorErrorCode =
   | "authentication_required"

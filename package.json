@@ -71,6 +71,7 @@
     "test:agent-exchange-ae2-slice2": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-exchange-ae2-slice2.test.mjs",
     "test:agent-exchange-ae2-slice2-browser": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-exchange-ae2-slice2-browser.test.mjs",
     "test:agent-exchange-ae2-slice2-types": "tsc -p scripts/tsconfig.agent-exchange-ae2-slice2.json --pretty false",
+    "test:agent-exchange-ae3-slice1": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/agent-exchange-ae3-slice1.test.mjs",
     "test:collaboration-hardening": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc1-hardening.test.mjs",
     "test:collaboration-hc2-slice1": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-slice1.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-import-safety.test.mjs && node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/collaboration-hc2-production-lock.test.mjs",
     "test:collaboration-hc2-slice1-independent": "python3 scripts/collaboration-hc2-slice1-independent.py",

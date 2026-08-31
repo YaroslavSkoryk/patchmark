@@ -6,7 +6,7 @@ import { join } from "node:path";
 
 import {
   LOCAL_CONNECTOR_MAX_RESPONSE_BYTES,
-  QUALIFIED_CODEX_VERSION,
+  PUBLICLY_SUPPORTED_CODEX_VERSIONS,
   type LocalConnectorErrorCode
 } from "../lib/agent-exchange/local-connector-protocol.ts";
 
@@ -80,7 +80,7 @@ export type CodexExecAdapterOptions = Readonly<{
   environment?: Readonly<Record<string, string>>;
   fixedArguments?: readonly string[];
   operationTimeoutMs?: number;
-  qualifiedVersion?: string;
+  qualifiedVersions?: readonly string[];
 }>;
 
 export class CodexExecAdapter {
@@ -88,7 +88,7 @@ export class CodexExecAdapter {
   readonly #executable: string;
   readonly #fixedArguments: readonly string[];
   readonly #operationTimeoutMs: number;
-  readonly #qualifiedVersion: string;
+  readonly #qualifiedVersions: ReadonlySet<string>;
 
   constructor(options: CodexExecAdapterOptions) {
     if (!options.executable || options.executable.includes("\0")) {
@@ -105,8 +105,12 @@ export class CodexExecAdapter {
     );
     this.#operationTimeoutMs =
       options.operationTimeoutMs ?? OPERATION_TIMEOUT_MS;
-    this.#qualifiedVersion =
-      options.qualifiedVersion ?? QUALIFIED_CODEX_VERSION;
+    const qualifiedVersions =
+      options.qualifiedVersions ?? PUBLICLY_SUPPORTED_CODEX_VERSIONS;
+    if (qualifiedVersions.length === 0) {
+      throw new Error("At least one exact qualified Codex version is required.");
+    }
+    this.#qualifiedVersions = new Set(qualifiedVersions);
   }
 
   async inspectCompatibility(
@@ -146,7 +150,7 @@ export class CodexExecAdapter {
       return {
         codex_version: version,
         compatibility:
-          version === this.#qualifiedVersion ? "supported" : "unsupported"
+          this.#qualifiedVersions.has(version) ? "supported" : "unsupported"
       };
     } catch (error) {
       if (

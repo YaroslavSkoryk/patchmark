@@ -51,7 +51,8 @@ qualified tool/extension features, and consumes JSONL. It selects the last
 completed `agent_message` only if a known `turn.completed` follows and the
 process exits cleanly. Tool-bearing, malformed, ambiguous, oversized, failed,
 or non-zero streams fail closed. The exact qualified Codex version for this
-slice is `0.148.0-alpha.15`; every other version is reported unsupported.
+historical slice was `0.148.0-alpha.15`; every other version was reported
+unsupported.
 
 The connector does not read, parse, copy, store, display, or proxy provider
 credentials. Codex owns its existing local authentication. The child receives
@@ -128,10 +129,12 @@ cleanliness, and a 390 px viewport.
 
 On 30 August 2026, the complete development-qualification workflow passed one
 bounded live turn using the ChatGPT-bundled `codex-cli 0.148.0-alpha.15` and the
-user's existing provider-owned ChatGPT authentication. The connector still
-supports exactly `0.148.0-alpha.15`: Slice 2 mechanically qualified that exact
-version, and Slice 3 live-qualified it. No version range or portable Patchmark
-protocol/schema was changed.
+user's existing provider-owned ChatGPT authentication. At the completion of
+AE-2, the connector supported exactly `0.148.0-alpha.15`: Slice 2 mechanically
+qualified that exact version, and Slice 3 live-qualified it. AE-3 Slice 1
+subsequently replaced the public exact allowlist with the current stable
+qualification while preserving this alpha result as development/legacy
+evidence. No version range or portable Patchmark protocol/schema was changed.
 
 The run used an invented three-document fixture with two focused comments and
 an inert shell-like literal. The 30,930-byte canonical manual-export request

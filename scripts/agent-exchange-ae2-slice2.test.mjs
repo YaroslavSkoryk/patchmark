@@ -243,7 +243,7 @@ async function qualifyHttpSecurityAndLifecycle() {
     async inspectCompatibility() {
       compatibilityCalls += 1;
       return {
-        codex_version: "0.148.0-alpha.15",
+        codex_version: "0.151.0",
         compatibility: "supported"
       };
     },
@@ -596,7 +596,7 @@ async function qualifyHttpSecurityAndLifecycle() {
   const shutdownConnector = createPatchmarkLocalConnector({
     adapter: {
       async inspectCompatibility() {
-        return { codex_version: "0.148.0-alpha.15", compatibility: "supported" };
+        return { codex_version: "0.151.0", compatibility: "supported" };
       },
       async exchange({ signal }) {
         await new Promise((resolve, reject) => {

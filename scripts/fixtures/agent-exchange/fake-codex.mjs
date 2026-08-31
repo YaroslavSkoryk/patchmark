@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 
 if (process.argv[2] === "--version") {
   process.stdout.write(
-    `codex-cli ${process.env.PATCHMARK_FAKE_CODEX_VERSION ?? "0.148.0-alpha.15"}\n`
+    `codex-cli ${process.env.PATCHMARK_FAKE_CODEX_VERSION ?? "0.151.0"}\n`
   );
   process.exit(0);
 }
