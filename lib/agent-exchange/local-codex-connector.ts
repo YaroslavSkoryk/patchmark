@@ -16,6 +16,7 @@ import {
   LOCAL_CONNECTOR_MAX_RESPONSE_BYTES,
   LOCAL_CONNECTOR_PROTOCOL_VERSION,
   LOCAL_CONNECTOR_VERSION,
+  PUBLICLY_SUPPORTED_CODEX_VERSIONS,
   LocalConnectorError,
   type LocalConnectorErrorCode,
   type LocalConnectorExchangeResponse,
@@ -81,11 +82,13 @@ export class LocalCodexConnectorSession {
         "busy",
         "codex_version",
         "compatibility",
+        "connector_id",
+        "connector_version",
         "instance_id",
         "paired",
-        "protocol_version"
+        "protocol_version",
+        "supported_codex_versions"
       ]) ||
-      value.protocol_version !== LOCAL_CONNECTOR_PROTOCOL_VERSION ||
       typeof value.busy !== "boolean" ||
       (value.codex_version !== null && typeof value.codex_version !== "string") ||
       !["supported", "unavailable", "unsupported"].includes(
@@ -93,9 +96,28 @@ export class LocalCodexConnectorSession {
       ) ||
       typeof value.instance_id !== "string" ||
       !/^[A-Za-z0-9_-]{22}$/.test(value.instance_id) ||
-      typeof value.paired !== "boolean"
+      typeof value.paired !== "boolean" ||
+      !Array.isArray(value.supported_codex_versions) ||
+      value.supported_codex_versions.some(
+        (version) => typeof version !== "string"
+      )
     ) {
       throw protocolError();
+    }
+    if (
+      value.protocol_version !== LOCAL_CONNECTOR_PROTOCOL_VERSION ||
+      value.connector_id !== LOCAL_CONNECTOR_ID ||
+      value.connector_version !== LOCAL_CONNECTOR_VERSION ||
+      value.supported_codex_versions.length !==
+        PUBLICLY_SUPPORTED_CODEX_VERSIONS.length ||
+      value.supported_codex_versions.some(
+        (version, index) => version !== PUBLICLY_SUPPORTED_CODEX_VERSIONS[index]
+      )
+    ) {
+      throw new LocalConnectorError(
+        "connector_unsupported",
+        "Patchmark Connector is not compatible with this Patchmark build."
+      );
     }
     const status = value as LocalConnectorStatus;
     if (this.#instanceId && status.instance_id !== this.#instanceId) {
@@ -232,7 +254,7 @@ export class LocalCodexConnectorSession {
         throw new LocalConnectorError("cancelled", "The connector request was cancelled.");
       }
       throw new LocalConnectorError(
-        "codex_unavailable",
+        "connector_unavailable",
         "The local connector could not be reached."
       );
     }
@@ -379,6 +401,8 @@ function readErrorCode(value: unknown): LocalConnectorErrorCode | null {
     "cancelled",
     "codex_unavailable",
     "codex_unsupported",
+    "connector_unavailable",
+    "connector_unsupported",
     "connector_protocol_error",
     "forbidden",
     "invalid_request",
@@ -408,6 +432,10 @@ function userMessageFor(code: LocalConnectorErrorCode): string {
       return "The local connector is already handling another request.";
     case "codex_unsupported":
       return "The installed Codex version has not been qualified for this connector.";
+    case "connector_unsupported":
+      return "Patchmark Connector is not compatible with this Patchmark build.";
+    case "connector_unavailable":
+      return "Patchmark Connector could not be reached.";
     case "not_paired":
       return "The local connector must be paired again.";
     case "request_too_large":

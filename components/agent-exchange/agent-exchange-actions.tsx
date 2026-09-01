@@ -19,6 +19,8 @@ export type AgentExchangeProductFailure =
   | "busy"
   | "codex_unavailable"
   | "codex_unsupported"
+  | "connector_unavailable"
+  | "connector_unsupported"
   | "import"
   | "provider"
   | "stale"
@@ -63,6 +65,7 @@ export function AgentExchangeActions({
   const cancelRef = useRef<HTMLButtonElement>(null);
   const fallbackRef = useRef<HTMLButtonElement>(null);
   const pairingInputRef = useRef<HTMLInputElement>(null);
+  const retryRef = useRef<HTMLButtonElement>(null);
   const previousPhaseRef = useRef(phase);
 
   useEffect(() => {
@@ -77,6 +80,8 @@ export function AgentExchangeActions({
       cancelRef.current?.focus();
     } else if (previous !== "cancelled" && phase === "cancelled") {
       fallbackRef.current?.focus();
+    } else if (previous !== "failed" && phase === "failed") {
+      retryRef.current?.focus();
     }
   }, [phase]);
 
@@ -159,6 +164,11 @@ export function AgentExchangeActions({
             Review replies and suggestions
           </button>
         ) : null}
+        {phase === "failed" ? (
+          <button disabled={disabled} onClick={onSend} ref={retryRef} type="button">
+            Try again
+          </button>
+        ) : null}
         {(phase === "failed" || phase === "cancelled") && canFallback ? (
           <button onClick={onFallback} ref={fallbackRef} type="button">
             Use manual export instead
@@ -215,9 +225,9 @@ function getStatus(
       }
       if (failure === "codex_unavailable") {
         return {
-          heading: "Local Codex isn’t ready",
+          heading: "Codex wasn’t found",
           detail:
-            "Start Patchmark Connector and check that Codex is installed, then try again or use the exact manual export."
+            "Install the qualified local Codex version, relaunch Patchmark Connector, then try again or use the exact manual export."
         };
       }
       if (failure === "codex_unsupported") {
@@ -225,6 +235,20 @@ function getStatus(
           heading: "This Codex version isn’t supported",
           detail:
             "Use the qualified local Codex version, or continue with the exact manual export."
+        };
+      }
+      if (failure === "connector_unsupported") {
+        return {
+          heading: "Patchmark Connector needs an update",
+          detail:
+            "Quit the connector, install the connector version for this Patchmark build, then try again or use the exact manual export."
+        };
+      }
+      if (failure === "connector_unavailable") {
+        return {
+          heading: "Patchmark Connector isn’t running",
+          detail:
+            "Launch Patchmark Connector, then try again or use the exact manual export."
         };
       }
       if (failure === "authentication_required") {

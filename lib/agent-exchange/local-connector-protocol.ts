@@ -5,7 +5,7 @@ export const LOCAL_CONNECTOR_DEFAULT_URL =
 export const LOCAL_CONNECTOR_MAX_REQUEST_BYTES = 1024 * 1024;
 export const LOCAL_CONNECTOR_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
 export const LOCAL_CONNECTOR_ID = "patchmark.local_codex_exec" as const;
-export const LOCAL_CONNECTOR_VERSION = "ae2.slice2" as const;
+export const LOCAL_CONNECTOR_VERSION = "0.1.0" as const;
 export const PUBLICLY_SUPPORTED_CODEX_VERSIONS = Object.freeze([
   "0.151.0"
 ] as const);
@@ -44,6 +44,8 @@ export type LocalConnectorErrorCode =
   | "cancelled"
   | "codex_unavailable"
   | "codex_unsupported"
+  | "connector_unavailable"
+  | "connector_unsupported"
   | "connector_protocol_error"
   | "forbidden"
   | "invalid_request"
@@ -52,6 +54,65 @@ export type LocalConnectorErrorCode =
   | "provider_failed"
   | "request_too_large"
   | "response_too_large";
+
+export const LOCAL_CONNECTOR_PROTOCOL_DIAGNOSTIC_CATEGORIES = Object.freeze([
+  "ambiguous_final_response",
+  "forbidden_tool_event",
+  "invalid_event_stream",
+  "unsupported_event_type",
+  "unsupported_item_type"
+] as const);
+
+export type LocalConnectorProtocolDiagnosticCategory =
+  (typeof LOCAL_CONNECTOR_PROTOCOL_DIAGNOSTIC_CATEGORIES)[number];
+
+export type LocalConnectorProtocolDiagnostic = Readonly<{
+  category: LocalConnectorProtocolDiagnosticCategory;
+  invalid_field_kind: string | null;
+  invalid_field_name: string | null;
+  item_is_object: boolean;
+  item_present: boolean;
+  item_type_present: boolean;
+  item_type_string: boolean;
+  missing_required_field_names: readonly string[];
+  sorted_item_key_names: readonly string[];
+  top_level_type: string | null;
+  unexpected_field_names: readonly string[];
+}>;
+
+export function isLocalConnectorProtocolDiagnostic(
+  value: unknown
+): value is LocalConnectorProtocolDiagnostic {
+  return (
+    isExactRecord(value, [
+      "category",
+      "invalid_field_kind",
+      "invalid_field_name",
+      "item_is_object",
+      "item_present",
+      "item_type_present",
+      "item_type_string",
+      "missing_required_field_names",
+      "sorted_item_key_names",
+      "top_level_type",
+      "unexpected_field_names"
+    ]) &&
+    typeof value.category === "string" &&
+    LOCAL_CONNECTOR_PROTOCOL_DIAGNOSTIC_CATEGORIES.some(
+      (category) => category === value.category
+    ) &&
+    isSafeDiagnosticToken(value.invalid_field_kind) &&
+    isSafeDiagnosticFieldName(value.invalid_field_name) &&
+    typeof value.item_is_object === "boolean" &&
+    typeof value.item_present === "boolean" &&
+    typeof value.item_type_present === "boolean" &&
+    typeof value.item_type_string === "boolean" &&
+    isSortedSafeDiagnosticFieldNames(value.missing_required_field_names) &&
+    isSortedSafeDiagnosticFieldNames(value.sorted_item_key_names) &&
+    isSafeDiagnosticToken(value.top_level_type) &&
+    isSortedSafeDiagnosticFieldNames(value.unexpected_field_names)
+  );
+}
 
 export class LocalConnectorError extends Error {
   readonly code: LocalConnectorErrorCode;
@@ -73,9 +134,12 @@ export type LocalConnectorStatus = Readonly<{
   busy: boolean;
   codex_version: string | null;
   compatibility: "supported" | "unavailable" | "unsupported";
+  connector_id: typeof LOCAL_CONNECTOR_ID;
+  connector_version: typeof LOCAL_CONNECTOR_VERSION;
   instance_id: string;
   paired: boolean;
   protocol_version: typeof LOCAL_CONNECTOR_PROTOCOL_VERSION;
+  supported_codex_versions: readonly string[];
 }>;
 
 export type LocalConnectorExchangeRequest = Readonly<{
@@ -115,6 +179,41 @@ export function isSafeOperationId(value: unknown): value is string {
     value.length > 0 &&
     value.length <= 128 &&
     /^[A-Za-z0-9._:-]+$/.test(value)
+  );
+}
+
+function isSafeDiagnosticToken(value: unknown): value is string | null {
+  return (
+    value === null ||
+    (typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= 64 &&
+      /^[a-z][a-z0-9._-]*$/.test(value))
+  );
+}
+
+function isSafeDiagnosticFieldName(value: unknown): value is string | null {
+  return (
+    value === null ||
+    (typeof value === "string" &&
+      value.length > 0 &&
+      value.length <= 64 &&
+      /^_?[a-z][a-z0-9_]*$/.test(value))
+  );
+}
+
+function isSortedSafeDiagnosticFieldNames(
+  value: unknown
+): value is readonly string[] {
+  return (
+    Array.isArray(value) &&
+    value.length <= 32 &&
+    value.every(
+      (field, index) =>
+        isSafeDiagnosticFieldName(field) &&
+        field !== null &&
+        (index === 0 || value[index - 1] < field)
+    )
   );
 }
 

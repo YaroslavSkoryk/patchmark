@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.agent-exchange-ae2-slice2.json",
+  "include": [
+    "../next-env.d.ts",
+    "../components/agent-exchange/agent-exchange-actions.tsx",
+    "../lib/agent-exchange/contracts.ts",
+    "../lib/agent-exchange/local-codex-connector.ts",
+    "../lib/agent-exchange/local-connector-protocol.ts",
+    "../lib/agent-exchange/product-driver.ts",
+    "../local-connector/application.ts",
+    "../local-connector/codex-discovery.ts",
+    "../local-connector/codex-exec-adapter.ts",
+    "../local-connector/packaged-entry.ts",
+    "../local-connector/server.ts"
+  ]
+}

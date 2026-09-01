@@ -542,6 +542,8 @@ type AgentExchangeProductFailure =
   | "busy"
   | "codex_unavailable"
   | "codex_unsupported"
+  | "connector_unavailable"
+  | "connector_unsupported"
   | "import"
   | "provider"
   | "stale"
@@ -14441,6 +14443,8 @@ function classifyAgentExchangeProductFailure(
   if (connectorCode === "busy") return "busy";
   if (connectorCode === "codex_unavailable") return "codex_unavailable";
   if (connectorCode === "codex_unsupported") return "codex_unsupported";
+  if (connectorCode === "connector_unavailable") return "connector_unavailable";
+  if (connectorCode === "connector_unsupported") return "connector_unsupported";
   if (
     connectorCode === "provider_failed" ||
     connectorCode === "connector_protocol_error" ||

@@ -8,6 +8,7 @@ import { join, resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  CODEX_EXEC_ITEM_CLASSIFICATIONS,
   CODEX_EXEC_FIXED_ARGUMENTS,
   CodexAdapterError,
   CodexExecAdapter,
@@ -19,7 +20,8 @@ import { LocalCodexConnectorSession } from "../lib/agent-exchange/local-codex-co
 import {
   LOCAL_CONNECTOR_MAX_REQUEST_BYTES,
   LOCAL_CONNECTOR_PROTOCOL_VERSION,
-  LocalConnectorError
+  LocalConnectorError,
+  isLocalConnectorProtocolDiagnostic
 } from "../lib/agent-exchange/local-connector-protocol.ts";
 import { AgentExchangeOperationController } from "../lib/agent-exchange/operation-controller.ts";
 
@@ -122,12 +124,36 @@ async function qualifyCodexAdapter() {
   assert.equal(new TextDecoder().decode(multiple), "authoritative");
   check(true, "the last completed agent message is authoritative before turn completion");
 
+  const metadataLifecycle = await createFakeAdapter("metadata-lifecycle", {
+    PATCHMARK_FAKE_RESPONSE_BASE64: Buffer.from("metadata-safe").toString("base64")
+  }).exchange({
+    maxResponseBytes: 1024,
+    requestBytes: new TextEncoder().encode("request"),
+    signal: new AbortController().signal
+  });
+  assert.equal(new TextDecoder().decode(metadataLifecycle), "metadata-safe");
+  assert.deepEqual(CODEX_EXEC_ITEM_CLASSIFICATIONS, {
+    agent_message: "authoritative",
+    collab_tool_call: "forbidden_authority",
+    command_execution: "forbidden_authority",
+    error: "non_fatal_diagnostic",
+    file_change: "forbidden_authority",
+    mcp_tool_call: "forbidden_authority",
+    reasoning: "inert_metadata",
+    todo_list: "inert_metadata",
+    web_search: "forbidden_authority"
+  });
+  check(true, "0.151.0 reasoning and todo lifecycle events are inert and cannot replace the final agent message");
+
   for (const [scenario, expectedCode] of [
     ["authentication-required", "authentication_required"],
     ["provider-failed", "provider_failed"],
+    ["top-level-error", "provider_failed"],
+    ["item-error", "provider_failed"],
     ["nonzero", "provider_failed"],
     ["malformed", "connector_protocol_error"],
     ["unknown-critical", "connector_protocol_error"],
+    ["unknown-item", "connector_protocol_error"],
     ["missing-final", "connector_protocol_error"],
     ["ambiguous-final", "connector_protocol_error"],
     ["tool-item", "connector_protocol_error"],
@@ -145,6 +171,89 @@ async function qualifyCodexAdapter() {
     );
     check(true, `${scenario} fails closed`);
   }
+
+  const expectedDiagnostics = [
+    ["malformed", "invalid_event_stream", null],
+    ["unknown-critical", "unsupported_event_type", "turn.maybe_completed"],
+    ["unknown-item", "unsupported_item_type", "item.started"],
+    ["ambiguous-final", "ambiguous_final_response", "item.completed"],
+    ["tool-item", "forbidden_tool_event", "item.started"]
+  ];
+  for (const [scenario, category, topLevelType] of expectedDiagnostics) {
+    await assert.rejects(
+      createFakeAdapter(scenario).exchange({
+        maxResponseBytes: 1024,
+        requestBytes: new TextEncoder().encode("diagnostic boundary"),
+        signal: new AbortController().signal
+      }),
+      (error) => {
+        assert.ok(error instanceof CodexAdapterError);
+        assert.equal(error.diagnostic?.category, category);
+        assert.equal(error.diagnostic?.top_level_type, topLevelType);
+        assert.equal(Object.hasOwn(error.diagnostic ?? {}, "item_type"), false);
+        assert.equal(Object.hasOwn(error.diagnostic ?? {}, "item_status"), false);
+        assert.equal(isLocalConnectorProtocolDiagnostic(error.diagnostic), true);
+        return true;
+      }
+    );
+  }
+  check(true, "protocol diagnostics contain only bounded structural event fields");
+
+  for (const itemType of [
+    "collab_tool_call",
+    "command_execution",
+    "file_change",
+    "mcp_tool_call",
+    "web_search"
+  ]) {
+    for (const topLevelType of ["item.started", "item.updated", "item.completed"]) {
+      await assert.rejects(
+        createFakeAdapter("forbidden-item", {
+          PATCHMARK_FAKE_ITEM_TYPE: itemType,
+          PATCHMARK_FAKE_TOP_LEVEL_TYPE: topLevelType
+        }).exchange({
+          maxResponseBytes: 1024,
+          requestBytes: new TextEncoder().encode("zero tool authority"),
+          signal: new AbortController().signal
+        }),
+        (error) =>
+          error instanceof CodexAdapterError &&
+          error.code === "connector_protocol_error" &&
+          error.diagnostic?.category === "forbidden_tool_event" &&
+          error.diagnostic.item_type_present === true &&
+          error.diagnostic.top_level_type === topLevelType
+      );
+    }
+  }
+  check(true, "every known authority-bearing item fails closed in every lifecycle phase");
+
+  const warningResponse = await createFakeAdapter("item-warning-success", {
+    PATCHMARK_FAKE_RESPONSE_BASE64: Buffer.from("warning-safe").toString(
+      "base64"
+    )
+  }).exchange({
+    maxResponseBytes: 1024,
+    requestBytes: new TextEncoder().encode("typed item diagnostic"),
+    signal: new AbortController().signal
+  });
+  assert.equal(new TextDecoder().decode(warningResponse), "warning-safe");
+  check(true, "the exact item.completed error form is non-fatal by itself");
+
+  const immediateStartedAt = Date.now();
+  await assert.rejects(
+    createFakeAdapter("forbidden-item-hang", {}, 10_000).exchange({
+      maxResponseBytes: 1024,
+      requestBytes: new TextEncoder().encode("terminate forbidden child"),
+      signal: new AbortController().signal
+    }),
+    (error) =>
+      error instanceof CodexAdapterError &&
+      error.diagnostic?.category === "forbidden_tool_event"
+  );
+  assert.ok(
+    Date.now() - immediateStartedAt < 2_000,
+    "a forbidden item terminates the child instead of waiting for the operation timeout"
+  );
 
   const unsupported = createFakeAdapter("success", {
     PATCHMARK_FAKE_CODEX_VERSION: "99.0.0"
@@ -222,15 +331,72 @@ async function qualifyCodexAdapter() {
   const parsed = extractFinalAgentMessage(
     new TextEncoder().encode(
       [
-        JSON.stringify({ type: "thread.started" }),
+        JSON.stringify({ type: "thread.started", thread_id: "thread" }),
         JSON.stringify({ type: "turn.started" }),
-        JSON.stringify({ item: { type: "agent_message", text: "one" }, type: "item.completed" }),
-        JSON.stringify({ item: { type: "agent_message", text: "two" }, type: "item.completed" }),
-        JSON.stringify({ type: "turn.completed" })
+        JSON.stringify({ item: { id: "one", type: "agent_message", text: "one" }, type: "item.completed" }),
+        JSON.stringify({ item: { id: "two", type: "agent_message", text: "two" }, type: "item.completed" }),
+        JSON.stringify({ type: "turn.completed", usage: zeroUsage() })
       ].join("\n") + "\n"
     )
   );
   assert.deepEqual(parsed, { completed: true, failureCode: null, finalMessage: "two" });
+
+  const lifecycleParsed = extractFinalAgentMessage(
+    new TextEncoder().encode(
+      [
+        { type: "thread.started", thread_id: "thread" },
+        { type: "turn.started" },
+        { item: { id: "reasoning", type: "reasoning", text: "discarded" }, type: "item.completed" },
+        { item: { id: "todo", type: "todo_list", items: [] }, type: "item.started" },
+        { item: { id: "todo", type: "todo_list", items: [] }, type: "item.updated" },
+        { item: { id: "todo", type: "todo_list", items: [] }, type: "item.completed" },
+        { item: { id: "message", type: "agent_message", text: "authoritative" }, type: "item.completed" },
+        { type: "turn.completed", usage: zeroUsage() }
+      ].map((event) => JSON.stringify(event)).join("\n") + "\n"
+    )
+  );
+  assert.deepEqual(lifecycleParsed, {
+    completed: true,
+    failureCode: null,
+    finalMessage: "authoritative"
+  });
+  assert.throws(
+    () => extractFinalAgentMessage(
+      new TextEncoder().encode(
+        [
+          { type: "thread.started", thread_id: "thread" },
+          { type: "turn.started" },
+          {
+            item: {
+              status: "contains private words and spaces",
+              type: "private/project/path?token=secret"
+            },
+            type: "item.started"
+          }
+        ].map((event) => JSON.stringify(event)).join("\n")
+      )
+    ),
+    (error) => {
+      assert.ok(error instanceof CodexAdapterError);
+      assert.equal(error.diagnostic?.category, "unsupported_item_type");
+      assert.equal(error.diagnostic?.top_level_type, "item.started");
+      assert.equal(JSON.stringify(error.diagnostic).includes("private/project"), false);
+      return true;
+    }
+  );
+  assert.deepEqual(
+    extractFinalAgentMessage(
+      new TextEncoder().encode(
+        [
+          { type: "thread.started", thread_id: "thread" },
+          { type: "turn.started" },
+          { item: { id: "error", type: "error", message: "synthetic" }, type: "item.completed" }
+        ].map((event) => JSON.stringify(event)).join("\n")
+      )
+    ),
+    { completed: false, failureCode: null, finalMessage: null }
+  );
+  check(true, "the deterministic parser matrix covers lifecycle, inert metadata, non-fatal diagnostics, unknowns, and diagnostic redaction");
 }
 
 async function qualifyHttpSecurityAndLifecycle() {
@@ -270,6 +436,44 @@ async function qualifyHttpSecurityAndLifecycle() {
       if (mode === "response-boundary") {
         return new Uint8Array(responseBoundaryBytes);
       }
+      if (mode === "protocol-diagnostic") {
+        throw new CodexAdapterError(
+          "connector_protocol_error",
+          "synthetic structural diagnostic",
+          {
+            category: "unsupported_item_type",
+            invalid_field_kind: null,
+            invalid_field_name: null,
+            item_is_object: true,
+            item_present: true,
+            item_type_present: true,
+            item_type_string: true,
+            missing_required_field_names: [],
+            sorted_item_key_names: ["id", "status", "type"],
+            top_level_type: "item.started",
+            unexpected_field_names: []
+          }
+        );
+      }
+      if (mode === "unsafe-protocol-diagnostic") {
+        throw new CodexAdapterError(
+          "connector_protocol_error",
+          "synthetic rejected diagnostic",
+          {
+            category: "unsupported_item_type",
+            invalid_field_kind: "contains private words and spaces",
+            invalid_field_name: "private/project/path?token=secret",
+            item_is_object: true,
+            item_present: true,
+            item_type_present: true,
+            item_type_string: true,
+            missing_required_field_names: [],
+            sorted_item_key_names: ["type"],
+            top_level_type: "item.started",
+            unexpected_field_names: []
+          }
+        );
+      }
       return responseBytes;
     }
   };
@@ -278,6 +482,7 @@ async function qualifyHttpSecurityAndLifecycle() {
   const connector = createPatchmarkLocalConnector({
     adapter,
     allowedOrigins: ["https://patchmark.test", "https://staging.patchmark.test"],
+    includeQualificationDiagnostics: true,
     onPairingCode: (code) => pairingCodes.push(code),
     port: 0
   });
@@ -420,6 +625,50 @@ async function qualifyHttpSecurityAndLifecycle() {
   assert.equal(success.status, 200);
   assert.deepEqual(Buffer.from(success.json.response_base64, "base64"), Buffer.from(responseBytes));
 
+  mode = "protocol-diagnostic";
+  const diagnosticFailure = await jsonRequest({
+    body: { ...exchangeBody, operation_id: "ae2_protocol_diagnostic" },
+    connectorOrigin,
+    origin: "https://patchmark.test",
+    path: "/v1/exchanges",
+    token
+  });
+  assert.equal(diagnosticFailure.status, 502);
+  assert.deepEqual(diagnosticFailure.json, {
+    error: { code: "connector_protocol_error" },
+    protocol_version: LOCAL_CONNECTOR_PROTOCOL_VERSION
+  });
+  const structuralDiagnostic = JSON.parse(
+    Buffer.from(
+      diagnosticFailure.headers[
+        "x-patchmark-qualification-structural-diagnostic"
+      ],
+      "base64url"
+    ).toString("utf8")
+  );
+  assert.equal(isLocalConnectorProtocolDiagnostic(structuralDiagnostic), true);
+  check(true, "the qualification HTTP seam exposes only the bounded structural diagnostic allowlist");
+
+  mode = "unsafe-protocol-diagnostic";
+  const rejectedDiagnostic = await jsonRequest({
+    body: { ...exchangeBody, operation_id: "ae2_rejected_diagnostic" },
+    connectorOrigin,
+    origin: "https://patchmark.test",
+    path: "/v1/exchanges",
+    token
+  });
+  assert.deepEqual(rejectedDiagnostic.json, {
+    error: { code: "connector_protocol_error" },
+    protocol_version: LOCAL_CONNECTOR_PROTOCOL_VERSION
+  });
+  assert.equal(
+    rejectedDiagnostic.headers[
+      "x-patchmark-qualification-structural-diagnostic"
+    ],
+    undefined
+  );
+  check(true, "the HTTP seam drops a diagnostic containing non-structural values");
+
   mode = "accept-any";
   const exactCeilingBytes = Buffer.alloc(LOCAL_CONNECTOR_MAX_REQUEST_BYTES, 0x61);
   const exactCeilingBody = makeExchangeBody("ae2_request_exact_ceiling", exactCeilingBytes);
@@ -467,6 +716,7 @@ async function qualifyHttpSecurityAndLifecycle() {
 
   mode = "hold";
   observedAbort = false;
+  const heldExchangeCalls = exchangeCalls;
   const held = jsonRequest({
     body: makeExchangeBody("ae2_operation_hold", canonical),
     connectorOrigin,
@@ -474,7 +724,7 @@ async function qualifyHttpSecurityAndLifecycle() {
     path: "/v1/exchanges",
     token
   });
-  await waitFor(() => exchangeCalls >= 2);
+  await waitFor(() => exchangeCalls > heldExchangeCalls);
   const busy = await jsonRequest({
     body: makeExchangeBody("ae2_operation_busy", canonical),
     connectorOrigin,
@@ -517,6 +767,7 @@ async function qualifyHttpSecurityAndLifecycle() {
 
   mode = "hold";
   observedAbort = false;
+  const disconnectedExchangeCalls = exchangeCalls;
   const disconnected = abortableJsonRequest({
     body: makeExchangeBody("ae2_client_disconnect", canonical),
     connectorOrigin,
@@ -524,7 +775,7 @@ async function qualifyHttpSecurityAndLifecycle() {
     path: "/v1/exchanges",
     token
   });
-  await waitFor(() => exchangeCalls >= 7);
+  await waitFor(() => exchangeCalls > disconnectedExchangeCalls);
   disconnected.destroy();
   await disconnected.promise.catch(() => undefined);
   await waitFor(() => observedAbort);
@@ -721,7 +972,9 @@ async function qualifyStaticBoundary() {
   assert.doesNotMatch(browserConnector, /localStorage|sessionStorage|document\.cookie|indexedDB/);
   assert.doesNotMatch(browserConnector, /project_id.*JSON\.stringify|document_id.*JSON\.stringify|review_batch_id.*JSON\.stringify/);
   for (const label of [
-    "Local Codex isn’t ready",
+    "Patchmark Connector isn’t running",
+    "Patchmark Connector needs an update",
+    "Codex wasn’t found",
     "This Codex version isn’t supported",
     "Codex sign-in required",
     "Local Codex is busy",
@@ -898,6 +1151,16 @@ function processExists(pid) {
   } catch (error) {
     return error?.code !== "ESRCH";
   }
+}
+
+function zeroUsage() {
+  return {
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0
+  };
 }
 
 async function waitFor(predicate) {

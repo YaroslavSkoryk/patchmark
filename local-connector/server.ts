@@ -8,17 +8,24 @@ import {
 
 import {
   isExactRecord,
+  isLocalConnectorProtocolDiagnostic,
   isSafeOperationId,
   LOCAL_CONNECTOR_DEFAULT_PORT,
+  LOCAL_CONNECTOR_ID,
   LOCAL_CONNECTOR_MAX_REQUEST_BYTES,
   LOCAL_CONNECTOR_MAX_RESPONSE_BYTES,
   LOCAL_CONNECTOR_PROTOCOL_VERSION,
+  LOCAL_CONNECTOR_VERSION,
+  PUBLICLY_SUPPORTED_CODEX_VERSIONS,
   LocalConnectorError,
   type LocalConnectorErrorCode,
-  type LocalConnectorExchangeRequest
+  type LocalConnectorExchangeRequest,
+  type LocalConnectorProtocolDiagnostic
 } from "../lib/agent-exchange/local-connector-protocol.ts";
 import {
   CodexAdapterError,
+  isCodexProviderFailureDiagnostic,
+  type CodexProviderFailureDiagnostic,
   type CodexExecAdapter
 } from "./codex-exec-adapter.ts";
 
@@ -28,6 +35,10 @@ const MAX_EXCHANGE_BODY_BYTES = Math.ceil(
   (LOCAL_CONNECTOR_MAX_REQUEST_BYTES * 4) / 3
 ) + 4096;
 const MAX_PAIR_FAILURES = 8;
+const QUALIFICATION_DIAGNOSTIC_HEADER =
+  "X-Patchmark-Qualification-Diagnostic";
+const QUALIFICATION_STRUCTURAL_DIAGNOSTIC_HEADER =
+  "X-Patchmark-Qualification-Structural-Diagnostic";
 
 export type LocalConnectorCodexAdapter = Pick<
   CodexExecAdapter,
@@ -38,6 +49,7 @@ export type PatchmarkLocalConnectorOptions = Readonly<{
   adapter: LocalConnectorCodexAdapter;
   allowInsecureLoopbackOriginsForTests?: boolean;
   allowedOrigins: readonly string[];
+  includeQualificationDiagnostics?: boolean;
   onPairingCode?: (pairingCode: string) => void;
   port?: number;
 }>;
@@ -104,9 +116,12 @@ export function createPatchmarkLocalConnector(
           busy: active !== null,
           codex_version: compatibility.codex_version,
           compatibility: compatibility.compatibility,
+          connector_id: LOCAL_CONNECTOR_ID,
+          connector_version: LOCAL_CONNECTOR_VERSION,
           instance_id: instanceId,
           paired: authenticated,
-          protocol_version: LOCAL_CONNECTOR_PROTOCOL_VERSION
+          protocol_version: LOCAL_CONNECTOR_PROTOCOL_VERSION,
+          supported_codex_versions: PUBLICLY_SUPPORTED_CODEX_VERSIONS
         });
         return;
       }
@@ -263,7 +278,15 @@ export function createPatchmarkLocalConnector(
       if (request.headers.origin && allowedOrigins.has(request.headers.origin)) {
         setSecurityHeaders(response, request.headers.origin);
       }
-      sendError(response, mapped.status, mapped.code);
+      sendError(
+        response,
+        mapped.status,
+        mapped.code,
+        options.includeQualificationDiagnostics ? mapped.diagnostic : null,
+        options.includeQualificationDiagnostics
+          ? mapped.qualificationDiagnostic
+          : null
+      );
     }
   };
 
@@ -285,11 +308,15 @@ export function createPatchmarkLocalConnector(
       );
       server = nextServer;
       await new Promise<void>((resolve, reject) => {
-        nextServer.once("error", reject);
+        const rejectStart = (error: Error) => {
+          server = null;
+          reject(error);
+        };
+        nextServer.once("error", rejectStart);
         nextServer.listen(
           { host: LOOPBACK_HOST, port: options.port ?? LOCAL_CONNECTOR_DEFAULT_PORT },
           () => {
-            nextServer.removeListener("error", reject);
+            nextServer.removeListener("error", rejectStart);
             resolve();
           }
         );
@@ -572,8 +599,26 @@ function sendJson(
 function sendError(
   response: ServerResponse,
   status: number,
-  code: LocalConnectorErrorCode
+  code: LocalConnectorErrorCode,
+  structuralDiagnostic: LocalConnectorProtocolDiagnostic | null,
+  qualificationDiagnostic: CodexProviderFailureDiagnostic | null
 ): void {
+  if (structuralDiagnostic) {
+    response.setHeader(
+      QUALIFICATION_STRUCTURAL_DIAGNOSTIC_HEADER,
+      Buffer.from(JSON.stringify(structuralDiagnostic), "utf8").toString(
+        "base64url"
+      )
+    );
+  }
+  if (qualificationDiagnostic) {
+    response.setHeader(
+      QUALIFICATION_DIAGNOSTIC_HEADER,
+      Buffer.from(JSON.stringify(qualificationDiagnostic), "utf8").toString(
+        "base64url"
+      )
+    );
+  }
   sendJson(response, status, {
     error: { code },
     protocol_version: LOCAL_CONNECTOR_PROTOCOL_VERSION
@@ -594,9 +639,18 @@ class HttpError extends Error {
 
 function mapError(error: unknown): Readonly<{
   code: LocalConnectorErrorCode;
+  diagnostic: LocalConnectorProtocolDiagnostic | null;
+  qualificationDiagnostic: CodexProviderFailureDiagnostic | null;
   status: number;
 }> {
-  if (error instanceof HttpError) return error;
+  if (error instanceof HttpError) {
+    return {
+      code: error.code,
+      diagnostic: null,
+      qualificationDiagnostic: null,
+      status: error.status
+    };
+  }
   if (error instanceof CodexAdapterError || error instanceof LocalConnectorError) {
     const statuses: Partial<Record<LocalConnectorErrorCode, number>> = {
       authentication_required: 401,
@@ -608,9 +662,27 @@ function mapError(error: unknown): Readonly<{
       request_too_large: 413,
       response_too_large: 413
     };
-    return { code: error.code, status: statuses[error.code] ?? 502 };
+    return {
+      code: error.code,
+      diagnostic:
+        error instanceof CodexAdapterError &&
+        isLocalConnectorProtocolDiagnostic(error.diagnostic)
+          ? error.diagnostic
+          : null,
+      qualificationDiagnostic:
+        error instanceof CodexAdapterError &&
+        isCodexProviderFailureDiagnostic(error.qualificationDiagnostic)
+          ? error.qualificationDiagnostic
+          : null,
+      status: statuses[error.code] ?? 502
+    };
   }
-  return { code: "provider_failed", status: 502 };
+  return {
+    code: "provider_failed",
+    diagnostic: null,
+    qualificationDiagnostic: null,
+    status: 502
+  };
 }
 
 function stopServer(server: Server): Promise<void> {

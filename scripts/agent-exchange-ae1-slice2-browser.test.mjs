@@ -248,7 +248,7 @@ try {
   await configureConnector({ holdAvailability: false, mode: "unavailable" });
   await keyboardActivateSend();
   await waitForPhase("failed");
-  assert.match(await agentText(), /Couldn’t reach agent/);
+  assert.match(await agentText(), /Patchmark Connector isn’t running/);
   const unavailablePrompt = readOnlyPromptPack(projectPaths[2]);
   await keyboardActivateButton("Use manual export instead");
   await waitFor(`Boolean(document.querySelector('[aria-label="Generate ChatGPT prompt"]'))`, "manual fallback dialog");
@@ -391,7 +391,7 @@ try {
     surfaceWithinViewport: true,
     buttonWithinViewport: true,
     buttonName: "Use manual export instead",
-    liveRegion: "Couldn’t reach agentThe prepared review is still available. Check that your local agent is ready, or continue with the exact manual export instead."
+    liveRegion: "Patchmark Connector isn’t runningLaunch Patchmark Connector, then try again or use the exact manual export."
   });
   await setViewport(720, 844);
   const zoomEquivalent = await evaluate(client, {

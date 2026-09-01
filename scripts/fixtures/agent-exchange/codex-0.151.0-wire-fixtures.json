@@ -1,0 +1,232 @@
+{
+  "provenance": {
+    "codex_commit": "78c290807ce710180111df227df3b7a4fe845452",
+    "codex_tag": "rust-v0.151.0",
+    "source_files": [
+      "codex-rs/exec/src/exec_events.rs",
+      "codex-rs/exec/src/event_processor_with_jsonl_output.rs",
+      "codex-rs/exec/src/event_processor_with_jsonl_output_tests.rs",
+      "codex-rs/exec/src/lib.rs",
+      "codex-rs/exec/src/lib_tests.rs",
+      "codex-rs/exec/tests/event_processor_with_json_output.rs"
+    ]
+  },
+  "events": {
+    "thread_started": {
+      "type": "thread.started",
+      "thread_id": "synthetic_thread"
+    },
+    "pre_turn_error_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_warning",
+        "type": "error",
+        "message": "synthetic pre-turn warning"
+      }
+    },
+    "runtime_warning_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_runtime_warning",
+        "type": "error",
+        "message": "synthetic non-fatal runtime warning"
+      }
+    },
+    "stream_integrity_warning_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_stream_integrity_warning",
+        "type": "error",
+        "message": "in-process app-server event stream lagged; dropped 7 events"
+      }
+    },
+    "turn_started": {
+      "type": "turn.started"
+    },
+    "agent_message_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_message",
+        "type": "agent_message",
+        "text": "synthetic assistant response"
+      }
+    },
+    "reasoning_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_reasoning",
+        "type": "reasoning",
+        "text": "synthetic reasoning summary"
+      }
+    },
+    "todo_list_started": {
+      "type": "item.started",
+      "item": {
+        "id": "item_todo",
+        "type": "todo_list",
+        "items": [
+          {
+            "text": "synthetic step",
+            "completed": false
+          }
+        ]
+      }
+    },
+    "todo_list_updated": {
+      "type": "item.updated",
+      "item": {
+        "id": "item_todo",
+        "type": "todo_list",
+        "items": [
+          {
+            "text": "synthetic step",
+            "completed": false
+          }
+        ]
+      }
+    },
+    "todo_list_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_todo",
+        "type": "todo_list",
+        "items": [
+          {
+            "text": "synthetic step",
+            "completed": false
+          }
+        ]
+      }
+    },
+    "command_execution_started": {
+      "type": "item.started",
+      "item": {
+        "id": "item_command",
+        "type": "command_execution",
+        "command": "synthetic command",
+        "aggregated_output": "",
+        "exit_code": null,
+        "status": "in_progress"
+      }
+    },
+    "command_execution_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_command",
+        "type": "command_execution",
+        "command": "synthetic command",
+        "aggregated_output": "",
+        "exit_code": null,
+        "status": "completed"
+      }
+    },
+    "file_change_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_file",
+        "type": "file_change",
+        "changes": [
+          {
+            "path": "synthetic.txt",
+            "kind": "update"
+          }
+        ],
+        "status": "completed"
+      }
+    },
+    "mcp_tool_call_started": {
+      "type": "item.started",
+      "item": {
+        "id": "item_mcp",
+        "type": "mcp_tool_call",
+        "server": "synthetic_server",
+        "tool": "synthetic_tool",
+        "arguments": null,
+        "result": null,
+        "error": null,
+        "status": "in_progress"
+      }
+    },
+    "mcp_tool_call_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_mcp",
+        "type": "mcp_tool_call",
+        "server": "synthetic_server",
+        "tool": "synthetic_tool",
+        "arguments": null,
+        "result": null,
+        "error": null,
+        "status": "completed"
+      }
+    },
+    "collab_tool_call_started": {
+      "type": "item.started",
+      "item": {
+        "id": "item_collab",
+        "type": "collab_tool_call",
+        "tool": "spawn_agent",
+        "sender_thread_id": "synthetic_parent",
+        "receiver_thread_ids": [],
+        "prompt": null,
+        "agents_states": {},
+        "status": "in_progress"
+      }
+    },
+    "collab_tool_call_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "item_collab",
+        "type": "collab_tool_call",
+        "tool": "spawn_agent",
+        "sender_thread_id": "synthetic_parent",
+        "receiver_thread_ids": [],
+        "prompt": null,
+        "agents_states": {},
+        "status": "completed"
+      }
+    },
+    "web_search_started": {
+      "type": "item.started",
+      "item": {
+        "id": "synthetic_search",
+        "type": "web_search",
+        "query": "synthetic query",
+        "action": {
+          "type": "other"
+        }
+      }
+    },
+    "web_search_completed": {
+      "type": "item.completed",
+      "item": {
+        "id": "synthetic_search",
+        "type": "web_search",
+        "query": "synthetic query",
+        "action": {
+          "type": "other"
+        }
+      }
+    },
+    "top_level_error": {
+      "type": "error",
+      "message": "synthetic top-level error"
+    },
+    "turn_failed": {
+      "type": "turn.failed",
+      "error": {
+        "message": "synthetic turn failure"
+      }
+    },
+    "turn_completed": {
+      "type": "turn.completed",
+      "usage": {
+        "input_tokens": 0,
+        "cached_input_tokens": 0,
+        "cache_write_input_tokens": 0,
+        "output_tokens": 0,
+        "reasoning_output_tokens": 0
+      }
+    }
+  }
+}
