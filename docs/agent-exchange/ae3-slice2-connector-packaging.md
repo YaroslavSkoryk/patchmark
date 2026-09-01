@@ -1,15 +1,12 @@
 # AE-3 Slice 2 — connector packaging and user lifecycle
 
 Status: the macOS Apple-silicon package and user-launched lifecycle are
-mechanically qualified. The latest authorized packaged Codex turn returned
-HTTP `502` / `connector_protocol_error`, category `invalid_event_stream`, at
-`item.completed` after 19,181 ms, with zero imports and no retry. Slice 2C
-proves and corrects the exact Codex `0.151.0` pre-turn item lifecycle mismatch;
-one freshly authorized packaged real Codex smoke turn is still required.
-Public
-distribution is also blocked on Developer ID signing, notarization, stapling,
-and clean-machine Gatekeeper verification. The checked-in release state
-remains:
+mechanically qualified. The final authorized packaged Codex `0.151.0` turn
+used the Slice 2D artifact, returned HTTP `200`, reached `ready`, imported one
+synthetic reply and zero patches, and made no retry. Public distribution
+remains blocked on a production-origin package, Developer ID signing,
+notarization, stapling, clean-machine Gatekeeper verification, and an
+authorized HTTPS distribution channel. The checked-in release state remains:
 
 ```ts
 {
@@ -479,12 +476,14 @@ The Slice 2D qualification archive is preserved at
 `/tmp/patchmark-ae3-slice2d-qualification.2NLzSu/artifact/patchmark-connector-0.1.0-macos-arm64-qualification.tar.gz`.
 It is `22,238,315` bytes with SHA-256
 `80c36352bd55583c00cfa304ed8604a3d2d3d24221bef7cd89f4cd2ac65c9156`.
-No live model turn occurred in Slice 2D. Portable request/response protocols,
+No live model turn occurred while implementing Slice 2D. A subsequent,
+separately authorized final gate used this exact archive and passed one real
+Codex turn with no retry. Portable request/response protocols,
 project schemas, pairing/security architecture, exact Codex allowlist,
 dependencies, lockfiles, and Human Collaboration are unchanged; production
 remains `{ human_collaboration: false, agent_exchange: false }`. This corrected
-package is mechanical qualification evidence only and awaits one separately
-authorized packaged real-Codex smoke turn.
+package is mechanical and provider qualification evidence, but it is not a
+signed public-distribution artifact.
 
 ## Signing, notarization, and distribution blocker
 
