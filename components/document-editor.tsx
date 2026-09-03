@@ -290,6 +290,7 @@ import {
   getProjectDocumentExportIdentity,
   getProjectDocumentScopeId,
   getProjectTitle,
+  isProjectDocumentListCurrentForManifest,
   isMultiDocumentProject,
   listProjectVersions,
   loadCollaborationProductQualification,
@@ -9764,7 +9765,11 @@ export function DocumentEditor() {
           loadedProject.project.projectManifest.project_id &&
         projectHandle.projectManifest.manifest_revision ===
           loadedProject.project.projectManifest.manifest_revision &&
-        projectDocumentsRef.current.length > 0
+        projectDocumentsRef.current.length > 0 &&
+        isProjectDocumentListCurrentForManifest(
+          projectDocumentsRef.current,
+          loadedProject.project.projectManifest
+        )
     );
     const navigatorStartedAt = performance.now();
     const navigatorPromise = canReuseNavigatorState

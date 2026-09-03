@@ -28,6 +28,10 @@ import {
 const editorUrl = process.env.PATCHMARK_EDITOR_URL ?? "http://localhost:3118/";
 const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-multi-browser-"));
 const projectDir = join(fixtureRoot, "Crust Chant");
+const shareholdersMarkdown =
+  "# SHAREHOLDERS AGREEMENT\n\n1.\nINTERPRETATION\n\n1.1\nIn this Agreement...\n";
+const failedRegistrationMarkdown =
+  "# FAILED REGISTRATION\n\nThis document must never become active.\n";
 createMultiDocumentFixture(projectDir);
 const inventory = inventoryProject(projectDir);
 const fixtureServer = await startFixtureFileServer(projectDir, inventory);
@@ -69,6 +73,10 @@ try {
     source: createProjectPickerShim({
       baseUrl: fixtureServer.baseUrl,
       directories: inventory.directories,
+      filePickerPaths: [
+        "shareholders-agreement.md",
+        "failed-registration.md"
+      ],
       files: inventory.files,
       projectName: "Crust Chant"
     })
@@ -196,6 +204,73 @@ try {
     "group-aware breadcrumb"
   );
 
+  assert.equal((await readGroupDocumentState(client, crustGroupId)).count, 2);
+  await addExistingDocument(client, crustGroupId);
+  await waitFor(
+    client,
+    `(() => {
+      const section = document.querySelector('[data-group-id="${crustGroupId}"]');
+      const titles = Array.from(section?.querySelectorAll('.project-document-select span') ?? [])
+        .map((element) => element.textContent);
+      return section?.querySelector('.project-document-group-header small')?.textContent === '3' &&
+        titles.includes('SHAREHOLDERS AGREEMENT') &&
+        section?.querySelector('.project-document-item[data-active="true"] .project-document-select span')?.textContent === 'SHAREHOLDERS AGREEMENT';
+    })()`,
+    "registered existing document in group navigation"
+  );
+  await waitFor(
+    client,
+    `document.querySelector(".application-document-breadcrumb")?.getAttribute("title") === "Crust Chant / Crust Chant / SHAREHOLDERS AGREEMENT"`,
+    "existing document breadcrumb agrees with navigation"
+  );
+  await clickButtonByText(client, "Markdown Mode");
+  await waitFor(
+    client,
+    `document.querySelector(".markdown-source-editor")?.value === ${JSON.stringify(shareholdersMarkdown)}`,
+    "unchanged existing Markdown source"
+  );
+  let existingManifest = readProjectManifest(projectDir);
+  const shareholdersRegistrations = existingManifest.documents.filter(
+    ({ path }) => path.toLowerCase() === "shareholders-agreement.md"
+  );
+  assert.equal(shareholdersRegistrations.length, 1);
+  assert.equal(shareholdersRegistrations[0].group_id, crustGroupId);
+  assert.equal(
+    readFileSync(join(projectDir, "shareholders-agreement.md"), "utf8"),
+    shareholdersMarkdown
+  );
+  const dataAfterExistingRegistration = captureDocumentData(projectDir);
+  for (const [key, value] of Object.entries(documentDataBeforeGroups)) {
+    assert.equal(
+      dataAfterExistingRegistration[key],
+      value,
+      `Adding an existing document changed prior document data: ${key}`
+    );
+  }
+
+  await evaluate(client, {
+    expression: `window.__patchmarkFixtureWriteControls.failNextPath = ".patchmark/project.json"; true`
+  });
+  await addExistingDocument(client, crustGroupId);
+  await waitFor(
+    client,
+    `Boolean(document.querySelector(".document-status-saveFailed"))`,
+    "failed existing-document registration"
+  );
+  existingManifest = readProjectManifest(projectDir);
+  assert.equal(
+    existingManifest.documents.some(
+      ({ path }) => path === "failed-registration.md"
+    ),
+    false
+  );
+  assert.equal((await readGroupDocumentState(client, crustGroupId)).count, 3);
+  assert.equal((await readNavigatorState(client)).activeTitle, "SHAREHOLDERS AGREEMENT");
+  assert.equal(
+    readFileSync(join(projectDir, "failed-registration.md"), "utf8"),
+    failedRegistrationMarkdown
+  );
+
   await clickProjectDocument(client, "Action Plan");
   await waitFor(
     client,
@@ -234,6 +309,15 @@ try {
   assert.equal(readProjectManifest(projectDir).manifest_revision, revisionBeforeReopen);
   await toggleGroup(client, "Crust Chant Business");
   await waitForGroupExpanded(client, "Crust Chant Business", true);
+  const reopenedGroup = await readGroupDocumentState(client, crustGroupId);
+  assert.equal(reopenedGroup.count, 3);
+  assert.equal(reopenedGroup.titles.includes("SHAREHOLDERS AGREEMENT"), true);
+  assert.equal(
+    readProjectManifest(projectDir).documents.filter(
+      ({ path }) => path.toLowerCase() === "shareholders-agreement.md"
+    ).length,
+    1
+  );
 
   await moveDocumentWithinGroup(client, "RTE Investigation", "up");
   await waitFor(
@@ -284,7 +368,7 @@ try {
       .every(({ group_id }) => group_id === null),
     true
   );
-  assert.deepEqual(captureDocumentData(projectDir), documentDataBeforeGroups);
+  assert.deepEqual(captureDocumentData(projectDir), dataAfterExistingRegistration);
 
   process.stdout.write(
     `${JSON.stringify({
@@ -298,6 +382,9 @@ try {
       groupBreadcrumb: true,
       localCollapseState: true,
       bookmarkGroupReveal: true,
+      existingDocumentRegistration: true,
+      existingDocumentRegistrationFailureAtomic: true,
+      existingDocumentRegistrationReload: true,
       archiveGroupPreservation: true,
       groupRemovalPreservesDocumentData: true
     }, null, 2)}\n`
@@ -406,6 +493,49 @@ async function waitForGroup(pageClient, title) {
     `Array.from(document.querySelectorAll(".project-document-group-header strong")).some((element) => element.textContent === ${JSON.stringify(title)})`,
     `group ${title}`
   );
+}
+
+async function addExistingDocument(pageClient, groupId) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const add = Array.from(document.querySelectorAll("summary"))
+        .find((summary) => summary.textContent?.trim() === "Add document");
+      if (!add) throw new Error("Add document control not found.");
+      if (!add.parentElement?.hasAttribute("open")) add.click();
+      const select = document.querySelector('select[aria-label="Group for existing document"]');
+      if (!select) throw new Error("Add existing document group control not available.");
+      const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set;
+      setter?.call(select, ${JSON.stringify(groupId)});
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+      return true;
+    })()`,
+    userGesture: true
+  });
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const button = Array.from(document.querySelectorAll("button"))
+        .find((candidate) => candidate.textContent?.trim() === "Add existing document" && !candidate.disabled);
+      if (!button) throw new Error("Add existing document action not available.");
+      button.click();
+      return true;
+    })()`,
+    userGesture: true
+  });
+}
+
+async function readGroupDocumentState(pageClient, groupId) {
+  return evaluate(pageClient, {
+    expression: `(() => {
+      const section = document.querySelector(${JSON.stringify(
+        `[data-group-id="${groupId}"]`
+      )});
+      return {
+        count: Number(section?.querySelector(".project-document-group-header small")?.textContent ?? -1),
+        titles: Array.from(section?.querySelectorAll(".project-document-select span") ?? [])
+          .map((element) => element.textContent?.trim())
+      };
+    })()`
+  });
 }
 
 async function moveDocumentToGroup(pageClient, title, groupId) {
@@ -656,6 +786,11 @@ function createMultiDocumentFixture(root) {
       manifest_revision: 1,
       documents
     }, null, 2)}\n`
+  );
+  writeFileSync(join(root, "shareholders-agreement.md"), shareholdersMarkdown);
+  writeFileSync(
+    join(root, "failed-registration.md"),
+    failedRegistrationMarkdown
   );
 }
 

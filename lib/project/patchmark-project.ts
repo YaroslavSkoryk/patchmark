@@ -279,6 +279,35 @@ export type PatchmarkProjectDocumentListItem = PatchmarkProjectDocumentView & {
   hasReadingBookmark: boolean;
 };
 
+export function isProjectDocumentListCurrentForManifest(
+  documents: PatchmarkProjectDocumentListItem[],
+  manifest: PatchmarkProjectManifestV1
+): boolean {
+  if (documents.length !== manifest.documents.length) {
+    return false;
+  }
+  const documentsById = new Map(
+    documents.map((document) => [document.document_id, document])
+  );
+  if (documentsById.size !== documents.length) {
+    return false;
+  }
+  return manifest.documents.every((registered) => {
+    const projected = documentsById.get(registered.document_id);
+    return Boolean(
+      projected &&
+        projected.path === registered.path &&
+        projected.display_title === registered.display_title &&
+        (projected.group_id ?? null) === (registered.group_id ?? null) &&
+        projected.role === registered.role &&
+        projected.status === registered.status &&
+        projected.position === registered.position &&
+        projected.added_at === registered.added_at &&
+        projected.archived_at === registered.archived_at
+    );
+  });
+}
+
 type ProjectWriteQueueState = {
   tail: Promise<void>;
   latestRequestId: number;

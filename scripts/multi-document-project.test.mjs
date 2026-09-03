@@ -9,6 +9,7 @@ import {
   createNewProjectDocument,
   getProjectDocumentList,
   getProjectDocumentExportIdentity,
+  isProjectDocumentListCurrentForManifest,
   locateProjectDocument,
   moveProjectDocument,
   openProjectDocument,
@@ -186,6 +187,9 @@ async function runLifecycleIntegrationTest() {
   const existingPath = path.join(projectPath, "evidence.md");
   const existingBytes = "# Evidence\n\nIndependent evidence.\n";
   fs.writeFileSync(existingPath, existingBytes);
+  const projectHandleBeforeExisting = second.project;
+  const revisionBeforeExisting = second.project.projectManifest.manifest_revision;
+  const projectedBeforeExisting = await getProjectDocumentList(second.project);
   const evidence = await addExistingDocumentToProject({
     path: "evidence.md",
     project: second.project,
@@ -193,6 +197,31 @@ async function runLifecycleIntegrationTest() {
   });
   assert.equal(fs.readFileSync(existingPath, "utf8"), existingBytes);
   assert.equal(evidence.project.document.display_title, "Evidence");
+  assert.notEqual(projectHandleBeforeExisting, evidence.project);
+  assert.notEqual(
+    revisionBeforeExisting,
+    evidence.project.projectManifest.manifest_revision
+  );
+  assert.equal(
+    projectHandleBeforeExisting.projectManifest.manifest_revision,
+    evidence.project.projectManifest.manifest_revision,
+    "The in-place handle mutation reproduces the revision-only cache false positive."
+  );
+  assert.equal(
+    isProjectDocumentListCurrentForManifest(
+      projectedBeforeExisting,
+      evidence.project.projectManifest
+    ),
+    false,
+    "A projection from before an in-place manifest mutation must not be reused."
+  );
+  assert.equal(
+    isProjectDocumentListCurrentForManifest(
+      await getProjectDocumentList(evidence.project),
+      evidence.project.projectManifest
+    ),
+    true
+  );
   await assert.rejects(() =>
     addExistingDocumentToProject({
       path: "EVIDENCE.md",

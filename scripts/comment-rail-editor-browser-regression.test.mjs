@@ -522,6 +522,7 @@ function getContentType(path) {
 function createProjectPickerShim({
   baseUrl,
   directories,
+  filePickerPaths = [],
   files,
   projectName,
   pickerPaths = [""]
@@ -544,6 +545,8 @@ function createProjectPickerShim({
       maximumActiveWrites: 0,
       nextSequence: 1
     };
+    const filePickerQueue = ${JSON.stringify(filePickerPaths)};
+    let filePickerIndex = 0;
     const pickerQueue = ${JSON.stringify(pickerPaths)};
     let pickerIndex = 0;
 
@@ -838,6 +841,15 @@ function createProjectPickerShim({
         return response.text();
       });
     };
+    if (filePickerQueue.length > 0) {
+      window.showOpenFilePicker = async () => {
+        const selectedPath = normalizePath(
+          filePickerQueue[Math.min(filePickerIndex, filePickerQueue.length - 1)] ?? ""
+        );
+        filePickerIndex += 1;
+        return [new PatchmarkFixtureFileHandle(selectedPath)];
+      };
+    }
     window.showDirectoryPicker = async () => {
       const selectedPath = normalizePath(
         pickerQueue[Math.min(pickerIndex, pickerQueue.length - 1)] ?? ""
