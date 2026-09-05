@@ -124,9 +124,41 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
     while (index < line.length) {
       const character = line[index];
 
+      if (
+        character === "\\" &&
+        isMarkdownEscapablePunctuation(line[index + 1])
+      ) {
+        appendNormalizedIndexedCharacter({
+          character: line[index + 1],
+          sourceOffset: markdownOffset + index + 1,
+          positions,
+          textParts
+        });
+        index += 2;
+        continue;
+      }
+
       if (character === "(" && index > 0 && line[index - 1] === "]") {
         const closingIndex = line.indexOf(")", index);
         index = closingIndex === -1 ? line.length : closingIndex + 1;
+        continue;
+      }
+
+      if (character === "_") {
+        const runEnd = getDelimiterRunEnd(line, index, "_");
+
+        if (isLiteralUnderscoreRun(line, index, runEnd)) {
+          for (let runIndex = index; runIndex < runEnd; runIndex += 1) {
+            appendNormalizedIndexedCharacter({
+              character: "_",
+              sourceOffset: markdownOffset + runIndex,
+              positions,
+              textParts
+            });
+          }
+        }
+
+        index = runEnd;
         continue;
       }
 
@@ -171,6 +203,86 @@ function getMarkdownPlainTextLineContentStart(line: string): number {
   }
 
   return index;
+}
+
+function isMarkdownEscapablePunctuation(character?: string): character is string {
+  if (!character) {
+    return false;
+  }
+
+  const code = character.charCodeAt(0);
+
+  return (
+    (code >= 0x21 && code <= 0x2f) ||
+    (code >= 0x3a && code <= 0x40) ||
+    (code >= 0x5b && code <= 0x60) ||
+    (code >= 0x7b && code <= 0x7e)
+  );
+}
+
+function getDelimiterRunEnd(
+  text: string,
+  start: number,
+  delimiter: string
+): number {
+  let end = start + 1;
+
+  while (text[end] === delimiter) {
+    end += 1;
+  }
+
+  return end;
+}
+
+function isLiteralUnderscoreRun(
+  text: string,
+  start: number,
+  end: number
+): boolean {
+  const before = text[start - 1];
+  const after = text[end];
+  const leftFlanking = isLeftFlankingDelimiterRun(before, after);
+  const rightFlanking = isRightFlankingDelimiterRun(before, after);
+  const canOpen =
+    leftFlanking && (!rightFlanking || isUnicodePunctuation(before));
+  const canClose =
+    rightFlanking && (!leftFlanking || isUnicodePunctuation(after));
+
+  return !canOpen && !canClose;
+}
+
+function isLeftFlankingDelimiterRun(
+  before?: string,
+  after?: string
+): boolean {
+  return Boolean(
+    after &&
+      !isMarkdownWhitespace(after) &&
+      (!isUnicodePunctuation(after) ||
+        isMarkdownWhitespace(before) ||
+        isUnicodePunctuation(before))
+  );
+}
+
+function isRightFlankingDelimiterRun(
+  before?: string,
+  after?: string
+): boolean {
+  return Boolean(
+    before &&
+      !isMarkdownWhitespace(before) &&
+      (!isUnicodePunctuation(before) ||
+        isMarkdownWhitespace(after) ||
+        isUnicodePunctuation(after))
+  );
+}
+
+function isMarkdownWhitespace(character?: string): boolean {
+  return character === undefined || /\s/u.test(character);
+}
+
+function isUnicodePunctuation(character?: string): boolean {
+  return Boolean(character && /[\p{P}\p{S}]/u.test(character));
 }
 
 export function getMarkdownPlainText(markdown: string): string {

@@ -241,6 +241,128 @@ assert.equal(
   fullLink
 );
 
+const businessVisibleText =
+  "The Business of the Company shall, unless and until the Parties hereto otherwise agree, be confined to carry on the business of ___";
+const businessMarkdownText = [
+  "## 3. AGREEMENTS OF THE PARTIES",
+  "",
+  "### 3.1 Business of the Company",
+  "",
+  "The Business of the Company shall, unless and until the Parties",
+  "hereto otherwise agree, be confined to carry on the business of \\_\\_\\_"
+].join("\n");
+const businessContextStart = businessMarkdownText.indexOf(
+  "The Business of the Company"
+);
+const businessContextMarkdown = businessMarkdownText.slice(businessContextStart);
+const mappedBusinessParagraph = mapVisibleSelectionToMarkdownRange({
+  contextMarkdown: businessContextMarkdown,
+  contextStart: businessContextStart,
+  selectedVisibleText: businessVisibleText,
+  visibleStart: 0,
+  visibleEnd: businessVisibleText.length
+});
+assert.ok(
+  mappedBusinessParagraph,
+  "a soft-wrapped paragraph ending in an escaped ___ placeholder must map"
+);
+assert.equal(
+  businessMarkdownText.slice(
+    mappedBusinessParagraph.start,
+    mappedBusinessParagraph.end
+  ),
+  businessContextMarkdown
+);
+
+const placeholderStart = businessVisibleText.indexOf("___");
+const mappedBusinessPlaceholder = mapVisibleSelectionToMarkdownRange({
+  contextMarkdown: businessContextMarkdown,
+  contextStart: businessContextStart,
+  selectedVisibleText: "___",
+  visibleStart: placeholderStart,
+  visibleEnd: placeholderStart + 3
+});
+assert.ok(mappedBusinessPlaceholder);
+assert.equal(
+  businessMarkdownText.slice(
+    mappedBusinessPlaceholder.start,
+    mappedBusinessPlaceholder.end
+  ),
+  "\\_\\_\\_"
+);
+
+const unescapedBusinessContextMarkdown = businessContextMarkdown.replaceAll(
+  "\\_",
+  "_"
+);
+const mappedLiteralBusinessPlaceholder = mapVisibleSelectionToMarkdownRange({
+  contextMarkdown: unescapedBusinessContextMarkdown,
+  contextStart: 0,
+  selectedVisibleText: businessVisibleText,
+  visibleStart: 0,
+  visibleEnd: businessVisibleText.length
+});
+assert.ok(
+  mappedLiteralBusinessPlaceholder,
+  "a literal Markdown ___ run must not be discarded as unmatched emphasis"
+);
+assert.equal(
+  unescapedBusinessContextMarkdown.slice(
+    mappedLiteralBusinessPlaceholder.start,
+    mappedLiteralBusinessPlaceholder.end
+  ),
+  unescapedBusinessContextMarkdown
+);
+
+const businessHistoricalComment = createComment({
+  id: "PM-COMMENT-BUSINESS",
+  markdownStart: 900000,
+  selectedText: businessVisibleText
+});
+businessHistoricalComment.anchor.containing_heading =
+  "3.1 Business of the Company";
+businessHistoricalComment.anchor.containing_heading_level = 3;
+businessHistoricalComment.anchor.anchor_context = {
+  kind: "paragraph",
+  plain_text: businessVisibleText,
+  markdown_text: businessVisibleText,
+  selected_start_in_context: 0,
+  selected_end_in_context: businessVisibleText.length
+};
+const businessRecovery = resolveCanonicalCommentTarget(
+  businessHistoricalComment,
+  { markdown: businessMarkdownText }
+);
+assert.equal(
+  businessRecovery.state,
+  "resolved",
+  "a unique historical visible-text anchor must recover through canonical Markdown escapes"
+);
+assert.equal(
+  businessMarkdownText.slice(
+    businessRecovery.range.start,
+    businessRecovery.range.end
+  ),
+  businessContextMarkdown
+);
+
+const ambiguousBusinessRecovery = resolveCanonicalCommentTarget(
+  {
+    ...businessHistoricalComment,
+    anchor: {
+      ...businessHistoricalComment.anchor,
+      containing_heading: undefined,
+      containing_heading_level: undefined
+    }
+  },
+  { markdown: `${businessContextMarkdown}\n\n${businessContextMarkdown}` }
+);
+assert.equal(
+  ambiguousBusinessRecovery.state,
+  "ambiguous",
+  "visible-text recovery must not choose between duplicate Markdown ranges"
+);
+
 const linkProposal = createHumanReanchorProposal({
   commentId: "PM-COMMENT-FIXTURE",
   documentId: "doc-action-plan",

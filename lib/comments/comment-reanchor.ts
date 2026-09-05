@@ -325,9 +325,13 @@ export function mapVisibleSelectionToMarkdownRange({
     return null;
   }
 
+  const escapeExpandedRange = expandCompleteMarkdownEscapeRange(
+    contextMarkdown,
+    localRange
+  );
   const expandedRange = expandCompleteMarkdownLinkRange({
     contextMarkdown,
-    range: localRange,
+    range: escapeExpandedRange,
     selectedVisibleText: normalizedSelectedText
   });
 
@@ -348,7 +352,7 @@ export function expandMarkdownRangeForVisibleSelection({
 }): TextRange {
   return expandCompleteMarkdownLinkRange({
     contextMarkdown: markdown,
-    range,
+    range: expandCompleteMarkdownEscapeRange(markdown, range),
     selectedVisibleText: normalizeVisibleText(selectedVisibleText)
   });
 }
@@ -741,6 +745,53 @@ function expandCompleteMarkdownLinkRange({
   }
 
   return range;
+}
+
+function expandCompleteMarkdownEscapeRange(
+  markdown: string,
+  range: TextRange
+): TextRange {
+  let start = range.start;
+
+  if (
+    start > 0 &&
+    markdown[start - 1] === "\\" &&
+    isMarkdownEscapablePunctuation(markdown[start]) &&
+    isUnescapedBackslash(markdown, start - 1)
+  ) {
+    start -= 1;
+  }
+
+  return { start, end: range.end };
+}
+
+function isUnescapedBackslash(text: string, index: number): boolean {
+  let precedingBackslashes = 0;
+
+  for (
+    let cursor = index - 1;
+    cursor >= 0 && text[cursor] === "\\";
+    cursor -= 1
+  ) {
+    precedingBackslashes += 1;
+  }
+
+  return precedingBackslashes % 2 === 0;
+}
+
+function isMarkdownEscapablePunctuation(character?: string): boolean {
+  if (!character) {
+    return false;
+  }
+
+  const code = character.charCodeAt(0);
+
+  return (
+    (code >= 0x21 && code <= 0x2f) ||
+    (code >= 0x3a && code <= 0x40) ||
+    (code >= 0x5b && code <= 0x60) ||
+    (code >= 0x7b && code <= 0x7e)
+  );
 }
 
 function findUnescapedCharacter(

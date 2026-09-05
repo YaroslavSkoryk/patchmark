@@ -42,7 +42,8 @@ const commentIds = {
   multi: "PM-COMMENT-PHASE8-D",
   row: "PM-COMMENT-PHASE8-E",
   table: "PM-COMMENT-PHASE8-F",
-  failure: "PM-COMMENT-PHASE8-G"
+  failure: "PM-COMMENT-PHASE8-G",
+  business: "PM-COMMENT-PHASE8-H"
 };
 const paragraphReplacement =
   "Current explanatory phrase for deleted evidence.";
@@ -52,6 +53,16 @@ const tableCellReplacement =
   "Break-even must be calculated after ingredient cost, packaging, labor, delivery, utilities, admin, accounting, tax/VAT handling, staff, and facility costs.";
 const failureReplacement =
   "Persistence failure target remains available for a safe retry.";
+const businessVisibleText =
+  "The Business of the Company shall, unless and until the Parties hereto otherwise agree, be confined to carry on the business of ___";
+const businessMarkdownText = [
+  "The Business of the Company shall, unless and until the Parties",
+  "hereto otherwise agree, be confined to carry on the business of \\_\\_\\_"
+].join("\n");
+const multiNodeVisibleText =
+  "A selection across multiple rendered text nodes stays within one supported paragraph.";
+const multiNodeMarkdownText =
+  "A selection across **multiple rendered text nodes** stays within one supported paragraph.";
 
 rmSync(fixtureDir, { force: true, recursive: true });
 rmSync(screenshotDir, { force: true, recursive: true });
@@ -133,6 +144,19 @@ try {
   await waitForPhase8Comments(client);
   await clickButtonByText(client, "Visual Mode");
   await waitForVisualEditor(client);
+
+  await activateComment(client, commentIds.business);
+  await clickCommentButton(client, commentIds.business, "Re-anchor");
+  await waitForSelector(client, ".reanchor-empty-candidates");
+  await selectVisualRange(client, businessVisibleText);
+  await waitForWorkspaceSelection(client, businessMarkdownText);
+  await clickWithin(client, ".reanchor-mode-panel", "Cancel");
+  await waitForSelectorToDisappear(client, ".reanchor-mode-panel");
+  assert.equal(
+    sha256(readFileSync(commentsPath)),
+    commentsBeforeCancelHash,
+    "Selecting the screenshot regression range and cancelling must not write project state."
+  );
 
   const initialFingerprint = fingerprintProject(fixtureDir);
   await activateComment(client, commentIds.ambiguous);
@@ -339,6 +363,83 @@ try {
   await clickWithin(client, ".reanchor-confirmation-dialog", "Confirm re-anchor");
   await waitForText(client, "This comment is already anchored to that text.");
   assert.equal(await getFixtureWriteCount(client), writesBeforeNoOp);
+
+  await activateComment(client, commentIds.business);
+  await clickCommentButton(client, commentIds.business, "Re-anchor");
+  await waitForSelector(client, ".reanchor-empty-candidates");
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1000,
+    mobile: false,
+    width: 620
+  });
+  const forwardBusinessSelection = await selectVisualRange(
+    client,
+    businessVisibleText
+  );
+  assert.ok(
+    forwardBusinessSelection.lineRectCount > 1,
+    "the business paragraph must exercise browser line wrapping"
+  );
+  await waitForWorkspaceSelection(client, businessMarkdownText);
+
+  const reversedBusinessSelection = await selectVisualRange(
+    client,
+    businessVisibleText,
+    { reverse: true }
+  );
+  assert.equal(reversedBusinessSelection.direction, "backward");
+  await waitForWorkspaceSelection(client, businessMarkdownText);
+
+  const multiNodeSelection = await selectVisualRange(
+    client,
+    multiNodeVisibleText
+  );
+  assert.ok(
+    multiNodeSelection.textNodeCount > 1,
+    "the regression must span multiple rendered text nodes"
+  );
+  await waitForWorkspaceSelection(client, multiNodeMarkdownText);
+
+  await selectVisualAcrossBlocks(
+    client,
+    businessVisibleText,
+    multiNodeVisibleText
+  );
+  await waitForRejectedWorkspaceSelection(client);
+
+  await selectVisualRange(client, businessVisibleText);
+  await waitForWorkspaceSelection(client, businessMarkdownText);
+  await clickWithin(
+    client,
+    ".reanchor-mode-panel",
+    "Use selection as new anchor"
+  );
+  await clickWithin(
+    client,
+    ".reanchor-confirmation-dialog",
+    "Confirm re-anchor"
+  );
+  const repairedBusinessComment = await waitForPersistedAnchor(
+    commentsPath,
+    commentIds.business,
+    businessMarkdownText
+  );
+  assert.equal(repairedBusinessComment.id, commentIds.business);
+  assert.equal(repairedBusinessComment.type, "note");
+  assert.equal(repairedBusinessComment.status, "open");
+  assert.equal(repairedBusinessComment.thread.length, 1);
+  await client.call("Emulation.setDeviceMetricsOverride", {
+    deviceScaleFactor: 1,
+    height: 1100,
+    mobile: false,
+    width: 1700
+  });
+  await assertActiveCommentProjection(
+    client,
+    commentIds.business,
+    businessMarkdownText
+  );
 
   await activateComment(client, commentIds.missing);
   await capture(client, "01-missing-anchor-reanchor.png");
@@ -681,7 +782,8 @@ try {
     commentIds.multi,
     commentIds.row,
     commentIds.table,
-    commentIds.failure
+    commentIds.failure,
+    commentIds.business
   ];
 
   for (const commentId of verifiedIds) {
@@ -714,6 +816,12 @@ try {
   await waitForVisualEditor(client);
   await activateComment(client, commentIds.ambiguous);
   await assertActiveCommentProjection(client, commentIds.ambiguous, "LINE add");
+  await activateComment(client, commentIds.business);
+  await assertActiveCommentProjection(
+    client,
+    commentIds.business,
+    businessMarkdownText
+  );
 
   console.log(
     JSON.stringify(
@@ -799,7 +907,15 @@ function preparePhase8Fixture(projectDir) {
     "| Baguette | Shared signal |",
     "",
     "## Persistence Failure",
-    failureReplacement
+    failureReplacement,
+    "",
+    "## 3. AGREEMENTS OF THE PARTIES",
+    "",
+    "### 3.1 Business of the Company",
+    "",
+    businessMarkdownText,
+    "",
+    multiNodeMarkdownText
   ].join("\n");
   const comments = [
     fixtureComment(commentIds.ambiguous, "LINE add", "Choose the relevant occurrence."),
@@ -808,7 +924,8 @@ function preparePhase8Fixture(projectDir) {
     fixtureComment(commentIds.multi, "Old product evidence", "Select current multi-block evidence."),
     fixtureComment(commentIds.row, "| Missing | Shared signal |", "Select the intended row."),
     fixtureComment(commentIds.table, "Old break-even table text", "Select the current table cell."),
-    fixtureComment(commentIds.failure, "Old persistence target", "Verify atomic retry behavior.")
+    fixtureComment(commentIds.failure, "Old persistence target", "Verify atomic retry behavior."),
+    fixtureComment(commentIds.business, "Deleted business wording", "Repair the business paragraph anchor.")
   ];
   const patches = [
     {
@@ -1286,6 +1403,128 @@ async function selectVisualText(pageClient, selectedText) {
   });
 }
 
+async function selectVisualRange(
+  pageClient,
+  selectedText,
+  { reverse = false } = {}
+) {
+  return await evaluate(pageClient, {
+    expression: `(() => {
+      const normalize = (value) => value.replace(/\\s+/g, " ").trim();
+      const selectedText = ${JSON.stringify(selectedText)};
+      const root = document.querySelector(".patchmark-prose");
+      if (!root) throw new Error("Visual editor missing");
+      const block = Array.from(
+        root.querySelectorAll("p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, code, td, th")
+      ).find((candidate) => normalize(candidate.textContent ?? "") === selectedText);
+      if (!block) throw new Error("Visual selection block missing: " + selectedText);
+
+      const points = [];
+      const visibleParts = [];
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let textNode = walker.nextNode();
+      while (textNode) {
+        for (let index = 0; index < textNode.data.length; index += 1) {
+          const character = textNode.data[index];
+          if (/\\s/.test(character)) {
+            if (
+              visibleParts.length > 0 &&
+              visibleParts[visibleParts.length - 1] !== " "
+            ) {
+              visibleParts.push(" ");
+              points.push({ node: textNode, offset: index });
+            }
+          } else {
+            visibleParts.push(character);
+            points.push({ node: textNode, offset: index });
+          }
+        }
+        textNode = walker.nextNode();
+      }
+      while (visibleParts[visibleParts.length - 1] === " ") {
+        visibleParts.pop();
+        points.pop();
+      }
+
+      const visibleText = visibleParts.join("");
+      const start = visibleText.indexOf(selectedText);
+      if (start < 0) throw new Error("Normalized Visual selection text missing");
+      const end = start + selectedText.length;
+      const startPoint = points[start];
+      const endPoint = points[end - 1];
+      if (!startPoint || !endPoint) throw new Error("Visual range points missing");
+
+      const range = document.createRange();
+      range.setStart(startPoint.node, startPoint.offset);
+      range.setEnd(endPoint.node, endPoint.offset + 1);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      if (${JSON.stringify(reverse)}) {
+        selection.setBaseAndExtent(
+          endPoint.node,
+          endPoint.offset + 1,
+          startPoint.node,
+          startPoint.offset
+        );
+      } else {
+        selection.addRange(range);
+      }
+      block.scrollIntoView({ block: "center" });
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      document.querySelector(".editor-body")
+        ?.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return {
+        direction: ${JSON.stringify(reverse)} ? "backward" : "forward",
+        lineRectCount: range.getClientRects().length,
+        selectedText: normalize(selection.toString()),
+        textNodeCount: new Set(
+          points.slice(start, end).map((point) => point.node)
+        ).size
+      };
+    })()`,
+    userGesture: true
+  });
+}
+
+async function selectVisualAcrossBlocks(pageClient, firstText, secondText) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const normalize = (value) => value.replace(/\\s+/g, " ").trim();
+      const root = document.querySelector(".patchmark-prose");
+      if (!root) throw new Error("Visual editor missing");
+      const blocks = Array.from(root.querySelectorAll("p"));
+      const firstBlock = blocks.find(
+        (candidate) => normalize(candidate.textContent ?? "") === ${JSON.stringify(firstText)}
+      );
+      const secondBlock = blocks.find(
+        (candidate) => normalize(candidate.textContent ?? "") === ${JSON.stringify(secondText)}
+      );
+      if (!firstBlock || !secondBlock) throw new Error("Cross-block range missing");
+      const firstWalker = document.createTreeWalker(firstBlock, NodeFilter.SHOW_TEXT);
+      const secondWalker = document.createTreeWalker(secondBlock, NodeFilter.SHOW_TEXT);
+      const firstNode = firstWalker.nextNode();
+      let secondNode = secondWalker.nextNode();
+      let lastSecondNode = secondNode;
+      while (secondNode) {
+        lastSecondNode = secondNode;
+        secondNode = secondWalker.nextNode();
+      }
+      if (!firstNode || !lastSecondNode) throw new Error("Cross-block text missing");
+      const range = document.createRange();
+      range.setStart(firstNode, 0);
+      range.setEnd(lastSecondNode, lastSecondNode.data.length);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      selection.addRange(range);
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      document.querySelector(".editor-body")
+        ?.dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      return normalize(selection.toString());
+    })()`,
+    userGesture: true
+  });
+}
+
 async function waitForWorkspaceSelection(pageClient, selectedText) {
   let latestState = null;
 
@@ -1314,6 +1553,36 @@ async function waitForWorkspaceSelection(pageClient, selectedText) {
   }
   throw new Error(
     `Timed out waiting for re-anchor selection ${selectedText}.\n${JSON.stringify(
+      latestState,
+      null,
+      2
+    )}`
+  );
+}
+
+async function waitForRejectedWorkspaceSelection(pageClient) {
+  let latestState = null;
+
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    latestState = await evaluate(pageClient, {
+      expression: `(() => {
+        const workspace = document.querySelector(".reanchor-workspace");
+        const button = Array.from(workspace?.querySelectorAll("button") ?? [])
+          .find((candidate) => candidate.textContent?.trim() === "Use selection as new anchor");
+        return {
+          buttonDisabled: Boolean(button?.disabled),
+          help: workspace?.querySelector(".reanchor-selection-status")?.textContent ?? ""
+        };
+      })()`
+    });
+    if (latestState.buttonDisabled) {
+      return latestState;
+    }
+    await delay(25);
+  }
+
+  throw new Error(
+    `Timed out waiting for rejected cross-block selection.\n${JSON.stringify(
       latestState,
       null,
       2

@@ -167,6 +167,13 @@ import {
   type MarkdownFileHandle
 } from "@/lib/files/file-system-access";
 import { parseMarkdownHeadings } from "@/lib/markdown/parse-headings";
+import {
+  buildMarkdownPlainTextIndex,
+  dedupeTextMatches,
+  findExactTextMatches,
+  findMarkdownPlainTextMatches,
+  findNormalizedTextMatches
+} from "@/lib/markdown/markdown-text";
 import { deriveReviewQueue } from "@/lib/review-queue/review-queue-engine";
 import {
   getDeferredReviewCommentIds,
@@ -20496,21 +20503,18 @@ function getBrowserSelectionSnapshotWithin(
     direction,
     range
   });
-  const commonAncestor =
-    range.commonAncestorContainer.nodeType === Node.ELEMENT_NODE
-      ? (range.commonAncestorContainer as Element)
-      : range.commonAncestorContainer.parentElement;
-  const tableCellElement = commonAncestor?.closest("td, th") ?? null;
-  const blockElement =
-    tableCellElement ??
-    commonAncestor?.closest(
-      "p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, code"
-    ) ??
-    null;
+  const blockElement = getSupportedVisualSelectionBlock(range);
+
+  if (!blockElement) {
+    return null;
+  }
+
   const blockText = normalizeDomText(blockElement?.textContent ?? selectedText);
-  const selectedRangeInBlock = blockElement
-    ? getSelectionOffsetsInsideElement(blockElement, range, selectedText)
-    : null;
+  const selectedRangeInBlock = getSelectionOffsetsInsideElement(
+    blockElement,
+    range,
+    selectedText
+  );
 
   return {
     affordanceRect,
@@ -20521,6 +20525,93 @@ function getBrowserSelectionSnapshotWithin(
     selectedStartInBlock: selectedRangeInBlock?.start,
     selectedText
   };
+}
+
+const SUPPORTED_VISUAL_SELECTION_BLOCK_SELECTOR =
+  "p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, code";
+
+function getSupportedVisualSelectionBlock(range: Range): Element | null {
+  const startBlock = getClosestSupportedVisualSelectionBlock(
+    range.startContainer
+  );
+  const endBlock = getClosestSupportedVisualSelectionBlock(range.endContainer);
+
+  if (startBlock && startBlock === endBlock) {
+    return startBlock;
+  }
+
+  if (
+    startBlock &&
+    endBlock &&
+    isSelectionPointAtVisualBlockStart(
+      endBlock,
+      range.endContainer,
+      range.endOffset
+    )
+  ) {
+    return startBlock;
+  }
+
+  if (
+    startBlock &&
+    endBlock &&
+    isSelectionPointAtVisualBlockEnd(
+      startBlock,
+      range.startContainer,
+      range.startOffset
+    )
+  ) {
+    return endBlock;
+  }
+
+  return null;
+}
+
+function getClosestSupportedVisualSelectionBlock(node: Node): Element | null {
+  const element =
+    node.nodeType === Node.ELEMENT_NODE
+      ? (node as Element)
+      : node.parentElement;
+
+  return (
+    element?.closest("td, th") ??
+    element?.closest(SUPPORTED_VISUAL_SELECTION_BLOCK_SELECTOR) ??
+    null
+  );
+}
+
+function isSelectionPointAtVisualBlockStart(
+  block: Element,
+  container: Node,
+  offset: number
+): boolean {
+  if (container !== block && !block.contains(container)) {
+    return false;
+  }
+
+  const beforePoint = document.createRange();
+  beforePoint.selectNodeContents(block);
+  beforePoint.setEnd(container, offset);
+  const isAtStart = normalizeDomText(beforePoint.toString()).length === 0;
+  beforePoint.detach();
+  return isAtStart;
+}
+
+function isSelectionPointAtVisualBlockEnd(
+  block: Element,
+  container: Node,
+  offset: number
+): boolean {
+  if (container !== block && !block.contains(container)) {
+    return false;
+  }
+
+  const afterPoint = document.createRange();
+  afterPoint.selectNodeContents(block);
+  afterPoint.setStart(container, offset);
+  const isAtEnd = normalizeDomText(afterPoint.toString()).length === 0;
+  afterPoint.detach();
+  return isAtEnd;
 }
 
 function isPointInsideVisualSelection({
@@ -23494,255 +23585,6 @@ function getSelectedTextHeadingLabel(
   anchor: Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>
 ): string {
   return getSelectedTextLocationLabel(anchor);
-}
-
-function findExactTextMatches(
-  markdown: string,
-  selectedText: string
-): Array<{ end: number; start: number }> {
-  if (!selectedText) {
-    return [];
-  }
-
-  const matches: Array<{ end: number; start: number }> = [];
-  let nextIndex = markdown.indexOf(selectedText);
-
-  while (nextIndex !== -1) {
-    matches.push({
-      end: nextIndex + selectedText.length,
-      start: nextIndex
-    });
-    nextIndex = markdown.indexOf(selectedText, nextIndex + selectedText.length);
-  }
-
-  return matches;
-}
-
-function findNormalizedTextMatches(
-  text: string,
-  searchText: string
-): Array<{ end: number; start: number }> {
-  const textIndex = buildNormalizedSourceTextIndex(text);
-  const normalizedSearchText = normalizeDomText(searchText);
-  const matches: Array<{ end: number; start: number }> = [];
-
-  if (!normalizedSearchText) {
-    return matches;
-  }
-
-  let nextIndex = textIndex.text.indexOf(normalizedSearchText);
-
-  while (nextIndex !== -1) {
-    const start = textIndex.positions[nextIndex];
-    const end = textIndex.positions[nextIndex + normalizedSearchText.length - 1];
-
-    if (typeof start === "number" && typeof end === "number") {
-      matches.push({
-        start,
-        end: end + 1
-      });
-    }
-
-    nextIndex = textIndex.text.indexOf(
-      normalizedSearchText,
-      nextIndex + normalizedSearchText.length
-    );
-  }
-
-  return matches;
-}
-
-function findMarkdownPlainTextMatches(
-  markdown: string,
-  searchText: string
-): Array<{ end: number; start: number }> {
-  const textIndex = buildMarkdownPlainTextIndex(markdown);
-  const normalizedSearchText = normalizeDomText(searchText);
-  const matches: Array<{ end: number; start: number }> = [];
-
-  if (!normalizedSearchText) {
-    return matches;
-  }
-
-  let nextIndex = textIndex.text.indexOf(normalizedSearchText);
-
-  while (nextIndex !== -1) {
-    const start = textIndex.positions[nextIndex];
-    const end = textIndex.positions[nextIndex + normalizedSearchText.length - 1];
-
-    if (typeof start === "number" && typeof end === "number") {
-      matches.push({
-        start,
-        end: end + 1
-      });
-    }
-
-    nextIndex = textIndex.text.indexOf(
-      normalizedSearchText,
-      nextIndex + normalizedSearchText.length
-    );
-  }
-
-  return matches;
-}
-
-function buildMarkdownPlainTextIndex(markdown: string): {
-  positions: number[];
-  text: string;
-} {
-  const textParts: string[] = [];
-  const positions: number[] = [];
-  const lines = markdown.split(/(\n)/);
-  let markdownOffset = 0;
-
-  for (const lineOrBreak of lines) {
-    if (lineOrBreak === "\n") {
-      appendNormalizedIndexedCharacter({
-        character: " ",
-        sourceOffset: markdownOffset,
-        positions,
-        textParts
-      });
-      markdownOffset += 1;
-      continue;
-    }
-
-    const line = lineOrBreak;
-    let index = getMarkdownPlainTextLineContentStart(line);
-
-    while (index < line.length) {
-      const character = line[index];
-
-      if (character === "(" && index > 0 && line[index - 1] === "]") {
-        const closingIndex = line.indexOf(")", index);
-        index = closingIndex === -1 ? line.length : closingIndex + 1;
-        continue;
-      }
-
-      if (/[*_`\[\]\|\\]/.test(character)) {
-        index += 1;
-        continue;
-      }
-
-      appendNormalizedIndexedCharacter({
-        character,
-        sourceOffset: markdownOffset + index,
-        positions,
-        textParts
-      });
-      index += 1;
-    }
-
-    markdownOffset += line.length;
-  }
-
-  trimNormalizedTextIndex(textParts, positions);
-
-  return {
-    positions,
-    text: textParts.join("")
-  };
-}
-
-function getMarkdownPlainTextLineContentStart(line: string): number {
-  let index = 0;
-
-  while (index < line.length) {
-    const prefixMatch = /^(#{1,6}\s+|>\s?|[-*+]\s+|\d+\.\s+)/.exec(
-      line.slice(index)
-    );
-
-    if (!prefixMatch) {
-      break;
-    }
-
-    index += prefixMatch[0].length;
-  }
-
-  return index;
-}
-
-function buildNormalizedSourceTextIndex(text: string): {
-  positions: number[];
-  text: string;
-} {
-  const textParts: string[] = [];
-  const positions: number[] = [];
-
-  for (let index = 0; index < text.length; index += 1) {
-    appendNormalizedIndexedCharacter({
-      character: text[index],
-      sourceOffset: index,
-      positions,
-      textParts
-    });
-  }
-
-  trimNormalizedTextIndex(textParts, positions);
-
-  return {
-    positions,
-    text: textParts.join("")
-  };
-}
-
-function appendNormalizedIndexedCharacter({
-  character,
-  positions,
-  sourceOffset,
-  textParts
-}: {
-  character: string;
-  positions: number[];
-  sourceOffset: number;
-  textParts: string[];
-}): void {
-  const isWhitespace = /\s/.test(character);
-  const previousCharacter = textParts[textParts.length - 1];
-
-  if (isWhitespace) {
-    if (textParts.length > 0 && previousCharacter !== " ") {
-      textParts.push(" ");
-      positions.push(sourceOffset);
-    }
-
-    return;
-  }
-
-  textParts.push(character);
-  positions.push(sourceOffset);
-}
-
-function trimNormalizedTextIndex(
-  textParts: string[],
-  positions: number[]
-): void {
-  while (textParts[0] === " ") {
-    textParts.shift();
-    positions.shift();
-  }
-
-  while (textParts[textParts.length - 1] === " ") {
-    textParts.pop();
-    positions.pop();
-  }
-}
-
-function dedupeTextMatches(
-  matches: Array<{ end: number; start: number }>
-): Array<{ end: number; start: number }> {
-  const seen = new Set<string>();
-
-  return matches.filter((match) => {
-    const key = `${match.start}:${match.end}`;
-
-    if (seen.has(key)) {
-      return false;
-    }
-
-    seen.add(key);
-    return true;
-  });
 }
 
 function getHeadingContainingOffset(
