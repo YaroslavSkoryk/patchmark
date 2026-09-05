@@ -202,6 +202,16 @@ function normalizeReviewBatch(
     projectId: identity.projectId,
     value: value.response_analysis
   });
+  const responseProtocolVersion =
+    value.response_protocol_version === undefined
+      ? undefined
+      : value.response_protocol_version === 2 ||
+          value.response_protocol_version === 3
+        ? value.response_protocol_version
+        : null;
+  if (responseProtocolVersion === null) {
+    throw invalidBatch(index);
+  }
   assertStatusFields({
     acknowledgedAt,
     cancelReason,
@@ -226,6 +236,9 @@ function normalizeReviewBatch(
       : {}),
     algorithm_version: algorithmVersion,
     prompt_builder_version: REVIEW_BATCH_PROMPT_BUILDER_VERSION,
+    ...(responseProtocolVersion
+      ? { response_protocol_version: responseProtocolVersion }
+      : {}),
     document_generation: value.document_generation,
     batch_record_generation: value.batch_record_generation,
     document_content_sha256: value.document_content_sha256,

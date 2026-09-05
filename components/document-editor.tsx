@@ -94,6 +94,13 @@ import {
   getDefaultCommentActionContext
 } from "@/lib/comments/native-comment";
 import {
+  createManualExternalParticipantV3Prompt,
+  createManualExternalParticipantV3RepairPrompt,
+  getCommentReplyProtocolVersionForDelivery,
+  MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES,
+  MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+} from "@/lib/comments/external-participant-prompt";
+import {
   buildCommentTrashSummary,
   getActiveComments,
   getTrashedComments,
@@ -702,12 +709,14 @@ type ChatGptImportDialogState = {
   documentId: string;
   error: string | null;
   errorCode: string | null;
+  expectedProtocolVersion: 2 | 3 | null;
   projectId: string;
   repairPrompt: string;
   responseJson: string;
   sourceChatUrl: string;
 };
 type ChatGptImportSummary = {
+  commentsCreated: number;
   openQuestionsAttached: number;
   patchProposalsStored: number;
   repliesAttached: number;
@@ -1903,6 +1912,7 @@ export function DocumentEditor() {
         markdown,
         patches: activePatches,
         project: projectHandle,
+        responseProtocolVersion: MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
         reviewBatchEnvelope: {
           review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
           project_id: activeDocumentIdentity.projectId,
@@ -4875,6 +4885,8 @@ export function DocumentEditor() {
     const operationPatches = patches;
     const exportedAt = new Date().toISOString();
     const exportId = createCommentExportId(exportedAt);
+    const responseProtocolVersion =
+      getCommentReplyProtocolVersionForDelivery(delivery);
     setIsCommentBusy(true);
     setCommentsError(null);
     setSaveFeedback(null);
@@ -4893,6 +4905,7 @@ export function DocumentEditor() {
             markdown: operationMarkdown,
             patches: operationPatches,
             project: operationProject,
+            responseProtocolVersion,
             reviewBatchEnvelope
           }),
         comments: focusedComments,
@@ -4905,6 +4918,7 @@ export function DocumentEditor() {
         overLimitWarning: false,
         patches: operationPatches,
         project: operationProject,
+        responseProtocolVersion,
         section: null,
         source: "manual",
         validateBeforeCommit: () => {
@@ -5157,6 +5171,8 @@ export function DocumentEditor() {
     const operationMarkdown = markdown;
     const operationComments = comments;
     const operationPatches = patches;
+    const responseProtocolVersion =
+      getCommentReplyProtocolVersionForDelivery(delivery);
     const operationDeferredCommentIds = new Set(deferredReviewCommentIds);
     const operationBuildPromptPreview = ({
       batchType,
@@ -5181,6 +5197,7 @@ export function DocumentEditor() {
         markdown: operationMarkdown,
         patches: operationPatches,
         project: operationProject,
+        responseProtocolVersion,
         reviewBatchEnvelope: {
           review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
           project_id: operationIdentity.projectId,
@@ -5244,6 +5261,7 @@ export function DocumentEditor() {
             markdown: operationMarkdown,
             patches: operationPatches,
             project: operationProject,
+            responseProtocolVersion,
             reviewBatchEnvelope
           }),
         comments: selectedComments,
@@ -5256,6 +5274,7 @@ export function DocumentEditor() {
         overLimitWarning: validatedSession.overLimitWarning,
         patches: operationPatches,
         project: operationProject,
+        responseProtocolVersion,
         section,
         selectionAdjustment: {
           base_proposal_comment_ids:
@@ -5327,6 +5346,14 @@ export function DocumentEditor() {
     project: PatchmarkProjectHandle;
     reviewBatches: PatchmarkReviewBatch[];
   }) {
+    if ((batch.response_protocol_version ?? 2) !== 2) {
+      setSaveFeedback({
+        kind: "info",
+        message:
+          "This Review Batch requests manual protocol v3 delivery. Cancel it before starting a separate Agent Exchange batch."
+      });
+      return;
+    }
     if (
       !agentExchangeProductModule ||
       agentExchangeInitiationLockRef.current
@@ -6164,8 +6191,10 @@ export function DocumentEditor() {
       documentId: identity.documentId,
       error: null,
       errorCode: null,
+      expectedProtocolVersion:
+        activeReviewBatch?.response_protocol_version ?? null,
       projectId: identity.projectId,
-      repairPrompt: CHATGPT_IMPORT_REPAIR_PROMPT,
+      repairPrompt: "",
       responseJson: "",
       sourceChatUrl: ""
     });
@@ -6231,6 +6260,7 @@ export function DocumentEditor() {
       setSaveFeedback({
         kind: imported.warnings.length > 0 ? "info" : "success",
         message: createChatGptImportSummaryMessage({
+          commentsCreated: imported.comments_created,
           openQuestionsAttached: imported.open_questions_attached,
           patchProposalsStored: imported.patch_proposals_stored,
           repliesAttached: imported.replies_attached,
@@ -6239,7 +6269,10 @@ export function DocumentEditor() {
       });
     } catch (error) {
       const message = getProjectErrorMessage(error);
-      const repairPrompt = createChatGptImportRepairPrompt(error);
+      const repairPrompt = createChatGptImportRepairPrompt(
+        error,
+        chatGptImportDialog.expectedProtocolVersion
+      );
       if (
         activeDocumentKeyRef.current ===
         createProjectDocumentKey(chatGptImportDialog)
@@ -6248,12 +6281,7 @@ export function DocumentEditor() {
         setChatGptImportDialog({
           ...chatGptImportDialog,
           error: message,
-          errorCode:
-            error instanceof AtomicTablePatchValidationError ||
-            error instanceof PatchDependencyValidationError ||
-            error instanceof ReviewBatchDocumentSnapshotError
-              ? error.code
-              : null,
+          errorCode: getChatGptImportErrorCode(error),
           repairPrompt
         });
         setSaveFeedback({
@@ -12035,9 +12063,9 @@ export function DocumentEditor() {
                 <span>Focused comments</span>
                 <h2>Import ChatGPT Response</h2>
                 <p>
-                  Paste the JSON response from ChatGPT. Patchmark will attach
-                  replies to matching comments and store patch proposals for
-                  review.
+                  Paste the JSON response from the external participant.
+                  Patchmark will create native comments, attach replies to
+                  matching comments, and store patch proposals for review.
                 </p>
               </div>
               <button
@@ -14364,7 +14392,10 @@ function getProjectErrorMessage(error: unknown): string {
   return "Project folder action failed. Your Markdown is still in Patchmark.";
 }
 
-function createChatGptImportRepairPrompt(error: unknown): string {
+function createChatGptImportRepairPrompt(
+  error: unknown,
+  expectedProtocolVersion: 2 | 3 | null
+): string {
   if (
     error instanceof ReviewBatchDocumentSnapshotError ||
     ((error instanceof AtomicTablePatchValidationError ||
@@ -14378,9 +14409,25 @@ function createChatGptImportRepairPrompt(error: unknown): string {
     createAtomicTableRepairPrompt(error) ||
     createPatchDependencyRepairPrompt(error);
 
+  if (expectedProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION) {
+    return createManualExternalParticipantV3RepairPrompt({
+      specializedPrompt: createAtomicTableRepairPrompt(error),
+      validationError: getProjectErrorMessage(error)
+    });
+  }
+
   return specializedPrompt
     ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${specializedPrompt}`
     : CHATGPT_IMPORT_REPAIR_PROMPT;
+}
+
+function getChatGptImportErrorCode(error: unknown): string | null {
+  return typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof error.code === "string"
+    ? error.code
+    : null;
 }
 
 function createNextThreadEntryId(comment: PatchmarkComment): string {
@@ -14525,13 +14572,29 @@ function createFocusedCommentsChatGptPrompt(
   {
     dedicatedDocumentReview,
     observedAt,
+    responseProtocolVersion,
     reviewBatchEnvelope
   }: {
     dedicatedDocumentReview: boolean;
     observedAt: string;
+    responseProtocolVersion: 2 | 3;
     reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
   }
 ): string {
+  if (responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION) {
+    if (!reviewBatchEnvelope) {
+      throw new Error(
+        "Manual external-participant protocol v3 requires a tracked Review Batch envelope."
+      );
+    }
+    return createManualExternalParticipantV3Prompt({
+      dedicatedDocumentInstruction: dedicatedDocumentReview,
+      jsonText,
+      observedAt,
+      reviewBatchEnvelope
+    });
+  }
+
   const dedicatedDocumentReviewNote = dedicatedDocumentReview
     ? `
 ## Dedicated Whole-Document Review Task
@@ -19743,16 +19806,18 @@ function formatPatchReanchorReason(
 }
 
 function createChatGptImportSummaryMessage({
+  commentsCreated,
   openQuestionsAttached,
   patchProposalsStored,
   repliesAttached,
   warnings
 }: ChatGptImportSummary): string {
   const summary = [
-    "Imported ChatGPT response.",
-    `Replies attached: ${repliesAttached}`,
+    "Imported external participant response.",
+    `Comments added: ${commentsCreated}`,
+    `Replies imported: ${repliesAttached}`,
     `Open questions attached: ${openQuestionsAttached}`,
-    `Patch proposals stored: ${patchProposalsStored}`,
+    `Patches proposed: ${patchProposalsStored}`,
     `Warnings: ${warnings.length}`
   ];
 
@@ -19772,6 +19837,7 @@ function buildFocusedCommentsPromptPreview({
   markdown,
   patches,
   project,
+  responseProtocolVersion,
   reviewBatchEnvelope
 }: {
   comments: PatchmarkComment[];
@@ -19782,6 +19848,7 @@ function buildFocusedCommentsPromptPreview({
   markdown: string;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  responseProtocolVersion: 2 | 3;
   reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
 }): { jsonText: string; promptText: string } {
   const exportPayload = createFocusedCommentsExportPayload({
@@ -19793,6 +19860,7 @@ function buildFocusedCommentsPromptPreview({
     markdown,
     patches,
     project,
+    responseProtocolVersion,
     reviewBatchEnvelope
   });
   const jsonText = `${JSON.stringify(exportPayload, null, 2)}\n`;
@@ -19801,6 +19869,7 @@ function buildFocusedCommentsPromptPreview({
     promptText: createFocusedCommentsChatGptPrompt(jsonText, {
       dedicatedDocumentReview,
       observedAt: exportedAt.slice(0, 10),
+      responseProtocolVersion,
       reviewBatchEnvelope
     })
   };
@@ -19815,6 +19884,7 @@ function createFocusedCommentsExportPayload({
   markdown,
   patches,
   project,
+  responseProtocolVersion,
   reviewBatchEnvelope
 }: {
   comments: PatchmarkComment[];
@@ -19825,6 +19895,7 @@ function createFocusedCommentsExportPayload({
   markdown: string;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  responseProtocolVersion: 2 | 3;
   reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
 }) {
   const tableContexts = createCanonicalTableContextsForExport({
@@ -19832,6 +19903,14 @@ function createFocusedCommentsExportPayload({
     headings,
     markdown
   });
+  if (
+    responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION &&
+    !reviewBatchEnvelope
+  ) {
+    throw new Error(
+      "Manual external-participant protocol v3 requires a tracked Review Batch envelope."
+    );
+  }
 
   return {
     protocol: "patchmark.comment_export",
@@ -19847,11 +19926,18 @@ function createFocusedCommentsExportPayload({
       ...getProjectDocumentExportIdentity(project),
       exported_at: exportedAt
     },
-    instructions_for_chatgpt: {
+    [responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+      ? "instructions_for_external_participant"
+      : "instructions_for_chatgpt"]: {
       role:
-        "You are helping review and improve a Markdown document through Patchmark comments.",
-      rules: [
-        "Reply to each exported comment by comment_id.",
+        responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+          ? "You are participating in a Patchmark document. Follow the user's instruction and return only useful native contribution primitives."
+          : "You are helping review and improve a Markdown document through Patchmark comments.",
+      rules:
+        responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+          ? [...MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES]
+          : [
+              "Reply to each exported comment by comment_id.",
         ...(reviewBatchEnvelope
           ? [
               "Return the exact review_batch_id, project_id, and document_id in the response root.",
@@ -19875,17 +19961,37 @@ function createFocusedCommentsExportPayload({
         ...CHATGPT_TERMINOLOGY_CLARIFICATION_PAYLOAD_RULES,
         "Preserve Markdown structure.",
         "Drafting support only. Legal review may still be required.",
-        ...(dedicatedDocumentReview
-          ? [
-              "This is a dedicated whole-document review task.",
-              "Focus only on the exported document-level comment.",
-              "Do not address unrelated document issues unless they are necessary to resolve this comment.",
-              "Prefer small exact patches over rewriting the whole document, except for atomic structural table changes."
-            ]
-          : [])
-      ],
-      expected_response_format: "patchmark.comment_reply_import"
+              ...(dedicatedDocumentReview
+                ? [
+                    "This is a dedicated whole-document review task.",
+                    "Focus only on the exported document-level comment.",
+                    "Do not address unrelated document issues unless they are necessary to resolve this comment.",
+                    "Prefer small exact patches over rewriting the whole document, except for atomic structural table changes."
+                  ]
+                : [])
+            ],
+      expected_response_format:
+        responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+          ? {
+              protocol: "patchmark.comment_reply_import" as const,
+              protocol_version: MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+            }
+          : "patchmark.comment_reply_import"
     },
+    ...(responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+      ? {
+          document_snapshot: {
+            document_id: reviewBatchEnvelope!.document_id,
+            markdown
+          },
+          document_structure: headings.map((heading) => ({
+            heading: heading.text,
+            heading_level: heading.level,
+            heading_line: heading.line,
+            heading_path: getHeadingPath(headings, heading)
+          }))
+        }
+      : {}),
     ...(tableContexts.length > 0
       ? {
           table_contexts: tableContexts.map((tableContext) => ({
@@ -19902,6 +20008,8 @@ function createFocusedCommentsExportPayload({
         headings,
         markdown,
         patches,
+        includeFullDocumentMarkdown:
+          responseProtocolVersion !== MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
         tableContexts
       })
     )
@@ -19911,12 +20019,14 @@ function createFocusedCommentsExportPayload({
 function createFocusedCommentExportEntry({
   comment,
   headings,
+  includeFullDocumentMarkdown,
   markdown,
   patches,
   tableContexts
 }: {
   comment: PatchmarkComment;
   headings: ReturnType<typeof parseMarkdownHeadings>;
+  includeFullDocumentMarkdown: boolean;
   markdown: string;
   patches: PatchmarkPatch[];
   tableContexts: CanonicalTableContext[];
@@ -19961,6 +20071,7 @@ function createFocusedCommentExportEntry({
       anchor: comment.anchor,
       comment,
       headings,
+      includeFullDocumentMarkdown,
       markdown,
       patches,
       tableContexts
@@ -20061,6 +20172,7 @@ function createExportContext({
   anchor,
   comment,
   headings,
+  includeFullDocumentMarkdown,
   markdown,
   patches,
   tableContexts
@@ -20069,6 +20181,7 @@ function createExportContext({
   anchor: PatchmarkCommentAnchor;
   comment: PatchmarkComment;
   headings: ReturnType<typeof parseMarkdownHeadings>;
+  includeFullDocumentMarkdown: boolean;
   markdown: string;
   patches: PatchmarkPatch[];
   tableContexts: CanonicalTableContext[];
@@ -20127,6 +20240,7 @@ function createExportContext({
           : containingSectionMarkdown
         : null,
     full_document_markdown:
+      includeFullDocumentMarkdown &&
       actionContext.default_scope === "full_document"
         ? replaceCompleteTableOccurrencesWithMarkers({
             markdown,

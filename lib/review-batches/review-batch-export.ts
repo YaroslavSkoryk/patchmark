@@ -49,6 +49,7 @@ export async function createTrackedReviewBatchExport({
   overLimitWarning,
   patches,
   project,
+  responseProtocolVersion = 2,
   section,
   selectionAdjustment,
   source,
@@ -69,6 +70,7 @@ export async function createTrackedReviewBatchExport({
   overLimitWarning: boolean;
   patches: PatchmarkPatch[];
   project: PatchmarkProjectHandle;
+  responseProtocolVersion?: 2 | 3;
   section: ReviewBatchSectionSnapshot | null;
   selectionAdjustment?: ReviewBatchSelectionAdjustment;
   source: ReviewBatchSource;
@@ -171,6 +173,7 @@ export async function createTrackedReviewBatchExport({
         : {}),
       algorithm_version: algorithmVersion,
       prompt_builder_version: REVIEW_BATCH_PROMPT_BUILDER_VERSION,
+      response_protocol_version: responseProtocolVersion,
       document_generation: documentGeneration,
       batch_record_generation: documentGeneration + 1,
       document_content_sha256: documentContentSha256,

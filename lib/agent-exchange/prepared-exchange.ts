@@ -26,6 +26,14 @@ export async function prepareAgentExchange({
     );
   }
   if (
+    batch.response_protocol_version !== undefined &&
+    batch.response_protocol_version !== AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION
+  ) {
+    throw new Error(
+      "Agent Exchange can prepare only a Review Batch that requests protocol version 2."
+    );
+  }
+  if (
     !Number.isSafeInteger(maxResponseBytes) ||
     maxResponseBytes < 1 ||
     maxResponseBytes > 64 * 1024 * 1024

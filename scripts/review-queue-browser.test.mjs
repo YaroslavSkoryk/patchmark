@@ -262,12 +262,35 @@ try {
   const exportedPayload = JSON.parse(
     exactExportedPrompt.match(/## Patchmark Export Payload\n\n```json\n([\s\S]+)\n```\n?$/)?.[1]
   );
+  assert.match(exactExportedPrompt, /"protocol_version": 3/);
+  assert.match(exactExportedPrompt, /create anchored comments where useful/);
+  assert.match(exactExportedPrompt, /"kind": "response_comment"/);
   const exportedBatchId = exportedPayload.review_batch.review_batch_id;
   assert.ok(exportedBatchId.startsWith("review_batch_"));
   assert.equal(exportedPayload.review_batch.document_id, "doc_market");
   assert.deepEqual(exportedPayload.review_batch.ordered_comment_ids, [
     "PM-COMMENT-0001"
   ]);
+  assert.equal(
+    exportedPayload.instructions_for_external_participant
+      .expected_response_format.protocol_version,
+    3
+  );
+  assert.equal(exportedPayload.document_snapshot.document_id, "doc_market");
+  assert.equal(
+    exportedPayload.document_snapshot.markdown,
+    readFileSync(join(projectDir, "market-review.md"), "utf8")
+  );
+  assert.ok(
+    exportedPayload.document_structure.some(
+      (heading) =>
+        heading.heading === "Operations" && heading.heading_level === 2
+    )
+  );
+  assert.equal(
+    exportedPayload.comments[0].context.full_document_markdown,
+    null
+  );
 
   await closePromptDialog(client);
   await client.call("Page.navigate", { url: editorUrl });
@@ -404,6 +427,15 @@ try {
     guidedPrompt.match(/## Patchmark Export Payload\n\n```json\n([\s\S]+)\n```\n?$/)?.[1]
   );
   const guidedEnvelope = guidedPayload.review_batch;
+  assert.equal(
+    guidedPayload.instructions_for_external_participant
+      .expected_response_format.protocol_version,
+    3
+  );
+  assert.equal(
+    guidedPayload.document_snapshot.markdown,
+    readFileSync(join(projectDir, "market-review.md"), "utf8")
+  );
   assert.equal(guidedEnvelope.document_id, "doc_market");
   assert.deepEqual(guidedEnvelope.ordered_comment_ids, ["PM-COMMENT-0001"]);
   await closePromptDialog(client);
@@ -415,19 +447,58 @@ try {
   );
   await fillImportResponse(client, {
     protocol: "patchmark.comment_reply_import",
-    protocol_version: 1,
+    protocol_version: 3,
     review_batch_id: guidedEnvelope.review_batch_id,
     project_id: guidedEnvelope.project_id,
     document_id: guidedEnvelope.document_id,
-    summary: "Reviewed the tracked batch.",
+    summary: "Added one independent comment and one linked patch.",
+    new_comments: [
+      {
+        local_ref: "comment-operations",
+        document_id: guidedEnvelope.document_id,
+        type: "risk",
+        anchor: {
+          kind: "selected_text",
+          selected_text: "Operations signal needs review.",
+          anchor_context: {
+            kind: "paragraph",
+            plain_text: "Operations signal needs review.",
+            markdown_text: "Operations signal needs review."
+          },
+          containing_heading: "Operations",
+          containing_heading_level: 2,
+          containing_heading_path: ["Market Review", "Operations"],
+          anchor_source: "markdown"
+        },
+        comment: "Clarify who owns this operational review."
+      }
+    ],
     replies: [],
-    patch_proposals: [],
+    patch_proposals: [
+      {
+        patch_key: "clarify-operations-owner",
+        depends_on: [],
+        comment_target: {
+          kind: "response_comment",
+          local_ref: "comment-operations"
+        },
+        display_title: "Clarify operations ownership",
+        target_heading: "Operations",
+        original_text: "Operations signal needs review.",
+        suggested_text: "Operations signal needs explicit owner review.",
+        suggested_text_sources: [],
+        reason: "Makes the missing ownership explicit.",
+        reason_sources: [],
+        risk: "The owner is still unspecified.",
+        risk_sources: []
+      }
+    ],
     open_questions: []
   });
   await clickButtonByText(client, "Import");
   await waitFor(
     client,
-    `!document.querySelector('[aria-label="Import ChatGPT response"]') && Boolean(document.querySelector('[aria-label="Review Batch response summary"]'))`,
+    `!document.querySelector('[aria-label="Import ChatGPT response"]') && Boolean(document.querySelector('[aria-label="Review Batch response summary"]')) && document.body.textContent.includes("Comments added: 1") && document.body.textContent.includes("Replies imported: 0") && document.body.textContent.includes("Patches proposed: 1")`,
     "exact response summary"
   );
   assert.equal(
@@ -456,6 +527,43 @@ try {
   assert.equal(receivedBatch.response_analysis.coverage_status, "partial");
   assert.equal(receivedBatch.response_analysis.aggregate.addressed_comments, 0);
   assert.equal(receivedBatch.response_analysis.aggregate.unanswered_comments, 1);
+  const importedComments = JSON.parse(
+    readFileSync(
+      join(
+        projectDir,
+        ".patchmark",
+        "documents",
+        "doc_market",
+        "comments.json"
+      ),
+      "utf8"
+    )
+  );
+  const importedComment = importedComments.find(
+    (comment) => comment.comment === "Clarify who owns this operational review."
+  );
+  assert.ok(importedComment);
+  assert.equal(importedComment.anchor.kind, "selected_text");
+  assert.equal(importedComment.anchor.selected_text, "Operations signal needs review.");
+  assert.equal(importedComment.source_import_id, receivedBatch.import_id);
+  const importedPatches = JSON.parse(
+    readFileSync(
+      join(
+        projectDir,
+        ".patchmark",
+        "documents",
+        "doc_market",
+        "patches.json"
+      ),
+      "utf8"
+    )
+  );
+  const importedPatch = importedPatches.find(
+    (patch) => patch.source_patch_key === "clarify-operations-owner"
+  );
+  assert.ok(importedPatch);
+  assert.equal(importedPatch.comment_id, importedComment.id);
+  assert.equal(importedPatch.source_import_id, receivedBatch.import_id);
   assert.deepEqual(receivedBatch.selection_adjustment, {
     base_proposal_comment_ids: ["PM-COMMENT-0001", "PM-COMMENT-0002"],
     final_comment_ids: ["PM-COMMENT-0001"],
@@ -506,6 +614,8 @@ try {
         noWriteFingerprintStable: true,
         exactPromptReopenedAfterRestart: reopenedPrompt === exactExportedPrompt,
         cancellationKeptContextPack: true,
+        manualV3NewCommentPatchRoundTrip: true,
+        manualV3PromptVerified: true,
         partialResponseSummary: true,
         partialProgressionOverview,
         transientWriteCount: 0,

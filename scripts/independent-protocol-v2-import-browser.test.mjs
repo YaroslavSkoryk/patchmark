@@ -234,7 +234,7 @@ async function runImportScenario({
       await waitFor(
         client,
         `!document.querySelector(".comment-import-dialog") &&
-          document.querySelector(".document-save-banner")?.textContent?.includes("Patch proposals stored: 4")`,
+          document.querySelector(".document-save-banner")?.textContent?.includes("Patches proposed: 4")`,
         "stale-current exported-snapshot import"
       );
       const comments = readJson(join(fixture.store, "comments.json"));
@@ -281,7 +281,7 @@ async function runImportScenario({
     await waitFor(
       client,
       `!document.querySelector(".comment-import-dialog") &&
-        document.querySelector(".document-save-banner")?.textContent?.includes("Patch proposals stored: 4")`,
+        document.querySelector(".document-save-banner")?.textContent?.includes("Patches proposed: 4")`,
       "successful exact independent import"
     );
     const comments = readJson(join(fixture.store, "comments.json"));

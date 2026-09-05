@@ -6,6 +6,7 @@ import {
 } from "../lib/comments/external-comment-admission.ts";
 import { getCleanCommentAnchorLabel } from "../lib/comments/comment-card-display.ts";
 import { getLatestEditableUserReply } from "../lib/comments/comment-thread-reply-edit.ts";
+import { resolveCanonicalCommentTarget } from "../lib/comments/canonical-target-resolution.ts";
 import { getActiveComments } from "../lib/comments/comment-trash-operations.ts";
 import { allocatePatchmarkCommentIds } from "../lib/comments/native-comment.ts";
 import {
@@ -55,6 +56,7 @@ try {
   );
 
   await proveNativeCreationAndBehavior();
+  await proveNewCommentsOnlyRemainSuccessfulPartialResponse();
   await proveSnapshotAdmissionFailuresAreAtomic();
   await proveCurrentDocumentRelocation();
   await proveDeletedCurrentTargetFailsClosed();
@@ -69,12 +71,14 @@ try {
         assertions: "complete",
         atomic_failures: true,
         canonical_relocation: true,
+        corrected_escaped_anchor_behavior: true,
         local_ref_mapping: true,
         manual_byte_path_convergence: true,
         multi_document_isolation: true,
         native_comment_creation: true,
         native_reply_patch_persistence: true,
         replay_protection: true,
+        responded_partial_is_successful: true,
         status: "ok",
         two_stage_anchor_admission: true
       },
@@ -100,6 +104,9 @@ async function proveNativeCreationAndBehavior() {
     "Backup route is stable.",
     "",
     "Existing line stays.",
+    "",
+    "The Business of the Company shall, unless and until the Parties",
+    "hereto otherwise agree, be confined to carry on the business of \\_\\_\\_",
     ""
   ].join("\n");
   const scenario = await createScenario("native", markdown);
@@ -130,7 +137,22 @@ async function proveNativeCreationAndBehavior() {
       {
         ...externalComment(scenario, "comment-c", { kind: "document" }),
         type: "question"
-      }
+      },
+      externalComment(scenario, "comment-d", {
+        kind: "selected_text",
+        selected_text: "\\_\\_\\_",
+        anchor_context: {
+          kind: "paragraph",
+          plain_text:
+            "The Business of the Company shall, unless and until the Parties hereto otherwise agree, be confined to carry on the business of ___",
+          markdown_text:
+            "The Business of the Company shall, unless and until the Parties\nhereto otherwise agree, be confined to carry on the business of \\_\\_\\_"
+        },
+        containing_heading: "Beta",
+        containing_heading_level: 1,
+        containing_heading_path: ["Beta"],
+        anchor_source: "markdown"
+      })
     ],
     replies: [
       {
@@ -179,7 +201,7 @@ async function proveNativeCreationAndBehavior() {
   });
 
   const imported = await importText(scenario, response);
-  assert.equal(imported.comments_created, 3);
+  assert.equal(imported.comments_created, 4);
   assert.equal(imported.replies_attached, 1);
   assert.equal(imported.open_questions_attached, 1);
   assert.equal(imported.patch_proposals_stored, 4);
@@ -187,7 +209,12 @@ async function proveNativeCreationAndBehavior() {
   assert.equal(imported.review_batches[0].import_id, IMPORT_ID);
   assert.deepEqual(
     imported.comments.slice(1).map((comment) => comment.id),
-    ["PM-COMMENT-0008", "PM-COMMENT-0009", "PM-COMMENT-0010"]
+    [
+      "PM-COMMENT-0008",
+      "PM-COMMENT-0009",
+      "PM-COMMENT-0010",
+      "PM-COMMENT-0011"
+    ]
   );
   assert.equal(imported.comments[0].thread.length, 2);
   assert.equal(imported.comments[0].export_state.focus_state, "reply_received");
@@ -195,16 +222,28 @@ async function proveNativeCreationAndBehavior() {
   const selectedComment = imported.comments[1];
   const sectionComment = imported.comments[2];
   const documentComment = imported.comments[3];
+  const escapedPlaceholderComment = imported.comments[4];
   assert.equal(selectedComment.anchor.kind, "selected_text");
   assert.equal(sectionComment.anchor.kind, "section");
   assert.equal(documentComment.anchor.kind, "document");
+  assert.equal(escapedPlaceholderComment.anchor.kind, "selected_text");
+  assert.equal(escapedPlaceholderComment.anchor.selected_text, "\\_\\_\\_");
+  assert.equal(
+    resolveCanonicalCommentTarget(escapedPlaceholderComment, { markdown }).state,
+    "resolved"
+  );
   assert.equal(sectionComment.type, "risk");
   assert.equal(documentComment.type, "question");
   assert.equal(
     getCleanCommentAnchorLabel(selectedComment),
     "Selected text in Alpha"
   );
-  for (const comment of [selectedComment, sectionComment, documentComment]) {
+  for (const comment of [
+    selectedComment,
+    sectionComment,
+    documentComment,
+    escapedPlaceholderComment
+  ]) {
     assert.equal(comment.source_import_id, IMPORT_ID);
     assert.equal("local_ref" in comment, false);
     assert.equal(comment.status, "open");
@@ -238,7 +277,7 @@ async function proveNativeCreationAndBehavior() {
   assert.ok(reloadedSelected);
   assert.equal(reloadedSelected.source_import_id, IMPORT_ID);
   assert.equal("local_ref" in reloadedSelected, false);
-  assert.equal(getActiveComments(reloadedComments).length, 4);
+  assert.equal(getActiveComments(reloadedComments).length, 5);
 
   const repliedAt = "2041-04-02T00:00:00.000Z";
   const repliedComments = reloadedComments.map((comment) =>
@@ -372,7 +411,63 @@ async function proveNativeCreationAndBehavior() {
   assert.equal(digestProjectTree(scenario.copy.projectRoot).digest, replayDigest);
   assert.equal(
     (await readProjectComments((await reopenScenario(scenario)).project)).length,
-    4
+    5
+  );
+}
+
+async function proveNewCommentsOnlyRemainSuccessfulPartialResponse() {
+  const markdown = [
+    "# Operating model",
+    "",
+    "The launch assumption remains intentionally concise.",
+    ""
+  ].join("\n");
+  const scenario = await createScenario("new-comments-partial", markdown);
+  const response = createResponse(scenario, {
+    new_comments: [
+      externalComment(scenario, "comment-partial", {
+        kind: "selected_text",
+        selected_text: "launch assumption",
+        anchor_context: {
+          kind: "paragraph",
+          plain_text: "The launch assumption remains intentionally concise.",
+          markdown_text: "The launch assumption remains intentionally concise."
+        },
+        containing_heading: "Operating model",
+        containing_heading_level: 1,
+        containing_heading_path: ["Operating model"],
+        anchor_source: "markdown"
+      })
+    ]
+  });
+
+  const imported = await importText(
+    scenario,
+    response,
+    "PM-IMPORT-V3-NEW-COMMENTS-PARTIAL"
+  );
+
+  assert.equal(imported.comments_created, 1);
+  assert.equal(imported.replies_attached, 0);
+  assert.equal(imported.patch_proposals_stored, 0);
+  assert.deepEqual(imported.warnings, []);
+  assert.equal(imported.review_batches[0].status, "responded_partial");
+  assert.equal(
+    imported.review_batches[0].response_analysis.coverage_status,
+    "partial"
+  );
+  assert.equal(
+    imported.review_batches[0].response_analysis.aggregate.unanswered_comments,
+    1
+  );
+
+  const reopened = await reopenScenario(scenario);
+  const reloadedComments = await readProjectComments(reopened.project);
+  assert.ok(
+    reloadedComments.some(
+      (comment) =>
+        comment.source_import_id === "PM-IMPORT-V3-NEW-COMMENTS-PARTIAL"
+    )
   );
 }
 
@@ -779,7 +874,7 @@ async function createScenario(name, snapshotMarkdown, currentMarkdown = snapshot
     batchType: "manual",
     buildPrompt: (envelope) => ({
       jsonText: `${JSON.stringify({ envelope })}\n`,
-      promptText: `Protocol-v2 production-safe fixture prompt.\n${JSON.stringify(envelope)}\n`
+      promptText: `Protocol-v3 external-participant fixture prompt.\n${JSON.stringify(envelope)}\n`
     }),
     comments,
     documentGeneration: loaded.project.persistence.generation,
@@ -789,9 +884,11 @@ async function createScenario(name, snapshotMarkdown, currentMarkdown = snapshot
     overLimitWarning: false,
     patches: [],
     project: loaded.project,
+    responseProtocolVersion: 3,
     section: null,
     source: "manual"
   });
+  assert.equal(exported.batch.response_protocol_version, 3);
   if (currentMarkdown !== snapshotMarkdown) {
     await saveProjectState({
       markdown: currentMarkdown,

@@ -41,6 +41,7 @@ const firstExport = await exportManualBatch(fixture, {
 assert.equal(firstExport.batch.status, "exported");
 assert.equal(firstExport.batch.source, "manual");
 assert.equal(firstExport.batch.batch_type, "manual");
+assert.equal(firstExport.batch.response_protocol_version, 2);
 assert.deepEqual(firstExport.batch.ordered_comment_ids, [fixture.comment.id]);
 assert.equal(firstExport.batch.document_generation, 1);
 assert.equal(firstExport.batch.batch_record_generation, 2);

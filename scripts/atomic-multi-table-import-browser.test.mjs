@@ -219,7 +219,7 @@ async function runImportScenario({
     await waitFor(
       client,
       `!document.querySelector(".comment-import-dialog") &&
-        document.querySelector(".document-save-banner")?.textContent?.includes("Patch proposals stored: 1")`,
+        document.querySelector(".document-save-banner")?.textContent?.includes("Patches proposed: 1")`,
       "successful exact atomic multi-table import"
     );
     const comments = readJson(join(fixture.store, "comments.json"));

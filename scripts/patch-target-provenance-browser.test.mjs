@@ -136,7 +136,7 @@ try {
   await waitFor(
     client,
     `!document.querySelector(".comment-import-dialog") &&
-      document.querySelector(".document-save-banner")?.textContent?.includes("Patch proposals stored: 2")`,
+      document.querySelector(".document-save-banner")?.textContent?.includes("Patches proposed: 2")`,
     "successful target duplication import"
   );
 

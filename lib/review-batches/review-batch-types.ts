@@ -96,6 +96,7 @@ export type PatchmarkReviewBatch = {
   selection_adjustment?: ReviewBatchSelectionAdjustment;
   algorithm_version: number | null;
   prompt_builder_version: typeof REVIEW_BATCH_PROMPT_BUILDER_VERSION;
+  response_protocol_version?: 2 | 3;
   document_generation: number;
   batch_record_generation: number;
   document_content_sha256: string;

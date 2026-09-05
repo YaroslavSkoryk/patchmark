@@ -167,6 +167,7 @@
     "test:external-participant-protocol": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/external-participant-protocol.test.mjs",
     "test:external-participant-protocol-types": "tsc -p scripts/tsconfig.external-participant-protocol.json --pretty false",
     "test:external-participant-import": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/external-participant-import.test.mjs",
+    "test:manual-external-participant-v3": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/manual-external-participant-v3.test.mjs",
     "test:source-date-protocol": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/source-date-protocol.test.mjs",
     "test:comment-rail-ordering": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-rail-ordering.test.mjs",
     "test:comment-thread-reply-edit": "node --experimental-strip-types --disable-warning=MODULE_TYPELESS_PACKAGE_JSON scripts/comment-thread-reply-edit.test.mjs",

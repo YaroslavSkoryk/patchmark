@@ -316,7 +316,7 @@ try {
   await clickWithin(client, ".comment-import-dialog", "Import");
   await waitFor(
     client,
-    `document.querySelector(".document-save-banner")?.textContent?.includes("Replies attached: 1")`,
+    `document.querySelector(".document-save-banner")?.textContent?.includes("Replies imported: 1")`,
     "research-only response import"
   );
 
