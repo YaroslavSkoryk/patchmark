@@ -5625,6 +5625,9 @@ function normalizeComment(comment: unknown): PatchmarkComment {
     export_state: normalizeCommentExportState(comment.export_state),
     anchor_history: normalizeCommentAnchorHistory(comment.anchor_history),
     patch_impacts: normalizeCommentPatchImpacts(comment.patch_impacts),
+    ...(typeof comment.source_import_id === "string"
+      ? { source_import_id: comment.source_import_id }
+      : {}),
     created_at: comment.created_at,
     updated_at: comment.updated_at,
     resolved_at:

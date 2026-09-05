@@ -154,7 +154,7 @@ export function createHumanReanchorProposal({
 
   return {
     ...candidate,
-    anchor: createSelectedTextAnchorFromRange({
+    anchor: createNativeSelectedTextAnchorFromRange({
       headings,
       markdown,
       previousAnchor,
@@ -236,7 +236,7 @@ export function applyHumanReanchor({
     return { kind: "no_op" };
   }
 
-  const nextAnchor = createSelectedTextAnchorFromRange({
+  const nextAnchor = createNativeSelectedTextAnchorFromRange({
     headings: parseMarkdownHeadings(markdown),
     markdown,
     previousAnchor: comment.anchor,
@@ -423,7 +423,7 @@ function getProposalReason(source: HumanReanchorSource): string {
     : "Selected manually in Visual Mode.";
 }
 
-function createSelectedTextAnchorFromRange({
+export function createNativeSelectedTextAnchorFromRange({
   headings,
   markdown,
   previousAnchor,

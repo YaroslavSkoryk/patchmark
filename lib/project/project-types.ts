@@ -102,9 +102,68 @@ export type PatchmarkSourceReference = {
   supports?: string;
 };
 
-export type PatchmarkCommentReplyImport = {
-  protocol: "patchmark.comment_reply_import";
-  protocol_version: 1 | 2;
+/** The native anchor evidence accepted from an untrusted external response. */
+export type PatchmarkExternalCommentAnchor =
+  | Omit<
+      Extract<PatchmarkCommentAnchor, { kind: "document" }>,
+      "action_context"
+    >
+  | Omit<
+      Extract<PatchmarkCommentAnchor, { kind: "section" }>,
+      "action_context" | "section_end_offset" | "section_start_offset"
+    >
+  | Omit<
+      Extract<PatchmarkCommentAnchor, { kind: "selected_text" }>,
+      "action_context"
+    >;
+
+export type PatchmarkResponseCommentTarget =
+  | {
+      kind: "existing_comment";
+      comment_id: string;
+    }
+  | {
+      kind: "response_comment";
+      local_ref: string;
+    };
+
+export type PatchmarkExternalComment = {
+  local_ref: string;
+  document_id: string;
+  type: PatchmarkCommentType;
+  anchor: PatchmarkExternalCommentAnchor;
+  comment: string;
+};
+
+type PatchmarkPatchProposalFields = {
+  display_title?: string;
+  title?: string;
+  target_heading?: string;
+  original_text: string;
+  suggested_text: string;
+  suggested_text_sources?: PatchmarkSourceReference[];
+  reason: string;
+  reason_sources?: PatchmarkSourceReference[];
+  risk?: string;
+  risk_sources?: PatchmarkSourceReference[];
+  sources?: PatchmarkSourceReference[];
+};
+
+export type PatchmarkLegacyPatchProposal = PatchmarkPatchProposalFields & {
+  patch_key?: string;
+  depends_on?: string[];
+  comment_id: string;
+  comment_target?: never;
+};
+
+export type PatchmarkExternalPatchProposal = PatchmarkPatchProposalFields & {
+  patch_key: string;
+  depends_on: string[];
+  comment_id?: never;
+  comment_target: PatchmarkResponseCommentTarget;
+};
+
+type PatchmarkCommentReplyImportFields = {
   review_batch_id?: string;
   project_id?: string;
   document_id?: string;
@@ -117,28 +176,35 @@ export type PatchmarkCommentReplyImport = {
     suggested_user_action?: PatchmarkSuggestedUserAction;
     sources?: PatchmarkSourceReference[];
   }>;
-  patch_proposals: Array<{
-    patch_key?: string;
-    depends_on?: string[];
-    comment_id: string;
-    display_title?: string;
-    title?: string;
-    target_heading?: string;
-    original_text: string;
-    suggested_text: string;
-    suggested_text_sources?: PatchmarkSourceReference[];
-    reason: string;
-    reason_sources?: PatchmarkSourceReference[];
-    risk?: string;
-    risk_sources?: PatchmarkSourceReference[];
-    sources?: PatchmarkSourceReference[];
-  }>;
   open_questions: Array<{
     comment_id: string;
     question: string;
     question_sources?: PatchmarkSourceReference[];
   }>;
 };
+
+export type PatchmarkLegacyCommentReplyImport =
+  PatchmarkCommentReplyImportFields & {
+    protocol: "patchmark.comment_reply_import";
+    protocol_version: 1 | 2;
+    new_comments?: never;
+    patch_proposals: PatchmarkLegacyPatchProposal[];
+  };
+
+export type PatchmarkExternalParticipantResponse =
+  PatchmarkCommentReplyImportFields & {
+    protocol: "patchmark.comment_reply_import";
+    protocol_version: 3;
+    review_batch_id: string;
+    project_id: string;
+    document_id: string;
+    new_comments: PatchmarkExternalComment[];
+    patch_proposals: PatchmarkExternalPatchProposal[];
+  };
+
+export type PatchmarkCommentReplyImport =
+  | PatchmarkLegacyCommentReplyImport
+  | PatchmarkExternalParticipantResponse;
 
 export type PatchmarkSelectedTextAnchorContextKind =
   | "sentence"
@@ -382,6 +448,7 @@ export type PatchmarkComment = {
   export_state: PatchmarkCommentExportState;
   anchor_history?: PatchmarkCommentAnchorHistoryEntry[];
   patch_impacts?: PatchmarkCommentPatchImpact[];
+  source_import_id?: string;
   created_at: string;
   updated_at: string;
   resolved_at?: string;

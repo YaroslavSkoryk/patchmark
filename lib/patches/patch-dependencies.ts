@@ -549,7 +549,7 @@ function createDependencyGraph(
       throw new PatchDependencyValidationError({
         code: "unsupported_dependency_protocol",
         message:
-          "Protocol version 2 requires patch_key and depends_on on every patch proposal.",
+          "Protocol versions 2 and 3 require patch_key and depends_on on every patch proposal.",
         patchKey
       });
     }
@@ -602,12 +602,15 @@ function createDependencyGraph(
         });
       }
 
-      if (dependency.comment_id !== proposal.comment_id) {
+      if (
+        getPatchProposalCommentTargetKey(dependency) !==
+        getPatchProposalCommentTargetKey(proposal)
+      ) {
         throw new PatchDependencyValidationError({
           code: "cross_comment_dependency",
           dependencyKey,
           message:
-            "Patch dependencies must remain within the same comment_id.",
+            "Patch dependencies must remain within the same comment target.",
           patchKey
         });
       }
@@ -615,6 +618,18 @@ function createDependencyGraph(
   }
 
   return { indexByKey, proposalByKey };
+}
+
+function getPatchProposalCommentTargetKey(
+  proposal: PatchmarkCommentReplyImport["patch_proposals"][number]
+): string {
+  if (proposal.comment_target?.kind === "existing_comment") {
+    return `existing_comment\u0000${proposal.comment_target.comment_id}`;
+  }
+  if (proposal.comment_target?.kind === "response_comment") {
+    return `response_comment\u0000${proposal.comment_target.local_ref}`;
+  }
+  return `existing_comment\u0000${proposal.comment_id ?? ""}`;
 }
 
 function validateDependencyCycles(graph: DependencyGraph): void {

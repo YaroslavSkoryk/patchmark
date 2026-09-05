@@ -1,4 +1,5 @@
 import type { ProjectDocumentIdentity } from "../project/document-scoped-identity.ts";
+import type { PatchmarkCommentReplyImport } from "../project/project-types.ts";
 import type {
   PatchmarkReviewBatch,
   ReviewBatchResponseIdentity
@@ -128,18 +129,20 @@ export function validateExactReviewBatchResponseComments({
   response
 }: {
   batch: PatchmarkReviewBatch;
-  response: {
-    replies: Array<{ comment_id: string }>;
-    patch_proposals: Array<{ comment_id: string }>;
-    open_questions: Array<{ comment_id: string }>;
-  };
+  response: PatchmarkCommentReplyImport;
 }): void {
   const expectedCommentIds = new Set(batch.ordered_comment_ids);
   const unexpectedCommentIds = Array.from(
     new Set(
       [
         ...response.replies.map((reply) => reply.comment_id),
-        ...response.patch_proposals.map((patch) => patch.comment_id),
+        ...response.patch_proposals.flatMap((patch) =>
+          patch.comment_target?.kind === "existing_comment"
+            ? [patch.comment_target.comment_id]
+            : patch.comment_id
+              ? [patch.comment_id]
+              : []
+        ),
         ...response.open_questions.map((question) => question.comment_id)
       ].filter((commentId) => !expectedCommentIds.has(commentId))
     )

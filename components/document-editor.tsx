@@ -89,6 +89,11 @@ import {
 } from "@/lib/comments/comment-anchor-visual-projection";
 import { editLatestUserReply } from "@/lib/comments/comment-thread-reply-edit";
 import {
+  allocatePatchmarkCommentIds,
+  createNativePatchmarkComment,
+  getDefaultCommentActionContext
+} from "@/lib/comments/native-comment";
+import {
   buildCommentTrashSummary,
   getActiveComments,
   getTrashedComments,
@@ -361,7 +366,6 @@ import {
   type PatchmarkComment,
   type PatchmarkCommentAnchor,
   type PatchmarkCommentActionContext,
-  type PatchmarkCommentActionIntent,
   type PatchCommentImpactKind,
   type PatchmarkCommentPatchImpact,
   type PatchmarkCommentType,
@@ -6334,10 +6338,10 @@ export function DocumentEditor() {
     }
 
     const now = new Date().toISOString();
-    const nextComment: PatchmarkComment = {
-      id: createNextCommentId(comments),
+    const [nextCommentId] = allocatePatchmarkCommentIds(comments, 1);
+    const nextComment = createNativePatchmarkComment({
+      id: nextCommentId,
       type: values.type,
-      status: "open",
       anchor: createCommentAnchor({
         headings,
         markdown,
@@ -6346,13 +6350,8 @@ export function DocumentEditor() {
         values
       }),
       comment: values.comment,
-      thread: [],
-      export_state: {
-        focus_state: "idle"
-      },
-      created_at: now,
-      updated_at: now
-    };
+      createdAt: now
+    });
     const nextComments = [...comments, nextComment];
 
     await persistComments(nextComments, "Added comment.");
@@ -14375,21 +14374,6 @@ function createChatGptImportRepairPrompt(error: unknown): string {
   return specializedPrompt
     ? `${CHATGPT_IMPORT_REPAIR_PROMPT}\n\n${specializedPrompt}`
     : CHATGPT_IMPORT_REPAIR_PROMPT;
-}
-
-function createNextCommentId(comments: PatchmarkComment[]): string {
-  const nextNumber =
-    comments.reduce((maxNumber, comment) => {
-      const match = /^PM-COMMENT-(\d+)$/.exec(comment.id);
-
-      if (!match) {
-        return maxNumber;
-      }
-
-      return Math.max(maxNumber, Number(match[1]));
-    }, 0) + 1;
-
-  return `PM-COMMENT-${String(nextNumber).padStart(4, "0")}`;
 }
 
 function createNextThreadEntryId(comment: PatchmarkComment): string {
@@ -23141,25 +23125,6 @@ function createCommentAnchor({
   };
 }
 
-function getDefaultCommentActionContext(
-  commentType: PatchmarkCommentType,
-  anchorKind: PatchmarkCommentAnchor["kind"]
-): PatchmarkCommentActionContext {
-  return anchorKind === "document"
-      ? {
-          default_scope: "full_document",
-          include_document_brief: true,
-          include_open_comments: "focused_only",
-          intent_hint: getActionIntentForCommentType(commentType)
-        }
-    : {
-        default_scope: "containing_section",
-        include_document_brief: true,
-        include_open_comments: "same_section",
-        intent_hint: getActionIntentForCommentType(commentType)
-      };
-}
-
 function refreshCommentAnchorActionContext(
   anchor: PatchmarkCommentAnchor,
   commentType: PatchmarkCommentType
@@ -23169,27 +23134,10 @@ function refreshCommentAnchorActionContext(
     action_context: {
       ...getDefaultCommentActionContext(commentType, anchor.kind),
       ...anchor.action_context,
-      intent_hint: getActionIntentForCommentType(commentType)
+      intent_hint: getDefaultCommentActionContext(commentType, anchor.kind)
+        .intent_hint
     }
   };
-}
-
-function getActionIntentForCommentType(
-  commentType: PatchmarkCommentType
-): PatchmarkCommentActionIntent {
-  if (commentType === "question" || commentType === "decision_needed") {
-    return "decision";
-  }
-
-  if (commentType === "risk") {
-    return "risk_review";
-  }
-
-  if (commentType === "research_needed") {
-    return "research";
-  }
-
-  return "note";
 }
 
 function getCommentAnchorSummary(

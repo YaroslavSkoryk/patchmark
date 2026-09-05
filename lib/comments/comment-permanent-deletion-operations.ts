@@ -158,6 +158,9 @@ export function buildPermanentDeletionSummary({
   );
   const imports = new Set<string>();
   selectedComments.forEach((comment) => {
+    if (comment.source_import_id) {
+      imports.add(comment.source_import_id);
+    }
     comment.thread.forEach((entry) => {
       if (entry.source_import_id) {
         imports.add(entry.source_import_id);

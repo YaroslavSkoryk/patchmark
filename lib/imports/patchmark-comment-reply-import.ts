@@ -1,5 +1,13 @@
 import type {
   PatchmarkCommentReplyImport,
+  PatchmarkExternalComment,
+  PatchmarkExternalCommentAnchor,
+  PatchmarkExternalParticipantResponse,
+  PatchmarkExternalPatchProposal,
+  PatchmarkLegacyCommentReplyImport,
+  PatchmarkLegacyPatchProposal,
+  PatchmarkResponseCommentTarget,
+  PatchmarkSelectedTextAnchorContext,
   PatchmarkSourceReference,
   PatchmarkSuggestedUserAction
 } from "../project/project-types.ts";
@@ -87,6 +95,23 @@ const INTERNAL_TURN_ID_PATTERN =
   /\bturn\d+(?:search|view|fetch|file|news|image|finance|weather)\d+\b/gi;
 const DOCUMENT_MARKDOWN_LINK_PATTERN = /\[[^\]]+\]\(https?:\/\/[^)]+\)/gi;
 const RAW_URL_PATTERN = /\bhttps?:\/\/\S+/gi;
+const RESPONSE_LOCAL_COMMENT_REF_PATTERN = /^[a-z][a-z0-9_-]*$/;
+const CONTROL_CHARACTER_PATTERN = /[\u0000-\u001f\u007f]/;
+
+export const PATCHMARK_EXTERNAL_RESPONSE_LIMITS = Object.freeze({
+  maximum_array_items: 100,
+  maximum_body_length: 32 * 1024,
+  maximum_context_length: 64 * 1024,
+  maximum_heading_length: 1024,
+  maximum_heading_path_items: 32,
+  maximum_identity_length: 256,
+  maximum_local_ref_length: 64,
+  maximum_offset: 2_147_483_647,
+  maximum_response_bytes: 8 * 1024 * 1024,
+  maximum_selected_text_length: 32 * 1024,
+  maximum_short_text_length: 1024,
+  maximum_sources_per_field: 32
+});
 
 type JsonPathPart = string | number;
 
@@ -123,10 +148,11 @@ export function parsePatchmarkCommentReplyImport(
 
   if (
     parsedResponse.protocol_version !== 1 &&
-    parsedResponse.protocol_version !== 2
+    parsedResponse.protocol_version !== 2 &&
+    parsedResponse.protocol_version !== 3
   ) {
     throw new Error(
-      "Invalid Patchmark response. Expected protocol_version 1 or 2."
+      "Invalid Patchmark response. Expected protocol_version 1, 2, or 3."
     );
   }
   const protocolVersion = parsedResponse.protocol_version;
@@ -141,9 +167,141 @@ export function parsePatchmarkCommentReplyImport(
     );
   }
 
-  const normalizedResponse: PatchmarkCommentReplyImport = {
-    protocol: "patchmark.comment_reply_import",
-    protocol_version: protocolVersion,
+  if (protocolVersion === 3) {
+    validateExternalResponseEnvelope(parsedResponse, rawInput);
+  }
+  const commonResponse = normalizeCommonResponseFields({
+    changedStringPaths: normalization.changedStringPaths,
+    parsedResponse,
+    protocolVersion
+  });
+  let normalizedResponse: PatchmarkCommentReplyImport;
+
+  if (protocolVersion === 3) {
+    const newComments = (parsedResponse.new_comments as unknown[]).map(
+      (comment, index) =>
+        normalizeExternalComment({
+          changedStringPaths: normalization.changedStringPaths,
+          comment,
+          documentId: parsedResponse.document_id as string,
+          index
+        })
+    );
+    const externalResponse: PatchmarkExternalParticipantResponse = {
+      ...commonResponse,
+      protocol: "patchmark.comment_reply_import",
+      protocol_version: 3,
+      review_batch_id: parsedResponse.review_batch_id as string,
+      project_id: parsedResponse.project_id as string,
+      document_id: parsedResponse.document_id as string,
+      new_comments: newComments,
+      patch_proposals: parsedResponse.patch_proposals.map(
+        (patchProposal, index) =>
+          normalizeExternalPatchProposal(
+            patchProposal,
+            index,
+            normalization.changedStringPaths
+          )
+      )
+    };
+    validateExternalResponseLocalReferences(externalResponse);
+    normalizedResponse = externalResponse;
+  } else {
+    if (parsedResponse.new_comments !== undefined) {
+      throw new Error(
+        "Invalid Patchmark response. new_comments requires protocol_version 3."
+      );
+    }
+    const legacyResponse: PatchmarkLegacyCommentReplyImport = {
+      ...commonResponse,
+      protocol: "patchmark.comment_reply_import",
+      protocol_version: protocolVersion,
+      patch_proposals: parsedResponse.patch_proposals.map(
+        (patchProposal, index) =>
+          normalizeImportedPatchProposal(
+            patchProposal,
+            index,
+            normalization.changedStringPaths,
+            protocolVersion
+          )
+      )
+    };
+    normalizedResponse = legacyResponse;
+  }
+
+  validateConsistentRepeatedSourceDates(
+    collectImportedSources(normalizedResponse)
+  );
+  validatePatchDependencyGraph(normalizedResponse);
+  validatePatchProposalVisibleReferenceDates(
+    normalizedResponse.patch_proposals,
+    protocolVersion
+  );
+
+  return normalizedResponse;
+}
+
+export function validatePatchmarkExternalParticipantResponseScope({
+  allowedExistingCommentIds,
+  documentId,
+  projectId,
+  response,
+  reviewBatchId
+}: {
+  allowedExistingCommentIds: ReadonlySet<string>;
+  documentId: string;
+  projectId: string;
+  response: PatchmarkExternalParticipantResponse;
+  reviewBatchId: string;
+}): void {
+  if (
+    response.project_id !== projectId ||
+    response.document_id !== documentId ||
+    response.review_batch_id !== reviewBatchId
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. The external participant response is outside the allowed project, document, or Review Batch scope."
+    );
+  }
+
+  const referencedExistingCommentIds = [
+    ...response.replies.map((reply) => reply.comment_id),
+    ...response.open_questions.map((question) => question.comment_id),
+    ...response.patch_proposals.flatMap((patch) =>
+      patch.comment_target.kind === "existing_comment"
+        ? [patch.comment_target.comment_id]
+        : []
+    )
+  ];
+  const unknownCommentIds = Array.from(
+    new Set(
+      referencedExistingCommentIds.filter(
+        (commentId) => !allowedExistingCommentIds.has(commentId)
+      )
+    )
+  );
+  if (unknownCommentIds.length > 0) {
+    throw new Error(
+      `Invalid Patchmark response. Existing comment target${
+        unknownCommentIds.length === 1 ? "" : "s"
+      } outside the allowed response scope: ${unknownCommentIds.join(", ")}.`
+    );
+  }
+}
+
+function normalizeCommonResponseFields({
+  changedStringPaths,
+  parsedResponse,
+  protocolVersion
+}: {
+  changedStringPaths: Set<string>;
+  parsedResponse: Record<string, unknown>;
+  protocolVersion: 1 | 2 | 3;
+}): Omit<
+  PatchmarkLegacyCommentReplyImport,
+  "patch_proposals" | "protocol" | "protocol_version"
+> {
+  return {
     review_batch_id:
       typeof parsedResponse.review_batch_id === "string"
         ? parsedResponse.review_batch_id
@@ -159,44 +317,729 @@ export function parsePatchmarkCommentReplyImport(
     summary:
       typeof parsedResponse.summary === "string"
         ? normalizeOptionalProtocolTextField({
-            changedStringPaths: normalization.changedStringPaths,
+            changedStringPaths,
             fieldName: "summary",
             value: parsedResponse.summary
           })
         : undefined,
-    sources: normalizeImportedSources(parsedResponse.sources, "sources"),
-    replies: parsedResponse.replies.map((reply, index) =>
-      normalizeImportedReply(reply, index, normalization.changedStringPaths)
+    sources: normalizeImportedSources(
+      parsedResponse.sources,
+      "sources",
+      protocolVersion === 3
+        ? PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+        : undefined
     ),
-    patch_proposals:
-      parsedResponse.patch_proposals.map((patchProposal, index) =>
-        normalizeImportedPatchProposal(
-          patchProposal,
-          index,
-          normalization.changedStringPaths,
-          protocolVersion
-        )
-      ),
-    open_questions:
-      parsedResponse.open_questions.map((openQuestion, index) =>
+    replies: (parsedResponse.replies as unknown[]).map((reply, index) =>
+      normalizeImportedReply(
+        reply,
+        index,
+        changedStringPaths,
+        protocolVersion === 3
+      )
+    ),
+    open_questions: (parsedResponse.open_questions as unknown[]).map(
+      (openQuestion, index) =>
         normalizeImportedOpenQuestion(
           openQuestion,
           index,
-          normalization.changedStringPaths
+          changedStringPaths,
+          protocolVersion === 3
         )
-      )
+    )
   };
+}
 
-  validateConsistentRepeatedSourceDates(
-    collectImportedSources(normalizedResponse)
+function validateExternalResponseEnvelope(
+  response: Record<string, unknown>,
+  rawInput: string
+): asserts response is Record<string, unknown> & {
+  document_id: string;
+  new_comments: unknown[];
+  patch_proposals: unknown[];
+  project_id: string;
+  review_batch_id: string;
+} {
+  assertExactObjectKeys(
+    response,
+    [
+      "protocol",
+      "protocol_version",
+      "review_batch_id",
+      "project_id",
+      "document_id",
+      "summary",
+      "sources",
+      "replies",
+      "patch_proposals",
+      "open_questions",
+      "new_comments"
+    ],
+    "response"
   );
-  validatePatchDependencyGraph(normalizedResponse);
-  validatePatchProposalVisibleReferenceDates(
-    normalizedResponse.patch_proposals,
-    protocolVersion
-  );
+  if (
+    typeof response.review_batch_id !== "string" ||
+    typeof response.project_id !== "string" ||
+    typeof response.document_id !== "string" ||
+    !Array.isArray(response.new_comments) ||
+    (response.summary !== undefined && typeof response.summary !== "string")
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. Protocol version 3 requires review_batch_id, project_id, document_id, and a new_comments array."
+    );
+  }
+  assertBoundedIdentity(response.review_batch_id, "review_batch_id");
+  assertBoundedIdentity(response.project_id, "project_id");
+  assertBoundedIdentity(response.document_id, "document_id");
+  if (!response.review_batch_id.startsWith("review_batch_")) {
+    throw new Error(
+      "Invalid Patchmark response. review_batch_id must preserve the exported Review Batch identity."
+    );
+  }
+  if (
+    new TextEncoder().encode(rawInput).byteLength >
+    PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_response_bytes
+  ) {
+    throw new Error(
+      `Invalid Patchmark response. Protocol version 3 is limited to ${PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_response_bytes} UTF-8 bytes.`
+    );
+  }
+  for (const [fieldName, value] of [
+    ["new_comments", response.new_comments],
+    ["replies", response.replies],
+    ["patch_proposals", response.patch_proposals],
+    ["open_questions", response.open_questions]
+  ] as const) {
+    if (
+      !Array.isArray(value) ||
+      value.length > PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_array_items
+    ) {
+      throw new Error(
+        `Invalid Patchmark response. ${fieldName} must contain at most ${PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_array_items} items.`
+      );
+    }
+  }
+  if (typeof response.summary === "string") {
+    assertBoundedString(
+      response.summary,
+      "summary",
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length,
+      { allowEmpty: true }
+    );
+  }
+}
 
-  return normalizedResponse;
+function normalizeExternalComment({
+  changedStringPaths,
+  comment,
+  documentId,
+  index
+}: {
+  changedStringPaths: Set<string>;
+  comment: unknown;
+  documentId: string;
+  index: number;
+}): PatchmarkExternalComment {
+  const commentPath = `new_comments[${index}]`;
+  assertExactObjectKeys(
+    comment,
+    ["local_ref", "document_id", "type", "anchor", "comment"],
+    commentPath
+  );
+  if (
+    typeof comment.local_ref !== "string" ||
+    typeof comment.document_id !== "string" ||
+    typeof comment.comment !== "string" ||
+    !isCommentType(comment.type)
+  ) {
+    throw new Error(
+      `Invalid Patchmark response. ${commentPath} needs local_ref, document_id, type, anchor, and comment.`
+    );
+  }
+  assertResponseLocalRef(comment.local_ref, `${commentPath}.local_ref`);
+  assertBoundedIdentity(comment.document_id, `${commentPath}.document_id`);
+  if (comment.document_id !== documentId) {
+    throw new Error(
+      `Invalid Patchmark response. ${commentPath}.document_id is outside the response document scope.`
+    );
+  }
+
+  return {
+    local_ref: comment.local_ref,
+    document_id: comment.document_id,
+    type: comment.type,
+    anchor: normalizeExternalCommentAnchor(
+      comment.anchor,
+      `${commentPath}.anchor`
+    ),
+    comment: validateBoundedProtocolTextField(
+      normalizeRequiredProtocolField({
+        changedStringPaths,
+        fieldName: `${commentPath}.comment`,
+        value: comment.comment
+      }),
+      `${commentPath}.comment`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length,
+      { allowEmpty: false }
+    )
+  };
+}
+
+function normalizeExternalCommentAnchor(
+  anchor: unknown,
+  anchorPath: string
+): PatchmarkExternalCommentAnchor {
+  if (!isRecord(anchor) || typeof anchor.kind !== "string") {
+    throw new Error(`Invalid Patchmark response. ${anchorPath} is malformed.`);
+  }
+
+  if (anchor.kind === "document") {
+    assertExactObjectKeys(anchor, ["kind"], anchorPath);
+    return { kind: "document" };
+  }
+
+  if (anchor.kind === "section") {
+    assertExactObjectKeys(
+      anchor,
+      ["kind", "heading", "heading_level", "heading_line", "heading_path"],
+      anchorPath
+    );
+    if (typeof anchor.heading !== "string") {
+      throw new Error(`Invalid Patchmark response. ${anchorPath}.heading is required.`);
+    }
+    const heading = assertBoundedString(
+      anchor.heading,
+      `${anchorPath}.heading`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_heading_length,
+      { allowEmpty: false }
+    );
+    const headingLevel = normalizeOptionalBoundedInteger(
+      anchor.heading_level,
+      `${anchorPath}.heading_level`,
+      6
+    );
+    if (headingLevel !== undefined && headingLevel < 1) {
+      throw new Error(
+        `Invalid Patchmark response. ${anchorPath}.heading_level must be between 1 and 6.`
+      );
+    }
+    return {
+      kind: "section",
+      heading,
+      heading_level: headingLevel,
+      heading_line: normalizeOptionalBoundedInteger(
+        anchor.heading_line,
+        `${anchorPath}.heading_line`
+      ),
+      heading_path: normalizeOptionalHeadingPath(
+        anchor.heading_path,
+        `${anchorPath}.heading_path`
+      )
+    };
+  }
+
+  if (anchor.kind !== "selected_text") {
+    throw new Error(`Invalid Patchmark response. ${anchorPath}.kind is unsupported.`);
+  }
+  assertExactObjectKeys(
+    anchor,
+    [
+      "kind",
+      "selected_text",
+      "selected_text_hash",
+      "anchor_context",
+      "markdown_start_offset",
+      "markdown_end_offset",
+      "context_before",
+      "context_after",
+      "containing_heading",
+      "containing_heading_level",
+      "containing_heading_line",
+      "containing_heading_path",
+      "anchor_source",
+      "fallback_section_start_offset",
+      "fallback_section_end_offset",
+      "anchor_text",
+      "anchor_text_source",
+      "anchor_text_hash"
+    ],
+    anchorPath
+  );
+  if (typeof anchor.selected_text !== "string") {
+    throw new Error(
+      `Invalid Patchmark response. ${anchorPath}.selected_text is required.`
+    );
+  }
+  const markdownStartOffset = normalizeOptionalBoundedInteger(
+    anchor.markdown_start_offset,
+    `${anchorPath}.markdown_start_offset`
+  );
+  const markdownEndOffset = normalizeOptionalBoundedInteger(
+    anchor.markdown_end_offset,
+    `${anchorPath}.markdown_end_offset`
+  );
+  assertOptionalRange(
+    markdownStartOffset,
+    markdownEndOffset,
+    `${anchorPath}.markdown`
+  );
+  const fallbackStartOffset = normalizeOptionalBoundedInteger(
+    anchor.fallback_section_start_offset,
+    `${anchorPath}.fallback_section_start_offset`
+  );
+  const fallbackEndOffset = normalizeOptionalBoundedInteger(
+    anchor.fallback_section_end_offset,
+    `${anchorPath}.fallback_section_end_offset`
+  );
+  assertOptionalRange(
+    fallbackStartOffset,
+    fallbackEndOffset,
+    `${anchorPath}.fallback_section`
+  );
+  const containingHeadingLevel = normalizeOptionalBoundedInteger(
+    anchor.containing_heading_level,
+    `${anchorPath}.containing_heading_level`,
+    6
+  );
+  if (containingHeadingLevel !== undefined && containingHeadingLevel < 1) {
+    throw new Error(
+      `Invalid Patchmark response. ${anchorPath}.containing_heading_level must be between 1 and 6.`
+    );
+  }
+  if (
+    anchor.anchor_source !== undefined &&
+    !["visual", "markdown", "patch"].includes(anchor.anchor_source as string)
+  ) {
+    throw new Error(
+      `Invalid Patchmark response. ${anchorPath}.anchor_source is invalid.`
+    );
+  }
+  if (
+    anchor.anchor_text_source !== undefined &&
+    !["selected", "expanded_sentence", "expanded_block"].includes(
+      anchor.anchor_text_source as string
+    )
+  ) {
+    throw new Error(
+      `Invalid Patchmark response. ${anchorPath}.anchor_text_source is invalid.`
+    );
+  }
+
+  return {
+    kind: "selected_text",
+    selected_text: assertBoundedString(
+      anchor.selected_text,
+      `${anchorPath}.selected_text`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_selected_text_length,
+      { allowEmpty: false }
+    ),
+    selected_text_hash: normalizeOptionalBoundedString(
+      anchor.selected_text_hash,
+      `${anchorPath}.selected_text_hash`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_short_text_length
+    ),
+    anchor_context: normalizeOptionalAnchorContext(
+      anchor.anchor_context,
+      `${anchorPath}.anchor_context`
+    ),
+    markdown_start_offset: markdownStartOffset,
+    markdown_end_offset: markdownEndOffset,
+    context_before: normalizeOptionalBoundedString(
+      anchor.context_before,
+      `${anchorPath}.context_before`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_context_length,
+      { allowEmpty: true }
+    ),
+    context_after: normalizeOptionalBoundedString(
+      anchor.context_after,
+      `${anchorPath}.context_after`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_context_length,
+      { allowEmpty: true }
+    ),
+    containing_heading: normalizeOptionalBoundedString(
+      anchor.containing_heading,
+      `${anchorPath}.containing_heading`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_heading_length
+    ),
+    containing_heading_level: containingHeadingLevel,
+    containing_heading_line: normalizeOptionalBoundedInteger(
+      anchor.containing_heading_line,
+      `${anchorPath}.containing_heading_line`
+    ),
+    containing_heading_path: normalizeOptionalHeadingPath(
+      anchor.containing_heading_path,
+      `${anchorPath}.containing_heading_path`
+    ),
+    anchor_source: anchor.anchor_source as
+      | "visual"
+      | "markdown"
+      | "patch"
+      | undefined,
+    fallback_section_start_offset: fallbackStartOffset,
+    fallback_section_end_offset: fallbackEndOffset,
+    anchor_text: normalizeOptionalBoundedString(
+      anchor.anchor_text,
+      `${anchorPath}.anchor_text`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_selected_text_length
+    ),
+    anchor_text_source: anchor.anchor_text_source as
+      | "selected"
+      | "expanded_sentence"
+      | "expanded_block"
+      | undefined,
+    anchor_text_hash: normalizeOptionalBoundedString(
+      anchor.anchor_text_hash,
+      `${anchorPath}.anchor_text_hash`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_short_text_length
+    )
+  };
+}
+
+function normalizeOptionalAnchorContext(
+  context: unknown,
+  contextPath: string
+): PatchmarkSelectedTextAnchorContext | undefined {
+  if (context === undefined) {
+    return undefined;
+  }
+  assertExactObjectKeys(
+    context,
+    [
+      "kind",
+      "plain_text",
+      "markdown_text",
+      "selected_start_in_context",
+      "selected_end_in_context",
+      "context_hash",
+      "markdown_start_offset",
+      "markdown_end_offset",
+      "table_index",
+      "table_row_index",
+      "table_cell_index",
+      "table_row_start_offset",
+      "table_row_end_offset",
+      "table_cell_start_offset",
+      "table_cell_end_offset"
+    ],
+    contextPath
+  );
+  if (
+    !isAnchorContextKind(context.kind) ||
+    typeof context.plain_text !== "string"
+  ) {
+    throw new Error(`Invalid Patchmark response. ${contextPath} is malformed.`);
+  }
+  const selectedStart = normalizeOptionalBoundedInteger(
+    context.selected_start_in_context,
+    `${contextPath}.selected_start_in_context`
+  );
+  const selectedEnd = normalizeOptionalBoundedInteger(
+    context.selected_end_in_context,
+    `${contextPath}.selected_end_in_context`
+  );
+  assertOptionalRange(selectedStart, selectedEnd, `${contextPath}.selected`);
+  if (selectedEnd !== undefined && selectedEnd > context.plain_text.length) {
+    throw new Error(
+      `Invalid Patchmark response. ${contextPath} selected range exceeds plain_text.`
+    );
+  }
+  const markdownStart = normalizeOptionalBoundedInteger(
+    context.markdown_start_offset,
+    `${contextPath}.markdown_start_offset`
+  );
+  const markdownEnd = normalizeOptionalBoundedInteger(
+    context.markdown_end_offset,
+    `${contextPath}.markdown_end_offset`
+  );
+  assertOptionalRange(markdownStart, markdownEnd, `${contextPath}.markdown`);
+  const tableRowStart = normalizeOptionalBoundedInteger(
+    context.table_row_start_offset,
+    `${contextPath}.table_row_start_offset`
+  );
+  const tableRowEnd = normalizeOptionalBoundedInteger(
+    context.table_row_end_offset,
+    `${contextPath}.table_row_end_offset`
+  );
+  assertOptionalRange(tableRowStart, tableRowEnd, `${contextPath}.table_row`);
+  const tableCellStart = normalizeOptionalBoundedInteger(
+    context.table_cell_start_offset,
+    `${contextPath}.table_cell_start_offset`
+  );
+  const tableCellEnd = normalizeOptionalBoundedInteger(
+    context.table_cell_end_offset,
+    `${contextPath}.table_cell_end_offset`
+  );
+  assertOptionalRange(tableCellStart, tableCellEnd, `${contextPath}.table_cell`);
+
+  return {
+    kind: context.kind,
+    plain_text: assertBoundedString(
+      context.plain_text,
+      `${contextPath}.plain_text`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_context_length,
+      { allowEmpty: false }
+    ),
+    markdown_text: normalizeOptionalBoundedString(
+      context.markdown_text,
+      `${contextPath}.markdown_text`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_context_length,
+      { allowEmpty: true }
+    ),
+    selected_start_in_context: selectedStart,
+    selected_end_in_context: selectedEnd,
+    context_hash: normalizeOptionalBoundedString(
+      context.context_hash,
+      `${contextPath}.context_hash`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_short_text_length
+    ),
+    markdown_start_offset: markdownStart,
+    markdown_end_offset: markdownEnd,
+    table_index: normalizeOptionalBoundedInteger(
+      context.table_index,
+      `${contextPath}.table_index`
+    ),
+    table_row_index: normalizeOptionalBoundedInteger(
+      context.table_row_index,
+      `${contextPath}.table_row_index`
+    ),
+    table_cell_index: normalizeOptionalBoundedInteger(
+      context.table_cell_index,
+      `${contextPath}.table_cell_index`
+    ),
+    table_row_start_offset: tableRowStart,
+    table_row_end_offset: tableRowEnd,
+    table_cell_start_offset: tableCellStart,
+    table_cell_end_offset: tableCellEnd
+  };
+}
+
+function normalizeResponseCommentTarget(
+  target: unknown,
+  targetPath: string
+): PatchmarkResponseCommentTarget {
+  if (!isRecord(target) || typeof target.kind !== "string") {
+    throw new Error(`Invalid Patchmark response. ${targetPath} is malformed.`);
+  }
+  if (target.kind === "existing_comment") {
+    assertExactObjectKeys(target, ["kind", "comment_id"], targetPath);
+    if (typeof target.comment_id !== "string") {
+      throw new Error(
+        `Invalid Patchmark response. ${targetPath}.comment_id is required.`
+      );
+    }
+    assertBoundedIdentity(target.comment_id, `${targetPath}.comment_id`);
+    return { kind: "existing_comment", comment_id: target.comment_id };
+  }
+  if (target.kind === "response_comment") {
+    assertExactObjectKeys(target, ["kind", "local_ref"], targetPath);
+    if (typeof target.local_ref !== "string") {
+      throw new Error(
+        `Invalid Patchmark response. ${targetPath}.local_ref is required.`
+      );
+    }
+    assertResponseLocalRef(target.local_ref, `${targetPath}.local_ref`);
+    return { kind: "response_comment", local_ref: target.local_ref };
+  }
+  throw new Error(`Invalid Patchmark response. ${targetPath}.kind is unsupported.`);
+}
+
+function validateExternalResponseLocalReferences(
+  response: PatchmarkExternalParticipantResponse
+): void {
+  const localRefs = new Set<string>();
+  for (const comment of response.new_comments) {
+    if (localRefs.has(comment.local_ref)) {
+      throw new Error(
+        `Invalid Patchmark response. Duplicate response-local comment reference: ${comment.local_ref}.`
+      );
+    }
+    localRefs.add(comment.local_ref);
+  }
+  for (const patch of response.patch_proposals) {
+    if (
+      patch.comment_target.kind === "response_comment" &&
+      !localRefs.has(patch.comment_target.local_ref)
+    ) {
+      throw new Error(
+        `Invalid Patchmark response. Patch ${patch.patch_key} references unknown response-local comment ${patch.comment_target.local_ref}.`
+      );
+    }
+  }
+}
+
+function assertExactObjectKeys(
+  value: unknown,
+  allowedKeys: readonly string[],
+  path: string
+): asserts value is Record<string, unknown> {
+  if (!isRecord(value)) {
+    throw new Error(`Invalid Patchmark response. ${path} must be an object.`);
+  }
+  const allowed = new Set(allowedKeys);
+  const unknownKeys = Object.keys(value).filter((key) => !allowed.has(key));
+  if (unknownKeys.length > 0) {
+    throw new Error(
+      `Invalid Patchmark response. ${path} contains unsupported field${
+        unknownKeys.length === 1 ? "" : "s"
+      }: ${unknownKeys.join(", ")}.`
+    );
+  }
+}
+
+function assertResponseLocalRef(value: string, path: string): void {
+  if (
+    value.length === 0 ||
+    value.length > PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_local_ref_length ||
+    !RESPONSE_LOCAL_COMMENT_REF_PATTERN.test(value) ||
+    value.startsWith("pm-") ||
+    value.startsWith("patchmark-")
+  ) {
+    throw new Error(
+      `Invalid Patchmark response. ${path} must be a lowercase response-local reference of at most ${PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_local_ref_length} characters and must not use a Patchmark ID prefix.`
+    );
+  }
+}
+
+function assertBoundedIdentity(value: string, path: string): string {
+  return assertBoundedString(
+    value,
+    path,
+    PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_identity_length,
+    { allowEmpty: false, rejectControlCharacters: true, requireTrimmed: true }
+  );
+}
+
+function assertBoundedString(
+  value: string,
+  path: string,
+  maximumLength: number,
+  options: {
+    allowEmpty?: boolean;
+    rejectControlCharacters?: boolean;
+    requireTrimmed?: boolean;
+  } = {}
+): string {
+  if (
+    value.length > maximumLength ||
+    (!options.allowEmpty && value.trim().length === 0) ||
+    (options.requireTrimmed && value !== value.trim()) ||
+    (options.rejectControlCharacters && CONTROL_CHARACTER_PATTERN.test(value))
+  ) {
+    throw new Error(
+      `Invalid Patchmark response. ${path} exceeds its bounds or has invalid text.`
+    );
+  }
+  return value;
+}
+
+function validateBoundedProtocolTextField(
+  value: string,
+  fieldName: string,
+  maximumLength: number,
+  options: { allowEmpty?: boolean } = {}
+): string {
+  assertBoundedString(value, fieldName, maximumLength, options);
+  return validateProtocolTextField(value, fieldName);
+}
+
+function normalizeOptionalBoundedString(
+  value: unknown,
+  path: string,
+  maximumLength: number,
+  options: { allowEmpty?: boolean } = {}
+): string | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (typeof value !== "string") {
+    throw new Error(`Invalid Patchmark response. ${path} must be a string.`);
+  }
+  return assertBoundedString(value, path, maximumLength, options);
+}
+
+function normalizeOptionalBoundedInteger(
+  value: unknown,
+  path: string,
+  maximum: number = PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_offset
+): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || (value as number) < 0 || (value as number) > maximum) {
+    throw new Error(
+      `Invalid Patchmark response. ${path} must be a bounded non-negative integer.`
+    );
+  }
+  return value as number;
+}
+
+function assertOptionalRange(
+  start: number | undefined,
+  end: number | undefined,
+  path: string
+): void {
+  if ((start === undefined) !== (end === undefined) || (start !== undefined && end! < start)) {
+    throw new Error(
+      `Invalid Patchmark response. ${path} start/end offsets must be a complete ordered pair.`
+    );
+  }
+}
+
+function normalizeOptionalHeadingPath(
+  value: unknown,
+  path: string
+): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.length > PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_heading_path_items
+  ) {
+    throw new Error(`Invalid Patchmark response. ${path} is malformed.`);
+  }
+  return value.map((heading, index) => {
+    if (typeof heading !== "string") {
+      throw new Error(
+        `Invalid Patchmark response. ${path}[${index}] must be a string.`
+      );
+    }
+    return assertBoundedString(
+      heading,
+      `${path}[${index}]`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_heading_length,
+      { allowEmpty: false }
+    );
+  });
+}
+
+function isCommentType(value: unknown): value is PatchmarkExternalComment["type"] {
+  return (
+    typeof value === "string" &&
+    ["note", "question", "risk", "research_needed", "decision_needed"].includes(
+      value
+    )
+  );
+}
+
+function isAnchorContextKind(
+  value: unknown
+): value is NonNullable<
+  Extract<PatchmarkExternalCommentAnchor, { kind: "selected_text" }>["anchor_context"]
+>["kind"] {
+  return (
+    typeof value === "string" &&
+    [
+      "sentence",
+      "paragraph",
+      "heading",
+      "list_item",
+      "table_cell",
+      "blockquote",
+      "block",
+      "section"
+    ].includes(value)
+  );
 }
 
 export function normalizeSourceChatUrl(sourceChatUrl: string): string | undefined {
@@ -337,7 +1180,8 @@ function stripMarkdownJsonFence(rawInput: string): string {
 function normalizeImportedReply(
   reply: unknown,
   index: number,
-  changedStringPaths: Set<string>
+  changedStringPaths: Set<string>,
+  bounded = false
 ): PatchmarkCommentReplyImport["replies"][number] {
   if (
     !isRecord(reply) ||
@@ -355,6 +1199,28 @@ function normalizeImportedReply(
     reply.reply_sources === undefined
       ? `${replyPath}.sources`
       : `${replyPath}.reply_sources`;
+  if (bounded) {
+    assertExactObjectKeys(
+      reply,
+      [
+        "comment_id",
+        "reply",
+        "reply_sources",
+        "suggested_user_action",
+        "sources"
+      ],
+      replyPath
+    );
+    assertBoundedIdentity(reply.comment_id, `${replyPath}.comment_id`);
+    if (
+      reply.suggested_user_action !== undefined &&
+      !isSuggestedUserAction(reply.suggested_user_action)
+    ) {
+      throw new Error(
+        `Invalid Patchmark response. ${replyPath}.suggested_user_action is invalid.`
+      );
+    }
+  }
 
   return {
     comment_id: normalizeRequiredProtocolField({
@@ -362,22 +1228,41 @@ function normalizeImportedReply(
       fieldName: `${replyPath}.comment_id`,
       value: reply.comment_id
     }),
-    reply: validateProtocolTextField(
+    reply: bounded
+      ? validateBoundedProtocolTextField(
+          normalizeRequiredProtocolField({
+            changedStringPaths,
+            fieldName: `${replyPath}.reply`,
+            value: reply.reply
+          }),
+          `${replyPath}.reply`,
+          PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length
+        )
+      : validateProtocolTextField(
       normalizeRequiredProtocolField({
         changedStringPaths,
         fieldName: `${replyPath}.reply`,
         value: reply.reply
       }),
-      `${replyPath}.reply`
-    ),
+          `${replyPath}.reply`
+        ),
     reply_sources: normalizeImportedSources(
       replySourcesInput,
-      replySourcesPath
+      replySourcesPath,
+      bounded
+        ? PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+        : undefined
     ),
     suggested_user_action: isSuggestedUserAction(reply.suggested_user_action)
       ? reply.suggested_user_action
       : undefined,
-    sources: normalizeImportedSources(reply.sources, `${replyPath}.sources`)
+    sources: normalizeImportedSources(
+      reply.sources,
+      `${replyPath}.sources`,
+      bounded
+        ? PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+        : undefined
+    )
   };
 }
 
@@ -386,10 +1271,11 @@ function normalizeImportedPatchProposal(
   index: number,
   changedStringPaths: Set<string>,
   protocolVersion: 1 | 2
-): PatchmarkCommentReplyImport["patch_proposals"][number] {
+): PatchmarkLegacyPatchProposal {
   if (
     !isRecord(patchProposal) ||
     typeof patchProposal.comment_id !== "string" ||
+    patchProposal.comment_target !== undefined ||
     typeof patchProposal.original_text !== "string" ||
     typeof patchProposal.suggested_text !== "string" ||
     typeof patchProposal.reason !== "string"
@@ -480,6 +1366,162 @@ function normalizeImportedPatchProposal(
   };
 }
 
+function normalizeExternalPatchProposal(
+  patchProposal: unknown,
+  index: number,
+  changedStringPaths: Set<string>
+): PatchmarkExternalPatchProposal {
+  const patchProposalPath = `patch_proposals[${index}]`;
+  assertExactObjectKeys(
+    patchProposal,
+    [
+      "patch_key",
+      "depends_on",
+      "comment_target",
+      "display_title",
+      "title",
+      "target_heading",
+      "original_text",
+      "suggested_text",
+      "suggested_text_sources",
+      "reason",
+      "reason_sources",
+      "risk",
+      "risk_sources",
+      "sources"
+    ],
+    patchProposalPath
+  );
+  if (
+    typeof patchProposal.original_text !== "string" ||
+    typeof patchProposal.suggested_text !== "string" ||
+    typeof patchProposal.reason !== "string" ||
+    (patchProposal.display_title !== undefined &&
+      typeof patchProposal.display_title !== "string") ||
+    (patchProposal.title !== undefined &&
+      typeof patchProposal.title !== "string") ||
+    (patchProposal.target_heading !== undefined &&
+      typeof patchProposal.target_heading !== "string") ||
+    (patchProposal.risk !== undefined && typeof patchProposal.risk !== "string")
+  ) {
+    throw new Error(
+      "Invalid Patchmark response. Each protocol-v3 patch proposal needs comment_target, original_text, suggested_text, and reason."
+    );
+  }
+
+  const reasonSourcesInput =
+    patchProposal.reason_sources ?? patchProposal.sources;
+  const reasonSourcesPath =
+    patchProposal.reason_sources === undefined
+      ? `${patchProposalPath}.sources`
+      : `${patchProposalPath}.reason_sources`;
+  const originalText = normalizeRequiredProtocolField({
+    changedStringPaths,
+    fieldName: `${patchProposalPath}.original_text`,
+    value: patchProposal.original_text
+  });
+  const suggestedText = normalizeRequiredProtocolField({
+    changedStringPaths,
+    fieldName: `${patchProposalPath}.suggested_text`,
+    value: patchProposal.suggested_text
+  });
+
+  if (
+    containsReservedPatchmarkTableMarker(originalText) ||
+    containsReservedPatchmarkTableMarker(suggestedText)
+  ) {
+    throw new Error(RESERVED_PATCHMARK_TABLE_MARKER_ERROR);
+  }
+  assertBoundedString(
+    originalText,
+    `${patchProposalPath}.original_text`,
+    PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length,
+    { allowEmpty: false }
+  );
+  assertBoundedString(
+    suggestedText,
+    `${patchProposalPath}.suggested_text`,
+    PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length,
+    { allowEmpty: true }
+  );
+  const dependencyFields = normalizePatchDependencyFields({
+    patchProposal,
+    patchProposalPath,
+    protocolVersion: 3
+  });
+
+  const displayTitle = normalizeImportedPatchDisplayTitle(
+    patchProposal,
+    patchProposalPath
+  );
+  if (displayTitle !== undefined) {
+    assertBoundedString(
+      displayTitle,
+      `${patchProposalPath}.display_title`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_short_text_length,
+      { allowEmpty: false }
+    );
+  }
+
+  return {
+    patch_key: dependencyFields.patch_key as string,
+    depends_on: dependencyFields.depends_on as string[],
+    comment_target: normalizeResponseCommentTarget(
+      patchProposal.comment_target,
+      `${patchProposalPath}.comment_target`
+    ),
+    display_title: displayTitle,
+    target_heading:
+      typeof patchProposal.target_heading === "string"
+        ? assertBoundedString(
+            patchProposal.target_heading,
+            `${patchProposalPath}.target_heading`,
+            PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_heading_length,
+            { allowEmpty: false }
+          )
+        : undefined,
+    original_text: originalText,
+    suggested_text: suggestedText,
+    suggested_text_sources: normalizeImportedSources(
+      patchProposal.suggested_text_sources,
+      `${patchProposalPath}.suggested_text_sources`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+    ),
+    reason: validateBoundedProtocolTextField(
+      normalizeRequiredProtocolField({
+        changedStringPaths,
+        fieldName: `${patchProposalPath}.reason`,
+        value: patchProposal.reason
+      }),
+      `${patchProposalPath}.reason`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length
+    ),
+    reason_sources: normalizeImportedSources(
+      reasonSourcesInput,
+      reasonSourcesPath,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+    ),
+    risk:
+      typeof patchProposal.risk === "string"
+        ? validateBoundedProtocolTextField(
+            patchProposal.risk,
+            `${patchProposalPath}.risk`,
+            PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length
+          )
+        : undefined,
+    risk_sources: normalizeImportedSources(
+      patchProposal.risk_sources,
+      `${patchProposalPath}.risk_sources`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+    ),
+    sources: normalizeImportedSources(
+      patchProposal.sources,
+      `${patchProposalPath}.sources`,
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+    )
+  };
+}
+
 function normalizePatchDependencyFields({
   patchProposal,
   patchProposalPath,
@@ -487,7 +1529,7 @@ function normalizePatchDependencyFields({
 }: {
   patchProposal: Record<string, unknown>;
   patchProposalPath: string;
-  protocolVersion: 1 | 2;
+  protocolVersion: 1 | 2 | 3;
 }): Pick<
   PatchmarkCommentReplyImport["patch_proposals"][number],
   "depends_on" | "patch_key"
@@ -523,8 +1565,30 @@ function normalizePatchDependencyFields({
   ) {
     throw new PatchDependencyValidationError({
       code: "unsupported_dependency_protocol",
-      message: `Invalid dependency fields at ${patchProposalPath}. Protocol version 2 requires a non-empty patch_key and a string depends_on array.`
+      message: `Invalid dependency fields at ${patchProposalPath}. Protocol version ${protocolVersion} requires a non-empty patch_key and a string depends_on array.`
     });
+  }
+
+  if (protocolVersion === 3) {
+    assertResponseLocalRef(
+      patchProposal.patch_key,
+      `${patchProposalPath}.patch_key`
+    );
+    if (
+      patchProposal.depends_on.length >
+      PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_array_items
+    ) {
+      throw new PatchDependencyValidationError({
+        code: "unsupported_dependency_protocol",
+        message: `Invalid dependency fields at ${patchProposalPath}. Too many dependency references.`
+      });
+    }
+    patchProposal.depends_on.forEach((dependency, dependencyIndex) =>
+      assertResponseLocalRef(
+        dependency as string,
+        `${patchProposalPath}.depends_on[${dependencyIndex}]`
+      )
+    );
   }
 
   return {
@@ -623,7 +1687,8 @@ function normalizeSourceTextField(
 
 function normalizeImportedSources(
   sources: unknown,
-  arrayPath: string
+  arrayPath: string,
+  maximumItems?: number
 ): PatchmarkSourceReference[] | undefined {
   if (sources === undefined) {
     return undefined;
@@ -632,6 +1697,11 @@ function normalizeImportedSources(
   if (!Array.isArray(sources)) {
     throw new Error(
       `Invalid source array at ${arrayPath}. Sources must be arrays of source objects.`
+    );
+  }
+  if (maximumItems !== undefined && sources.length > maximumItems) {
+    throw new Error(
+      `Invalid source array at ${arrayPath}. At most ${maximumItems} sources are allowed.`
     );
   }
 
@@ -767,11 +1837,11 @@ function collectImportedSources(
 
 function validatePatchProposalVisibleReferenceDates(
   patchProposals: PatchmarkCommentReplyImport["patch_proposals"],
-  protocolVersion: 1 | 2
+  protocolVersion: 1 | 2 | 3
 ) {
   for (const patchProposal of patchProposals) {
     if (
-      protocolVersion === 2 &&
+      protocolVersion >= 2 &&
       (patchProposal.depends_on?.length ?? 0) > 0
     ) {
       continue;
@@ -785,7 +1855,7 @@ function validatePatchProposalVisibleReferenceDates(
       });
     } catch (error) {
       if (
-        protocolVersion !== 2 ||
+        protocolVersion < 2 ||
         !(error instanceof SourceReferenceValidationError)
       ) {
         throw error;
@@ -811,7 +1881,8 @@ function validatePatchProposalVisibleReferenceDates(
 function normalizeImportedOpenQuestion(
   openQuestion: unknown,
   index: number,
-  changedStringPaths: Set<string>
+  changedStringPaths: Set<string>,
+  bounded = false
 ): PatchmarkCommentReplyImport["open_questions"][number] {
   if (
     !isRecord(openQuestion) ||
@@ -824,6 +1895,17 @@ function normalizeImportedOpenQuestion(
   }
 
   const openQuestionPath = `open_questions[${index}]`;
+  if (bounded) {
+    assertExactObjectKeys(
+      openQuestion,
+      ["comment_id", "question", "question_sources"],
+      openQuestionPath
+    );
+    assertBoundedIdentity(
+      openQuestion.comment_id,
+      `${openQuestionPath}.comment_id`
+    );
+  }
 
   return {
     comment_id: normalizeRequiredProtocolField({
@@ -831,17 +1913,30 @@ function normalizeImportedOpenQuestion(
       fieldName: `${openQuestionPath}.comment_id`,
       value: openQuestion.comment_id
     }),
-    question: validateProtocolTextField(
-      normalizeRequiredProtocolField({
-        changedStringPaths,
-        fieldName: `${openQuestionPath}.question`,
-        value: openQuestion.question
-      }),
-      `${openQuestionPath}.question`
-    ),
+    question: bounded
+      ? validateBoundedProtocolTextField(
+          normalizeRequiredProtocolField({
+            changedStringPaths,
+            fieldName: `${openQuestionPath}.question`,
+            value: openQuestion.question
+          }),
+          `${openQuestionPath}.question`,
+          PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_body_length
+        )
+      : validateProtocolTextField(
+          normalizeRequiredProtocolField({
+            changedStringPaths,
+            fieldName: `${openQuestionPath}.question`,
+            value: openQuestion.question
+          }),
+          `${openQuestionPath}.question`
+        ),
     question_sources: normalizeImportedSources(
       openQuestion.question_sources,
-      `${openQuestionPath}.question_sources`
+      `${openQuestionPath}.question_sources`,
+      bounded
+        ? PATCHMARK_EXTERNAL_RESPONSE_LIMITS.maximum_sources_per_field
+        : undefined
     )
   };
 }
@@ -872,5 +1967,5 @@ function isSuggestedUserAction(
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null;
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }

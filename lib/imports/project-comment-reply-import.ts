@@ -2,6 +2,11 @@ import {
   getPatchDisplayTitleInfo,
   normalizePatchDisplayTitleCandidate
 } from "../patches/patch-display-title.ts";
+import { admitExternalCommentAnchor } from "../comments/external-comment-admission.ts";
+import {
+  allocatePatchmarkCommentIds,
+  createNativePatchmarkComment
+} from "../comments/native-comment.ts";
 import {
   PatchDependencyValidationError,
   validateImportedPatchDependencySimulation
@@ -20,6 +25,9 @@ import type {
   PatchmarkComment,
   PatchmarkCommentReplyImport,
   PatchmarkCommentThreadEntry,
+  PatchmarkExternalParticipantResponse,
+  PatchmarkLegacyCommentReplyImport,
+  PatchmarkLegacyPatchProposal,
   PatchmarkPatch,
   PatchmarkSourceReference,
   PatchmarkSuggestedUserAction
@@ -42,11 +50,13 @@ import type { PatchmarkReviewBatch } from "../review-batches/review-batch-types.
 import { createContentSha256 } from "../storage/document-recovery-storage.ts";
 import {
   normalizeSourceChatUrl,
-  parsePatchmarkCommentReplyImport
+  parsePatchmarkCommentReplyImport,
+  validatePatchmarkExternalParticipantResponseScope
 } from "./patchmark-comment-reply-import.ts";
 
 export type ProjectCommentReplyImportResult = Readonly<{
   comments: PatchmarkComment[];
+  comments_created: number;
   import_id: string;
   import_relative_path: string;
   imported_at: string;
@@ -78,7 +88,7 @@ export type ProjectCommentReplyImportInput = Readonly<{
   comments: PatchmarkComment[];
   importedAt?: string;
   importId?: string;
-  expectedProtocolVersion?: 1 | 2;
+  expectedProtocolVersion?: 1 | 2 | 3;
   knownCommentIds: ReadonlySet<string>;
   markdown: string;
   project: PatchmarkProjectHandle;
@@ -121,6 +131,31 @@ export async function importProjectCommentReplyResponse({
     response: parsedResponse,
     target: getProjectDocumentIdentity(project)
   });
+  if (parsedResponse.protocol_version === 3) {
+    if (responseAssociation.kind !== "exact") {
+      throw new Error(
+        "Invalid Patchmark response. Protocol version 3 requires an active exact Review Batch."
+      );
+    }
+    const identity = getProjectDocumentIdentity(project);
+    validatePatchmarkExternalParticipantResponseScope({
+      allowedExistingCommentIds: new Set(
+        responseAssociation.batch.ordered_comment_ids
+      ),
+      documentId: identity.documentId,
+      projectId: identity.projectId,
+      response: parsedResponse,
+      reviewBatchId: responseAssociation.batch.batch_id
+    });
+    validateExactReviewBatchResponseComments({
+      batch: responseAssociation.batch,
+      response: parsedResponse
+    });
+    validateExternalExistingCommentTargets({
+      comments,
+      response: parsedResponse
+    });
+  }
   let dependencyBaseDocumentState: "changed" | "current" | "unknown" =
     "unknown";
   let dependencyValidationMarkdown = markdown;
@@ -130,13 +165,12 @@ export async function importProjectCommentReplyResponse({
       batch: responseAssociation.batch,
       response: parsedResponse
     });
-    dependencyValidationMarkdown = (
-      await readExactReviewBatchDocumentSnapshot({
-        batch: responseAssociation.batch,
-        currentMarkdown: markdown,
-        project
-      })
-    ).markdown;
+    const snapshot = await readExactReviewBatchDocumentSnapshot({
+      batch: responseAssociation.batch,
+      currentMarkdown: markdown,
+      project
+    });
+    dependencyValidationMarkdown = snapshot.markdown;
     dependencyBaseDocumentState = "current";
   }
   validateAtomicTablePatchImport({
@@ -150,19 +184,43 @@ export async function importProjectCommentReplyResponse({
   validateBeforeCommit?.();
 
   const existingPatches = await readProjectPatches(project);
+  const v3Plan =
+    parsedResponse.protocol_version === 3
+      ? createExternalCommentExecutionPlan({
+          comments,
+          currentMarkdown: markdown,
+          documentId: getProjectDocumentIdentity(project).documentId,
+          importedAt,
+          importId,
+          response: parsedResponse,
+          snapshotMarkdown: dependencyValidationMarkdown
+        })
+      : null;
+  const commentsBeforeThreadImport = v3Plan?.currentComments ?? comments;
+  const dependencyValidationComments =
+    v3Plan?.snapshotComments ?? commentsBeforeThreadImport;
+  const executablePatchProposals: PatchmarkLegacyPatchProposal[] = v3Plan
+    ? v3Plan.patchProposals
+    : parsedResponse.protocol_version === 3
+      ? []
+      : parsedResponse.patch_proposals;
+  const executablePatchCommentIds = v3Plan
+    ? new Set(commentsBeforeThreadImport.map((comment) => comment.id))
+    : knownCommentIds;
   const importedPatches = createImportedPatchProposals({
-    comments,
+    comments: commentsBeforeThreadImport,
     existingPatches,
     importedAt,
     importId,
-    knownCommentIds,
-    patchProposals: parsedResponse.patch_proposals,
+    knownCommentIds: executablePatchCommentIds,
+    patchProposals: executablePatchProposals,
+    strictCommentTargets: Boolean(v3Plan),
     sourceChatUrl: normalizedSourceChatUrl
   });
   validateImportedPatchDependencySimulation({
     baseDocumentSha256: dependencyBaseDocumentSha256,
     baseDocumentState: dependencyBaseDocumentState,
-    comments,
+    comments: dependencyValidationComments,
     documentId: getProjectDocumentIdentity(project).documentId,
     existingPatches:
       responseAssociation.kind === "exact" ? [] : existingPatches,
@@ -171,11 +229,13 @@ export async function importProjectCommentReplyResponse({
   });
   const importedCommentIds = getKnownImportCommentIds(
     parsedResponse,
-    knownCommentIds
+    parsedResponse.protocol_version === 3 && responseAssociation.kind === "exact"
+      ? new Set(responseAssociation.batch.ordered_comment_ids)
+      : knownCommentIds
   );
   const { nextComments, openQuestionsAttached, repliesAttached } =
     createImportedCommentThreads({
-      comments,
+      comments: commentsBeforeThreadImport,
       importedAt,
       importId,
       importedCommentIds,
@@ -259,6 +319,7 @@ export async function importProjectCommentReplyResponse({
 
   return Object.freeze({
     comments: nextComments,
+    comments_created: v3Plan?.createdComments.length ?? 0,
     import_id: importId,
     import_relative_path: importWrite.relativePath,
     imported_at: importedAt,
@@ -283,10 +344,141 @@ function createFileSafeTimestamp(value: string): string {
     .replace("Z", "");
 }
 
+type ExternalCommentExecutionPlan = Readonly<{
+  createdComments: PatchmarkComment[];
+  currentComments: PatchmarkComment[];
+  patchProposals: PatchmarkLegacyPatchProposal[];
+  snapshotComments: PatchmarkComment[];
+}>;
+
+function createExternalCommentExecutionPlan({
+  comments,
+  currentMarkdown,
+  documentId,
+  importedAt,
+  importId,
+  response,
+  snapshotMarkdown
+}: {
+  comments: PatchmarkComment[];
+  currentMarkdown: string;
+  documentId: string;
+  importedAt: string;
+  importId: string;
+  response: PatchmarkExternalParticipantResponse;
+  snapshotMarkdown: string;
+}): ExternalCommentExecutionPlan {
+  const admissions = response.new_comments.map((externalComment) => ({
+    externalComment,
+    admitted: admitExternalCommentAnchor({
+      currentMarkdown,
+      documentId,
+      externalComment,
+      snapshotMarkdown
+    })
+  }));
+  const allocatedIds = allocatePatchmarkCommentIds(comments, admissions.length);
+  const commentIdsByLocalRef = new Map<string, string>();
+  const createdComments: PatchmarkComment[] = [];
+  const snapshotCreatedComments: PatchmarkComment[] = [];
+
+  admissions.forEach(({ admitted, externalComment }, index) => {
+    const id = allocatedIds[index];
+    if (!id || commentIdsByLocalRef.has(externalComment.local_ref)) {
+      throw new Error(
+        "Protocol-version-3 comment planning violated validated response-local reference invariants. No response data was imported."
+      );
+    }
+    commentIdsByLocalRef.set(externalComment.local_ref, id);
+    createdComments.push(
+      createNativePatchmarkComment({
+        anchor: admitted.currentAnchor,
+        comment: externalComment.comment,
+        createdAt: importedAt,
+        id,
+        sourceImportId: importId,
+        type: externalComment.type
+      })
+    );
+    snapshotCreatedComments.push(
+      createNativePatchmarkComment({
+        anchor: admitted.snapshotAnchor,
+        comment: externalComment.comment,
+        createdAt: importedAt,
+        id,
+        sourceImportId: importId,
+        type: externalComment.type
+      })
+    );
+  });
+
+  const currentComments = [...comments, ...createdComments];
+  const currentCommentIds = new Set(currentComments.map((comment) => comment.id));
+  const patchProposals = response.patch_proposals.map(
+    (proposal): PatchmarkLegacyPatchProposal => {
+      const { comment_target: target, ...proposalFields } = proposal;
+      const commentId =
+        target.kind === "existing_comment"
+          ? target.comment_id
+          : commentIdsByLocalRef.get(target.local_ref);
+
+      if (!commentId || !currentCommentIds.has(commentId)) {
+        throw new Error(
+          `Patch ${proposal.patch_key} could not bind its validated comment target. No response data was imported.`
+        );
+      }
+
+      return {
+        ...proposalFields,
+        comment_id: commentId
+      };
+    }
+  );
+
+  return Object.freeze({
+    createdComments,
+    currentComments,
+    patchProposals,
+    snapshotComments: [...comments, ...snapshotCreatedComments]
+  });
+}
+
+function validateExternalExistingCommentTargets({
+  comments,
+  response
+}: {
+  comments: PatchmarkComment[];
+  response: PatchmarkExternalParticipantResponse;
+}): void {
+  const availableCommentIds = new Set(
+    comments
+      .filter((comment) => !comment.trashed_at)
+      .map((comment) => comment.id)
+  );
+  const unavailableIds = Array.from(
+    new Set(
+      getReferencedExistingCommentIds(response).filter(
+        (commentId) => !availableCommentIds.has(commentId)
+      )
+    )
+  );
+
+  if (unavailableIds.length > 0) {
+    throw new Error(
+      `Invalid Patchmark response. Existing comment target${
+        unavailableIds.length === 1 ? "" : "s"
+      } no longer available in this document: ${unavailableIds.join(", ")}. No response data was imported.`
+    );
+  }
+}
+
 function getUnknownImportCommentIds(
   response: PatchmarkCommentReplyImport,
   knownCommentIds: ReadonlySet<string>
 ): string[] {
+  if (response.protocol_version === 3) {
+    return [];
+  }
   return Array.from(
     new Set(
       getReferencedCommentIds(response).filter(
@@ -310,9 +502,21 @@ function getKnownImportCommentIds(
 function getReferencedCommentIds(
   response: PatchmarkCommentReplyImport
 ): string[] {
+  return getReferencedExistingCommentIds(response);
+}
+
+function getReferencedExistingCommentIds(
+  response: PatchmarkCommentReplyImport
+): string[] {
   return [
     ...response.replies.map((reply) => reply.comment_id),
-    ...response.patch_proposals.map((patch) => patch.comment_id),
+    ...response.patch_proposals.flatMap((patch) =>
+      patch.comment_target?.kind === "existing_comment"
+        ? [patch.comment_target.comment_id]
+        : patch.comment_id
+          ? [patch.comment_id]
+          : []
+    ),
     ...response.open_questions.map((question) => question.comment_id)
   ];
 }
@@ -439,6 +643,7 @@ function createImportedPatchProposals({
   importId,
   knownCommentIds,
   patchProposals,
+  strictCommentTargets = false,
   sourceChatUrl
 }: {
   comments: PatchmarkComment[];
@@ -446,9 +651,20 @@ function createImportedPatchProposals({
   importedAt: string;
   importId: string;
   knownCommentIds: ReadonlySet<string>;
-  patchProposals: PatchmarkCommentReplyImport["patch_proposals"];
+  patchProposals: PatchmarkLegacyCommentReplyImport["patch_proposals"];
+  strictCommentTargets?: boolean;
   sourceChatUrl?: string;
 }): PatchmarkPatch[] {
+  const unknownTargets = patchProposals.filter(
+    (proposal) => !knownCommentIds.has(proposal.comment_id)
+  );
+  if (strictCommentTargets && unknownTargets.length > 0) {
+    throw new Error(
+      `Protocol-version-3 patch target planning failed for: ${unknownTargets
+        .map((proposal) => proposal.patch_key ?? proposal.comment_id)
+        .join(", ")}. No response data was imported.`
+    );
+  }
   const validProposals = patchProposals.filter((proposal) =>
     knownCommentIds.has(proposal.comment_id)
   );
