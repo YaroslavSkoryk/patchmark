@@ -10,6 +10,7 @@ type ProjectResumeBannerProps = {
   permission: FileSystemPermissionState | "unavailable";
   project: LocalProjectInstanceRecord;
   recoveryCount: number;
+  requiresFolderSelection: boolean;
   onDeleteDeviceData: () => void;
   onResume: () => void;
 };
@@ -20,10 +21,12 @@ export function ProjectResumeBanner({
   permission,
   project,
   recoveryCount,
+  requiresFolderSelection,
   onDeleteDeviceData,
   onResume
 }: ProjectResumeBannerProps) {
   const actionLabel =
+    !requiresFolderSelection &&
     isUsableStoredDirectoryHandle(project.directory_handle) &&
     permission !== "denied"
       ? `Resume ${project.project_title_snapshot}`

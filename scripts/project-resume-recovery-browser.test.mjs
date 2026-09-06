@@ -293,6 +293,73 @@ try {
     true
   );
 
+  const projectBeforeStaleHandleResume = fingerprintTree(projectDir);
+  assert.equal(
+    JSON.parse(
+      projectBeforeStaleHandleResume[
+        ".patchmark/documents/doc_shareholders/comments.json"
+      ]
+    ).length,
+    7
+  );
+  const staleHandleInstanceId = "local_project_stale_handle_resume";
+  const recoveryCountBeforeStaleHandleResume =
+    await readDeviceRecoveryCount(client);
+  await seedPersistedOpfsProjectHandle(client, {
+    files: projectBeforeStaleHandleResume,
+    localInstanceId: staleHandleInstanceId
+  });
+  await reloadToLanding(client);
+  await waitFor(
+    client,
+    `document.querySelector(".project-resume-banner")?.textContent?.includes("Resume Strategy") && document.querySelector(".project-resume-banner")?.textContent?.includes("SHAREHOLDERS AGREEMENT")`,
+    "stored-handle Shareholders resume banner"
+  );
+  await makePersistedProjectHandleFailWithoutPermissionState(client, {
+    localInstanceId: staleHandleInstanceId
+  });
+  await clickButtonByText(client, "Resume Strategy");
+  await waitFor(
+    client,
+    `document.querySelector(".project-resume-banner [role='alert']")?.textContent?.includes("Select the existing Strategy folder") && Array.from(document.querySelectorAll(".project-resume-banner button")).some((button) => button.textContent?.trim() === "Reopen Strategy folder")`,
+    "actionable stored-handle resume failure"
+  );
+  assert.equal(await hasSelector(client, ".empty-state"), true);
+  assert.equal(await textContent(client, ".application-comments-trigger"), "Comments0");
+  assert.equal(
+    await readDeviceRecoveryCount(client),
+    recoveryCountBeforeStaleHandleResume,
+    "A failed stored-handle resume must preserve document recovery records."
+  );
+  await restoreProjectPickerAfterStaleHandleFailure(client);
+  await confirmAndClick(client, "Reopen Strategy folder");
+  await waitFor(
+    client,
+    `document.querySelector(".workspace-status")?.textContent?.includes("Project: Strategy") && document.querySelector(".application-document-breadcrumb")?.textContent?.includes("SHAREHOLDERS AGREEMENT")`,
+    "Shareholders project context after folder reauthorization"
+  );
+  await waitFor(
+    client,
+    `document.querySelectorAll(".project-document-item").length === 3 && document.querySelector(".application-comments-trigger")?.textContent?.replace(/\\s+/g, "") === "Comments6"`,
+    "Shareholders navigation and comments after resume"
+  );
+  await clickButtonByText(client, "Markdown Mode");
+  await waitFor(
+    client,
+    `document.querySelector(".markdown-source-editor")?.value.includes("Shareholders fixture terms") && document.querySelector(".document-tools")?.textContent?.includes("1 heading")`,
+    "Shareholders Markdown and heading projection after resume"
+  );
+  const resumedIdentity = await readProjectInstanceIdentity(client, {
+    localInstanceId: staleHandleInstanceId
+  });
+  assert.deepEqual(resumedIdentity, {
+    documentId: "doc_shareholders",
+    localInstanceId: staleHandleInstanceId,
+    projectId: "prj_resume_browser"
+  });
+  assert.deepEqual(fingerprintTree(projectDir), projectBeforeStaleHandleResume);
+  progress("stale_handle_failure_recovered_by_reselection");
+
   console.log(
     JSON.stringify(
       {
@@ -308,6 +375,14 @@ try {
         recoveredConflictWorkingCopyNoWrite: true,
         explicitDiscardNoProjectWrites: true,
         multipleRecoveriesIndependent: true,
+        staleStoredHandleFailureSurfaced: true,
+        staleStoredHandleRecoveryPreserved: true,
+        staleStoredHandleReselection: true,
+        shareholdersResumeIdentityPreserved: true,
+        shareholdersResumeNavigation: true,
+        shareholdersResumeMarkdown: true,
+        shareholdersResumeSevenStoredComments: true,
+        shareholdersResumeSixActiveComments: true,
         compactResumeLayout
       },
       null,
@@ -553,6 +628,156 @@ async function waitForRecoveryCount(pageClient, count) {
   );
 }
 
+async function readDeviceRecoveryCount(pageClient) {
+  return evaluate(pageClient, {
+    expression: `(async () => {
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("patchmark-device-state", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      const values = await new Promise((resolve, reject) => {
+        const request = database.transaction("document-recoveries", "readonly")
+          .objectStore("document-recoveries")
+          .getAll();
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      database.close();
+      return values.length;
+    })()`,
+    awaitPromise: true
+  });
+}
+
+async function seedPersistedOpfsProjectHandle(
+  pageClient,
+  { files, localInstanceId }
+) {
+  await evaluate(pageClient, {
+    expression: `(async () => {
+      const files = ${JSON.stringify(files)};
+      const opfs = await navigator.storage.getDirectory();
+      await opfs.removeEntry("Strategy-stale-resume", { recursive: true }).catch(() => undefined);
+      const project = await opfs.getDirectoryHandle("Strategy-stale-resume", { create: true });
+      for (const [path, text] of Object.entries(files)) {
+        const parts = path.split("/");
+        const name = parts.pop();
+        let directory = project;
+        for (const part of parts) {
+          directory = await directory.getDirectoryHandle(part, { create: true });
+        }
+        const file = await directory.getFileHandle(name, { create: true });
+        const writable = await file.createWritable();
+        await writable.write(text);
+        await writable.close();
+      }
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("patchmark-device-state", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      await new Promise((resolve, reject) => {
+        const transaction = database.transaction("project-instances", "readwrite");
+        transaction.objectStore("project-instances").put({
+          schema_version: 1,
+          local_instance_id: ${JSON.stringify(localInstanceId)},
+          project_id: "prj_resume_browser",
+          project_title_snapshot: "Strategy",
+          last_document_id: "doc_shareholders",
+          last_document_title_snapshot: "SHAREHOLDERS AGREEMENT",
+          last_group_id: "grp_strategy",
+          last_opened_at: new Date().toISOString(),
+          directory_handle: project
+        });
+        transaction.oncomplete = resolve;
+        transaction.onerror = () => reject(transaction.error);
+        transaction.onabort = () => reject(transaction.error);
+      });
+      database.close();
+      localStorage.setItem(
+        "patchmark:active-document:prj_resume_browser",
+        "doc_shareholders"
+      );
+      await opfs.removeEntry("Strategy-stale-resume", { recursive: true });
+      return true;
+    })()`,
+    awaitPromise: true
+  });
+}
+
+async function makePersistedProjectHandleFailWithoutPermissionState(
+  pageClient,
+  { localInstanceId }
+) {
+  await evaluate(pageClient, {
+    expression: `(async () => {
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("patchmark-device-state", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      const record = await new Promise((resolve, reject) => {
+        const request = database.transaction("project-instances", "readonly")
+          .objectStore("project-instances")
+          .get(${JSON.stringify(localInstanceId)});
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      database.close();
+      const prototype = Object.getPrototypeOf(record.directory_handle);
+      window.__patchmarkResumeOriginalQueryPermission = prototype.queryPermission;
+      window.__patchmarkResumeOriginalShowDirectoryPicker = window.showDirectoryPicker;
+      Object.defineProperty(prototype, "queryPermission", {
+        configurable: true,
+        value: async () => {
+          throw new Error("Injected unavailable permission state.");
+        }
+      });
+      window.showDirectoryPicker = async () => {
+        throw new DOMException("Injected picker cancellation.", "AbortError");
+      };
+      return true;
+    })()`,
+    awaitPromise: true
+  });
+}
+
+async function restoreProjectPickerAfterStaleHandleFailure(pageClient) {
+  await evaluate(pageClient, {
+    expression: `(() => {
+      window.showDirectoryPicker = window.__patchmarkResumeOriginalShowDirectoryPicker;
+      return true;
+    })()`
+  });
+}
+
+async function readProjectInstanceIdentity(pageClient, { localInstanceId }) {
+  return evaluate(pageClient, {
+    expression: `(async () => {
+      const database = await new Promise((resolve, reject) => {
+        const request = indexedDB.open("patchmark-device-state", 1);
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      const record = await new Promise((resolve, reject) => {
+        const request = database.transaction("project-instances", "readonly")
+          .objectStore("project-instances")
+          .get(${JSON.stringify(localInstanceId)});
+        request.onerror = () => reject(request.error);
+        request.onsuccess = () => resolve(request.result);
+      });
+      database.close();
+      return {
+        documentId: record.last_document_id,
+        localInstanceId: record.local_instance_id,
+        projectId: record.project_id
+      };
+    })()`,
+    awaitPromise: true
+  });
+}
+
 async function confirmAndClick(pageClient, label) {
   await evaluate(pageClient, {
     expression: `(() => {
@@ -644,6 +869,18 @@ function createProjectFixture(root) {
       position: 2000,
       role: "summary",
       root
+    }),
+    createDocumentFixture({
+      comments: createShareholdersComments(now),
+      displayTitle: "SHAREHOLDERS AGREEMENT",
+      documentId: "doc_shareholders",
+      groupId,
+      markdown: "# SHAREHOLDERS AGREEMENT\n\nShareholders fixture terms.\n",
+      now,
+      path: "shareholders.md",
+      position: 3000,
+      role: null,
+      root
     })
   ];
   writeFileSync(
@@ -677,6 +914,7 @@ function progress(label) {
 }
 
 function createDocumentFixture({
+  comments = [],
   displayTitle,
   documentId,
   groupId,
@@ -730,7 +968,10 @@ function createDocumentFixture({
       2
     )}\n`
   );
-  writeFileSync(join(store, "comments.json"), "[]\n");
+  writeFileSync(
+    join(store, "comments.json"),
+    `${JSON.stringify(comments, null, 2)}\n`
+  );
   writeFileSync(join(store, "patches.json"), "[]\n");
   writeFileSync(join(store, "tasks.json"), "[]\n");
   writeFileSync(
@@ -758,4 +999,24 @@ function createDocumentFixture({
     added_at: now,
     archived_at: null
   };
+}
+
+function createShareholdersComments(now) {
+  return Array.from({ length: 7 }, (_, index) => ({
+    id: `PM-COMMENT-RESUME-${String(index + 1).padStart(4, "0")}`,
+    type: "note",
+    status: "open",
+    anchor: { kind: "document" },
+    comment: `Shareholders resume comment ${index + 1}.`,
+    thread: [],
+    export_state: { focus_state: "idle" },
+    created_at: now,
+    updated_at: now,
+    ...(index === 6
+      ? {
+          trashed_at: now,
+          trash_operation_id: "comment_trash_resume_fixture"
+        }
+      : {})
+  }));
 }

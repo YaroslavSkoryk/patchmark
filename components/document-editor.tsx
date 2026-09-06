@@ -1041,6 +1041,10 @@ export function DocumentEditor() {
   const [recentProjectRecoveryCount, setRecentProjectRecoveryCount] =
     useState(0);
   const [isResumingProject, setIsResumingProject] = useState(false);
+  const [
+    resumeProjectRequiresFolderSelection,
+    setResumeProjectRequiresFolderSelection
+  ] = useState(false);
   const [resumeProjectError, setResumeProjectError] = useState<string | null>(
     null
   );
@@ -3741,6 +3745,7 @@ export function DocumentEditor() {
       if (!recent) {
         setRecentProjectPermission("unavailable");
         setRecentProjectRecoveryCount(0);
+        setResumeProjectRequiresFolderSelection(false);
         return;
       }
       const [permission, recoveries] = await Promise.all([
@@ -3768,9 +3773,13 @@ export function DocumentEditor() {
     try {
       let loadedProject: LoadedPatchmarkProject | null = null;
       let selectedDirectory: StoredDirectoryHandle | null = null;
+      let storedDirectoryOpenError: unknown = null;
       const storedDirectory = recentProject.directory_handle;
 
-      if (isUsableStoredDirectoryHandle(storedDirectory)) {
+      if (
+        !resumeProjectRequiresFolderSelection &&
+        isUsableStoredDirectoryHandle(storedDirectory)
+      ) {
         let permission = await getDirectoryPermission(storedDirectory);
         if (permission === "prompt") {
           permission = await requestDirectoryPermission(storedDirectory);
@@ -3783,16 +3792,35 @@ export function DocumentEditor() {
             );
             selectedDirectory = storedDirectory;
           } catch (error) {
-            if (permission === "granted") {
-              throw error;
-            }
+            storedDirectoryOpenError = error;
+            setResumeProjectRequiresFolderSelection(true);
           }
+        } else {
+          setResumeProjectRequiresFolderSelection(true);
         }
+      } else {
+        setResumeProjectRequiresFolderSelection(true);
       }
 
       if (!loadedProject) {
-        loadedProject = await openProjectFolder();
+        try {
+          loadedProject = await openProjectFolder();
+        } catch (error) {
+          throw new Error(
+            getProjectFolderReselectionErrorMessage(
+              recentProject,
+              storedDirectoryOpenError ?? error
+            )
+          );
+        }
         if (!loadedProject) {
+          setResumeProjectRequiresFolderSelection(true);
+          setResumeProjectError(
+            getProjectFolderReselectionErrorMessage(
+              recentProject,
+              storedDirectoryOpenError
+            )
+          );
           return;
         }
         selectedDirectory = (loadedProject.project.projectDirectoryHandle ??
@@ -3801,6 +3829,7 @@ export function DocumentEditor() {
 
       const openedIdentity = getProjectDocumentIdentity(loadedProject.project);
       if (openedIdentity.projectId !== recentProject.project_id) {
+        setResumeProjectRequiresFolderSelection(true);
         throw new Error(
           `This folder is a different Patchmark project. Expected ${recentProject.project_title_snapshot}.`
         );
@@ -3853,8 +3882,10 @@ export function DocumentEditor() {
         );
       }
       await loadProjectIntoEditor(loadedProject, {
-        localInstanceId: recentProject.local_instance_id
+        localInstanceId: recentProject.local_instance_id,
+        requireCommit: true
       });
+      setResumeProjectRequiresFolderSelection(false);
       setSaveFeedback(null);
     } catch (error) {
       setResumeProjectError(getProjectErrorMessage(error));
@@ -3877,6 +3908,7 @@ export function DocumentEditor() {
       setRecentProject(null);
       setRecentProjectRecoveryCount(0);
       setRecentProjectPermission("unavailable");
+      setResumeProjectRequiresFolderSelection(false);
       setResumeProjectError(null);
     } catch (error) {
       setResumeProjectError(getDeviceRecoveryErrorMessage(error));
@@ -9770,6 +9802,7 @@ export function DocumentEditor() {
       localInstanceId?: string | null;
       pendingBookmarkDocumentKey?: string | null;
       performanceOperationId?: string | null;
+      requireCommit?: boolean;
       switchRequest?: {
         feedback: SaveFeedback | null;
         generation: number;
@@ -9993,6 +10026,11 @@ export function DocumentEditor() {
       performance.now() - navigatorStartedAt
     );
     if (requestId !== deviceRecoveryLoadRequestRef.current) {
+      if (options.requireCommit) {
+        throw new Error(
+          "Project resume was superseded before the project and document could become active. Try reopening the project folder again."
+        );
+      }
       return;
     }
     const editorMarkdown = preparedRecovery?.markdown ?? loadedProject.markdown;
@@ -11008,6 +11046,7 @@ export function DocumentEditor() {
             permission={recentProjectPermission}
             project={recentProject}
             recoveryCount={recentProjectRecoveryCount}
+            requiresFolderSelection={resumeProjectRequiresFolderSelection}
             onDeleteDeviceData={() => void handleDeleteRecentDeviceData()}
             onResume={() => void handleResumeProject()}
           />
@@ -14415,6 +14454,14 @@ function getProjectErrorMessage(error: unknown): string {
   }
 
   return "Project folder action failed. Your Markdown is still in Patchmark.";
+}
+
+function getProjectFolderReselectionErrorMessage(
+  project: LocalProjectInstanceRecord,
+  error: unknown = null
+): string {
+  const cause = error ? ` ${getProjectErrorMessage(error)}` : "";
+  return `Patchmark could not reopen ${project.project_title_snapshot}.${cause} Select the existing ${project.project_title_snapshot} folder to continue. Device recovery data is preserved.`;
 }
 
 function createChatGptImportRepairPrompt(
