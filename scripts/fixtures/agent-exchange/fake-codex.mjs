@@ -67,22 +67,87 @@ function patchmarkResponse() {
   if (!request) throw new Error("The fake expected a Patchmark JSON prompt block.");
   const batch = request.review_batch;
   const commentId = request.comments?.[0]?.comment_id;
+  const responseProtocolVersion =
+    request.instructions_for_external_participant?.expected_response_format
+      ?.protocol_version ?? 2;
+  const mixedV3 =
+    responseProtocolVersion === 3 &&
+    /two deterministic independent comments/i.test(
+      request.comments?.[0]?.comment ?? ""
+    );
   return JSON.stringify({
     protocol: "patchmark.comment_reply_import",
-    protocol_version: 2,
+    protocol_version: responseProtocolVersion,
     review_batch_id: batch.review_batch_id,
     project_id: batch.project_id,
     document_id: batch.document_id,
     summary: "Deterministic local connector qualification response.",
+    ...(responseProtocolVersion === 3
+      ? {
+          new_comments: mixedV3
+            ? [
+                {
+                  local_ref: "comment-a",
+                  document_id: batch.document_id,
+                  type: "note",
+                  anchor: {
+                    kind: "selected_text",
+                    selected_text: "The launch window opens at dawn.",
+                    containing_heading: "Launch Plan",
+                    containing_heading_level: 1,
+                    containing_heading_path: ["Launch Plan"],
+                    anchor_source: "markdown"
+                  },
+                  comment: "The timing phrase could be more precise."
+                },
+                {
+                  local_ref: "comment-b",
+                  document_id: batch.document_id,
+                  type: "risk",
+                  anchor: {
+                    kind: "section",
+                    heading: "Risks",
+                    heading_level: 2,
+                    heading_line: 5,
+                    heading_path: ["Launch Plan", "Risks"]
+                  },
+                  comment: "This section should state how stability was established."
+                }
+              ]
+            : []
+        }
+      : {}),
     replies: [
       {
         comment_id: commentId,
-        reply: "The local Codex connector returned this review reply.",
+        reply: mixedV3
+          ? "The existing instruction is addressed by two separate comments and one linked wording patch."
+          : "The local Codex connector returned this review reply.",
         reply_sources: [],
         suggested_user_action: "review"
       }
     ],
-    patch_proposals: [],
+    patch_proposals: mixedV3
+      ? [
+          {
+            patch_key: "clarify-launch-window",
+            depends_on: [],
+            comment_target: {
+              kind: "response_comment",
+              local_ref: "comment-a"
+            },
+            display_title: "Clarify launch timing",
+            target_heading: "Launch Plan",
+            original_text: "launch window",
+            suggested_text: "launch period",
+            suggested_text_sources: [],
+            reason: "Uses less ambiguous timing language.",
+            reason_sources: [],
+            risk: "Minimal wording change.",
+            risk_sources: []
+          }
+        ]
+      : [],
     open_questions: []
   });
 }

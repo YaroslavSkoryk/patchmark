@@ -1,17 +1,20 @@
 import { CHATGPT_ATOMIC_TABLE_PROMPT_RULES } from "../patches/atomic-table-patches.ts";
 import type { ReviewBatchPromptEnvelope } from "../review-batches/review-batch-types.ts";
 
-export const MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION = 3 as const;
+export const EXTERNAL_PARTICIPANT_PROTOCOL_VERSION = 3 as const;
+export const MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION =
+  EXTERNAL_PARTICIPANT_PROTOCOL_VERSION;
 
 export function getCommentReplyProtocolVersionForDelivery(
   delivery: "agent" | "manual"
-): 2 | 3 {
-  return delivery === "manual"
-    ? MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
-    : 2;
+): typeof EXTERNAL_PARTICIPANT_PROTOCOL_VERSION {
+  return {
+    agent: EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
+    manual: EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+  }[delivery];
 }
 
-export const MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES = Object.freeze([
+export const EXTERNAL_PARTICIPANT_PAYLOAD_RULES = Object.freeze([
   "Follow the user's instruction expressed by the exported Patchmark comments.",
   "You may create independent anchored comments, reply to exported comments, and propose concrete text patches; each contribution kind is optional.",
   "Do not create comments merely to fill the response. A reply-only response is valid when that is all the instruction needs.",
@@ -22,8 +25,10 @@ export const MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES = Object.freeze([
   "Anchor new comments only to the exact exported document_snapshot for the exact document_id. Similar text in another document is not a valid target.",
   "Prefer the smallest meaningful selected text or exact section heading, with supported heading path and source context when useful. Do not fabricate offsets or hashes."
 ]);
+export const MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES =
+  EXTERNAL_PARTICIPANT_PAYLOAD_RULES;
 
-export function createManualExternalParticipantV3Prompt({
+export function createExternalParticipantV3Prompt({
   dedicatedDocumentInstruction,
   jsonText,
   observedAt,
@@ -37,7 +42,7 @@ export function createManualExternalParticipantV3Prompt({
   const exampleExistingCommentId = reviewBatchEnvelope.ordered_comment_ids[0];
   if (!exampleExistingCommentId) {
     throw new Error(
-      "Manual external-participant protocol v3 requires at least one exported comment."
+      "External-participant protocol v3 requires at least one exported comment."
     );
   }
   const dedicatedNote = dedicatedDocumentInstruction
@@ -209,7 +214,10 @@ ${jsonText.trimEnd()}
 `;
 }
 
-export function createManualExternalParticipantV3RepairPrompt({
+export const createManualExternalParticipantV3Prompt =
+  createExternalParticipantV3Prompt;
+
+export function createExternalParticipantV3RepairPrompt({
   specializedPrompt,
   validationError
 }: {
@@ -236,3 +244,6 @@ Return exactly one fenced json code block containing patchmark.comment_reply_imp
 - Return no text outside the fenced JSON.
 ${specializedPrompt ? `\nAdditional repair requirement:\n${specializedPrompt}\n` : ""}`;
 }
+
+export const createManualExternalParticipantV3RepairPrompt =
+  createExternalParticipantV3RepairPrompt;

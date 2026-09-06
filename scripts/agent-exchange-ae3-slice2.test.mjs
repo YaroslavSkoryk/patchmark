@@ -208,7 +208,7 @@ async function qualifyPackage() {
   const exchange = await jsonRequest({
     body: {
       expected_response_protocol: "patchmark.comment_reply_import",
-      expected_response_protocol_version: 2,
+      expected_response_protocol_version: 3,
       max_response_bytes: 4096,
       operation_id: "ae3_slice2_packaged_fake",
       protocol_version: LOCAL_CONNECTOR_PROTOCOL_VERSION,

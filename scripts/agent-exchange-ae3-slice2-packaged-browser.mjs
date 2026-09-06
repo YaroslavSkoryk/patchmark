@@ -198,14 +198,15 @@ try {
   const comments = readDocumentJson(projectRoot, "comments.json");
   const patches = readDocumentJson(projectRoot, "patches.json");
   if (phase === "ready") {
-    assert.ok(
-      comments[0]?.thread?.length >= 1,
-      "the strict importer must attach a reply"
-    );
+    if (providerMode === "fake") {
+      assert.equal(comments.length - 1, 2);
+      assert.equal(comments[0]?.thread?.length, 1);
+      assert.equal(patches.length, 1);
+    }
     await clickButton("Review replies and suggestions");
     await waitFor(
-      `document.body.textContent?.includes("Packaged connector qualification")`,
-      "imported reply review"
+      `document.body.textContent?.includes("two deterministic independent comments")`,
+      "imported contribution review"
     );
   } else {
     assert.equal(comments[0]?.thread?.length, 0);
@@ -223,12 +224,19 @@ try {
     console_errors: consoleErrors,
     credentials_in_payload: false,
     duration_ms: Date.now() - startedAt,
+    imported_comments: Math.max(0, comments.length - 1),
     imported_patch_proposals: patches.length,
     imported_replies: comments[0].thread.length,
     network_failures: networkFailures,
     private_project_data_sent: false,
     prompt_byte_length: Buffer.byteLength(prompt),
     prompt_sha256: await sha256Text(prompt),
+    requested_response_protocol_version: /"protocol_version": 3/.test(prompt)
+      ? 3
+      : null,
+    response_local_patch_links: patches.filter((patch) =>
+      comments.slice(1).some((comment) => comment.id === patch.comment_id)
+    ).length,
     provider_kind: providerMode,
     provider_tool_events: phase === "ready" ? 0 : null,
     provider_turn_count: providerMode === "real" ? 1 : 0,
@@ -276,7 +284,7 @@ function prepareProject(projectDirectory) {
   const syntheticDocuments = {
     doc_evidence: "# Evidence\n\nSynthetic packaging evidence only. No user or private project data.\n",
     doc_operations:
-      "# Operations\n\nThis is an invented document for the Patchmark packaged-connector qualification.\n",
+      "# Launch Plan\n\nThe launch window opens at dawn.\n\n## Risks\n\nBackup route is stable.\n\n## Timeline\n\nExisting line stays.\n",
     doc_summary: "# Summary\n\nSynthetic qualification summary.\n"
   };
   for (const [documentId, markdown] of Object.entries(syntheticDocuments)) {
@@ -296,7 +304,7 @@ function prepareProject(projectDirectory) {
         {
           anchor: { kind: "document" },
           comment:
-            "Reply with the exact sentence ‘Packaged connector qualification passed.’ and do not propose a patch.",
+            "Read this short synthetic document as an editor. Create two deterministic independent comments where there are concrete issues, reply to this instruction, and propose a patch for a specific wording improvement linked to the relevant new comment.",
           created_at: "2040-03-01T00:00:00.000Z",
           export_state: { focus_state: "in_focus" },
           id: "PM-COMMENT-AE3-PACKAGED-0001",

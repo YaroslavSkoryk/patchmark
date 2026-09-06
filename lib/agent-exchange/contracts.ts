@@ -1,7 +1,12 @@
+import { EXTERNAL_PARTICIPANT_PROTOCOL_VERSION } from "../comments/external-participant-prompt.ts";
+
 export const AGENT_EXCHANGE_RESPONSE_PROTOCOL =
   "patchmark.comment_reply_import" as const;
-export const AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION = 2 as const;
+export const AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION =
+  EXTERNAL_PARTICIPANT_PROTOCOL_VERSION;
 export const AGENT_EXCHANGE_DEFAULT_MAX_RESPONSE_BYTES = 8 * 1024 * 1024;
+
+export type AgentExchangeResponseProtocolVersion = 2 | 3;
 
 export type AgentExchangeAuthority = "none";
 
@@ -21,8 +26,7 @@ export type PreparedAgentExchange = Readonly<{
   authority: AgentExchangeAuthority;
   copy_request_bytes(): Uint8Array;
   expected_response_protocol: typeof AGENT_EXCHANGE_RESPONSE_PROTOCOL;
-  expected_response_protocol_version:
-    typeof AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION;
+  expected_response_protocol_version: AgentExchangeResponseProtocolVersion;
   max_response_bytes: number;
   project_id: string;
   request_byte_length: number;
@@ -37,8 +41,7 @@ export type AgentExchangeOperationBinding = Readonly<{
   connector_version: string;
   document_id: string;
   expected_response_protocol: typeof AGENT_EXCHANGE_RESPONSE_PROTOCOL;
-  expected_response_protocol_version:
-    typeof AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION;
+  expected_response_protocol_version: AgentExchangeResponseProtocolVersion;
   export_scope: AgentExchangeDocumentScope;
   max_response_bytes: number;
   operation_id: string;
@@ -52,8 +55,7 @@ export type AgentExchangeResponseBinding = AgentExchangeOperationBinding &
   Readonly<{
     response_byte_length: number;
     response_protocol: typeof AGENT_EXCHANGE_RESPONSE_PROTOCOL;
-    response_protocol_version:
-      typeof AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION;
+    response_protocol_version: AgentExchangeResponseProtocolVersion;
   }>;
 
 export type AgentExchangeConnectorSubmission = Readonly<{

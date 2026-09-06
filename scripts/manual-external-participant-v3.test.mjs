@@ -57,7 +57,7 @@ const prompt = createManualExternalParticipantV3Prompt({
 
 assert.equal(MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION, 3);
 assert.equal(getCommentReplyProtocolVersionForDelivery("manual"), 3);
-assert.equal(getCommentReplyProtocolVersionForDelivery("agent"), 2);
+assert.equal(getCommentReplyProtocolVersionForDelivery("agent"), 3);
 assert.match(prompt, /You are participating in a Patchmark document/);
 assert.match(prompt, /create anchored comments where useful/);
 assert.match(prompt, /reply to existing exported comments/);
@@ -149,17 +149,17 @@ const parsedV3 = parsePatchmarkCommentReplyImport(
 );
 assert.equal(parsedV3.protocol_version, 3);
 
-assert.equal(AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION, 2);
+assert.equal(AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION, 3);
 await assert.rejects(
   () =>
     prepareAgentExchange({
       batch: {
         status: "exported",
-        response_protocol_version: 3
+        response_protocol_version: 1
       },
       project: {}
     }),
-  /requests protocol version 2/
+  /requests protocol version 2 or 3/
 );
 assert.deepEqual(productReleaseState, {
   human_collaboration: false,
@@ -182,7 +182,7 @@ assert.match(documentEditorSource, /Replies imported: \$\{repliesAttached\}/);
 assert.match(documentEditorSource, /Patches proposed: \$\{patchProposalsStored\}/);
 assert.match(
   documentEditorSource,
-  /This Review Batch requests manual protocol v3 delivery/
+  /responseProtocolVersion !== 2 && responseProtocolVersion !== 3/
 );
 
 process.stdout.write(

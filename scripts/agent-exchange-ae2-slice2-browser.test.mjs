@@ -39,7 +39,21 @@ const fixtureRoot = mkdtempSync(join(tmpdir(), "patchmark-ae2-local-browser-"));
 const sourceFixture = new URL("./fixtures/projects/core-multidoc", import.meta.url).pathname;
 const fakeCodex = new URL("./fixtures/agent-exchange/fake-codex.mjs", import.meta.url).pathname;
 const capturePath = join(fixtureRoot, "codex-capture.json");
-const projects = ["Success", "Cancel", "Reload"].map((name, index) =>
+const contributionMarkdown = [
+  "# Launch Plan",
+  "",
+  "The launch window opens at dawn.",
+  "",
+  "## Risks",
+  "",
+  "Backup route is stable.",
+  "",
+  "## Timeline",
+  "",
+  "Existing line stays.",
+  ""
+].join("\n");
+const projects = ["Success", "Contributions", "Cancel", "Reload"].map((name, index) =>
   createScenarioProject(name, index + 1)
 );
 const inventory = inventoryProject(fixtureRoot);
@@ -187,6 +201,65 @@ try {
     sessionPersistence: "tab-memory-only"
   };
 
+  await openNextProject("Contributions");
+  await openComments();
+  await waitForSendAction();
+  await keyboardActivateButton("Send to agent");
+  await waitForPhase("waiting");
+  await waitForPhase("ready");
+  const contributionComments = readComments(projects[1]);
+  const contributionPatches = readPatches(projects[1]);
+  const contributionBatches = readJson(projects[1], "review-batches.json");
+  const contributionStatus = await agentText();
+  assert.match(contributionStatus, /Comments added: 2/);
+  assert.match(contributionStatus, /Replies imported: 1/);
+  assert.match(contributionStatus, /Patches proposed: 1/);
+  assert.match(contributionStatus, /Warnings: 0/);
+  assert.equal(contributionComments.length, 3);
+  assert.equal(contributionComments[0].thread.length, 1);
+  assert.deepEqual(
+    contributionComments.slice(1).map((comment) => comment.id),
+    ["PM-COMMENT-0001", "PM-COMMENT-0002"]
+  );
+  assert.equal(contributionComments[1].anchor.kind, "selected_text");
+  assert.equal(contributionComments[2].anchor.kind, "section");
+  assert.equal(contributionComments[2].anchor.heading, "Risks");
+  for (const comment of contributionComments.slice(1)) {
+    assert.equal("local_ref" in comment, false);
+    assert.match(comment.source_import_id, /^PM-IMPORT-/);
+  }
+  assert.equal(contributionPatches.length, 1);
+  assert.equal(contributionPatches[0].comment_id, contributionComments[1].id);
+  assert.equal(
+    contributionPatches[0].source_patch_key,
+    "clarify-launch-window"
+  );
+  assert.equal(contributionBatches[0].response_protocol_version, 3);
+  assert.equal(contributionBatches[0].status, "responded");
+  const contributionCapture = JSON.parse(readFileSync(capturePath, "utf8"));
+  const contributionPrompt = Buffer.from(
+    contributionCapture.stdinBase64,
+    "base64"
+  ).toString("utf8");
+  assert.match(contributionPrompt, /"protocol_version": 3/);
+  assert.match(contributionPrompt, /"new_comments"/);
+  assert.match(contributionPrompt, /"kind": "response_comment"/);
+  assert.equal(
+    (contributionPrompt.match(/The launch window opens at dawn\./g) ?? []).length,
+    1,
+    "the authorized document snapshot must appear exactly once"
+  );
+  evidence.v3Contributions = {
+    commentsAdded: 2,
+    localRefsPersisted: 0,
+    nativeIds: contributionComments.slice(1).map((comment) => comment.id),
+    patchesProposed: 1,
+    protocolVersion: 3,
+    repliesImported: 1,
+    responseLocalPatchLinked: true,
+    warnings: 0
+  };
+
   await openNextProject("Cancel");
   await openComments();
   await waitForSendAction();
@@ -194,13 +267,13 @@ try {
   await waitForPhase("waiting");
   await keyboardActivateButton("Cancel");
   await waitForPhase("cancelled");
-  assert.equal(readComments(projects[1])[0].thread.length, 0);
+  assert.equal(readComments(projects[2])[0].thread.length, 0);
   await keyboardActivateButton("Use manual export instead");
   await waitFor(
     "Boolean(document.querySelector('[aria-label=\"Generate ChatGPT prompt\"]'))",
     "manual fallback dialog"
   );
-  assert.equal(await fallbackPromptText(), readOnlyPromptPack(projects[1]));
+  assert.equal(await fallbackPromptText(), readOnlyPromptPack(projects[2]));
   await evaluate(client, {
     expression:
       "document.querySelector('[aria-label=\"Generate ChatGPT prompt\"] button')?.click(); true",
@@ -220,7 +293,9 @@ try {
   await client.call("Page.reload");
   await waitForEditorShell(client);
   await delay(300);
-  assert.equal(readComments(projects[2])[0].thread.length, 0);
+  assert.equal(readComments(projects[3])[0].thread.length, 0);
+  assert.equal(readComments(projects[1]).length, contributionComments.length);
+  assert.equal(readPatches(projects[1]).length, contributionPatches.length);
   evidence.reload = {
     activeRequestCancelled: true,
     lateImportRejected: true
@@ -300,14 +375,23 @@ function createScenarioProject(name, sequence) {
     "doc_operations",
     "comments.json"
   );
-  writeFileSync(commentsPath, `${JSON.stringify([createComment()], null, 2)}\n`);
+  writeFileSync(
+    commentsPath,
+    `${JSON.stringify([createComment(name)], null, 2)}\n`
+  );
+  if (name === "Contributions") {
+    writeFileSync(join(projectRoot, "operations.md"), contributionMarkdown);
+  }
   return relativePath;
 }
 
-function createComment() {
+function createComment(name) {
   return {
     anchor: { kind: "document" },
-    comment: "Return one deterministic connector reply.",
+    comment:
+      name === "Contributions"
+        ? "Create two deterministic independent comments, reply to this instruction, and propose one patch linked to the first new comment."
+        : "Return one deterministic connector reply.",
     created_at: "2040-02-01T00:00:00.000Z",
     export_state: { focus_state: "in_focus" },
     id: commentId,

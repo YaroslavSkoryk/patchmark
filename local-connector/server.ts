@@ -545,7 +545,8 @@ function validateExchangeRequest(value: unknown): LocalConnectorExchangeRequest 
     ]) ||
     value.protocol_version !== LOCAL_CONNECTOR_PROTOCOL_VERSION ||
     value.expected_response_protocol !== "patchmark.comment_reply_import" ||
-    value.expected_response_protocol_version !== 2 ||
+    (value.expected_response_protocol_version !== 2 &&
+      value.expected_response_protocol_version !== 3) ||
     !isSafeOperationId(value.operation_id) ||
     typeof value.request_base64 !== "string" ||
     !Number.isSafeInteger(value.request_byte_length) ||

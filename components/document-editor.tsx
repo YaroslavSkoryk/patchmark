@@ -94,11 +94,11 @@ import {
   getDefaultCommentActionContext
 } from "@/lib/comments/native-comment";
 import {
-  createManualExternalParticipantV3Prompt,
-  createManualExternalParticipantV3RepairPrompt,
-  getCommentReplyProtocolVersionForDelivery,
-  MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES,
-  MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+  createExternalParticipantV3Prompt,
+  createExternalParticipantV3RepairPrompt,
+  EXTERNAL_PARTICIPANT_PAYLOAD_RULES,
+  EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
+  getCommentReplyProtocolVersionForDelivery
 } from "@/lib/comments/external-participant-prompt";
 import {
   buildCommentTrashSummary,
@@ -573,7 +573,12 @@ type AgentExchangeProductUiState = {
   phase: AgentExchangeProductPhase;
   pairingCode: string;
   pairingError: boolean;
-  result: { patches: number; replies: number } | null;
+  result: {
+    comments: number;
+    patches: number;
+    replies: number;
+    warnings: number;
+  } | null;
   reviewCommentId: string | null;
 };
 type AgentExchangePrepared = Readonly<{
@@ -602,7 +607,7 @@ type AgentExchangeProductController = {
     connector: unknown;
     createOperationId(): string;
     importResponse(input: {
-      binding: { expected_response_protocol_version: 2 };
+      binding: { expected_response_protocol_version: 2 | 3 };
       response_bytes: Uint8Array;
       validate_before_commit(): void;
     }): Promise<TResult>;
@@ -641,7 +646,12 @@ type AgentExchangeActionsProps = {
   phase: AgentExchangeProductPhase;
   pairingCode: string;
   pairingError: boolean;
-  result: { patches: number; replies: number } | null;
+  result: {
+    comments: number;
+    patches: number;
+    replies: number;
+    warnings: number;
+  } | null;
 };
 type AgentExchangeProductModule = Readonly<{
   ReviewDeliveryActions: ComponentType<AgentExchangeActionsProps>;
@@ -1096,6 +1106,8 @@ export function DocumentEditor() {
   commentsRef.current = comments;
   const patchesRef = useRef(patches);
   patchesRef.current = patches;
+  const reviewBatchesRef = useRef(reviewBatches);
+  reviewBatchesRef.current = reviewBatches;
   const [isProjectDataLoading, setIsProjectDataLoading] = useState(false);
   const isProjectDataLoadingRef = useRef(isProjectDataLoading);
   isProjectDataLoadingRef.current = isProjectDataLoading;
@@ -1912,7 +1924,7 @@ export function DocumentEditor() {
         markdown,
         patches: activePatches,
         project: projectHandle,
-        responseProtocolVersion: MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
+        responseProtocolVersion: EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
         reviewBatchEnvelope: {
           review_batch_id: REVIEW_QUEUE_PREVIEW_BATCH_ID,
           project_id: activeDocumentIdentity.projectId,
@@ -3384,6 +3396,7 @@ export function DocumentEditor() {
     setSelectionActions(null);
     setComments([]);
     setPatches([]);
+    reviewBatchesRef.current = [];
     setReviewBatches([]);
     setReviewQueueOverrides(null);
     setIsPatchReviewWorkspaceOpen(false);
@@ -4777,8 +4790,7 @@ export function DocumentEditor() {
       if (delivery === "agent") {
         void startAgentExchangeForBatch({
           batch: activeReviewBatch,
-          project: projectHandle,
-          reviewBatches
+          project: projectHandle
         });
         return;
       }
@@ -4937,12 +4949,12 @@ export function DocumentEditor() {
       if (activeDocumentIdRef.current !== operationDocumentId) {
         return;
       }
+      reviewBatchesRef.current = result.batches;
       setReviewBatches(result.batches);
       if (delivery === "agent") {
         await startAgentExchangeForBatch({
           batch: result.batch,
-          project: operationProject,
-          reviewBatches: result.batches
+          project: operationProject
         });
       } else {
         setChatGptPromptDialog(
@@ -5306,12 +5318,12 @@ export function DocumentEditor() {
       ) {
         return;
       }
+      reviewBatchesRef.current = result.batches;
       setReviewBatches(result.batches);
       if (delivery === "agent") {
         await startAgentExchangeForBatch({
           batch: result.batch,
-          project: operationProject,
-          reviewBatches: result.batches
+          project: operationProject
         });
       } else {
         setChatGptPromptDialog(
@@ -5339,18 +5351,17 @@ export function DocumentEditor() {
 
   async function startAgentExchangeForBatch({
     batch,
-    project,
-    reviewBatches: operationReviewBatches
+    project
   }: {
     batch: PatchmarkReviewBatch;
     project: PatchmarkProjectHandle;
-    reviewBatches: PatchmarkReviewBatch[];
   }) {
-    if ((batch.response_protocol_version ?? 2) !== 2) {
+    const responseProtocolVersion = batch.response_protocol_version ?? 2;
+    if (responseProtocolVersion !== 2 && responseProtocolVersion !== 3) {
       setSaveFeedback({
         kind: "info",
         message:
-          "This Review Batch requests manual protocol v3 delivery. Cancel it before starting a separate Agent Exchange batch."
+          "This Review Batch requests a response protocol version that Agent Exchange cannot transport."
       });
       return;
     }
@@ -5367,11 +5378,6 @@ export function DocumentEditor() {
     agentExchangeInitiationLockRef.current = true;
     const token = agentExchangeOperationTokenRef.current + 1;
     agentExchangeOperationTokenRef.current = token;
-    const operationComments = commentsRef.current;
-    const operationMarkdown = markdownRef.current;
-    const knownCommentIds = new Set(
-      getActiveComments(operationComments).map((comment) => comment.id)
-    );
     let lastObservedPhase: AgentExchangeOperationPhase = "prepared";
     setAgentExchangeUiState({
       documentKey,
@@ -5432,23 +5438,36 @@ export function DocumentEditor() {
           response_bytes,
           validate_before_commit
         }) => {
+          const importComments = commentsRef.current;
+          const importMarkdown = markdownRef.current;
+          const importPatches = patchesRef.current;
+          const importReviewBatches = reviewBatchesRef.current;
+          const knownCommentIds = new Set(
+            getActiveComments(importComments).map((comment) => comment.id)
+          );
           const validateOwnership = () => {
             validate_before_commit();
-            if (activeDocumentKeyRef.current !== documentKey) {
+            if (
+              activeDocumentKeyRef.current !== documentKey ||
+              markdownRef.current !== importMarkdown ||
+              commentsRef.current !== importComments ||
+              patchesRef.current !== importPatches ||
+              reviewBatchesRef.current !== importReviewBatches
+            ) {
               throw new Error(
-                "The agent response no longer belongs to the active project document."
+                "The project document changed while the agent response was being imported. No response data was imported."
               );
             }
           };
           const imported = await importProjectCommentReplyResponseBytes({
-            comments: operationComments,
+            comments: importComments,
             expectedProtocolVersion:
               binding.expected_response_protocol_version,
             knownCommentIds,
-            markdown: operationMarkdown,
+            markdown: importMarkdown,
             project,
             responseBytes: response_bytes,
-            reviewBatches: operationReviewBatches,
+            reviewBatches: importReviewBatches,
             validateBeforeCommit: validateOwnership
           });
           validateOwnership();
@@ -5460,12 +5479,13 @@ export function DocumentEditor() {
               "The agent response no longer belongs to the active project document."
             );
           }
-          setBaselineMarkdown(operationMarkdown);
+          setBaselineMarkdown(importMarkdown);
           setRestoredMarkdown(null);
           commentsRef.current = imported.comments;
           patchesRef.current = imported.patches;
           setComments(imported.comments);
           setPatches(imported.patches);
+          reviewBatchesRef.current = imported.review_batches;
           setReviewBatches(imported.review_batches);
           return imported;
         },
@@ -5504,9 +5524,10 @@ export function DocumentEditor() {
             pairingCode: "",
             pairingError: false,
             result: {
+              comments: imported.comments_created,
               patches: imported.patch_proposals_stored,
-              replies:
-                imported.replies_attached + imported.open_questions_attached
+              replies: imported.replies_attached,
+              warnings: imported.warnings.length
             },
             reviewCommentId: batch.ordered_comment_ids[0] ?? null
           });
@@ -5935,6 +5956,7 @@ export function DocumentEditor() {
         if (activeDocumentKeyRef.current !== operationDocumentKey) {
           return;
         }
+        reviewBatchesRef.current = batches;
         setReviewBatches(batches);
       })
       .catch((error) => {
@@ -5969,6 +5991,7 @@ export function DocumentEditor() {
       if (activeDocumentKeyRef.current !== operationDocumentKey) {
         return;
       }
+      reviewBatchesRef.current = batches;
       setReviewBatches(batches);
       setSaveFeedback({
         kind: "success",
@@ -6160,6 +6183,7 @@ export function DocumentEditor() {
       ) {
         return;
       }
+      reviewBatchesRef.current = batches;
       setReviewBatches(batches);
       setReviewBatchCancelDialog(null);
       setChatGptPromptDialog(null);
@@ -6255,6 +6279,7 @@ export function DocumentEditor() {
       patchesRef.current = imported.patches;
       setComments(imported.comments);
       setPatches(imported.patches);
+      reviewBatchesRef.current = imported.review_batches;
       setReviewBatches(imported.review_batches);
       setChatGptImportDialog(null);
       setSaveFeedback({
@@ -10040,6 +10065,7 @@ export function DocumentEditor() {
     setVersionEntries(versions);
     setComments(projectComments);
     setPatches(projectPatches);
+    reviewBatchesRef.current = projectReviewBatches;
     setReviewBatches(projectReviewBatches);
     setReviewQueueOverrides(projectReviewQueueOverrides);
     setDocumentActiveCommentState({
@@ -11929,8 +11955,7 @@ export function DocumentEditor() {
               if (!activeReviewBatch || !projectHandle) return;
               void startAgentExchangeForBatch({
                 batch: activeReviewBatch,
-                project: projectHandle,
-                reviewBatches
+                project: projectHandle
               });
             }
           })}
@@ -14409,9 +14434,9 @@ function createChatGptImportRepairPrompt(
     createAtomicTableRepairPrompt(error) ||
     createPatchDependencyRepairPrompt(error);
 
-  if (expectedProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION) {
-    return createManualExternalParticipantV3RepairPrompt({
-      specializedPrompt: createAtomicTableRepairPrompt(error),
+  if (expectedProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION) {
+    return createExternalParticipantV3RepairPrompt({
+      specializedPrompt,
       validationError: getProjectErrorMessage(error)
     });
   }
@@ -14581,13 +14606,13 @@ function createFocusedCommentsChatGptPrompt(
     reviewBatchEnvelope?: ReviewBatchPromptEnvelope;
   }
 ): string {
-  if (responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION) {
+  if (responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION) {
     if (!reviewBatchEnvelope) {
       throw new Error(
-        "Manual external-participant protocol v3 requires a tracked Review Batch envelope."
+        "External-participant protocol v3 requires a tracked Review Batch envelope."
       );
     }
-    return createManualExternalParticipantV3Prompt({
+    return createExternalParticipantV3Prompt({
       dedicatedDocumentInstruction: dedicatedDocumentReview,
       jsonText,
       observedAt,
@@ -19904,11 +19929,11 @@ function createFocusedCommentsExportPayload({
     markdown
   });
   if (
-    responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION &&
+    responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION &&
     !reviewBatchEnvelope
   ) {
     throw new Error(
-      "Manual external-participant protocol v3 requires a tracked Review Batch envelope."
+      "External-participant protocol v3 requires a tracked Review Batch envelope."
     );
   }
 
@@ -19926,16 +19951,16 @@ function createFocusedCommentsExportPayload({
       ...getProjectDocumentExportIdentity(project),
       exported_at: exportedAt
     },
-    [responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+    [responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
       ? "instructions_for_external_participant"
       : "instructions_for_chatgpt"]: {
       role:
-        responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+        responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
           ? "You are participating in a Patchmark document. Follow the user's instruction and return only useful native contribution primitives."
           : "You are helping review and improve a Markdown document through Patchmark comments.",
       rules:
-        responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
-          ? [...MANUAL_EXTERNAL_PARTICIPANT_PAYLOAD_RULES]
+        responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+          ? [...EXTERNAL_PARTICIPANT_PAYLOAD_RULES]
           : [
               "Reply to each exported comment by comment_id.",
         ...(reviewBatchEnvelope
@@ -19971,14 +19996,14 @@ function createFocusedCommentsExportPayload({
                 : [])
             ],
       expected_response_format:
-        responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+        responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
           ? {
               protocol: "patchmark.comment_reply_import" as const,
-              protocol_version: MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+              protocol_version: EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
             }
           : "patchmark.comment_reply_import"
     },
-    ...(responseProtocolVersion === MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
+    ...(responseProtocolVersion === EXTERNAL_PARTICIPANT_PROTOCOL_VERSION
       ? {
           document_snapshot: {
             document_id: reviewBatchEnvelope!.document_id,
@@ -20009,7 +20034,7 @@ function createFocusedCommentsExportPayload({
         markdown,
         patches,
         includeFullDocumentMarkdown:
-          responseProtocolVersion !== MANUAL_EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
+          responseProtocolVersion !== EXTERNAL_PARTICIPANT_PROTOCOL_VERSION,
         tableContexts
       })
     )

@@ -27,8 +27,10 @@ export type AgentExchangeProductFailure =
   | "unavailable";
 
 export type AgentExchangeProductResult = Readonly<{
+  comments: number;
   patches: number;
   replies: number;
+  warnings: number;
 }>;
 
 export function AgentExchangeActions({
@@ -282,14 +284,5 @@ function getStatus(
 
 function getReadyDetail(result: AgentExchangeProductResult | null): string {
   if (!result) return "The response is ready for human review.";
-  if (result.replies > 0 && result.patches > 0) {
-    return `${result.replies} ${result.replies === 1 ? "reply" : "replies"} and ${result.patches} ${result.patches === 1 ? "suggestion" : "suggestions"} require your review.`;
-  }
-  if (result.replies > 0) {
-    return `${result.replies} ${result.replies === 1 ? "reply is" : "replies are"} ready for review.`;
-  }
-  if (result.patches > 0) {
-    return `${result.patches} ${result.patches === 1 ? "suggestion is" : "suggestions are"} ready for review.`;
-  }
-  return "The response is ready for human review.";
+  return `Comments added: ${result.comments}. Replies imported: ${result.replies}. Patches proposed: ${result.patches}. Warnings: ${result.warnings}.`;
 }

@@ -25,12 +25,13 @@ export async function prepareAgentExchange({
       "Agent Exchange can prepare only an active exported Review Batch."
     );
   }
+  const responseProtocolVersion = batch.response_protocol_version ?? 2;
   if (
-    batch.response_protocol_version !== undefined &&
-    batch.response_protocol_version !== AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION
+    responseProtocolVersion !== 2 &&
+    responseProtocolVersion !== AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION
   ) {
     throw new Error(
-      "Agent Exchange can prepare only a Review Batch that requests protocol version 2."
+      "Agent Exchange can prepare only a Review Batch that requests protocol version 2 or 3."
     );
   }
   if (
@@ -53,8 +54,7 @@ export async function prepareAgentExchange({
     authority: "none" as const,
     copy_request_bytes: () => Uint8Array.from(requestBytes),
     expected_response_protocol: AGENT_EXCHANGE_RESPONSE_PROTOCOL,
-    expected_response_protocol_version:
-      AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION,
+    expected_response_protocol_version: responseProtocolVersion,
     max_response_bytes: maxResponseBytes,
     project_id: batch.project_id,
     request_byte_length: requestBytes.byteLength,

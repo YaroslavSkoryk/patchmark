@@ -144,7 +144,7 @@ export type LocalConnectorStatus = Readonly<{
 
 export type LocalConnectorExchangeRequest = Readonly<{
   expected_response_protocol: "patchmark.comment_reply_import";
-  expected_response_protocol_version: 2;
+  expected_response_protocol_version: 2 | 3;
   max_response_bytes: number;
   operation_id: string;
   protocol_version: typeof LOCAL_CONNECTOR_PROTOCOL_VERSION;

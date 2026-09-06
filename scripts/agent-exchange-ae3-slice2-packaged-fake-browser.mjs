@@ -163,7 +163,11 @@ async function runPackagedBrowserScenario(packaged, qualification) {
   );
   if (qualification.expectedPhase === "ready") {
     assert.equal(exchangeResponse.status, 200);
+    assert.equal(result.requested_response_protocol_version, 3);
+    assert.equal(result.imported_comments, 2);
     assert.equal(result.imported_replies, 1);
+    assert.equal(result.imported_patch_proposals, 1);
+    assert.equal(result.response_local_patch_links, 1);
     assert.equal(result.provider_tool_events, 0);
   } else {
     assert.ok(exchangeResponse.status >= 400);
@@ -179,8 +183,12 @@ async function runPackagedBrowserScenario(packaged, qualification) {
   return {
     browser_output_present: browserResult.stdout.length > 0,
     connector_response: exchangeResponse,
+    imported_comments: result.imported_comments,
     imported_patch_proposals: result.imported_patch_proposals,
     imported_replies: result.imported_replies,
+    requested_response_protocol_version:
+      result.requested_response_protocol_version,
+    response_local_patch_links: result.response_local_patch_links,
     packaged_stdin_sha256: sha256(
       Buffer.from(codexCapture.stdinBase64, "base64")
     ),

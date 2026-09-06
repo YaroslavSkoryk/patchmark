@@ -1,6 +1,5 @@
 import {
   AGENT_EXCHANGE_RESPONSE_PROTOCOL,
-  AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION,
   type AgentExchangeConnector,
   type AgentExchangeConnectorResponse,
   type AgentExchangeOperationBinding,
@@ -367,7 +366,7 @@ function validateResponseBinding(
     response.binding.review_batch_id === expected.review_batch_id &&
     response.binding.response_protocol === AGENT_EXCHANGE_RESPONSE_PROTOCOL &&
     response.binding.response_protocol_version ===
-      AGENT_EXCHANGE_RESPONSE_PROTOCOL_VERSION;
+      expected.expected_response_protocol_version;
   if (!exact) {
     throw new AgentExchangeOperationError(
       "response_binding_mismatch",

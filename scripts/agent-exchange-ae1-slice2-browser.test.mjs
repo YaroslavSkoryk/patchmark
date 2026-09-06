@@ -511,11 +511,12 @@ function createQualificationDriverShim() {
         ? encoder.encode('{"invalid":')
         : encoder.encode(JSON.stringify({
             protocol: 'patchmark.comment_reply_import',
-            protocol_version: 2,
+            protocol_version: binding.expected_response_protocol_version,
             review_batch_id: binding.review_batch_id,
             project_id: binding.project_id,
             document_id: binding.document_id,
             summary: 'Deterministic Agent Exchange qualification response.',
+            ...(binding.expected_response_protocol_version === 3 ? { new_comments: [] } : {}),
             replies: [{
               comment_id: ${JSON.stringify(commentId)},
               reply: 'The two requested improvements are proposed separately.',
@@ -524,13 +525,19 @@ function createQualificationDriverShim() {
             }],
             patch_proposals: [
               {
-                patch_key: 'careful-calibration', depends_on: [], comment_id: ${JSON.stringify(commentId)},
+                patch_key: 'careful-calibration', depends_on: [],
+                ...(binding.expected_response_protocol_version === 3
+                  ? { comment_target: { kind: 'existing_comment', comment_id: ${JSON.stringify(commentId)} } }
+                  : { comment_id: ${JSON.stringify(commentId)} }),
                 original_text: ${JSON.stringify(firstOriginal)}, suggested_text: ${JSON.stringify(firstSuggested)},
                 suggested_text_sources: [], reason: 'Clarifies the care taken during calibration.', reason_sources: [],
                 risk: 'Minimal wording change.', risk_sources: []
               },
               {
-                patch_key: 'every-rehearsal', depends_on: [], comment_id: ${JSON.stringify(commentId)},
+                patch_key: 'every-rehearsal', depends_on: [],
+                ...(binding.expected_response_protocol_version === 3
+                  ? { comment_target: { kind: 'existing_comment', comment_id: ${JSON.stringify(commentId)} } }
+                  : { comment_id: ${JSON.stringify(commentId)} }),
                 original_text: ${JSON.stringify(secondOriginal)}, suggested_text: ${JSON.stringify(secondSuggested)},
                 suggested_text_sources: [], reason: 'Uses more direct frequency wording.', reason_sources: [],
                 risk: 'Minimal wording change.', risk_sources: []
@@ -543,7 +550,7 @@ function createQualificationDriverShim() {
           ...binding,
           response_byte_length: response.byteLength,
           response_protocol: 'patchmark.comment_reply_import',
-          response_protocol_version: 2
+          response_protocol_version: binding.expected_response_protocol_version
         },
         response_bytes: response
       };
