@@ -1685,11 +1685,28 @@ export function DocumentEditor() {
     }
 
     if (!selectionResult.draft || !selectionResult.affordanceRect) {
-      if (selectionActionsRef.current?.presentation === "chooser") {
-        const current = selectionActionsRef.current;
+      const current = selectionActionsRef.current;
+      const currentDocumentFingerprint = createDocumentHash(markdown);
+      const browserSelection = window.getSelection();
+      const hasDifferentLiveSelection = Boolean(
+        browserSelection &&
+          !browserSelection.isCollapsed &&
+          browserSelection.rangeCount > 0
+      );
+      const canRetainCapturedSelection = Boolean(
+        current &&
+          !hasDifferentLiveSelection &&
+          current.documentKey === activeDocumentKey &&
+          current.documentVersion === documentVersion &&
+          current.projectId === activeDocumentIdentity.projectId &&
+          current.documentId === activeDocumentIdentity.documentId &&
+          current.documentFingerprint === currentDocumentFingerprint
+      );
+
+      if (current && canRetainCapturedSelection) {
         const position = getSelectionActionsPosition({
           anchorRect: current.anchorRect,
-          presentation: "chooser"
+          presentation: current.presentation
         });
         setSelectionActions({
           ...current,
@@ -1752,6 +1769,11 @@ export function DocumentEditor() {
       presentation
     });
 
+    const selectionHelp = getVisualSelectionDraftHelp(
+      selectedDraft,
+      selectionResult.help
+    );
+
     setVisualSelectionDraft(selectedDraft);
     setSelectionActions({
       anchorRect: selectionResult.affordanceRect,
@@ -1764,7 +1786,7 @@ export function DocumentEditor() {
       selectedDraft,
       selectedTextPositionTop,
       selectionFingerprint,
-      selectionHelp: selectionResult.help,
+      selectionHelp,
       selectionLatencyMs: Math.max(0, performance.now() - selectionStartedAt),
       targetHeadingLine: targetHeading?.line ?? null,
       trigger: preservesOpenChooser ? current.trigger : "selection",
@@ -1855,7 +1877,9 @@ export function DocumentEditor() {
                 ? "A rewrite draft already exists for this document. Resume or discard it first."
                 : null,
     sectionLabel: selectionActionsSectionLabel,
-    selectedTextAvailable: Boolean(selectionActions?.selectedDraft),
+    selectedTextAvailable: Boolean(
+      getDraftMarkdownRange(selectionActions?.selectedDraft ?? null)
+    ),
     selectionUnavailableReason:
       selectionActions?.selectionHelp ?? "Select document text first."
   });
@@ -2648,11 +2672,20 @@ export function DocumentEditor() {
   }, [isDirty]);
 
   useEffect(() => {
-    if (selectionActions?.presentation !== "chooser") {
+    if (!selectionActions) {
       return;
     }
 
-    function closeSelectionActionsFromOutside() {
+    function closeSelectionActionsFromOutside(event: PointerEvent) {
+      if (
+        event.target instanceof Element &&
+        event.target.closest(
+          "[data-testid='comment-selection-action'], [data-testid='selection-actions-chooser']"
+        )
+      ) {
+        return;
+      }
+
       setSelectionActions(null);
       setVisualSelectionDraft(null);
     }
@@ -2665,7 +2698,7 @@ export function DocumentEditor() {
         closeSelectionActionsFromOutside
       );
     };
-  }, [selectionActions?.presentation]);
+  }, [selectionActions]);
 
   useEffect(() => {
     let animationFrameId: number | null = null;
@@ -8673,6 +8706,10 @@ export function DocumentEditor() {
             markdown
           })
         : initialSelectedDraft;
+    const selectionHelp = getVisualSelectionDraftHelp(
+      selectedDraft,
+      selectionResult.help
+    );
     const workspaceRect = documentWorkspaceRef.current?.getBoundingClientRect();
     const selectedTextPositionTop =
       mode === "visual" &&
@@ -8720,7 +8757,7 @@ export function DocumentEditor() {
         projectId,
         targetHeadingLine
       }),
-      selectionHelp: selectionResult.help,
+      selectionHelp,
       selectionLatencyMs: null,
       targetHeadingLine,
       trigger: "context_menu",
@@ -9246,7 +9283,8 @@ export function DocumentEditor() {
           ? "section"
           : "document";
     if (
-      (scope === "selected_text" && !current.selectedDraft) ||
+      (scope === "selected_text" &&
+        !getDraftMarkdownRange(current.selectedDraft)) ||
       (scope === "section" && !current.targetHeadingLine)
     ) {
       rejectStaleSelectionActions();
@@ -14351,6 +14389,15 @@ function getDraftMarkdownRange(
     end > start
     ? { end, start }
     : null;
+}
+
+function getVisualSelectionDraftHelp(
+  draft: SelectedCommentAnchorDraft | null,
+  fallbackHelp: string | null
+): string | null {
+  return draft && !getDraftMarkdownRange(draft)
+    ? "Patchmark could not map this selection to one canonical Markdown range. Choose text within one supported document range."
+    : fallbackHelp;
 }
 
 function areSelectedCommentDraftsEqual(
@@ -20689,23 +20736,29 @@ function getBrowserSelectionSnapshotWithin(
     direction,
     range
   });
-  const blockElement = getSupportedVisualSelectionBlock(range);
+  const selectionContext = getSupportedVisualSelectionContext(range);
 
-  if (!blockElement) {
+  if (!selectionContext) {
     return null;
   }
 
-  const blockText = normalizeDomText(blockElement?.textContent ?? selectedText);
-  const selectedRangeInBlock = getSelectionOffsetsInsideElement(
-    blockElement,
-    range,
-    selectedText
+  const blockText = normalizeDomText(
+    selectionContext.blockElement?.textContent ?? selectedText
   );
+  const selectedRangeInBlock = selectionContext.blockElement
+    ? getSelectionOffsetsInsideElement(
+        selectionContext.blockElement,
+        range,
+        selectedText
+      )
+    : { end: selectedText.length, start: 0 };
 
   return {
     affordanceRect,
     blockText,
-    blockKind: getVisualAnchorContextKind(blockElement),
+    blockKind: selectionContext.blockElement
+      ? getVisualAnchorContextKind(selectionContext.blockElement)
+      : "block",
     direction,
     selectedEndInBlock: selectedRangeInBlock?.end,
     selectedStartInBlock: selectedRangeInBlock?.start,
@@ -20716,14 +20769,22 @@ function getBrowserSelectionSnapshotWithin(
 const SUPPORTED_VISUAL_SELECTION_BLOCK_SELECTOR =
   "p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, code";
 
-function getSupportedVisualSelectionBlock(range: Range): Element | null {
-  const startBlock = getClosestSupportedVisualSelectionBlock(
-    range.startContainer
+function getSupportedVisualSelectionContext(
+  range: Range
+): { blockElement: Element | null } | null {
+  const startBlock = getSupportedVisualSelectionBlockAtPoint(
+    range.startContainer,
+    range.startOffset,
+    "start"
   );
-  const endBlock = getClosestSupportedVisualSelectionBlock(range.endContainer);
+  const endBlock = getSupportedVisualSelectionBlockAtPoint(
+    range.endContainer,
+    range.endOffset,
+    "end"
+  );
 
   if (startBlock && startBlock === endBlock) {
-    return startBlock;
+    return { blockElement: startBlock };
   }
 
   if (
@@ -20735,7 +20796,7 @@ function getSupportedVisualSelectionBlock(range: Range): Element | null {
       range.endOffset
     )
   ) {
-    return startBlock;
+    return { blockElement: startBlock };
   }
 
   if (
@@ -20747,10 +20808,71 @@ function getSupportedVisualSelectionBlock(range: Range): Element | null {
       range.startOffset
     )
   ) {
-    return endBlock;
+    return { blockElement: endBlock };
+  }
+
+  if (
+    startBlock &&
+    endBlock &&
+    isSupportedPlainParagraphRange(startBlock, endBlock)
+  ) {
+    return { blockElement: null };
   }
 
   return null;
+}
+
+function getSupportedVisualSelectionBlockAtPoint(
+  container: Node,
+  offset: number,
+  endpoint: "end" | "start"
+): Element | null {
+  const closestBlock = getClosestSupportedVisualSelectionBlock(container);
+
+  if (closestBlock || container.nodeType !== Node.ELEMENT_NODE) {
+    return closestBlock;
+  }
+
+  const childNodes = (container as Element).childNodes;
+  const adjacentNode =
+    endpoint === "start" ? childNodes[offset] : childNodes[offset - 1];
+
+  return adjacentNode
+    ? getClosestSupportedVisualSelectionBlock(adjacentNode)
+    : null;
+}
+
+function isSupportedPlainParagraphRange(
+  startBlock: Element,
+  endBlock: Element
+): boolean {
+  const parent = startBlock.parentElement;
+
+  if (
+    startBlock.tagName !== "P" ||
+    endBlock.tagName !== "P" ||
+    !parent ||
+    parent !== endBlock.parentElement ||
+    !parent.matches(".patchmark-prose")
+  ) {
+    return false;
+  }
+
+  let currentBlock: Element | null = startBlock;
+
+  while (currentBlock) {
+    if (currentBlock.tagName !== "P") {
+      return false;
+    }
+
+    if (currentBlock === endBlock) {
+      return true;
+    }
+
+    currentBlock = currentBlock.nextElementSibling;
+  }
+
+  return false;
 }
 
 function getClosestSupportedVisualSelectionBlock(node: Node): Element | null {
@@ -23338,12 +23460,16 @@ function createCommentAnchor({
     throw new Error(SHORT_SELECTION_HELP);
   }
 
-  const markdownStartOffset = usableSelectedDraft
-    ? usableSelectedDraft.markdownStartOffset
-    : selection.start;
-  const markdownEndOffset = usableSelectedDraft
-    ? usableSelectedDraft.markdownEndOffset
-    : selection.end;
+  const selectedRange = getDraftMarkdownRange(usableSelectedDraft);
+
+  if (!selectedRange) {
+    throw new Error(
+      "The selected text does not map to one canonical Markdown range."
+    );
+  }
+
+  const markdownStartOffset = selectedRange.start;
+  const markdownEndOffset = selectedRange.end;
   const contextStartOffset =
     usableSelectedDraft.anchorContext.markdown_start_offset;
   const contextEndOffset = usableSelectedDraft.anchorContext.markdown_end_offset;

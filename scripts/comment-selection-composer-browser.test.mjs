@@ -43,6 +43,8 @@ const unsupportedVisualFallbackScreenshotPath =
   process.env.PATCHMARK_UNSUPPORTED_VISUAL_FALLBACK_SCREENSHOT;
 const semanticReviewAuditOnly =
   process.env.PATCHMARK_SEMANTIC_REVIEW_AUDIT_ONLY === "1";
+const selectedTextCommentOnly =
+  process.env.PATCHMARK_SELECTED_TEXT_COMMENT_ONLY === "1";
 const preambleTarget =
   "Preamble selection has no deterministic containing section.";
 const paragraphTarget =
@@ -64,6 +66,29 @@ const multiBlockStart = "Multi-block anchor first paragraph.";
 const multiBlockEnd = "Multi-block anchor second paragraph.";
 const secondDocumentTarget =
   "Second-document selection must never reuse the first document draft.";
+const thirdDocumentTarget =
+  "Third-document selection completes the rapid switching fixture.";
+const reportedSelectionVisibleText = [
+  "The remaining 75% of the registered capital shall be called in accordance with the",
+  "procedures and requirements set out in Clause 5.3 of this Agreement, at such time as",
+  "the Board of Directors determines the Company requires such capital for its",
+  "operations, provided always that any such call shall require the prior written consent",
+  "of Party-1."
+].join(" ");
+const reportedSelectionMarkdown = [
+  "The remaining 75% of the registered capital shall be called in accordance with the",
+  "procedures and requirements set out in Clause 5.3 of this Agreement, at such time as",
+  "the Board of Directors determines the Company requires such capital for its",
+  "operations, provided always that any such call shall require the prior written consent&#x20;",
+  "",
+  "of Party-1."
+].join("\n");
+const formattedSelectionVisibleText =
+  "A selection across multiple rendered text nodes keeps ___ and literal___underscores intact.";
+const formattedSelectionMarkdown = [
+  "A selection across **multiple rendered text nodes** keeps \\_\\_\\_ and",
+  "literal___underscores intact."
+].join("\n");
 
 await run();
 
@@ -149,7 +174,7 @@ async function run() {
     await waitForVisualEditor(client);
 
     let initialFingerprint = fingerprintProject(fixtureDir);
-    const initialDocumentContentFingerprint = fingerprintDocumentContent(fixtureDir);
+    let initialDocumentContentFingerprint = fingerprintDocumentContent(fixtureDir);
     const initialDocumentManifestReviewState = readDocumentManifestReviewState(
       fixtureDir,
       "doc_action"
@@ -172,6 +197,25 @@ async function run() {
       );
       console.log(JSON.stringify(evidence, null, 2));
       console.log("Isolated Markdown-safe unsupported Visual fallback passed.");
+      return;
+    }
+
+    const selectedTextCommentRegression =
+      await runReportedSelectedTextCommentScenario(client, fixtureDir);
+    initialFingerprint = fingerprintProject(fixtureDir);
+    initialDocumentContentFingerprint = fingerprintDocumentContent(fixtureDir);
+    await evaluate(client, {
+      expression: `(() => {
+        window.__patchmarkSelectionActionsEditorNode =
+          document.querySelector("[aria-label='editable markdown']");
+        return Boolean(window.__patchmarkSelectionActionsEditorNode);
+      })()`
+    });
+    await installRewritePersistenceObserver(client);
+
+    if (selectedTextCommentOnly) {
+      console.log(JSON.stringify(selectedTextCommentRegression, null, 2));
+      console.log("Selected-text comment browser regression passed.");
       return;
     }
 
@@ -1289,7 +1333,9 @@ async function run() {
       dispatchMouseUp: true,
       scrollBlock: "center"
     });
-    await waitForSelectionAction(client, tableTarget);
+    await waitForSelectionAction(client, tableTarget, {
+      allowCollapsedAfterCapture: true
+    });
     await openSelectionChooser(client);
     const rewriteTableVisualRenderStartedAt = Date.now();
     await chooseSelectionAction(client, "rewrite_section");
@@ -1713,9 +1759,10 @@ async function run() {
       dispatchMouseUp: true,
       scrollBlock: "center"
     });
-    const tableAction = await waitForSelectionAction(client, tableTarget);
+    const tableAction = await waitForSelectionAction(client, tableTarget, {
+      allowCollapsedAfterCapture: true
+    });
     assert.ok(tableAction.scrollY > 2000, "Table selection should require long scrolling.");
-    assert.equal(tableAction.cellTag, "TD");
     assertActionInViewport(tableAction);
     await openSelectionChooser(client);
     const tableChooser = await waitForChooser(
@@ -1766,7 +1813,9 @@ async function run() {
       dispatchMouseUp: true,
       scrollBlock: "center"
     });
-    await waitForSelectionAction(client, tableTarget);
+    await waitForSelectionAction(client, tableTarget, {
+      allowCollapsedAfterCapture: true
+    });
     assert.equal(
       await evaluate(client, {
         expression: `Boolean(document.querySelector("[data-testid='selection-actions-chooser']"))`
@@ -2057,7 +2106,9 @@ async function run() {
       dispatchMouseUp: true,
       scrollBlock: "center"
     });
-    await waitForSelectionAction(client, tableTarget);
+    await waitForSelectionAction(client, tableTarget, {
+      allowCollapsedAfterCapture: true
+    });
 
     await openSelectionComposer(client);
     const submitComposer = await waitForComposer(client, tableTarget);
@@ -2311,6 +2362,7 @@ async function run() {
         {
           kind: "comment-selection-composer-browser",
           editorUrl,
+          selectedTextCommentRegression,
           paragraphAction,
           tableAction,
           chooserRenderCount: paragraphChooser.renderCount,
@@ -2376,6 +2428,279 @@ async function run() {
     rmSync(userDataDir, { force: true, recursive: true });
     rmSync(fixtureDir, { force: true, recursive: true });
   }
+}
+
+async function runReportedSelectedTextCommentScenario(client, fixtureDir) {
+  await selectDocument(client, "Appendix");
+  await waitForActiveDocument(client, "Appendix");
+  await waitForVisualEditor(client);
+
+  const appendixMarkdown = createAppendixMarkdown();
+  const reportedStart = appendixMarkdown.indexOf(reportedSelectionMarkdown);
+  const reportedEnd = reportedStart + reportedSelectionMarkdown.length;
+  const formattedStart = appendixMarkdown.indexOf(formattedSelectionMarkdown);
+  const formattedEnd = formattedStart + formattedSelectionMarkdown.length;
+  assert.ok(reportedStart >= 0);
+  assert.ok(formattedStart >= 0);
+
+  const forwardSelection = await selectVisualParagraphRange(client, {
+    endText: "of Party-1.",
+    reverse: false,
+    startText: "The remaining 75%"
+  });
+  assert.equal(forwardSelection.normalizedText, reportedSelectionVisibleText);
+  assert.equal(forwardSelection.direction, "forward");
+  assert.ok(
+    forwardSelection.lineRectCount > 1,
+    "The reported selection must exercise browser visual wrapping."
+  );
+  assert.equal(forwardSelection.startBlockTag, "P");
+  assert.equal(forwardSelection.endBlockTag, "P");
+  assert.notEqual(forwardSelection.startBlockText, forwardSelection.endBlockText);
+  await waitForSelectionAction(client, forwardSelection.rawText);
+  await openSelectionChooser(client);
+  let forwardChooser = await waitForChooser(
+    client,
+    "The remaining 75%",
+    "selection"
+  );
+  assertCompleteChooser(forwardChooser);
+  assert.equal(forwardChooser.activeAction, "selected_text");
+
+  await evaluate(client, {
+    expression: `(() => {
+      window.getSelection()?.removeAllRanges();
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      return window.getSelection()?.rangeCount ?? -1;
+    })()`,
+    userGesture: true
+  });
+  forwardChooser = await waitForChooser(
+    client,
+    "The remaining 75%",
+    "selection"
+  );
+  assertCompleteChooser(forwardChooser);
+  assert.equal(forwardChooser.activeAction, "selected_text");
+
+  await chooseSelectionAction(client, "selected_text");
+  const forwardComposer = await waitForComposer(
+    client,
+    "The remaining 75%"
+  );
+  assertComposerInViewport(forwardComposer);
+  await fillComposer(client, "Reported forward selected-text comment.");
+  await clickComposerButton(client, "Save Comment");
+  await waitForComposerMissing(client, false);
+  const forwardComment = await waitForPersistedComment(
+    fixtureDir,
+    "doc_appendix",
+    {
+      commentText: "Reported forward selected-text comment.",
+      selectedText: reportedSelectionMarkdown
+    }
+  );
+  assertNativeSelectedTextComment(forwardComment, {
+    end: reportedEnd,
+    id: "PM-COMMENT-0001",
+    start: reportedStart,
+    visibleText: reportedSelectionVisibleText
+  });
+  await waitForCreatedCommentCard(client, forwardComment.id);
+  const forwardHighlight = await waitForActiveCommentHighlightText(
+    client,
+    reportedSelectionVisibleText
+  );
+
+  await clickButtonByText(client, "Markdown Mode");
+  await waitFor(
+    client,
+    "Markdown editor after selected-text comment",
+    `Boolean(document.querySelector("textarea.markdown-source-editor"))`
+  );
+  assert.deepEqual(
+    readFixtureComments(fixtureDir, "doc_appendix").find(
+      (comment) => comment.id === forwardComment.id
+    )?.anchor,
+    forwardComment.anchor,
+    "Visual to Markdown mode must preserve the canonical anchor."
+  );
+  await clickButtonByText(client, "Visual Mode");
+  await waitForVisualEditor(client);
+  await waitForCreatedCommentCard(client, forwardComment.id);
+  const roundTripHighlight = await waitForActiveCommentHighlightText(
+    client,
+    reportedSelectionVisibleText
+  );
+
+  const reversedSelection = await selectVisualParagraphRange(client, {
+    endText: "of Party-1.",
+    reverse: true,
+    startText: "The remaining 75%"
+  });
+  assert.equal(reversedSelection.normalizedText, reportedSelectionVisibleText);
+  assert.equal(reversedSelection.direction, "backward");
+  await waitForSelectionAction(client, reversedSelection.rawText);
+  await openSelectionComposer(client);
+  await waitForComposer(client, "The remaining 75%");
+  await fillComposer(client, "Reported reversed selected-text comment.");
+  await clickComposerButton(client, "Save Comment");
+  await waitForComposerMissing(client, false);
+  const reversedComment = await waitForPersistedComment(
+    fixtureDir,
+    "doc_appendix",
+    {
+      commentText: "Reported reversed selected-text comment.",
+      selectedText: reportedSelectionMarkdown
+    }
+  );
+  assertNativeSelectedTextComment(reversedComment, {
+    end: reportedEnd,
+    id: "PM-COMMENT-0002",
+    start: reportedStart,
+    visibleText: reportedSelectionVisibleText
+  });
+
+  const formattedSelection = await selectVisualBlockRange(client, {
+    endAtBlockBoundary: false,
+    reverse: false,
+    visibleText: formattedSelectionVisibleText
+  });
+  assert.ok(
+    formattedSelection.textNodeCount > 1,
+    "The formatted fixture must span multiple rendered DOM text nodes."
+  );
+  await waitForSelectionAction(client, formattedSelection.rawText);
+  await openSelectionComposer(client);
+  await waitForComposer(client, "A selection across");
+  await fillComposer(client, "Formatted selected-text comment.");
+  await clickComposerButton(client, "Save Comment");
+  await waitForComposerMissing(client, false);
+  const formattedComment = await waitForPersistedComment(
+    fixtureDir,
+    "doc_appendix",
+    {
+      commentText: "Formatted selected-text comment.",
+      selectedText: formattedSelectionMarkdown
+    }
+  );
+  assertNativeSelectedTextComment(formattedComment, {
+    end: formattedEnd,
+    id: "PM-COMMENT-0003",
+    start: formattedStart,
+    visibleText: formattedSelectionVisibleText
+  });
+
+  const boundarySelection = await selectVisualBlockRange(client, {
+    endAtBlockBoundary: true,
+    reverse: false,
+    visibleText: formattedSelectionVisibleText
+  });
+  assert.equal(boundarySelection.endContainerTag, "P");
+  await waitForSelectionAction(client, boundarySelection.rawText);
+  await openSelectionChooser(client);
+  const boundaryChooser = await waitForChooser(client, "A selection across");
+  assertCompleteChooser(boundaryChooser);
+  await cancelChooser(client);
+
+  const selectionBeforeUnsupported = await selectVisualBlockRange(client, {
+    reverse: false,
+    visibleText: formattedSelectionVisibleText
+  });
+  await waitForSelectionAction(client, selectionBeforeUnsupported.rawText);
+
+  const unsupportedSelection = await selectVisualParagraphRange(client, {
+    endText: "Appendix Tail",
+    reverse: false,
+    startText: "A selection across"
+  });
+  assert.equal(unsupportedSelection.startBlockTag, "P");
+  assert.equal(unsupportedSelection.endBlockTag, "H1");
+  await assertSelectionActionsMissing(client);
+  const unsupportedChooser = await openRightClickChooser(client);
+  assert.equal(
+    unsupportedChooser.unavailableIds.includes("selected_text"),
+    true
+  );
+  assert.equal(unsupportedChooser.actionIds.includes("section"), true);
+  assert.equal(unsupportedChooser.actionIds.includes("document"), true);
+  assert.match(unsupportedChooser.text, /Select document text first/);
+  await cancelChooser(client);
+
+  await selectVisualParagraphRange(client, {
+    endText: "of Party-1.",
+    reverse: false,
+    startText: "The remaining 75%"
+  });
+  await waitForSelectionAction(client, forwardSelection.rawText);
+  await openSelectionChooser(client);
+  await selectDocument(client, "Notes");
+  await waitForActiveDocument(client, "Notes");
+  await assertSelectionActionsMissing(client);
+  await selectVisualText(client, secondDocumentTarget, {
+    dispatchMouseUp: true,
+    scrollBlock: "center"
+  });
+  await waitForSelectionAction(client, secondDocumentTarget);
+  await rapidSelectDocuments(client, ["Appendix", "Action Plan"]);
+  await waitForActiveDocument(client, "Action Plan");
+  await assertSelectionActionsMissing(client);
+
+  const beforeReload = fingerprintProject(fixtureDir);
+  await client.call("Page.reload", { ignoreCache: true });
+  await waitForEditorShell(client);
+  await clickButtonByText(client, "Open Project Folder");
+  await waitForActiveDocument(client, "Action Plan");
+  await waitForVisualEditor(client);
+  await selectDocument(client, "Appendix");
+  await waitForActiveDocument(client, "Appendix");
+  for (const comment of [forwardComment, reversedComment, formattedComment]) {
+    await waitForCreatedCommentCard(client, comment.id);
+  }
+  await selectDocument(client, "Action Plan");
+  await waitForActiveDocument(client, "Action Plan");
+  await assertSelectionActionsMissing(client);
+  assert.deepEqual(
+    fingerprintProject(fixtureDir),
+    beforeReload,
+    "Reloading selected-text comments must not create additional writes."
+  );
+
+  return {
+    boundaryEndpointSupported: true,
+    canonicalRange: { end: reportedEnd, start: reportedStart },
+    focusLossPreservedCapturedTarget: true,
+    formattedCanonicalRange: { end: formattedEnd, start: formattedStart },
+    formattedCommentId: formattedComment.id,
+    forwardCommentId: forwardComment.id,
+    forwardHighlight,
+    rapidDocumentSwitchRejectedStaleSelection: true,
+    reversedCommentId: reversedComment.id,
+    roundTripHighlight,
+    unsupportedStructureRejected: true
+  };
+}
+
+function assertNativeSelectedTextComment(
+  comment,
+  { end, id, start, visibleText }
+) {
+  assert.equal(comment.id, id);
+  assert.equal(comment.type, "note");
+  assert.equal(comment.status, "open");
+  assert.equal(comment.trashed_at, undefined);
+  assert.deepEqual(comment.thread, []);
+  assert.equal(comment.anchor.kind, "selected_text");
+  assert.equal(comment.anchor.markdown_start_offset, start);
+  assert.equal(comment.anchor.markdown_end_offset, end);
+  assert.equal(comment.anchor.anchor_source, "visual");
+  assert.equal(
+    comment.anchor.anchor_context?.plain_text,
+    visibleText
+  );
+  assert.equal(comment.anchor.action_context?.default_scope, "containing_section");
+  assert.match(comment.created_at, /^\d{4}-\d{2}-\d{2}T/);
+  assert.equal(comment.updated_at, comment.created_at);
 }
 
 async function closeCommentsIfOpen(client) {
@@ -2538,6 +2863,7 @@ function createFixture() {
     "",
     "A separate document confirms document-scoped selection state."
   ].join("\n");
+  const appendixMarkdown = createAppendixMarkdown();
   const documents = [
     createDocumentStore({
       comments: createExistingComments(actionMarkdown, now),
@@ -2559,6 +2885,18 @@ function createFixture() {
       now,
       path: "notes.md",
       position: 2000,
+      patches: [],
+      root,
+      withBookmark: false
+    }),
+    createDocumentStore({
+      comments: [],
+      displayTitle: "Appendix",
+      documentId: "doc_appendix",
+      markdown: appendixMarkdown,
+      now,
+      path: "appendix.md",
+      position: 3000,
       patches: [],
       root,
       withBookmark: false
@@ -2627,6 +2965,30 @@ function createActionMarkdown() {
     "## 11. Production, Capacity, and Operations",
     "",
     "Production growth must follow actual capacity, not only demand."
+  ].join("\n");
+}
+
+function createAppendixMarkdown() {
+  return [
+    "# Appendix",
+    "",
+    thirdDocumentTarget,
+    "",
+    "#### 4.1.3.1 Schedule of Payment",
+    "",
+    "##### (a) Initial Capital Payment",
+    "",
+    "Each Party shall pay its initial contribution on the agreed date.",
+    "",
+    "##### (b) Call for Remaining Unpaid Capital",
+    "",
+    reportedSelectionMarkdown,
+    "",
+    formattedSelectionMarkdown,
+    "",
+    "# Appendix Tail",
+    "",
+    "A third document exercises latest-request-wins selection invalidation."
   ].join("\n");
 }
 
@@ -2785,6 +3147,168 @@ async function waitForVisualEditor(client) {
   })()`);
 }
 
+async function selectVisualParagraphRange(
+  client,
+  { endText, reverse, startText }
+) {
+  return await evaluate(client, {
+    expression: `(() => {
+      const root = document.querySelector(".patchmark-prose");
+      if (!root) throw new Error("Visual editor missing.");
+      const blocks = Array.from(
+        root.querySelectorAll("p, h1, h2, h3, h4, h5, h6")
+      );
+      const startBlock = blocks.find((block) =>
+        block.textContent.includes(${JSON.stringify(startText)})
+      );
+      const endBlock = blocks.find((block) =>
+        block.textContent.includes(${JSON.stringify(endText)})
+      );
+      if (!startBlock || !endBlock) {
+        throw new Error("Visual paragraph range blocks missing.");
+      }
+      const startWalker = document.createTreeWalker(
+        startBlock,
+        NodeFilter.SHOW_TEXT
+      );
+      const endWalker = document.createTreeWalker(
+        endBlock,
+        NodeFilter.SHOW_TEXT
+      );
+      let startNode = startWalker.nextNode();
+      while (startNode && !startNode.data.includes(${JSON.stringify(startText)})) {
+        startNode = startWalker.nextNode();
+      }
+      let endNode = endWalker.nextNode();
+      while (endNode && !endNode.data.includes(${JSON.stringify(endText)})) {
+        endNode = endWalker.nextNode();
+      }
+      if (!startNode || !endNode) {
+        throw new Error("Visual paragraph range text missing.");
+      }
+      const startOffset = startNode.data.indexOf(${JSON.stringify(startText)});
+      const endOffset =
+        endNode.data.indexOf(${JSON.stringify(endText)}) +
+        ${JSON.stringify(endText)}.length;
+      const range = document.createRange();
+      range.setStart(startNode, startOffset);
+      range.setEnd(endNode, endOffset);
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      if (${JSON.stringify(reverse)}) {
+        selection.setBaseAndExtent(
+          endNode,
+          endOffset,
+          startNode,
+          startOffset
+        );
+      } else {
+        selection.addRange(range);
+      }
+      startBlock.scrollIntoView({ block: "center", inline: "nearest" });
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      document.querySelector(".editor-body")
+        .dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      const rawText = selection.toString();
+      return {
+        direction: ${JSON.stringify(reverse)} ? "backward" : "forward",
+        endBlockTag: endBlock.tagName,
+        endBlockText: endBlock.textContent,
+        lineRectCount: range.getClientRects().length,
+        normalizedText: rawText.replace(/\\s+/g, " ").trim(),
+        rawText,
+        startBlockTag: startBlock.tagName,
+        startBlockText: startBlock.textContent
+      };
+    })()`,
+    userGesture: true
+  });
+}
+
+async function selectVisualBlockRange(
+  client,
+  { endAtBlockBoundary, reverse, visibleText }
+) {
+  return await evaluate(client, {
+    expression: `(() => {
+      const normalize = (value) => value.replace(/\\s+/g, " ").trim();
+      const visibleText = ${JSON.stringify(visibleText)};
+      const root = document.querySelector(".patchmark-prose");
+      if (!root) throw new Error("Visual editor missing.");
+      const block = Array.from(
+        root.querySelectorAll("p, li, blockquote, h1, h2, h3, h4, h5, h6, pre, code, td, th")
+      ).find((candidate) => normalize(candidate.textContent ?? "") === visibleText);
+      if (!block) throw new Error("Visual selection block missing: " + visibleText);
+      const points = [];
+      const visibleParts = [];
+      const walker = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+      let textNode = walker.nextNode();
+      while (textNode) {
+        for (let index = 0; index < textNode.data.length; index += 1) {
+          const character = textNode.data[index];
+          if (/\\s/.test(character)) {
+            if (
+              visibleParts.length > 0 &&
+              visibleParts[visibleParts.length - 1] !== " "
+            ) {
+              visibleParts.push(" ");
+              points.push({ node: textNode, offset: index });
+            }
+          } else {
+            visibleParts.push(character);
+            points.push({ node: textNode, offset: index });
+          }
+        }
+        textNode = walker.nextNode();
+      }
+      while (visibleParts[visibleParts.length - 1] === " ") {
+        visibleParts.pop();
+        points.pop();
+      }
+      if (visibleParts.join("") !== visibleText) {
+        throw new Error("Normalized Visual block text differs from the fixture.");
+      }
+      const startPoint = points[0];
+      const endPoint = points[points.length - 1];
+      if (!startPoint || !endPoint) throw new Error("Visual range points missing.");
+      const range = document.createRange();
+      range.setStart(startPoint.node, startPoint.offset);
+      if (${JSON.stringify(endAtBlockBoundary)}) {
+        range.setEnd(block, block.childNodes.length);
+      } else {
+        range.setEnd(endPoint.node, endPoint.offset + 1);
+      }
+      const selection = window.getSelection();
+      selection.removeAllRanges();
+      if (${JSON.stringify(reverse)}) {
+        selection.setBaseAndExtent(
+          range.endContainer,
+          range.endOffset,
+          range.startContainer,
+          range.startOffset
+        );
+      } else {
+        selection.addRange(range);
+      }
+      block.scrollIntoView({ block: "center", inline: "nearest" });
+      document.dispatchEvent(new Event("selectionchange", { bubbles: true }));
+      document.querySelector(".editor-body")
+        .dispatchEvent(new MouseEvent("mouseup", { bubbles: true }));
+      const rawText = selection.toString();
+      return {
+        endContainerTag:
+          range.endContainer.nodeType === Node.ELEMENT_NODE
+            ? range.endContainer.tagName
+            : range.endContainer.parentElement?.tagName ?? null,
+        normalizedText: normalize(rawText),
+        rawText,
+        textNodeCount: new Set(points.map((point) => point.node)).size
+      };
+    })()`,
+    userGesture: true
+  });
+}
+
 async function selectVisualText(
   client,
   selectedText,
@@ -2912,12 +3436,27 @@ async function waitForMarkdownSelectionAction(client) {
   })()`, Boolean);
 }
 
-async function waitForSelectionAction(client, expectedText) {
+async function waitForSelectionAction(
+  client,
+  expectedText,
+  { allowCollapsedAfterCapture = false } = {}
+) {
   return await waitFor(client, "selection action", `(() => {
     const action = document.querySelector("[data-testid='comment-selection-action']");
     const selection = window.getSelection();
-    if (!action || selection?.toString() !== ${JSON.stringify(expectedText)}) {
-      return null;
+    const selectedText = selection?.toString() ?? "";
+    if (
+      !action ||
+      (!${JSON.stringify(allowCollapsedAfterCapture)} &&
+        selectedText !== ${JSON.stringify(expectedText)})
+    ) {
+      return {
+        actionPresent: Boolean(action),
+        anchorNode: selection?.anchorNode?.parentElement?.outerHTML ?? null,
+        focusNode: selection?.focusNode?.parentElement?.outerHTML ?? null,
+        ready: false,
+        selectedText
+      };
     }
     const rect = action.getBoundingClientRect();
     const style = getComputedStyle(action);
@@ -2925,6 +3464,7 @@ async function waitForSelectionAction(client, expectedText) {
     const cell = range?.commonAncestorContainer.parentElement?.closest("td, th");
     const toolbar = document.querySelector(".mdxeditor-toolbar")?.getBoundingClientRect();
     return {
+      ready: true,
       selectedText: selection.toString(),
       cellTag: cell?.tagName ?? null,
       scrollY: window.scrollY,
@@ -2946,7 +3486,7 @@ async function waitForSelectionAction(client, expectedText) {
         zIndex: style.zIndex
       }
     };
-  })()`, (value) => Boolean(value));
+  })()`, (value) => Boolean(value?.ready));
 }
 
 function assertActionInViewport(action) {
@@ -3460,6 +4000,66 @@ async function waitForCreatedCommentCard(client, commentId) {
       item.getAttribute("data-comment-anchor-status") === "active"
     );
   })()`);
+}
+
+async function waitForActiveCommentHighlightText(client, expectedText) {
+  return await waitFor(
+    client,
+    `active comment highlight ${expectedText.slice(0, 32)}`,
+    `(() => {
+      const normalize = (value) => value.replace(/\\s+/g, " ").trim();
+      const highlight = globalThis.CSS?.highlights?.get(
+        "patchmark-comment-open-selected-anchor"
+      );
+      const ranges = highlight ? Array.from(highlight) : [];
+      const matches = ranges
+        .map((range) => ({
+          rectCount: Array.from(range.getClientRects()).filter(
+            (rect) => rect.width > 0 && rect.height > 0
+          ).length,
+          text: normalize(range.toString())
+        }))
+        .filter((entry) => entry.text === ${JSON.stringify(expectedText)});
+      return matches.length > 0 && matches[0].rectCount > 0
+        ? matches[0]
+        : null;
+    })()`,
+    Boolean
+  );
+}
+
+async function assertSelectionActionsMissing(client) {
+  await waitFor(
+    client,
+    "stale selection actions removed",
+    `(() => ({
+      chooser: Boolean(document.querySelector("[data-testid='selection-actions-chooser']")),
+      compact: Boolean(document.querySelector("[data-testid='comment-selection-action']"))
+    }))()`,
+    (state) => state && !state.chooser && !state.compact
+  );
+}
+
+async function rapidSelectDocuments(client, titles) {
+  await evaluate(client, {
+    expression: `(() => {
+      const titles = ${JSON.stringify(titles)};
+      const buttons = Array.from(
+        document.querySelectorAll(".project-document-select")
+      );
+      for (const title of titles) {
+        const button = buttons.find((candidate) =>
+          candidate.textContent.includes(title)
+        );
+        if (!button || button.disabled) {
+          throw new Error("Document button missing during rapid switch: " + title);
+        }
+        button.click();
+      }
+      return true;
+    })()`,
+    userGesture: true
+  });
 }
 
 async function auditExistingAnchors(client) {

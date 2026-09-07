@@ -209,6 +209,7 @@
     "@mdxeditor/editor": "4.2.2",
     "lexical": "0.48.0",
     "libsodium-wrappers-sumo": "0.8.4",
+    "micromark-util-decode-string": "2.0.1",
     "next": "16.3.3",
     "qr": "0.6.0",
     "react": "^19.0.0",

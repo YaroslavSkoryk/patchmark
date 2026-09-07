@@ -301,7 +301,7 @@ export function mapVisibleSelectionToMarkdownRange({
   ) {
     const textIndex = buildMarkdownPlainTextIndex(contextMarkdown);
     const localStart = textIndex.positions[visibleStart];
-    const localEnd = textIndex.positions[visibleEnd - 1];
+    const localEnd = textIndex.ends[visibleEnd - 1];
 
     if (
       typeof localStart === "number" &&
@@ -309,7 +309,7 @@ export function mapVisibleSelectionToMarkdownRange({
       normalizeVisibleText(textIndex.text.slice(visibleStart, visibleEnd)) ===
         normalizedSelectedText
     ) {
-      localRange = { start: localStart, end: localEnd + 1 };
+      localRange = { start: localStart, end: localEnd };
     }
   }
 

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   mkdtempSync,
@@ -302,12 +303,114 @@ try {
     ).length,
     7
   );
+  const validHandleInstanceId = "local_project_valid_handle_resume";
+  await seedPersistedOpfsProjectHandle(client, {
+    directoryName: "Strategy-valid-resume",
+    files: projectBeforeStaleHandleResume,
+    localInstanceId: validHandleInstanceId,
+    removeAfterSeed: false
+  });
+  const shareholdersSavedMarkdown =
+    projectBeforeStaleHandleResume["shareholders.md"];
+  const shareholdersRecoveryMarker = "VALID_HANDLE_UNSAVED_RECOVERY";
+  const shareholdersRecoveredMarkdown =
+    `# SHAREHOLDERS AGREEMENT\n\n` +
+    `Recovered working Markdown intentionally omits the persisted selected-text anchor.\n\n` +
+    `${shareholdersRecoveryMarker}\n`;
+  const validHandlePickerGuardId = await installProjectPickerFailureGuard(client);
+  try {
+    await reloadToLanding(client);
+    await waitFor(
+      client,
+      `document.querySelector(".project-resume-banner")?.textContent?.includes("Resume Strategy") && document.querySelector(".project-resume-banner")?.textContent?.includes("SHAREHOLDERS AGREEMENT")`,
+      "valid stored-handle Shareholders resume banner"
+    );
+    await clickButtonByText(client, "Resume Strategy");
+    await assertValidHandleShareholdersProjection(client, {
+      expectedFirstAnchorStatus: "active",
+      expectedMarkdownText: "Shareholders fixture terms."
+    });
+    assert.deepEqual(await readProjectPickerGuardCalls(client), {
+      directory: 0,
+      file: 0
+    });
+    const validHandleIdentity = await readProjectInstanceIdentity(client, {
+      localInstanceId: validHandleInstanceId
+    });
+    assert.deepEqual(validHandleIdentity, {
+      documentId: "doc_shareholders",
+      localInstanceId: validHandleInstanceId,
+      projectId: "prj_resume_browser"
+    });
+    progress("valid_stored_handle_comments_loaded");
+
+    await seedRecovery(client, {
+      baseMarkdown: shareholdersSavedMarkdown,
+      documentId: "doc_shareholders",
+      documentTitle: "SHAREHOLDERS AGREEMENT",
+      localInstanceId: validHandleInstanceId,
+      markdown: shareholdersRecoveredMarkdown
+    });
+    await reloadToLanding(client);
+    await waitFor(
+      client,
+      `document.querySelector(".project-resume-banner")?.textContent?.includes("Resume Strategy") && document.querySelector(".project-resume-banner")?.textContent?.includes("Unsaved changes may be available in 1 document")`,
+      "valid stored-handle unsaved recovery resume banner"
+    );
+    await clickButtonByText(client, "Resume Strategy");
+    await waitFor(
+      client,
+      `document.querySelector(".document-recovery-banner-recovered")?.textContent?.includes("Unsaved changes recovered")`,
+      "valid stored-handle Shareholders recovery application"
+    );
+    await assertValidHandleShareholdersProjection(client, {
+      expectedFirstAnchorStatus: "not_found",
+      expectedMarkdownText: shareholdersRecoveryMarker,
+      expectFirstAnchorRepair: true
+    });
+    assert.deepEqual(await readProjectPickerGuardCalls(client), {
+      directory: 0,
+      file: 0
+    });
+    assert.deepEqual(
+      await readProjectInstanceIdentity(client, {
+        localInstanceId: validHandleInstanceId
+      }),
+      validHandleIdentity
+    );
+    assert.deepEqual(fingerprintTree(projectDir), projectBeforeStaleHandleResume);
+    progress("valid_stored_handle_unsaved_recovery_loaded");
+
+    await reloadToLanding(client);
+    await waitFor(
+      client,
+      `document.querySelector(".project-resume-banner")?.textContent?.includes("Resume Strategy") && document.querySelector(".project-resume-banner")?.textContent?.includes("Unsaved changes may be available in 1 document")`,
+      "second valid stored-handle unsaved recovery resume banner"
+    );
+    await clickButtonByText(client, "Resume Strategy");
+    await assertValidHandleShareholdersProjection(client, {
+      expectedFirstAnchorStatus: "not_found",
+      expectedMarkdownText: shareholdersRecoveryMarker,
+      expectFirstAnchorRepair: true
+    });
+    assert.deepEqual(await readProjectPickerGuardCalls(client), {
+      directory: 0,
+      file: 0
+    });
+    assert.deepEqual(fingerprintTree(projectDir), projectBeforeStaleHandleResume);
+    progress("valid_stored_handle_second_recovery_resume_loaded");
+  } finally {
+    await removeProjectPickerFailureGuard(client, validHandlePickerGuardId);
+  }
+
   const staleHandleInstanceId = "local_project_stale_handle_resume";
   const recoveryCountBeforeStaleHandleResume =
     await readDeviceRecoveryCount(client);
   await seedPersistedOpfsProjectHandle(client, {
+    directoryName: "Strategy-stale-resume",
     files: projectBeforeStaleHandleResume,
-    localInstanceId: staleHandleInstanceId
+    localInstanceId: staleHandleInstanceId,
+    removeAfterSeed: true
   });
   await reloadToLanding(client);
   await waitFor(
@@ -375,6 +478,19 @@ try {
         recoveredConflictWorkingCopyNoWrite: true,
         explicitDiscardNoProjectWrites: true,
         multipleRecoveriesIndependent: true,
+        validStoredHandleResume: true,
+        validStoredHandleNoReselection: true,
+        validStoredHandleIdentityPreserved: true,
+        validStoredHandleSevenStoredComments: true,
+        validStoredHandleSixActiveComments: true,
+        validStoredHandleOneTrashedComment: true,
+        validStoredHandleReplyPreserved: true,
+        validStoredHandlePatchPreserved: true,
+        validStoredHandleReviewBatchPreserved: true,
+        validStoredHandleUnsavedRecoveryApplied: true,
+        validStoredHandleRecoveryIdentityPreserved: true,
+        validStoredHandleRecoveryBrokenAnchorRepairable: true,
+        validStoredHandleSecondResume: true,
         staleStoredHandleFailureSurfaced: true,
         staleStoredHandleRecoveryPreserved: true,
         staleStoredHandleReselection: true,
@@ -553,6 +669,7 @@ async function seedRecovery(pageClient, {
   baseMarkdown,
   documentId,
   documentTitle,
+  localInstanceId = null,
   markdown
 }) {
   await evaluate(pageClient, {
@@ -572,7 +689,11 @@ async function seedRecovery(pageClient, {
       const database = await open();
       const readTransaction = database.transaction("project-instances", "readonly");
       const instances = await all(readTransaction.objectStore("project-instances"));
-      const instance = instances.sort((left, right) => Date.parse(right.last_opened_at) - Date.parse(left.last_opened_at))[0];
+      const requestedLocalInstanceId = ${JSON.stringify(localInstanceId)};
+      const instance = requestedLocalInstanceId
+        ? instances.find((candidate) => candidate.local_instance_id === requestedLocalInstanceId)
+        : instances.sort((left, right) => Date.parse(right.last_opened_at) - Date.parse(left.last_opened_at))[0];
+      if (!instance) throw new Error("Project instance for recovery seed was not found.");
       const now = new Date().toISOString();
       const recoveryId = "project:" + encodeURIComponent(instance.local_instance_id) + ":" + encodeURIComponent(instance.project_id) + ":" + encodeURIComponent(${JSON.stringify(documentId)});
       const record = {
@@ -652,14 +773,15 @@ async function readDeviceRecoveryCount(pageClient) {
 
 async function seedPersistedOpfsProjectHandle(
   pageClient,
-  { files, localInstanceId }
+  { directoryName, files, localInstanceId, removeAfterSeed }
 ) {
   await evaluate(pageClient, {
     expression: `(async () => {
       const files = ${JSON.stringify(files)};
       const opfs = await navigator.storage.getDirectory();
-      await opfs.removeEntry("Strategy-stale-resume", { recursive: true }).catch(() => undefined);
-      const project = await opfs.getDirectoryHandle("Strategy-stale-resume", { create: true });
+      const directoryName = ${JSON.stringify(directoryName)};
+      await opfs.removeEntry(directoryName, { recursive: true }).catch(() => undefined);
+      const project = await opfs.getDirectoryHandle(directoryName, { create: true });
       for (const [path, text] of Object.entries(files)) {
         const parts = path.split("/");
         const name = parts.pop();
@@ -699,11 +821,186 @@ async function seedPersistedOpfsProjectHandle(
         "patchmark:active-document:prj_resume_browser",
         "doc_shareholders"
       );
-      await opfs.removeEntry("Strategy-stale-resume", { recursive: true });
+      if (${JSON.stringify(removeAfterSeed)}) {
+        await opfs.removeEntry(directoryName, { recursive: true });
+      }
       return true;
     })()`,
     awaitPromise: true
   });
+}
+
+async function installProjectPickerFailureGuard(pageClient) {
+  const { identifier } = await pageClient.call(
+    "Page.addScriptToEvaluateOnNewDocument",
+    {
+      source: `(() => {
+        window.__patchmarkValidHandleOriginalShowDirectoryPicker = window.showDirectoryPicker;
+        window.__patchmarkValidHandleOriginalShowOpenFilePicker = window.showOpenFilePicker;
+        window.__patchmarkValidHandlePickerCalls = 0;
+        window.__patchmarkValidHandleFilePickerCalls = 0;
+        window.showDirectoryPicker = async () => {
+          window.__patchmarkValidHandlePickerCalls += 1;
+          throw new Error("A valid stored-handle Resume must not open the folder picker.");
+        };
+        window.showOpenFilePicker = async () => {
+          window.__patchmarkValidHandleFilePickerCalls += 1;
+          throw new Error("Project recovery must not enter standalone Markdown loading.");
+        };
+      })();`
+    }
+  );
+  return identifier;
+}
+
+async function readProjectPickerGuardCalls(pageClient) {
+  return evaluate(pageClient, {
+    expression: `({
+      directory: window.__patchmarkValidHandlePickerCalls ?? 0,
+      file: window.__patchmarkValidHandleFilePickerCalls ?? 0
+    })`
+  });
+}
+
+async function removeProjectPickerFailureGuard(pageClient, identifier) {
+  await pageClient.call("Page.removeScriptToEvaluateOnNewDocument", {
+    identifier
+  });
+  await evaluate(pageClient, {
+    expression: `(() => {
+      if (window.__patchmarkValidHandleOriginalShowDirectoryPicker) {
+        window.showDirectoryPicker = window.__patchmarkValidHandleOriginalShowDirectoryPicker;
+      }
+      if (window.__patchmarkValidHandleOriginalShowOpenFilePicker) {
+        window.showOpenFilePicker = window.__patchmarkValidHandleOriginalShowOpenFilePicker;
+      }
+      return true;
+    })()`
+  });
+}
+
+async function assertValidHandleShareholdersProjection(
+  pageClient,
+  {
+    expectedFirstAnchorStatus,
+    expectedMarkdownText,
+    expectFirstAnchorRepair = false
+  }
+) {
+  await waitFor(
+    pageClient,
+    `document.querySelector(".workspace-status")?.textContent?.includes("Project: Strategy") && document.querySelector(".application-document-breadcrumb")?.textContent?.includes("SHAREHOLDERS AGREEMENT")`,
+    "valid stored-handle Shareholders context"
+  );
+  await waitFor(
+    pageClient,
+    `document.querySelectorAll(".project-document-item").length === 3 && document.querySelector(".application-comments-trigger")?.textContent?.replace(/\\s+/g, "") === "Comments6"`,
+    "valid stored-handle navigation and comments"
+  );
+  await clickButtonByText(pageClient, "Markdown Mode");
+  await waitFor(
+    pageClient,
+    `document.querySelector(".markdown-source-editor")?.value.includes(${JSON.stringify(expectedMarkdownText)}) && document.querySelector(".document-tools")?.textContent?.includes("1 heading")`,
+    "valid stored-handle Markdown and headings"
+  );
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const trigger = document.querySelector(".application-comments-trigger");
+      if (!(trigger instanceof HTMLButtonElement)) {
+        throw new Error("Comments trigger not found.");
+      }
+      if (trigger.getAttribute("aria-expanded") !== "true") trigger.click();
+      return true;
+    })()`
+  });
+  await waitFor(
+    pageClient,
+    `document.querySelector(".comments-panel")?.textContent?.includes("Trash · 1")`,
+    "valid stored-handle Trash projection"
+  );
+  if (expectFirstAnchorRepair) {
+    await evaluate(pageClient, {
+      expression: `document.querySelector("#patchmark-comment-card-PM-COMMENT-RESUME-0001")?.click(); true`
+    });
+    await waitFor(
+      pageClient,
+      `Array.from(document.querySelectorAll("#patchmark-comment-card-PM-COMMENT-RESUME-0001 button")).some((button) => button.textContent?.trim() === "Re-anchor")`,
+      "recovery-invalidated comment repair control"
+    );
+  }
+  const commentProjection = await evaluate(pageClient, {
+    expression: `(() => {
+      const activeComments = Array.from(document.querySelectorAll(".comment-list > li[data-comment-id]"));
+      return {
+        activeCount: activeComments.length,
+        activeIds: activeComments.map((comment) => comment.getAttribute("data-comment-id")).sort(),
+        anchorStatuses: Object.fromEntries(activeComments.map((comment) => [
+          comment.getAttribute("data-comment-id"),
+          comment.getAttribute("data-comment-anchor-status")
+        ])),
+        firstThreadCount: activeComments.find((comment) => comment.getAttribute("data-comment-id") === "PM-COMMENT-RESUME-0001")?.getAttribute("data-comment-thread-count"),
+        firstPendingPatchCount: activeComments.find((comment) => comment.getAttribute("data-comment-id") === "PM-COMMENT-RESUME-0001")?.getAttribute("data-comment-pending-patch-count"),
+        firstRepairable: Array.from(document.querySelectorAll("#patchmark-comment-card-PM-COMMENT-RESUME-0001 button")).some((button) => button.textContent?.trim() === "Re-anchor"),
+        trashCount: document.querySelectorAll(".comment-trash-list > li").length,
+        trashIds: Array.from(document.querySelectorAll(".comment-trash-list strong")).map((element) => element.textContent?.trim())
+      };
+    })()`
+  });
+  assert.deepEqual(commentProjection, {
+    activeCount: 6,
+    activeIds: [
+      "PM-COMMENT-RESUME-0001",
+      "PM-COMMENT-RESUME-0002",
+      "PM-COMMENT-RESUME-0003",
+      "PM-COMMENT-RESUME-0004",
+      "PM-COMMENT-RESUME-0005",
+      "PM-COMMENT-RESUME-0006"
+    ],
+    anchorStatuses: {
+      "PM-COMMENT-RESUME-0001": expectedFirstAnchorStatus,
+      "PM-COMMENT-RESUME-0002": "document",
+      "PM-COMMENT-RESUME-0003": "document",
+      "PM-COMMENT-RESUME-0004": "document",
+      "PM-COMMENT-RESUME-0005": "document",
+      "PM-COMMENT-RESUME-0006": "document"
+    },
+    firstThreadCount: "1",
+    firstPendingPatchCount: "1",
+    firstRepairable: expectFirstAnchorRepair,
+    trashCount: 1,
+    trashIds: ["PM-COMMENT-RESUME-0007"]
+  });
+
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const review = document.querySelector('[aria-label="Review menu"]');
+      if (!(review instanceof HTMLButtonElement)) throw new Error("Review menu not found.");
+      review.click();
+      return true;
+    })()`
+  });
+  await waitFor(
+    pageClient,
+    `Boolean(Array.from(document.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.trim() === "Review patch proposals"))`,
+    "Review patch proposals menu item"
+  );
+  await evaluate(pageClient, {
+    expression: `(() => {
+      const item = Array.from(document.querySelectorAll('[role="menuitem"]')).find((candidate) => candidate.textContent?.trim() === "Review patch proposals");
+      if (!(item instanceof HTMLElement)) throw new Error("Review patch proposals item not found.");
+      item.click();
+      return true;
+    })()`
+  });
+  await waitFor(
+    pageClient,
+    `document.querySelector(".patch-review-batch-switcher")?.textContent?.includes("Manual Review")`,
+    "valid stored-handle Review Batch projection"
+  );
+  assert.match(
+    await textContent(pageClient, ".patch-review-workspace"),
+    /1 patch(?:es)? awaiting a decision/
+  );
 }
 
 async function makePersistedProjectHandleFailWithoutPermissionState(
@@ -877,8 +1174,10 @@ function createProjectFixture(root) {
       groupId,
       markdown: "# SHAREHOLDERS AGREEMENT\n\nShareholders fixture terms.\n",
       now,
+      patches: createShareholdersPatches(now),
       path: "shareholders.md",
       position: 3000,
+      reviewBatches: createShareholdersReviewBatches(now),
       role: null,
       root
     })
@@ -920,8 +1219,10 @@ function createDocumentFixture({
   groupId,
   markdown,
   now,
+  patches = [],
   path: documentPath,
   position,
+  reviewBatches = [],
   role,
   root
 }) {
@@ -931,49 +1232,73 @@ function createDocumentFixture({
   mkdirSync(join(store, "context-packs"), { recursive: true });
   mkdirSync(join(store, "imports"), { recursive: true });
   mkdirSync(join(store, "recovery"), { recursive: true });
-  writeFileSync(
-    join(store, "manifest.json"),
-    `${JSON.stringify(
-      {
-        schema_version: 1,
-        project_id: "prj_resume_browser",
-        document_id: documentId,
-        project_name: "Strategy",
-        document_file: "document.md",
-        created_at: now,
-        updated_at: now,
-        ...(documentId === "doc_summary"
-          ? {
-              reading_bookmark: {
-                format_version: 1,
-                document: {
-                  project_id: "prj_resume_browser",
-                  document_id: documentId
-                },
-                anchor: {
-                  kind: "selected_text",
-                  selected_text: "Summary body.",
-                  markdown_start_offset: markdown.indexOf("Summary body."),
-                  markdown_end_offset:
-                    markdown.indexOf("Summary body.") + "Summary body.".length,
-                  anchor_source: "markdown"
-                },
-                created_at: now,
-                updated_at: now
-              }
-            }
-          : {})
-      },
-      null,
-      2
-    )}\n`
-  );
-  writeFileSync(
-    join(store, "comments.json"),
-    `${JSON.stringify(comments, null, 2)}\n`
-  );
-  writeFileSync(join(store, "patches.json"), "[]\n");
+  const committed = reviewBatches.length > 0;
+  const commitId = `PM-SAVE-000002-${documentId}`;
+  const manifestText = serializeJson({
+    schema_version: 1,
+    project_id: "prj_resume_browser",
+    document_id: documentId,
+    project_name: "Strategy",
+    document_file: "document.md",
+    created_at: now,
+    updated_at: now,
+    ...(committed
+      ? {
+          save_generation: 2,
+          save_commit_id: commitId
+        }
+      : {}),
+    ...(documentId === "doc_summary"
+      ? {
+          reading_bookmark: {
+            format_version: 1,
+            document: {
+              project_id: "prj_resume_browser",
+              document_id: documentId
+            },
+            anchor: {
+              kind: "selected_text",
+              selected_text: "Summary body.",
+              markdown_start_offset: markdown.indexOf("Summary body."),
+              markdown_end_offset:
+                markdown.indexOf("Summary body.") + "Summary body.".length,
+              anchor_source: "markdown"
+            },
+            created_at: now,
+            updated_at: now
+          }
+        }
+      : {})
+  });
+  const commentsText = serializeJson(comments);
+  const patchesText = serializeJson(patches);
+  const reviewBatchesText = serializeJson(reviewBatches);
+  writeFileSync(join(store, "manifest.json"), manifestText);
+  writeFileSync(join(store, "comments.json"), commentsText);
+  writeFileSync(join(store, "patches.json"), patchesText);
   writeFileSync(join(store, "tasks.json"), "[]\n");
+  if (committed) {
+    writeFileSync(join(store, "review-batches.json"), reviewBatchesText);
+    writeFileSync(
+      join(store, "save-commit.json"),
+      serializeJson({
+        format_version: 1,
+        generation: 2,
+        commit_id: commitId,
+        created_at: now,
+        files: {
+          document: descriptor("document.md", markdown),
+          comments: descriptor(".patchmark/comments.json", commentsText),
+          patches: descriptor(".patchmark/patches.json", patchesText),
+          review_batches: descriptor(
+            ".patchmark/review-batches.json",
+            reviewBatchesText
+          ),
+          manifest: descriptor(".patchmark/manifest.json", manifestText)
+        }
+      })
+    );
+  }
   writeFileSync(
     join(store, "document.json"),
     `${JSON.stringify(
@@ -1006,9 +1331,28 @@ function createShareholdersComments(now) {
     id: `PM-COMMENT-RESUME-${String(index + 1).padStart(4, "0")}`,
     type: "note",
     status: "open",
-    anchor: { kind: "document" },
+    anchor:
+      index === 0
+        ? {
+            kind: "selected_text",
+            selected_text: "Shareholders fixture terms.",
+            markdown_start_offset: 26,
+            markdown_end_offset: 53,
+            anchor_source: "markdown"
+          }
+        : { kind: "document" },
     comment: `Shareholders resume comment ${index + 1}.`,
-    thread: [],
+    thread:
+      index === 0
+        ? [
+            {
+              id: "PM-THREAD-RESUME-0001",
+              role: "chatgpt",
+              content: "Persisted Shareholders reply.",
+              created_at: now
+            }
+          ]
+        : [],
     export_state: { focus_state: "idle" },
     created_at: now,
     updated_at: now,
@@ -1019,4 +1363,73 @@ function createShareholdersComments(now) {
         }
       : {})
   }));
+}
+
+function createShareholdersPatches(now) {
+  return [
+    {
+      id: "PM-PATCH-RESUME-0001",
+      status: "pending",
+      comment_id: "PM-COMMENT-RESUME-0001",
+      original_text: "Shareholders fixture terms.",
+      suggested_text: "Shareholders fixture terms remain available.",
+      reason: "Exercise persisted patch projection during Resume.",
+      created_at: now
+    }
+  ];
+}
+
+function createShareholdersReviewBatches(now) {
+  return [
+    {
+      schema_version: 1,
+      batch_id: "review_batch_valid_handle_resume",
+      project_id: "prj_resume_browser",
+      document_id: "doc_shareholders",
+      source: "manual",
+      batch_type: "manual",
+      ordered_comment_ids: ["PM-COMMENT-RESUME-0001"],
+      section: null,
+      algorithm_version: null,
+      prompt_builder_version: 1,
+      document_generation: 1,
+      batch_record_generation: 2,
+      document_content_sha256: "a".repeat(64),
+      comment_fingerprints: [
+        {
+          comment_id: "PM-COMMENT-RESUME-0001",
+          fingerprint: "b".repeat(64)
+        }
+      ],
+      estimated_prompt_tokens: 100,
+      over_limit_warning: false,
+      prompt_sha256: "c".repeat(64),
+      context_pack: {
+        relative_path:
+          ".patchmark/context-packs/review_batch_valid_handle_resume-prompt.md",
+        content_sha256: "d".repeat(64),
+        bytes: 100
+      },
+      document_title_snapshot: "SHAREHOLDERS AGREEMENT",
+      status: "exported",
+      created_at: now,
+      exported_at: now,
+      response_received_at: null,
+      cancelled_at: null,
+      cancel_reason: null,
+      import_id: null
+    }
+  ];
+}
+
+function serializeJson(value) {
+  return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function descriptor(path, text) {
+  return {
+    path,
+    sha256: createHash("sha256").update(text).digest("hex"),
+    bytes: Buffer.byteLength(text)
+  };
 }

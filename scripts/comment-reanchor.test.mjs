@@ -314,6 +314,41 @@ assert.equal(
   unescapedBusinessContextMarkdown
 );
 
+const paymentVisibleText = [
+  "The remaining 75% of the registered capital shall be called in accordance with the",
+  "procedures and requirements set out in Clause 5.3 of this Agreement, at such time as",
+  "the Board of Directors determines the Company requires such capital for its",
+  "operations, provided always that any such call shall require the prior written consent",
+  "of Party-1."
+].join(" ");
+const paymentMarkdownText = [
+  "The remaining 75% of the registered capital shall be called in accordance with the",
+  "procedures and requirements set out in Clause 5.3 of this Agreement, at such time as",
+  "the Board of Directors determines the Company requires such capital for its",
+  "operations, provided always that any such call shall require the prior written consent&#x20;",
+  "",
+  "of Party-1."
+].join("\n");
+const mappedPaymentSelection = mapVisibleSelectionToMarkdownRange({
+  contextMarkdown: paymentMarkdownText,
+  contextStart: 0,
+  selectedVisibleText: paymentVisibleText,
+  visibleStart: 0,
+  visibleEnd: paymentVisibleText.length
+});
+assert.deepEqual(mappedPaymentSelection, {
+  end: paymentMarkdownText.length,
+  start: 0
+});
+assert.equal(
+  paymentMarkdownText.slice(
+    mappedPaymentSelection.start,
+    mappedPaymentSelection.end
+  ),
+  paymentMarkdownText,
+  "a visible space encoded as a Markdown character reference must retain the exact source range"
+);
+
 const businessHistoricalComment = createComment({
   id: "PM-COMMENT-BUSINESS",
   markdownStart: 900000,

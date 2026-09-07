@@ -1,3 +1,5 @@
+import { decodeString } from "micromark-util-decode-string";
+
 export type TextRange = {
   end: number;
   start: number;
@@ -45,12 +47,12 @@ export function findNormalizedTextMatches(
 
   while (nextIndex !== -1) {
     const start = textIndex.positions[nextIndex];
-    const end = textIndex.positions[nextIndex + normalizedSearchText.length - 1];
+    const end = textIndex.ends[nextIndex + normalizedSearchText.length - 1];
 
     if (typeof start === "number" && typeof end === "number") {
       matches.push({
         start,
-        end: end + 1
+        end
       });
     }
 
@@ -79,12 +81,12 @@ export function findMarkdownPlainTextMatches(
 
   while (nextIndex !== -1) {
     const start = textIndex.positions[nextIndex];
-    const end = textIndex.positions[nextIndex + normalizedSearchText.length - 1];
+    const end = textIndex.ends[nextIndex + normalizedSearchText.length - 1];
 
     if (typeof start === "number" && typeof end === "number") {
       matches.push({
         start,
-        end: end + 1
+        end
       });
     }
 
@@ -98,11 +100,13 @@ export function findMarkdownPlainTextMatches(
 }
 
 export function buildMarkdownPlainTextIndex(markdown: string): {
+  ends: number[];
   positions: number[];
   text: string;
 } {
   const textParts: string[] = [];
   const positions: number[] = [];
+  const ends: number[] = [];
   const lines = markdown.split(/(\n)/);
   let markdownOffset = 0;
 
@@ -110,7 +114,9 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
     if (lineOrBreak === "\n") {
       appendNormalizedIndexedCharacter({
         character: " ",
+        ends,
         sourceOffset: markdownOffset,
+        sourceEnd: markdownOffset + 1,
         positions,
         textParts
       });
@@ -130,12 +136,37 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
       ) {
         appendNormalizedIndexedCharacter({
           character: line[index + 1],
+          ends,
           sourceOffset: markdownOffset + index + 1,
+          sourceEnd: markdownOffset + index + 2,
           positions,
           textParts
         });
         index += 2;
         continue;
+      }
+
+      if (character === "&") {
+        const referenceMatch = /^&(?:#(?:\d{1,7}|[xX][\da-fA-F]{1,6})|[\da-zA-Z]{1,31});/.exec(
+          line.slice(index)
+        );
+        const reference = referenceMatch?.[0];
+        const decodedReference = reference ? decodeString(reference) : null;
+
+        if (reference && decodedReference && decodedReference !== reference) {
+          for (let decodedIndex = 0; decodedIndex < decodedReference.length; decodedIndex += 1) {
+            appendNormalizedIndexedCharacter({
+              character: decodedReference[decodedIndex],
+              ends,
+              sourceOffset: markdownOffset + index,
+              sourceEnd: markdownOffset + index + reference.length,
+              positions,
+              textParts
+            });
+          }
+          index += reference.length;
+          continue;
+        }
       }
 
       if (character === "(" && index > 0 && line[index - 1] === "]") {
@@ -151,7 +182,9 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
           for (let runIndex = index; runIndex < runEnd; runIndex += 1) {
             appendNormalizedIndexedCharacter({
               character: "_",
+              ends,
               sourceOffset: markdownOffset + runIndex,
+              sourceEnd: markdownOffset + runIndex + 1,
               positions,
               textParts
             });
@@ -169,7 +202,9 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
 
       appendNormalizedIndexedCharacter({
         character,
+        ends,
         sourceOffset: markdownOffset + index,
+        sourceEnd: markdownOffset + index + 1,
         positions,
         textParts
       });
@@ -179,9 +214,10 @@ export function buildMarkdownPlainTextIndex(markdown: string): {
     markdownOffset += line.length;
   }
 
-  trimNormalizedTextIndex(textParts, positions);
+  trimNormalizedTextIndex(textParts, positions, ends);
 
   return {
+    ends,
     positions,
     text: textParts.join("")
   };
@@ -290,24 +326,29 @@ export function getMarkdownPlainText(markdown: string): string {
 }
 
 export function buildNormalizedSourceTextIndex(text: string): {
+  ends: number[];
   positions: number[];
   text: string;
 } {
   const textParts: string[] = [];
   const positions: number[] = [];
+  const ends: number[] = [];
 
   for (let index = 0; index < text.length; index += 1) {
     appendNormalizedIndexedCharacter({
       character: text[index],
+      ends,
       sourceOffset: index,
+      sourceEnd: index + 1,
       positions,
       textParts
     });
   }
 
-  trimNormalizedTextIndex(textParts, positions);
+  trimNormalizedTextIndex(textParts, positions, ends);
 
   return {
+    ends,
     positions,
     text: textParts.join("")
   };
@@ -330,13 +371,17 @@ export function dedupeTextMatches(matches: TextRange[]): TextRange[] {
 
 function appendNormalizedIndexedCharacter({
   character,
+  ends,
   positions,
   sourceOffset,
+  sourceEnd,
   textParts
 }: {
   character: string;
+  ends: number[];
   positions: number[];
   sourceOffset: number;
+  sourceEnd: number;
   textParts: string[];
 }): void {
   const isWhitespace = /\s/.test(character);
@@ -346,6 +391,9 @@ function appendNormalizedIndexedCharacter({
     if (textParts.length > 0 && previousCharacter !== " ") {
       textParts.push(" ");
       positions.push(sourceOffset);
+      ends.push(sourceEnd);
+    } else if (previousCharacter === " ") {
+      ends[ends.length - 1] = sourceEnd;
     }
 
     return;
@@ -353,19 +401,23 @@ function appendNormalizedIndexedCharacter({
 
   textParts.push(character);
   positions.push(sourceOffset);
+  ends.push(sourceEnd);
 }
 
 function trimNormalizedTextIndex(
   textParts: string[],
-  positions: number[]
+  positions: number[],
+  ends: number[]
 ): void {
   while (textParts[0] === " ") {
     textParts.shift();
     positions.shift();
+    ends.shift();
   }
 
   while (textParts[textParts.length - 1] === " ") {
     textParts.pop();
     positions.pop();
+    ends.pop();
   }
 }

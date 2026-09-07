@@ -404,7 +404,7 @@ try {
   await selectVisualAcrossBlocks(
     client,
     businessVisibleText,
-    multiNodeVisibleText
+    "Structural boundary"
   );
   await waitForRejectedWorkspaceSelection(client);
 
@@ -915,7 +915,9 @@ function preparePhase8Fixture(projectDir) {
     "",
     businessMarkdownText,
     "",
-    multiNodeMarkdownText
+    multiNodeMarkdownText,
+    "",
+    "## Structural boundary"
   ].join("\n");
   const comments = [
     fixtureComment(commentIds.ambiguous, "LINE add", "Choose the relevant occurrence."),
@@ -1492,7 +1494,9 @@ async function selectVisualAcrossBlocks(pageClient, firstText, secondText) {
       const normalize = (value) => value.replace(/\\s+/g, " ").trim();
       const root = document.querySelector(".patchmark-prose");
       if (!root) throw new Error("Visual editor missing");
-      const blocks = Array.from(root.querySelectorAll("p"));
+      const blocks = Array.from(
+        root.querySelectorAll("p,h1,h2,h3,h4,h5,h6,li,td,th")
+      );
       const firstBlock = blocks.find(
         (candidate) => normalize(candidate.textContent ?? "") === ${JSON.stringify(firstText)}
       );
